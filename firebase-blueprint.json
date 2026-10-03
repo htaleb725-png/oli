@@ -1,0 +1,186 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user account with role and department assignments",
+      "type": "object",
+      "properties": {
+        "User_ID": { "type": "string" },
+        "Username": { "type": "string" },
+        "Role": { "type": "string" },
+        "RoleArabic": { "type": "string" },
+        "FullName": { "type": "string" },
+        "Department": { "type": "string" },
+        "Status": { "type": "string" },
+        "CreatedAt": { "type": "string" }
+      },
+      "required": ["User_ID", "Username", "Role", "FullName"]
+    },
+    "Citizen": {
+      "title": "Citizen",
+      "description": "Citizen record holding personal, contact and residential information",
+      "type": "object",
+      "properties": {
+        "Citizen_ID": { "type": "string" },
+        "FullName": { "type": "string" },
+        "Phone1": { "type": "string" },
+        "District": { "type": "string" },
+        "SubDistrict": { "type": "string" },
+        "Gender": { "type": "string" },
+        "Rating": { "type": "string" },
+        "CreatedAt": { "type": "string" }
+      },
+      "required": ["Citizen_ID", "FullName", "Phone1", "CreatedAt"]
+    },
+    "OfficeRequest": {
+      "title": "OfficeRequest",
+      "description": "Citizen administrative request and official transaction",
+      "type": "object",
+      "properties": {
+        "Request_ID": { "type": "string" },
+        "Citizen_ID": { "type": "string" },
+        "CitizenName": { "type": "string" },
+        "Entity": { "type": "string" },
+        "RequestStatus": { "type": "string" },
+        "ProcessingStatus": { "type": "string" },
+        "Priority": { "type": "string" },
+        "Details": { "type": "string" },
+        "CreatedAt": { "type": "string" },
+        "CreatedBy": { "type": "string" }
+      },
+      "required": ["Request_ID", "Citizen_ID", "Entity", "CreatedAt"]
+    },
+    "Interview": {
+      "title": "Interview",
+      "description": "Scheduled or documented citizen meeting with the MP or executive team",
+      "type": "object",
+      "properties": {
+        "Interview_ID": { "type": "string" },
+        "Citizen_ID": { "type": "string" },
+        "CitizenName": { "type": "string" },
+        "Date": { "type": "string" },
+        "Status": { "type": "string" },
+        "CreatedAt": { "type": "string" }
+      },
+      "required": ["Interview_ID", "Citizen_ID", "Date", "CreatedAt"]
+    },
+    "OfficialLetter": {
+      "title": "OfficialLetter",
+      "description": "Issued official correspondence and ministerial memos",
+      "type": "object",
+      "properties": {
+        "Letter_ID": { "type": "string" },
+        "LetterNumber": { "type": "string" },
+        "LetterDate": { "type": "string" },
+        "Recipient": { "type": "string" },
+        "Subject": { "type": "string" },
+        "Body": { "type": "string" },
+        "Citizen_ID": { "type": "string" }
+      },
+      "required": ["Letter_ID", "LetterNumber", "Recipient", "Subject"]
+    },
+    "ChequeRecord": {
+      "title": "ChequeRecord",
+      "description": "Cheque financial assistance and distribution record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "Citizen_ID": { "type": "string" },
+        "CitizenName": { "type": "string" },
+        "Amount": { "type": "number" },
+        "CreatedAt": { "type": "string" }
+      },
+      "required": ["id", "Citizen_ID", "Amount", "CreatedAt"]
+    },
+    "OrganizationRecord": {
+      "title": "OrganizationRecord",
+      "description": "Organizational and political assessment records",
+      "type": "object",
+      "properties": {
+        "Org_ID": { "type": "string" },
+        "Citizen_ID": { "type": "string" },
+        "Rating": { "type": "string" },
+        "UpdatedAt": { "type": "string" }
+      },
+      "required": ["Org_ID", "Citizen_ID", "Rating"]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Global office system settings and operational parameters",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "systemTitle": { "type": "string" },
+        "deputyName": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "DropdownItem": {
+      "title": "DropdownItem",
+      "description": "Configurable dropdown option categories and values",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "Category": { "type": "string" },
+        "ItemValue": { "type": "string" }
+      },
+      "required": ["id", "Category", "ItemValue"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "System event and security audit trail record",
+      "type": "object",
+      "properties": {
+        "Log_ID": { "type": "string" },
+        "Timestamp": { "type": "string" },
+        "User_ID": { "type": "string" },
+        "Action": { "type": "string" },
+        "Details": { "type": "string" }
+      },
+      "required": ["Log_ID", "Timestamp", "Action"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User accounts and employee permissions"
+    },
+    "/citizens/{citizenId}": {
+      "schema": "Citizen",
+      "description": "Registered citizen records"
+    },
+    "/requests/{requestId}": {
+      "schema": "OfficeRequest",
+      "description": "Citizen administrative requests"
+    },
+    "/interviews/{interviewId}": {
+      "schema": "Interview",
+      "description": "Parliamentary interview records"
+    },
+    "/letters/{letterId}": {
+      "schema": "OfficialLetter",
+      "description": "Official ministerial correspondence"
+    },
+    "/cheques/{chequeId}": {
+      "schema": "ChequeRecord",
+      "description": "Cheque distribution records"
+    },
+    "/organizations/{orgId}": {
+      "schema": "OrganizationRecord",
+      "description": "Organizational evaluations"
+    },
+    "/settings/{settingId}": {
+      "schema": "SystemSettings",
+      "description": "Global office configuration"
+    },
+    "/dropdowns/{dropdownId}": {
+      "schema": "DropdownItem",
+      "description": "System dropdown menus and categories"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "System audit logs"
+    }
+  }
+}

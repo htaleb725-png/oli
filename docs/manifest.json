@@ -1,0 +1,46 @@
+{
+  "name": "نظام مكتب النائب علا الناشي",
+  "short_name": "مكتب علا الناشي",
+  "description": "المنظومة الإدارية والمكتبية المتكاملة لمكتب النائب علا الناشي لإدارة المراجعين، المعاملات، المقابلات، والأرشيف",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "background_color": "#0f172a",
+  "theme_color": "#1e293b",
+  "orientation": "any",
+  "dir": "rtl",
+  "lang": "ar",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "تسجيل مراجع جديد",
+      "short_name": "مراجع جديد",
+      "description": "إضافة مراجع فوري لقاعدة بيانات الاستعلامات",
+      "url": "/?section=reception",
+      "icons": [{ "src": "/icon.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "المعاملات والطلبات",
+      "short_name": "المعاملات",
+      "description": "متابعة وإحالة المعاملات",
+      "url": "/?section=admin",
+      "icons": [{ "src": "/icon.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "مقابلات النائب",
+      "short_name": "المقابلات",
+      "description": "جدول مقابلات النائب والقرارات",
+      "url": "/?section=interviews",
+      "icons": [{ "src": "/icon.svg", "sizes": "192x192" }]
+    }
+  ]
+}

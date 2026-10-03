@@ -1,0 +1,6 @@
+{
+  "name": "نظام مكتب النائب علا الناشي",
+  "description": "النظام الإداري والمكتبي المتكامل لمكتب النائب علا الناشي لإدارة المراجعين، الطلبات، مقابلات النائب، الأرشيف، وبطاقات المعلومات الرسمية",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

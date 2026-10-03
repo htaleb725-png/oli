@@ -1,11 +1,45 @@
-<div align="center">
+# منظومة مكتب النائب م. علا عودة الناشي (مجلس النواب العراقي)
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+منظومة إلكترونية متكاملة لإدارة شؤون المراجعين، الطلبات والكتب الرسمية، المقابلات، والتنظيم الجماهيري.
 
-  <h1>Built with AI Studio</h2>
+---
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## 🚀 كيفية تشغيل المنظومة بعد تنزيلها من GitHub
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+### 1. التشغيل المحلي على الحاسوب (Localhost):
 
-</div>
+تأكد من تثبيت [Node.js](https://nodejs.org/) (الإصدار 18 أو أحدث) على حاسوبك، ثم نفذ الأوامر التالية في الـ Terminal:
+
+```bash
+# تثبيت الحزم والمكتبات
+npm install
+
+# تشغيل خادم التطوير المحلي
+npm run dev
+```
+سيفتح النظام على الرابط: `http://localhost:3000`
+
+---
+
+### 2. بناء النسخة النهائية للنشر (Production Build):
+
+```bash
+npm run build
+```
+سيتم توليد مجلد `dist/` الجاهز للنشر على أي استضافة ويب.
+
+---
+
+### 3. تفعيل النشر التلقائي المجاني على GitHub Pages:
+
+تم تجهيز ملف `GitHub Actions Workflow` تلقائياً. كل ما عليك فعله لتشغيل الموقع أونلاين:
+1. اذهب إلى مستودع المشروع في **GitHub**.
+2. ادخل إلى **Settings** (الإعدادات).
+3. اختر من القائمة الجانبية **Pages**.
+4. تحت خانة **Build and deployment**، غيّر **Source** من `Deploy from a branch` إلى **`GitHub Actions`**.
+5. سيتم بناء ونشر الموقع مباشرة وستحصل على رابط دائم لفتح واستخدام المنظومة من أي جهاز!
+
+---
+
+### 4. النشر السريع على Vercel أو Netlify:
+يمكنك أيضاً ربط المستودع بـ **Vercel** أو **Netlify** بضغطة زر واحدة (Framework Preset: **Vite**).

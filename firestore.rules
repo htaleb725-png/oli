@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Office Database Security Rules - Allow all office collections read and write
+    match /citizens/{document=**} {
+      allow read, write: if true;
+    }
+    match /requests/{document=**} {
+      allow read, write: if true;
+    }
+    match /interviews/{document=**} {
+      allow read, write: if true;
+    }
+    match /letters/{document=**} {
+      allow read, write: if true;
+    }
+    match /cheques/{document=**} {
+      allow read, write: if true;
+    }
+    match /organizations/{document=**} {
+      allow read, write: if true;
+    }
+    match /users/{document=**} {
+      allow read, write: if true;
+    }
+    match /settings/{document=**} {
+      allow read, write: if true;
+    }
+    match /dropdowns/{document=**} {
+      allow read, write: if true;
+    }
+    match /audit_logs/{document=**} {
+      allow read, write: if true;
+    }
+    match /test/{document=**} {
+      allow read, write: if true;
+    }
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

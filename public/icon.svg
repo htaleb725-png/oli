@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e293b;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="gradGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f59e0b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#d97706;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="gradBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Background Rounded -->
+  <rect width="512" height="512" rx="128" fill="url(#grad1)"/>
+  <!-- Outer Gold Border -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="url(#gradGold)" stroke-width="8" opacity="0.8"/>
+  
+  <!-- Emblem Center Circle -->
+  <circle cx="256" cy="256" r="170" fill="#1e293b" stroke="#f59e0b" stroke-width="4"/>
+  
+  <!-- Inner Parliamentary / Scales Motif -->
+  <!-- Building / Office Icon -->
+  <path d="M176 340 L176 220 L256 160 L336 220 L336 340 Z" fill="none" stroke="url(#gradGold)" stroke-width="12" stroke-linejoin="round"/>
+  <!-- Columns -->
+  <line x1="216" y1="230" x2="216" y2="330" stroke="#f59e0b" stroke-width="8"/>
+  <line x1="256" y1="210" x2="256" y2="330" stroke="#f59e0b" stroke-width="8"/>
+  <line x1="296" y1="230" x2="296" y2="330" stroke="#f59e0b" stroke-width="8"/>
+  
+  <!-- Crest Gold Badge on Top -->
+  <circle cx="256" cy="150" r="28" fill="#f59e0b"/>
+  <polygon points="256,132 262,145 276,145 265,154 269,168 256,158 243,168 247,154 236,145 250,145" fill="#0f172a"/>
+  
+  <!-- Arabic Text Calligraphy Stylized 'ع' for Ola -->
+  <text x="256" y="415" font-family="'Cairo', 'Tajawal', sans-serif" font-size="44" font-weight="900" fill="#ffffff" text-anchor="middle">مكتب النائب علا الناشي</text>
+  <text x="256" y="455" font-family="'Cairo', 'Tajawal', sans-serif" font-size="24" font-weight="700" fill="#f59e0b" text-anchor="middle">المنظومة الإدارية المتكاملة</text>
+</svg>
