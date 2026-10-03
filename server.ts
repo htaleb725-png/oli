@@ -110,6 +110,16 @@ async function startServer() {
     });
   });
 
+  // Supabase status & verification endpoint
+  app.get('/api/supabase/status', (req, res) => {
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+    const hasKey = !!(process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY);
+    res.json({
+      configured: !!(supabaseUrl && hasKey),
+      supabaseUrl: supabaseUrl ? supabaseUrl.replace(/https?:\/\//, '').split('.')[0] + '...' : '',
+    });
+  });
+
   // OCR Document & Image Analysis Endpoint
   app.post('/api/ocr/analyze-image', async (req, res) => {
     const { image, filename } = req.body || {};

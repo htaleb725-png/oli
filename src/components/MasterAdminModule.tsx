@@ -46,6 +46,7 @@ import {
 } from 'lucide-react';
 import { AiRequestDrafterModal } from './AiRequestDrafterModal';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+import { SupabaseSyncModule } from './SupabaseSyncModule';
 import { 
   initGoogleAuth, 
   googleSignIn, 
@@ -94,7 +95,7 @@ export const MasterAdminModule: React.FC = () => {
     triggerDeveloper3WaySync
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'system' | 'users' | 'dropdowns' | 'sync' | 'desktop' | 'data_wipe'>('system');
+  const [activeTab, setActiveTab] = useState<'system' | 'users' | 'dropdowns' | 'sync' | 'supabase' | 'desktop' | 'data_wipe'>('system');
   const [selectedCategory, setSelectedCategory] = useState<DropdownCategory>('Entity');
   const [newItemValue, setNewItemValue] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -579,6 +580,18 @@ export const MasterAdminModule: React.FC = () => {
             onClick: () => setActiveTab('dropdowns')
           },
           {
+            id: 'dev_supabase',
+            title: 'قاعدة بيانات Supabase (الرئيسية)',
+            subtitle: 'PostgreSQL - استعلام وحفظ وجداول تلقائية',
+            icon: Database,
+            iconColor: 'text-emerald-600 dark:text-emerald-400',
+            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+            badge: 'الرئيسية ⚡',
+            badgeColor: 'bg-emerald-600 text-white',
+            isActive: activeTab === 'supabase',
+            onClick: () => setActiveTab('supabase')
+          },
+          {
             id: 'dev_sync',
             title: 'المزامنة والاتصال السحابي',
             subtitle: 'Google Sheets و Drive API',
@@ -696,6 +709,18 @@ export const MasterAdminModule: React.FC = () => {
         >
           <ListPlus className="w-3.5 h-3.5" />
           <span>القوائم المنسدلة والحقول الديناميكية ({dropdowns.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('supabase')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'supabase' 
+              ? 'bg-gradient-to-r from-emerald-600 to-teal-700 text-white shadow-md' 
+              : 'bg-white text-emerald-800 border border-emerald-300 hover:bg-emerald-50'
+          }`}
+        >
+          <Database className="w-3.5 h-3.5 text-emerald-500" />
+          <span>قاعدة بيانات Supabase (الرئيسية) 🚀</span>
         </button>
 
         <button
@@ -1455,9 +1480,31 @@ export const MasterAdminModule: React.FC = () => {
         </div>
       )}
 
+      {/* TAB: Supabase Cloud Database */}
+      {activeTab === 'supabase' && (
+        <SupabaseSyncModule />
+      )}
+
       {/* TAB 4: Developer Secret Cloud Sync & Google Workspace Matrix */}
       {activeTab === 'sync' && (
         <div className="space-y-6 max-w-5xl">
+          {/* Quick link banner to Supabase */}
+          <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Database className="w-6 h-6 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 dark:text-white">قاعدة بيانات Supabase (الخيار الموصى به والرئيسي)</h4>
+                <p className="text-xs text-slate-600 dark:text-slate-300">تم تفعيل الربط المباشر بقاعدة بيانات Supabase لإنشاء الأعمدة والجداول والاستعلام والحفظ دون قيود توثيق النطاقات.</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setActiveTab('supabase')}
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shrink-0 transition shadow-sm"
+            >
+              إدارة قاعدة بيانات Supabase
+            </button>
+          </div>
+
           {/* Secret Developer Notice Banner */}
           <div className="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white border border-indigo-500/30 shadow-md">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">

@@ -60,6 +60,27 @@ import {
   seedInitialDataIfEmpty,
   pushAllStateToFirestore
 } from '../services/firestoreSync';
+import {
+  isSupabaseConfigured,
+  checkSupabaseHealth,
+  subscribeToSupabaseChanges,
+  upsertCitizenToSupabase,
+  deleteCitizenFromSupabase,
+  upsertRequestToSupabase,
+  deleteRequestFromSupabase,
+  upsertInterviewToSupabase,
+  deleteInterviewFromSupabase,
+  upsertChequeToSupabase,
+  deleteChequeFromSupabase,
+  upsertOfficialLetterToSupabase,
+  deleteOfficialLetterFromSupabase,
+  upsertOrganizationRecordToSupabase,
+  insertAuditLogToSupabase,
+  saveSystemSettingsToSupabase,
+  syncAllLocalDataToSupabase,
+  fetchAllDataFromSupabase,
+  autoSyncNewCodeDataToSupabase
+} from '../services/supabaseService';
 
 // Run storage cleanup immediately on module evaluation to fix any existing quota issue
 cleanBloatedLocalStorage();
@@ -177,6 +198,10 @@ interface AppContextType {
   syncAllToFirestoreNow: () => Promise<{ successCount: number; total: number }>;
   loginWithGoogleDeveloper: (onProgress?: (step: number, totalSteps: number, message: string) => void) => Promise<{ success: boolean; cancelled?: boolean; error?: string | null }>;
   triggerDeveloper3WaySync: () => Promise<{ success: boolean; sheetsSynced: boolean; firestoreCount: number; message: string }>;
+  isSupabaseConnected: boolean;
+  isSupabaseSyncing: boolean;
+  syncAllDataToSupabase: () => Promise<{ success: boolean; message: string; counts?: Record<string, number> }>;
+  fetchAllDataFromSupabase: () => Promise<{ success: boolean; message: string }>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -269,6 +294,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(() => {
     return localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true';
   });
+
+  const [isSupabaseConnected, setIsSupabaseConnected] = useState<boolean>(false);
+  const [isSupabaseSyncing, setIsSupabaseSyncing] = useState<boolean>(false);
 
   const [citizens, setCitizens] = useState<Citizen[]>(() => {
     if (localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') {
@@ -732,6 +760,105 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
+  // Supabase initialization, health check and realtime synchronization
+  useEffect(() => {
+    if (!isSupabaseConfigured()) {
+      setIsSupabaseConnected(false);
+      return;
+    }
+
+    let isMounted = true;
+
+    // Automatic migration & hydration on boot/deployment
+    autoSyncNewCodeDataToSupabase({
+      codeUsers: INITIAL_USERS,
+      codeDropdowns: INITIAL_DROPDOWNS,
+      codeDynamicFields: INITIAL_DYNAMIC_FIELDS,
+      codeSettings: INITIAL_SETTINGS
+    })
+      .then((result) => {
+        if (!isMounted) return;
+        if (result.isSupabaseActive && result.restoredData) {
+          setIsSupabaseConnected(true);
+          const { restoredData } = result;
+          if (restoredData.citizens.length > 0) setCitizens(restoredData.citizens);
+          if (restoredData.requests.length > 0) setRequests(restoredData.requests);
+          if (restoredData.interviews.length > 0) setInterviews(restoredData.interviews);
+          if (restoredData.officialLetters.length > 0) setOfficialLetters(restoredData.officialLetters);
+          if (restoredData.organizationRecords.length > 0) setOrganizationRecords(restoredData.organizationRecords);
+          if (restoredData.cheques.length > 0) setCheques(restoredData.cheques);
+          if (restoredData.users.length > 0) setUsers(restoredData.users);
+          if (restoredData.dropdowns.length > 0) setDropdowns(restoredData.dropdowns);
+          if (restoredData.dynamicFields.length > 0) setDynamicFields(restoredData.dynamicFields);
+          if (restoredData.settings) setSystemSettings((prev) => ({ ...prev, ...restoredData.settings }));
+        }
+      })
+      .catch((err) => {
+        console.warn('Supabase autoSync on boot warning:', err);
+      });
+
+    checkSupabaseHealth()
+      .then((res) => {
+        if (isMounted) {
+          setIsSupabaseConnected(res.connected);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setIsSupabaseConnected(false);
+      });
+
+    const unsubRealtime = subscribeToSupabaseChanges((table, eventType, newRec, oldRec) => {
+      if (localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') return;
+
+      if (table === 'citizens') {
+        if (eventType === 'INSERT' && newRec?.Citizen_ID) {
+          setCitizens((prev) => [newRec, ...prev.filter((c) => c.Citizen_ID !== newRec.Citizen_ID)]);
+        } else if (eventType === 'UPDATE' && newRec?.Citizen_ID) {
+          setCitizens((prev) => prev.map((c) => (c.Citizen_ID === newRec.Citizen_ID ? { ...c, ...newRec } : c)));
+        } else if (eventType === 'DELETE' && oldRec?.Citizen_ID) {
+          setCitizens((prev) => prev.filter((c) => c.Citizen_ID !== oldRec.Citizen_ID));
+        }
+      } else if (table === 'requests') {
+        if (eventType === 'INSERT' && newRec?.Request_ID) {
+          setRequests((prev) => [newRec, ...prev.filter((r) => r.Request_ID !== newRec.Request_ID)]);
+        } else if (eventType === 'UPDATE' && newRec?.Request_ID) {
+          setRequests((prev) => prev.map((r) => (r.Request_ID === newRec.Request_ID ? { ...r, ...newRec } : r)));
+        } else if (eventType === 'DELETE' && oldRec?.Request_ID) {
+          setRequests((prev) => prev.filter((r) => r.Request_ID !== oldRec.Request_ID));
+        }
+      } else if (table === 'interviews') {
+        if (eventType === 'INSERT' && newRec?.Interview_ID) {
+          setInterviews((prev) => [newRec, ...prev.filter((i) => i.Interview_ID !== newRec.Interview_ID)]);
+        } else if (eventType === 'UPDATE' && newRec?.Interview_ID) {
+          setInterviews((prev) => prev.map((i) => (i.Interview_ID === newRec.Interview_ID ? { ...i, ...newRec } : i)));
+        } else if (eventType === 'DELETE' && oldRec?.Interview_ID) {
+          setInterviews((prev) => prev.filter((i) => i.Interview_ID !== oldRec.Interview_ID));
+        }
+      } else if (table === 'cheques') {
+        if (eventType === 'INSERT' && newRec?.id) {
+          setCheques((prev) => [newRec, ...prev.filter((ch) => ch.id !== newRec.id)]);
+        } else if (eventType === 'UPDATE' && newRec?.id) {
+          setCheques((prev) => prev.map((ch) => (ch.id === newRec.id ? { ...ch, ...newRec } : ch)));
+        } else if (eventType === 'DELETE' && oldRec?.id) {
+          setCheques((prev) => prev.filter((ch) => ch.id !== oldRec.id));
+        }
+      } else if (table === 'official_letters') {
+        if (eventType === 'INSERT' && newRec?.Letter_ID) {
+          setOfficialLetters((prev) => [newRec, ...prev.filter((l) => l.Letter_ID !== newRec.Letter_ID)]);
+        } else if (eventType === 'UPDATE' && newRec?.Letter_ID) {
+          setOfficialLetters((prev) => prev.map((l) => (l.Letter_ID === newRec.Letter_ID ? { ...l, ...newRec } : l)));
+        } else if (eventType === 'DELETE' && oldRec?.Letter_ID) {
+          setOfficialLetters((prev) => prev.filter((l) => l.Letter_ID !== oldRec.Letter_ID));
+        }
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubRealtime();
+    };
+  }, []);
+
   const addAuditLog = (action: string, section: string, details: string) => {
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
@@ -746,6 +873,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setAuditLogs(prev => [newLog, ...prev]);
     syncAuditLogToFirestore(newLog);
+    insertAuditLogToSupabase(newLog).catch(() => {});
   };
 
   const login = (username: string, pass: string): boolean => {
@@ -1008,6 +1136,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushToGoogleSheetsRealtime('citizens', newCitizen, 'insert', systemSettings.appsScriptUrl);
     // Sync to Cloud Firestore
     syncCitizenToFirestore(newCitizen);
+    // Direct save to Supabase
+    upsertCitizenToSupabase(newCitizen).catch(() => {});
 
     return newCitizen;
   };
@@ -1045,6 +1175,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushToGoogleSheetsRealtime('citizens', updatedCitizen, 'update', systemSettings.appsScriptUrl);
     // Sync to Cloud Firestore
     syncCitizenToFirestore(updatedCitizen);
+    // Direct save to Supabase
+    upsertCitizenToSupabase(updatedCitizen).catch(() => {});
   };
 
   const deleteCitizen = (citizenId: string) => {
@@ -1053,6 +1185,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCitizens(prev => prev.filter(c => c.Citizen_ID !== citizenId));
       addAuditLog('حذف سجل مواطن', 'الاستعلامات', `تم حذف سجل المواطن ${target.FullName} (${citizenId})`);
       deleteCitizenFromFirestore(citizenId);
+      deleteCitizenFromSupabase(citizenId).catch(() => {});
     }
   };
 
@@ -1140,6 +1273,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushToGoogleSheetsRealtime('requests', newRequest, 'insert', systemSettings.appsScriptUrl);
     // Sync to Cloud Firestore
     syncRequestToFirestore(newRequest);
+    // Direct save to Supabase
+    upsertRequestToSupabase(newRequest).catch(() => {});
 
     return newRequest;
   };
@@ -1151,12 +1286,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushToGoogleSheetsRealtime('requests', req, 'update', systemSettings.appsScriptUrl);
     // Sync to Cloud Firestore
     syncRequestToFirestore(req);
+    // Direct save to Supabase
+    upsertRequestToSupabase(req).catch(() => {});
   };
 
   const deleteRequest = (requestId: string) => {
     setRequests(prev => prev.filter(r => r.Request_ID !== requestId));
     addAuditLog('حذف طلب إداري', 'قسم الإدارة', `تم حذف الطلب ${requestId}`);
     deleteRequestFromFirestore(requestId);
+    deleteRequestFromSupabase(requestId).catch(() => {});
   };
 
   const addCheque = (newChequeData: Omit<ChequeRecord, 'id' | 'CreatedAt'>): ChequeRecord => {
@@ -1171,6 +1309,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('إصدار شيك مالي', 'قسم الشيكات', `تم إصدار الشيك رقم ${newCheque.ChequeNumber} للمستفيد ${newCheque.CitizenName} بمبلغ ${newCheque.Amount} د.ع`);
     syncChequeToFirestore(newCheque);
     pushToGoogleSheetsRealtime('cheques', newCheque, 'insert', systemSettings.appsScriptUrl);
+    upsertChequeToSupabase(newCheque).catch(() => {});
     return newCheque;
   };
 
@@ -1179,6 +1318,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('تعديل بيانات شيك', 'قسم الشيكات', `تم تحديث الشيك رقم ${updated.ChequeNumber} للمستفيد ${updated.CitizenName}`);
     syncChequeToFirestore(updated);
     pushToGoogleSheetsRealtime('cheques', updated, 'update', systemSettings.appsScriptUrl);
+    upsertChequeToSupabase(updated).catch(() => {});
   };
 
   const deleteCheque = (id: string) => {
@@ -1186,6 +1326,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCheques(prev => prev.filter(c => c.id !== id));
     addAuditLog('حذف شيك مالي', 'قسم الشيكات', `تم حذف الشيك رقم ${chq?.ChequeNumber || id}`);
     deleteChequeFromFirestore(id);
+    deleteChequeFromSupabase(id).catch(() => {});
   };
 
   const bulkUpdateRequestsStatus = (
@@ -1273,6 +1414,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushToGoogleSheetsRealtime('interviews', newInterview, 'insert', systemSettings.appsScriptUrl);
     // Sync to Cloud Firestore
     syncInterviewToFirestore(newInterview);
+    upsertInterviewToSupabase(newInterview).catch(() => {});
 
     return newInterview;
   };
@@ -1283,12 +1425,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushToGoogleSheetsRealtime('interviews', interview, 'update', systemSettings.appsScriptUrl);
     // Sync to Cloud Firestore
     syncInterviewToFirestore(interview);
+    upsertInterviewToSupabase(interview).catch(() => {});
   };
 
   const deleteInterview = (interviewId: string) => {
     setInterviews(prev => prev.filter(i => i.Interview_ID !== interviewId));
     addAuditLog('حذف موعد مقابلة', 'مقابلات النائب', `تم حذف المقابلة ${interviewId}`);
     deleteInterviewFromFirestore(interviewId);
+    deleteInterviewFromSupabase(interviewId).catch(() => {});
   };
 
   const convertInterviewToRequest = (interviewId: string, targetEntity?: string): OfficeRequest | null => {
@@ -1336,6 +1480,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addAuditLog('تحديث التقييم التنظيمي', 'قسم التنظيم', `تحديث تقييم المواطن ${recordData.FullName} إلى (${recordData.OrgRating})`);
       pushToGoogleSheetsRealtime('organization', updated, 'update', systemSettings.appsScriptUrl);
       syncOrgRecordToFirestore(updated);
+      upsertOrganizationRecordToSupabase(updated).catch(() => {});
     } else {
       const newOrg: OrganizationRecord = {
         ...recordData,
@@ -1346,6 +1491,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addAuditLog('إضافة سجل تنظيمي جديد', 'قسم التنظيم', `تسجيل تقييم تنظيمي للمواطن ${recordData.FullName} (${recordData.OrgRating})`);
       pushToGoogleSheetsRealtime('organization', newOrg, 'insert', systemSettings.appsScriptUrl);
       syncOrgRecordToFirestore(newOrg);
+      upsertOrganizationRecordToSupabase(newOrg).catch(() => {});
     }
   };
 
@@ -1395,6 +1541,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('إنشاء كتاب رسمي', 'قسم المكنة والطباعة', `تم تحرير الكتاب ذي العدد (${newLetter.LetterNumber}) الموجه إلى ${newLetter.Recipient}`);
     syncLetterToFirestore(newLetter);
     pushToGoogleSheetsRealtime('letters', newLetter, 'insert', systemSettings.appsScriptUrl);
+    upsertOfficialLetterToSupabase(newLetter).catch(() => {});
   };
 
   const updateOfficialLetter = (letter: OfficialLetter) => {
@@ -1402,12 +1549,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('تحديث كتاب رسمي', 'قسم المكنة والطباعة', `تعديل بيانات الكتاب ذي العدد (${letter.LetterNumber})`);
     syncLetterToFirestore(letter);
     pushToGoogleSheetsRealtime('letters', letter, 'update', systemSettings.appsScriptUrl);
+    upsertOfficialLetterToSupabase(letter).catch(() => {});
   };
 
   const updateSettings = (newSettings: Partial<SystemSettings>) => {
     const merged = { ...systemSettings, ...newSettings };
     setSystemSettings(merged);
     syncSettingsToFirestore(merged);
+    saveSystemSettingsToSupabase(merged).catch(() => {});
     addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام');
   };
 
@@ -1755,6 +1904,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const syncAllDataToSupabaseAction = async (): Promise<{ success: boolean; message: string; counts?: Record<string, number> }> => {
+    setIsSupabaseSyncing(true);
+    try {
+      const res = await syncAllLocalDataToSupabase({
+        citizens,
+        requests,
+        interviews,
+        officialLetters,
+        organizationRecords,
+        cheques,
+        auditLogs,
+        users,
+        settings: systemSettings,
+      });
+      return res;
+    } finally {
+      setIsSupabaseSyncing(false);
+    }
+  };
+
+  const fetchAllDataFromSupabaseAction = async (): Promise<{ success: boolean; message: string }> => {
+    setIsSupabaseSyncing(true);
+    try {
+      const res = await fetchAllDataFromSupabase();
+      if (res.success) {
+        if (res.data.citizens.length > 0) setCitizens(res.data.citizens);
+        if (res.data.requests.length > 0) setRequests(res.data.requests);
+        if (res.data.interviews.length > 0) setInterviews(res.data.interviews);
+        if (res.data.officialLetters.length > 0) setOfficialLetters(res.data.officialLetters);
+        if (res.data.organizationRecords.length > 0) setOrganizationRecords(res.data.organizationRecords);
+        if (res.data.cheques.length > 0) setCheques(res.data.cheques);
+      }
+      return { success: res.success, message: res.message };
+    } finally {
+      setIsSupabaseSyncing(false);
+    }
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -1843,7 +2030,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isSystemZeroed,
         syncAllToFirestoreNow,
         loginWithGoogleDeveloper,
-        triggerDeveloper3WaySync
+        triggerDeveloper3WaySync,
+        isSupabaseConnected,
+        isSupabaseSyncing,
+        syncAllDataToSupabase: syncAllDataToSupabaseAction,
+        fetchAllDataFromSupabase: fetchAllDataFromSupabaseAction
       }}
     >
       {children}
@@ -1858,3 +2049,6 @@ export const useApp = () => {
   }
   return context;
 };
+
+export const useAppContext = useApp;
+
