@@ -33,9 +33,11 @@ import {
   Layers,
   ChevronLeft,
   LayoutGrid,
+  Download,
   Printer
 } from 'lucide-react';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
+import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
 // The Official Department Modules
 import { ReceptionModule } from './ReceptionModule';
@@ -75,6 +77,11 @@ export const DirectorExecutiveModule: React.FC = () => {
     updateRequest,
     interviews, 
     organizationRecords, 
+    cheques,
+    officialLetters,
+    customSections,
+    customRecords,
+    systemSettings,
     auditLogs, 
     users, 
     whatsappTemplates,
@@ -82,6 +89,21 @@ export const DirectorExecutiveModule: React.FC = () => {
     addAuditLog,
     setActiveSection
   } = useApp();
+
+  const handleDirectorExportUnifiedExcel = () => {
+    exportUnifiedSystemExcel({
+      citizens,
+      requests,
+      interviews,
+      cheques,
+      organizationRecords,
+      officialLetters,
+      customSections,
+      customRecords,
+      officeName: systemSettings.officeName || systemSettings.appName,
+      exporterName: currentUser?.FullName || 'مدير المكتب التنفيذي'
+    });
+  };
 
   // Navigation mode: 'inbox' (وارد الاستعلامات) | 'icon_hub' (شبكة الأيقونات) | individual department
   const [directorMainTab, setDirectorMainTab] = useState<'inbox' | 'icon_hub'>('inbox');
@@ -362,6 +384,17 @@ export const DirectorExecutiveModule: React.FC = () => {
           >
             <LayoutGrid className="w-4 h-4 text-slate-950" />
             <span>الخروج للأيقونات المركزية 🌐</span>
+          </button>
+
+          {/* Comprehensive Excel Export */}
+          <button
+            type="button"
+            onClick={handleDirectorExportUnifiedExcel}
+            className="flex-1 md:flex-initial h-10 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md shadow-teal-600/25 transition-all cursor-pointer active:scale-95"
+            title="تصدير قاعدة بيانات المنظومة بالكامل بكافة الجداول والصور والمرفقات في ملف Excel واحد"
+          >
+            <Download className="w-4 h-4 text-white" />
+            <span>تصدير Excel الشامل</span>
           </button>
         </div>
       </div>
@@ -982,6 +1015,17 @@ export const DirectorExecutiveModule: React.FC = () => {
                 badge: `${users.length} موظف`,
                 badgeColor: 'bg-rose-600 text-white shadow-2xs',
                 onClick: () => setActiveDepartment('employee_stats')
+              },
+              {
+                id: 'dept_export_excel',
+                title: 'تصدير قاعدة البيانات الشاملة Excel',
+                subtitle: 'سحب كشف كامل لكافة الجداول والأقسام والصور',
+                icon: Download,
+                iconColor: 'text-teal-600 dark:text-teal-400',
+                iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+                badge: 'Excel الشامل 📥',
+                badgeColor: 'bg-teal-600 text-white shadow-2xs',
+                onClick: handleDirectorExportUnifiedExcel
               }
             ]}
           />

@@ -6,9 +6,23 @@ import { getAccessToken, pushSingleRecordToSheetsRealtime } from './googleSheets
  * without requiring the user to manually click any sync button.
  */
 
+export type RealtimeEntityType = 
+  | 'citizens' 
+  | 'requests' 
+  | 'interviews' 
+  | 'organization' 
+  | 'letters' 
+  | 'cheques' 
+  | 'drive_archive' 
+  | 'dropdowns'
+  | 'custom_sections'
+  | 'custom_records';
+
+export type RealtimeActionType = 'insert' | 'update' | 'upsert' | 'delete';
+
 export interface SyncPayload {
-  entityType: 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'drive_archive' | 'dropdowns';
-  action: 'insert' | 'update';
+  entityType: RealtimeEntityType;
+  action: RealtimeActionType;
   data: any;
   timestamp: string;
 }
@@ -18,9 +32,9 @@ const syncQueue: SyncPayload[] = [];
 let isProcessingQueue = false;
 
 export async function pushToGoogleSheetsRealtime(
-  entityType: 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'drive_archive' | 'dropdowns',
+  entityType: RealtimeEntityType,
   data: any,
-  action: 'insert' | 'update' = 'insert',
+  action: RealtimeActionType = 'insert',
   appsScriptUrl?: string,
   sheetId?: string
 ): Promise<void> {

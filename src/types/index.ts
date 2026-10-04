@@ -408,6 +408,78 @@ export interface SystemSettings {
   googleAppsScriptUrl?: string;
   primaryThemeColor?: string;
   allowAdminOpenDriveFolder?: boolean; // للمطور لتحديد هل يحق لمدير الإدارة فتح مجلد Google Drive المباشر
+  developerPasscode?: string; // رمز دخول المطور السري القابل للتغيير
+  uiCustomizations?: UiCustomizationSettings;
+  officeWorkspaceId?: string; // معرف عزل قاعدة البيانات للمكتب (لتشغيل عدة مكاتب بدون تداخل بيانات)
+  officeName?: string; // اسم المكتب الحالي
+  customFirebaseConfig?: {
+    apiKey?: string;
+    projectId?: string;
+    firestoreDatabaseId?: string;
+    storageBucket?: string;
+    appId?: string;
+  };
+  customTilesConfig?: Record<string, {
+    title: string;
+    subtitle?: string;
+    iconUrl?: string;
+    iconColor?: string;
+    bgGradient?: string;
+  }>;
+  receptionCustomFields?: CustomFieldDefinition[]; // الحقول المخصصة التي يضيفها المطور للاستعلامات
+  receptionHiddenDefaultFields?: string[]; // الحقول الافتراضية التي يقرر المطور إخفاءها من الاستعلامات
+}
+
+export type CustomFieldType = 'text' | 'number' | 'dropdown' | 'image' | 'date' | 'textarea' | 'status' | 'checkbox';
+
+export interface CustomFieldDefinition {
+  id: string;
+  name: string;
+  label: string;
+  type: CustomFieldType;
+  required?: boolean;
+  placeholder?: string;
+  options?: string[]; // لقوائم الاختيار المنسدلة
+  helpText?: string;
+  defaultValue?: any;
+}
+
+export interface CustomSection {
+  id: string;
+  title: string;
+  description?: string;
+  icon?: string;
+  iconUrl?: string; // صورة مخصصة لأيقونة القسم
+  badgeColor?: string;
+  createdAt: string;
+  updatedAt?: string;
+  createdBy?: string;
+  fields: CustomFieldDefinition[];
+  enableDashboard?: boolean;
+  enablePhotoGallery?: boolean;
+  enableExcelExport?: boolean;
+  enableCustomStats?: boolean;
+}
+
+export interface CustomSectionRecord {
+  id: string;
+  sectionId: string;
+  data: Record<string, any>; // القيم المدخلة لكافة الحقول (نص، رقم، قائمة منسدلة، صور، الخ)
+  createdAt: string;
+  updatedAt?: string;
+  createdBy?: string;
+}
+
+export interface UiCustomizationSettings {
+  buttonSize: 'compact' | 'standard' | 'large';
+  inputFieldSize: 'compact' | 'standard' | 'large';
+  borderRadius: 'sharp' | 'standard' | 'rounded';
+  showSecondaryPhone: boolean;
+  showClanSurname: boolean;
+  showAcademicEducation: boolean;
+  showCitizenRating: boolean;
+  showDependencyStatus: boolean;
+  tableDensity: 'compact' | 'standard' | 'spacious';
 }
 
 export interface CitizenInquiryLog {

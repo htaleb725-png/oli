@@ -6,6 +6,7 @@ export interface OfficeTileItem {
   title: string;
   subtitle?: string;
   icon: LucideIcon | React.ComponentType<{ className?: string }>;
+  iconImgUrl?: string; // صورة مخصصة للأيقونة تم رفعها بواسطة المطور
   iconColor?: string; // e.g. 'text-blue-600 dark:text-blue-400'
   iconBg?: string;    // e.g. 'bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800'
   badge?: string | number | null;
@@ -94,11 +95,15 @@ export const OfficeIconTilesGrid: React.FC<OfficeIconTilesGridProps> = ({
 
               {/* Icon Container */}
               <div
-                className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center mb-2 transition-all duration-200 group-hover:scale-110 shadow-2xs border ${
+                className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center mb-2 transition-all duration-200 group-hover:scale-110 shadow-2xs border overflow-hidden ${
                   item.iconBg || 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700'
                 } ${item.iconColor || 'text-slate-700 dark:text-slate-300'}`}
               >
-                <IconComp className="w-6 h-6 sm:w-7 sm:h-7 stroke-[2]" />
+                {item.iconImgUrl ? (
+                  <img src={item.iconImgUrl} alt={item.title} className="w-full h-full object-cover" />
+                ) : (
+                  <IconComp className="w-6 h-6 sm:w-7 sm:h-7 stroke-[2]" />
+                )}
               </div>
 
               {/* Label */}

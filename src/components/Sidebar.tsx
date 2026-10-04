@@ -30,7 +30,9 @@ export const Sidebar: React.FC = () => {
     currentUser, 
     systemSettings,
     setIsDesktopInstallModalOpen,
-    triggerDepartmentGreeting
+    triggerDepartmentGreeting,
+    customSections,
+    customRecords
   } = useApp();
 
   const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
@@ -295,21 +297,39 @@ export const Sidebar: React.FC = () => {
       <div className="py-4 px-3 border-b border-slate-800/80 bg-[#070d1a] shrink-0 relative flex items-center justify-between">
         {!isCollapsed ? (
           <div className="min-w-0 pr-1 text-right flex-1">
-            <div className="flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-spin" style={{ animationDuration: '6s' }} />
-              <h1 className="text-xl font-black tracking-wide text-white font-['Cairo',sans-serif] truncate">
-                {systemSettings.appName || 'مكتب النائب'}
-              </h1>
+            <div className="flex items-center gap-2">
+              {systemSettings.logoUrl ? (
+                <img 
+                  src={systemSettings.logoUrl} 
+                  alt="شعار البرنامج" 
+                  className="w-8 h-8 rounded-lg object-contain bg-white/10 p-0.5 shadow-xs shrink-0 border border-slate-700" 
+                />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-spin shrink-0" style={{ animationDuration: '6s' }} />
+              )}
+              <div className="min-w-0">
+                <h1 className="text-sm sm:text-base font-black tracking-wide text-white font-['Cairo',sans-serif] truncate">
+                  {systemSettings.appName || 'مكتب النائب'}
+                </h1>
+                <p className="text-[10px] text-slate-400 font-medium truncate mt-0.5">
+                  {systemSettings.deputyTitle || 'نظام الإدارة المتكامل'}
+                </p>
+              </div>
             </div>
-            <p className="text-[10px] text-slate-400 font-medium truncate mt-0.5">
-              {systemSettings.deputyTitle || 'نظام الإدارة المتكامل'}
-            </p>
           </div>
         ) : (
           <div className="w-full flex justify-center py-1">
-            <div className="w-9 h-9 rounded-xl bg-blue-600/20 border border-blue-500/40 text-blue-400 flex items-center justify-center font-black text-sm shadow-inner">
-              ع
-            </div>
+            {systemSettings.logoUrl ? (
+              <img 
+                src={systemSettings.logoUrl} 
+                alt="شعار البرنامج" 
+                className="w-9 h-9 rounded-xl object-contain bg-white/10 p-1 shadow-inner border border-slate-700" 
+              />
+            ) : (
+              <div className="w-9 h-9 rounded-xl bg-blue-600/20 border border-blue-500/40 text-blue-400 flex items-center justify-center font-black text-sm shadow-inner">
+                ع
+              </div>
+            )}
           </div>
         )}
 
@@ -470,6 +490,65 @@ export const Sidebar: React.FC = () => {
                     <div className="fixed right-20 z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-200 mr-2">
                       <div className="bg-[#0f172a] text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-xl border border-slate-700 whitespace-nowrap">
                         {item.label}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Dynamic Developer Custom Sections */}
+        {customSections.length > 0 && (
+          <div className="pt-3">
+            {!isCollapsed ? (
+              <div className="px-3 py-1 text-[10px] font-bold text-indigo-400 uppercase tracking-wider flex items-center justify-between">
+                <span>أقسام مخصصة</span>
+                <span className="w-8 h-[1px] bg-slate-800"></span>
+              </div>
+            ) : (
+              <div className="w-8 h-[1px] bg-slate-800 mx-auto my-2"></div>
+            )}
+
+            {customSections.map((sec) => {
+              const secRecCount = customRecords.filter(r => r.sectionId === sec.id).length;
+              const isSecActive = activeSection === `custom_section_${sec.id}`;
+              return (
+                <div key={sec.id} className="relative group mt-1">
+                  <button
+                    onClick={() => setActiveSection(`custom_section_${sec.id}`)}
+                    className={`w-full flex items-center ${
+                      isCollapsed ? 'justify-center px-2 py-3' : 'justify-between px-3 py-2.5'
+                    } rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer text-right group ${
+                      isSecActive
+                        ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-600/30'
+                        : 'text-slate-300 hover:bg-slate-800/70 hover:text-white hover:translate-x-[-2px]'
+                    }`}
+                  >
+                    {!isCollapsed ? (
+                      <>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <ChevronDown className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                          <span className="truncate">{sec.title}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold border bg-indigo-950/80 text-indigo-300 border-indigo-700/50">
+                            {secRecCount}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-xs font-bold text-indigo-400">
+                        {sec.title.slice(0, 1)}
+                      </span>
+                    )}
+                  </button>
+
+                  {isCollapsed && (
+                    <div className="fixed right-20 z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-200 mr-2">
+                      <div className="bg-[#0f172a] text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-xl border border-slate-700 whitespace-nowrap">
+                        {sec.title} ({secRecCount} سجل)
                       </div>
                     </div>
                   )}

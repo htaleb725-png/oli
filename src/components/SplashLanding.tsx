@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { 
   Building2, 
@@ -23,9 +23,14 @@ import {
   Copy,
   Clock,
   ShieldAlert,
-  ArrowRight
+  ArrowRight,
+  Zap,
+  Globe2,
+  ScanLine
 } from 'lucide-react';
 import { DesktopInstallModal } from './DesktopInstallModal';
+import { Interactive3DBackground } from './Interactive3DBackground';
+import { playWelcomeChime } from '../utils/audio';
 import { User } from '../types';
 
 export const SplashLanding: React.FC = () => {
@@ -37,9 +42,13 @@ export const SplashLanding: React.FC = () => {
     setIsDesktopInstallModalOpen,
     assignedWorkstationUser,
     assignWorkstationUser,
-    directLoginAsAssigned
+    directLoginAsAssigned,
+    loginWithDeveloperPasscode,
+    developerPasscode
   } = useApp();
 
+  const [loginMode, setLoginMode] = useState<'developer' | 'staff' | 'biometric'>('developer');
+  const [devCodeInput, setDevCodeInput] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -47,6 +56,35 @@ export const SplashLanding: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
   const [currentDate, setCurrentDate] = useState('');
+
+  // 3D Card Interactive Tilt & Glare Tracking
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [tilt, setTilt] = useState<{ rx: number; ry: number; glareX: number; glareY: number }>({
+    rx: 0,
+    ry: 0,
+    glareX: 50,
+    glareY: 50
+  });
+
+  const handleCardMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!cardRef.current) return;
+    const rect = cardRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+
+    const rx = ((y - centerY) / centerY) * -10; // max 10 deg tilt
+    const ry = ((x - centerX) / centerX) * 10;
+    const glareX = (x / rect.width) * 100;
+    const glareY = (y / rect.height) * 100;
+
+    setTilt({ rx, ry, glareX, glareY });
+  };
+
+  const handleCardMouseLeave = () => {
+    setTilt({ rx: 0, ry: 0, glareX: 50, glareY: 50 });
+  };
 
   // Developer & Director Provisioning Console
   const [showManagerModal, setShowManagerModal] = useState(false);
@@ -75,6 +113,38 @@ export const SplashLanding: React.FC = () => {
     return 'مساء الخير وأهلاً وسهلاً بكم';
   };
 
+  const handleDeveloperLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!devCodeInput.trim()) {
+      setErrorMsg('يرجى إدخال رمز دخول المطور.');
+      return;
+    }
+    setIsSubmitting(true);
+    setTimeout(() => {
+      const success = loginWithDeveloperPasscode(devCodeInput.trim());
+      if (!success) {
+        setErrorMsg('رمز دخول المطور غير صحيح.');
+        setIsSubmitting(false);
+      } else {
+        playWelcomeChime();
+      }
+    }, 200);
+  };
+
+  const handleFastDevCode = (code: string) => {
+    setDevCodeInput(code);
+    setIsSubmitting(true);
+    setTimeout(() => {
+      const success = loginWithDeveloperPasscode(code);
+      if (!success) {
+        setErrorMsg('رمز الدخول غير صالح.');
+        setIsSubmitting(false);
+      } else {
+        playWelcomeChime();
+      }
+    }, 150);
+  };
+
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password.trim()) {
@@ -90,6 +160,7 @@ export const SplashLanding: React.FC = () => {
         setIsSubmitting(false);
       } else {
         setErrorMsg('');
+        playWelcomeChime();
       }
     }, 250);
   };
@@ -101,13 +172,14 @@ export const SplashLanding: React.FC = () => {
       if (!success) {
         setErrorMsg('تعذر الدخول المباشر. يرجى إدخال كلمة المرور يدوياً.');
         setIsSubmitting(false);
+      } else {
+        playWelcomeChime();
       }
     }, 200);
   };
 
   const handleManagerAuth = (e: React.FormEvent) => {
     e.preventDefault();
-    // Allow developer or director credentials / master pins
     const isValid = managerPin === '123' || 
                     managerPin === 'admin' || 
                     managerPin === 'developer' || 
@@ -343,7 +415,86 @@ export const SplashLanding: React.FC = () => {
                   </div>
                 )}
 
-                <form onSubmit={handleLogin} className="space-y-4">
+                {/* Login Mode Selector Tabs */}
+                <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-slate-950 border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginMode('developer');
+                      setErrorMsg('');
+                    }}
+                    className={`py-2 px-3 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                      loginMode === 'developer'
+                        ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <KeyRound className="w-3.5 h-3.5" />
+                    <span>رمز دخول المطور 🔑</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginMode('staff');
+                      setErrorMsg('');
+                    }}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                      loginMode === 'staff'
+                        ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <UserCheck className="w-3.5 h-3.5" />
+                    <span>حسابات الموظفين 👔</span>
+                  </button>
+                </div>
+
+                {loginMode === 'developer' ? (
+                  /* Developer Passcode Fast Gate */
+                  <form onSubmit={handleDeveloperLogin} className="space-y-4">
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-amber-300 text-right">
+                        رمز دخول المطور السري
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          value={devCodeInput}
+                          onChange={(e) => {
+                            setDevCodeInput(e.target.value);
+                            if (errorMsg) setErrorMsg('');
+                          }}
+                          placeholder="أدخل رمز دخول المطور..."
+                          className="w-full px-4 py-3 bg-slate-950/80 border border-amber-500/40 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-500/20 text-center text-sm font-mono tracking-widest transition-all"
+                          required
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(!showPassword)}
+                          className="absolute left-3.5 top-3.5 text-slate-400 hover:text-amber-400 transition-colors"
+                        >
+                          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      <span className="text-[11px] text-slate-400 block text-right">
+                        الرمز الافتراضي الأولي هو (2026) وقابل للتغيير من لوحة المطور
+                      </span>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="w-full py-3.5 px-4 rounded-xl font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-500 hover:from-amber-300 hover:to-amber-400 active:scale-95 shadow-md shadow-amber-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer text-xs"
+                    >
+                      <span>{isSubmitting ? 'جاري فتح لوحة المطور...' : 'دخول فوري للمنظومة (المطور)'}</span>
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                  </form>
+                ) : (
+                  /* Standard Staff Login Form */
+                  <form onSubmit={handleLogin} className="space-y-4">
                   {/* Username Field */}
                   <div className="space-y-1.5">
                     <label className="block text-xs font-bold text-slate-300 text-right">
@@ -416,6 +567,7 @@ export const SplashLanding: React.FC = () => {
                     <ChevronLeft className="w-4 h-4" />
                   </button>
                 </form>
+                )}
 
                 {/* Privacy Assurance Notice (Codes are kept private) */}
                 <div className="pt-3 border-t border-slate-800 text-center">

@@ -43,6 +43,7 @@ import { SmartImageArchiveModule } from './SmartImageArchiveModule';
 import { ReferrersStats } from './ReferrersStats';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
 import { SYSTEM_PERMISSIONS } from '../types';
+import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
 export const AdminModule: React.FC = () => {
   const { 
@@ -52,6 +53,13 @@ export const AdminModule: React.FC = () => {
     deleteRequest,
     citizens, 
     updateCitizen,
+    interviews,
+    cheques,
+    organizationRecords,
+    officialLetters,
+    customSections,
+    customRecords,
+    systemSettings,
     getDropdownOptions, 
     addDocument,
     currentUser,
@@ -64,6 +72,21 @@ export const AdminModule: React.FC = () => {
     forwardRequestWorkflow,
     exportToExcel
   } = useApp();
+
+  const handleExportComprehensiveExcel = () => {
+    exportUnifiedSystemExcel({
+      citizens,
+      requests,
+      interviews,
+      cheques,
+      organizationRecords,
+      officialLetters,
+      customSections,
+      customRecords,
+      officeName: systemSettings.officeName || systemSettings.appName,
+      exporterName: currentUser?.FullName || 'مدير الإدارة'
+    });
+  };
 
   const [activeTab, setActiveTab] = useState<'requests_list' | 'reception_citizens' | 'direct_scanner' | 'smart_images' | 'referrers' | 'department_staff'>('requests_list');
 
@@ -484,6 +507,15 @@ export const AdminModule: React.FC = () => {
           </button>
 
           <button
+            onClick={handleExportComprehensiveExcel}
+            className="px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs active:scale-95"
+            title="تصدير قاعدة بيانات المنظومة بالكامل بكافة الجداول والصور في ملف Excel واحد"
+          >
+            <Download className="w-4 h-4" />
+            <span>تصدير Excel الشامل</span>
+          </button>
+
+          <button
             onClick={() => {
               setEditingRequest(null);
               setDetails('');
@@ -612,12 +644,14 @@ export const AdminModule: React.FC = () => {
           },
           {
             id: 'adm_export',
-            title: 'تصدير وسحب القوائم Excel',
-            subtitle: 'تنزيل كشوفات المعاملات',
-            icon: Printer,
-            iconColor: 'text-orange-600 dark:text-orange-400',
-            iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800',
-            onClick: () => exportToExcel(requests, 'سجل_طلبات_المعاملات_الادارة')
+            title: 'تصدير قاعدة البيانات الشاملة Excel',
+            subtitle: 'سحب كشف كامل لكافة الجداول والصور والمرفقات',
+            icon: Download,
+            iconColor: 'text-teal-600 dark:text-teal-400',
+            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+            badge: 'شامل Excel 📥',
+            badgeColor: 'bg-teal-600 text-white',
+            onClick: handleExportComprehensiveExcel
           },
           {
             id: 'adm_ai_drafter',

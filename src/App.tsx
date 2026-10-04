@@ -16,6 +16,7 @@ import { AuditModule } from './components/AuditModule';
 import { ReportsModule } from './components/ReportsModule';
 import { MasterAdminModule } from './components/MasterAdminModule';
 import { AppsScriptSyncModule } from './components/AppsScriptSyncModule';
+import { DynamicSectionView } from './components/DynamicSectionView';
 import { DriveRequestsArchiveModule } from './components/DriveRequestsArchiveModule';
 import { PrintableIdCard } from './components/PrintableIdCard';
 import { PrintableReviewBadge } from './components/PrintableReviewBadge';
@@ -140,6 +141,9 @@ const MainAppLayout: React.FC = () => {
     // Every department has access to its statistics dashboard
     if (section === 'dashboard') return true;
 
+    // Allow custom dynamic sections created by the developer
+    if (section.startsWith('custom_section_')) return true;
+
     switch (role) {
       case 'reception':
       case 'reception_officer':
@@ -187,6 +191,12 @@ const MainAppLayout: React.FC = () => {
           </button>
         </div>
       );
+    }
+
+    // Dynamic Custom Sections created by developer
+    if (activeSection.startsWith('custom_section_')) {
+      const secId = activeSection.replace('custom_section_', '');
+      return <DynamicSectionView sectionId={secId} />;
     }
 
     switch (activeSection) {

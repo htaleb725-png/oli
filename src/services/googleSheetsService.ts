@@ -974,7 +974,7 @@ export const uploadImageToDrive = async (
 export const pushSingleRecordToSheetsRealtime = async (
   token: string,
   spreadsheetId: string,
-  entityType: 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'drive_archive' | 'dropdowns',
+  entityType: 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'drive_archive' | 'dropdowns' | 'custom_sections' | 'custom_records',
   record: any
 ): Promise<boolean> => {
   try {
@@ -982,6 +982,29 @@ export const pushSingleRecordToSheetsRealtime = async (
     let rowValues: any[] = [];
 
     switch (entityType) {
+      case 'custom_sections':
+        sheetName = 'أقسام_مخصصة_Sections';
+        rowValues = [
+          record.id,
+          record.title,
+          record.description || '',
+          record.icon || 'Folder',
+          record.color || 'blue',
+          record.createdAt || new Date().toISOString(),
+          record.createdBy || 'المطور'
+        ];
+        break;
+      case 'custom_records':
+        sheetName = `سجلات_${record.sectionTitle || record.sectionId || 'مخصصة'}`;
+        rowValues = [
+          record.id,
+          record.sectionId,
+          record.createdAt || new Date().toISOString(),
+          record.createdBy || 'المستخدم',
+          JSON.stringify(record.fieldValues || {}),
+          (record.imageAttachments || []).join(', ')
+        ];
+        break;
       case 'citizens':
         sheetName = 'سجل_المراجعين_Citizens';
         rowValues = [
@@ -1055,6 +1078,184 @@ export const pushSingleRecordToSheetsRealtime = async (
   } catch (error) {
     console.warn('pushSingleRecordToSheetsRealtime warning:', error);
     return false;
+  }
+};
+
+/**
+ * Fetches all sheets data from Google Sheets spreadsheet and parses it into typed entities
+ */
+export const fetchAllDataFromGoogleSheets = async (
+  token: string,
+  spreadsheetId: string
+): Promise<{
+  success: boolean;
+  message: string;
+  data: {
+    citizens: Citizen[];
+    requests: OfficeRequest[];
+    interviews: Interview[];
+    officialLetters: OfficialLetter[];
+    organizationRecords: OrganizationRecord[];
+    cheques: ChequeRecord[];
+  };
+}> => {
+  try {
+    const ranges = [
+      'سجل_المراجعين_Citizens!A2:R',
+      'طلبات_المواطنين_Requests!A2:N',
+      'مقابلات_النائب_Interviews!A2:O',
+      'الكتب_الرسمية_OfficialLetters!A2:J',
+      'صكوك_المساعدات_المالية_Cheques!A2:L',
+      'الموقف_الجماهيري_Organization!A2:L'
+    ];
+    const encodedRanges = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
+    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${encodedRanges}`, {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      return {
+        success: false,
+        message: errData.error?.message || `خطأ استعلام Google Sheets (${response.status})`,
+        data: { citizens: [], requests: [], interviews: [], officialLetters: [], organizationRecords: [], cheques: [] }
+      };
+    }
+
+    const resJson = await response.json();
+    const valueRanges = resJson.valueRanges || [];
+
+    // Map citizens
+    const citizensRows = valueRanges[0]?.values || [];
+    const citizens: Citizen[] = citizensRows.filter((r: any[]) => r && r[0] && r[6]).map((r: any[]) => ({
+      Citizen_ID: r[0] || '',
+      FirstName: r[1] || '',
+      FatherName: r[2] || '',
+      GrandFatherName: r[3] || '',
+      GreatGrandFatherName: r[4] || '',
+      Surname: r[5] || '',
+      FullName: r[6] || '',
+      Phone1: r[7] || '',
+      Phone2: r[8] || '',
+      Gender: (r[9] as any) || 'ذكر',
+      Job: r[10] || '',
+      Education: r[11] || '',
+      Rating: (r[12] as any) || 'A',
+      District: r[13] || '',
+      SubDistrict: r[14] || '',
+      ReferralSource: r[15] || '',
+      CreatedAt: r[16] || new Date().toISOString(),
+      CreatedBy: r[17] || 'الاستعلامات'
+    }));
+
+    // Map requests
+    const requestsRows = valueRanges[1]?.values || [];
+    const requests: OfficeRequest[] = requestsRows.filter((r: any[]) => r && r[0] && r[1]).map((r: any[]) => ({
+      Request_ID: r[0] || '',
+      Citizen_ID: r[1] || '',
+      CitizenName: r[2] || '',
+      CitizenPhone: r[3] || '',
+      Entity: r[4] || '',
+      RequestStatus: (r[5] as any) || 'قيد المتابعة',
+      ProcessingStatus: (r[6] as any) || 'وارد',
+      Priority: (r[7] as any) || 'متوسطة',
+      Details: r[8] || '',
+      AttachmentRequest: r[9] || undefined,
+      AttachmentResponse: r[10] || undefined,
+      DeputyNotes: r[11] || '',
+      CreatedAt: r[12] || new Date().toISOString(),
+      CreatedBy: r[13] || 'الإدارة'
+    }));
+
+    // Map interviews
+    const interviewsRows = valueRanges[2]?.values || [];
+    const interviews: Interview[] = interviewsRows.filter((r: any[]) => r && r[0] && r[2]).map((r: any[]) => ({
+      Interview_ID: r[0] || '',
+      Citizen_ID: r[1] || '',
+      FullName: r[2] || '',
+      Subject: r[3] || '',
+      Phone1: r[4] || '',
+      Phone2: r[5] || '',
+      Address: r[6] || '',
+      Referrer: r[7] || '',
+      InterviewDate: r[8] || new Date().toISOString().split('T')[0],
+      InterviewTime: r[9] || '',
+      Priority: (r[10] as any) || 'متوسطة',
+      Status: (r[11] as any) || 'مكتملة',
+      DeputyNotes: r[12] || '',
+      Outcome: r[13] || '',
+      ConvertedToRequest: r[14] === 'نعم'
+    }));
+
+    // Map official letters
+    const lettersRows = valueRanges[3]?.values || [];
+    const officialLetters: OfficialLetter[] = lettersRows.filter((r: any[]) => r && r[0] && r[3]).map((r: any[]) => ({
+      Letter_ID: r[0] || '',
+      LetterNumber: r[1] || '',
+      LetterDate: r[2] || '',
+      Recipient: r[3] || '',
+      Subject: r[4] || '',
+      Body: r[5] || '',
+      Citizen_ID: r[6] || undefined,
+      CitizenName: r[7] || undefined,
+      Status: (r[8] as any) || 'صادر',
+      ClerkName: r[9] || 'الطباعة'
+    }));
+
+    // Map cheques
+    const chequesRows = valueRanges[4]?.values || [];
+    const cheques: ChequeRecord[] = chequesRows.filter((r: any[]) => r && r[0] && r[1]).map((r: any[]) => ({
+      id: r[0] || '',
+      ChequeNumber: r[1] || '',
+      Citizen_ID: r[2] || '',
+      CitizenName: r[3] || '',
+      CitizenPhone: r[4] || '',
+      Amount: Number(r[5]) || 0,
+      AmountInWords: r[6] || '',
+      BankName: r[7] || '',
+      Purpose: r[8] || '',
+      IssueDate: r[9] || '',
+      Status: (r[10] as any) || 'مصروف',
+      CreatedBy: r[11] || 'المالية'
+    }));
+
+    // Map organization
+    const orgRows = valueRanges[5]?.values || [];
+    const organizationRecords: OrganizationRecord[] = orgRows.filter((r: any[]) => r && r[0] && r[1]).map((r: any[]) => ({
+      Citizen_ID: r[0] || '',
+      FullName: r[1] || '',
+      District: r[2] || '',
+      SubDistrict: r[3] || '',
+      Phone1: r[4] || '',
+      OrgRating: (r[5] as any) || 'B',
+      InfluenceType: (r[6] as any) || 'وجيه عشائري',
+      EvaluationPoints: Number(r[7]) || 50,
+      ElectionCenter: r[8] || '',
+      StationNumber: r[9] || '',
+      Notes: r[10] || '',
+      UpdatedAt: r[11] || new Date().toISOString()
+    }));
+
+    return {
+      success: true,
+      message: `تم جلب ${citizens.length} مراجع، ${requests.length} طلب، ${interviews.length} مقابلة، و ${cheques.length} صك بنجاح من Google Sheets`,
+      data: {
+        citizens,
+        requests,
+        interviews,
+        officialLetters,
+        organizationRecords,
+        cheques
+      }
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      message: error.message || 'فشل الاتصال بقاعدة بيانات Google Sheets',
+      data: { citizens: [], requests: [], interviews: [], officialLetters: [], organizationRecords: [], cheques: [] }
+    };
   }
 };
 

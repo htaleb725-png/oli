@@ -62,7 +62,10 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     auditLogs, 
     organizationRecords,
     currentUser,
-    setActiveSection 
+    setActiveSection,
+    customSections,
+    customRecords,
+    systemSettings
   } = useApp();
 
   const [activeMainTab, setActiveMainTab] = useState<'icon_tiles' | 'performance_stats'>('icon_tiles');
@@ -207,11 +210,19 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
   const isDeveloper = currentUser?.Role === 'developer';
 
   const departmentTiles: OfficeTileItem[] = useMemo(() => {
+    const getMeta = (id: string, defTitle: string, defSubtitle: string) => {
+      const conf = systemSettings?.customTilesConfig?.[id];
+      return {
+        title: conf?.title?.trim() || defTitle,
+        subtitle: conf?.subtitle?.trim() || defSubtitle,
+        iconImgUrl: conf?.iconUrl?.trim() || undefined
+      };
+    };
+
     const list: OfficeTileItem[] = [
       {
         id: 'tile_reception',
-        title: 'قسم الاستعلامات والمراجعين',
-        subtitle: 'تسجيل واستعلام وتوثيق المراجعين',
+        ...getMeta('tile_reception', 'قسم الاستعلامات والمراجعين', 'تسجيل واستعلام وتوثيق المراجعين'),
         icon: UserPlus,
         iconColor: 'text-blue-600 dark:text-blue-400',
         iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
@@ -221,8 +232,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_admin',
-        title: 'قسم الإدارة والمعاملات',
-        subtitle: 'المعاملات الحكومية والمخاطبات والكتب',
+        ...getMeta('tile_admin', 'قسم الإدارة والمعاملات', 'المعاملات الحكومية والمخاطبات والكتب'),
         icon: FolderKanban,
         iconColor: 'text-amber-600 dark:text-amber-400',
         iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
@@ -232,8 +242,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_director',
-        title: 'قسم مدير المكتب التنفيذي',
-        subtitle: 'اعتماد وتوجيه وارد الاستعلامات والإشراف',
+        ...getMeta('tile_director', 'قسم مدير المكتب التنفيذي', 'اعتماد وتوجيه وارد الاستعلامات والإشراف'),
         icon: Briefcase,
         iconColor: 'text-fuchsia-600 dark:text-fuchsia-400',
         iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-950/50 border-fuchsia-200 dark:border-fuchsia-800',
@@ -243,8 +252,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_interviews',
-        title: 'قسم مقابلات النائب',
-        subtitle: 'جدول مواعيد النائب وتوثيق الهوامش',
+        ...getMeta('tile_interviews', 'قسم مقابلات النائب', 'جدول مواعيد النائب وتوثيق الهوامش'),
         icon: Handshake,
         iconColor: 'text-teal-600 dark:text-teal-400',
         iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
@@ -254,8 +262,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_organization',
-        title: 'قسم التنظيم والجماهير',
-        subtitle: 'شؤون العشائر والموقف الجماهيري',
+        ...getMeta('tile_organization', 'قسم التنظيم والجماهير', 'شؤون العشائر والموقف الجماهيري'),
         icon: Users2,
         iconColor: 'text-purple-600 dark:text-purple-400',
         iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
@@ -265,8 +272,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_machine',
-        title: 'قسم المكنة والطباعة',
-        subtitle: 'طباعة الكتب الرسمية والصادر والوارد',
+        ...getMeta('tile_machine', 'قسم المكنة والطباعة', 'طباعة الكتب الرسمية والصادر والوارد'),
         icon: Printer,
         iconColor: 'text-indigo-600 dark:text-indigo-400',
         iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
@@ -274,8 +280,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_search_archive',
-        title: 'قسم البحث الشامل والأرشيف',
-        subtitle: 'البحث الفوري واستخراج السجلات وطباعة الهوية',
+        ...getMeta('tile_search_archive', 'قسم البحث الشامل والأرشيف', 'البحث الفوري واستخراج السجلات وطباعة الهوية'),
         icon: Search,
         iconColor: 'text-cyan-600 dark:text-cyan-400',
         iconBg: 'bg-cyan-50 dark:bg-cyan-950/50 border-cyan-200 dark:border-cyan-800',
@@ -283,8 +288,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_drive_requests',
-        title: 'أرشيف طلبات Google Drive',
-        subtitle: 'مزامنة وتنزيل وأرشفة المستندات السحابية',
+        ...getMeta('tile_drive_requests', 'أرشيف طلبات Google Drive', 'مزامنة وتنزيل وأرشفة المستندات السحابية'),
         icon: CloudDownload,
         iconColor: 'text-emerald-600 dark:text-emerald-400',
         iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
@@ -294,8 +298,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_reports',
-        title: 'قسم التقارير والإحصائيات',
-        subtitle: 'مؤشرات الإنجاز، التحليلات، وسحب Excel',
+        ...getMeta('tile_reports', 'قسم التقارير والإحصائيات', 'مؤشرات الإنجاز، التحليلات، وسحب Excel'),
         icon: BarChart3,
         iconColor: 'text-pink-600 dark:text-pink-400',
         iconBg: 'bg-pink-50 dark:bg-pink-950/50 border-pink-200 dark:border-pink-800',
@@ -303,8 +306,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_audit',
-        title: 'قسم الرقابة والتدقيق والمتابعة',
-        subtitle: 'الحوكمة وسجل النشاطات والمتابعة الميدانية',
+        ...getMeta('tile_audit', 'قسم الرقابة والتدقيق والمتابعة', 'الحوكمة وسجل النشاطات والمتابعة الميدانية'),
         icon: ShieldCheck,
         iconColor: 'text-rose-600 dark:text-rose-400',
         iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
@@ -314,8 +316,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       },
       {
         id: 'tile_whatsapp',
-        title: 'مراسلات الواتساب التلقائية',
-        subtitle: 'إشعار وتحديث المراجعين فورياً بالرسائل',
+        ...getMeta('tile_whatsapp', 'مراسلات الواتساب التلقائية', 'إشعار وتحديث المراجعين فورياً بالرسائل'),
         icon: MessageSquare,
         iconColor: 'text-green-600 dark:text-green-400',
         iconBg: 'bg-green-50 dark:bg-green-950/50 border-green-200 dark:border-green-800',
@@ -324,6 +325,22 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
         onClick: () => setActiveSection('whatsapp')
       }
     ];
+
+    // Add Custom Dynamic Sections configured by Developer
+    customSections.forEach((sec) => {
+      const secRecs = customRecords.filter(r => r.sectionId === sec.id);
+      list.push({
+        id: `tile_custom_${sec.id}`,
+        title: sec.title,
+        subtitle: sec.description || 'قسم مخصص تم إنشاؤه عبر لوحة المطور',
+        icon: Layers,
+        iconColor: 'text-indigo-600 dark:text-indigo-400',
+        iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
+        badge: `${secRecs.length} سجل`,
+        badgeColor: 'bg-indigo-600 text-white',
+        onClick: () => setActiveSection(`custom_section_${sec.id}`)
+      });
+    });
 
     if (isDeveloper) {
       list.push(
@@ -353,7 +370,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     }
 
     return list;
-  }, [citizens.length, requests.length, urgentRequestsCount, pendingDirectorReviewCount, interviews.length, organizationRecords.length, auditLogs.length, isDeveloper, setActiveSection]);
+  }, [citizens.length, requests.length, urgentRequestsCount, pendingDirectorReviewCount, interviews.length, organizationRecords.length, auditLogs.length, isDeveloper, setActiveSection, customSections, customRecords.length, systemSettings?.customTilesConfig]);
 
   const handleExportToExcel = () => {
     const data = employeeStats.map((emp, index) => ({

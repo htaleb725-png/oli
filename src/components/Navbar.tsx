@@ -18,8 +18,10 @@ import {
   CheckCircle2,
   Trash2,
   ArrowLeft,
-  LayoutGrid
+  LayoutGrid,
+  Download
 } from 'lucide-react';
+import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
 export const Navbar: React.FC = () => {
   const { 
@@ -33,7 +35,15 @@ export const Navbar: React.FC = () => {
     setIsDesktopInstallModalOpen,
     setIsSystemWipeModalOpen,
     users,
-    switchUser
+    switchUser,
+    citizens,
+    requests,
+    interviews,
+    cheques,
+    organizationRecords,
+    officialLetters,
+    customSections,
+    customRecords
   } = useApp();
 
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
@@ -240,6 +250,34 @@ export const Navbar: React.FC = () => {
 
         {/* Left Section (in RTL): User Profile, Notifications, Dark Mode & Language */}
         <div className="flex items-center gap-2 sm:gap-2.5">
+          {/* Universal Full Database Excel Export Button for Admin, Deputy, Developer */}
+          {(currentUser?.Role === 'admin' || currentUser?.Role === 'deputy' || currentUser?.Role === 'developer') && (
+            <button
+              onClick={() => {
+                const success = exportUnifiedSystemExcel({
+                  citizens,
+                  requests,
+                  interviews,
+                  cheques,
+                  organizationRecords,
+                  officialLetters,
+                  customSections,
+                  customRecords,
+                  officeName: systemSettings.officeName || systemSettings.appName,
+                  exporterName: currentUser?.FullName || 'المستخدم المصرح'
+                });
+                if (success) {
+                  showNavbarToast('تم تصدير قاعدة البيانات بالكامل مع الصور إلى Excel بنجاح 📥');
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-teal-200 dark:border-teal-800/60 bg-teal-50/80 dark:bg-teal-950/40 hover:bg-teal-100 dark:hover:bg-teal-900/50 text-teal-900 dark:text-teal-300 text-xs font-bold transition-all cursor-pointer shadow-2xs group active:scale-95"
+              title="تصدير قاعدة بيانات المنظومة بالكامل مع الصور في ملف Excel واحد (خاص بالإدارة والمدير والمطور)"
+            >
+              <Download className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 group-hover:scale-110 transition-transform" />
+              <span className="hidden sm:inline">تصدير Excel الشامل</span>
+            </button>
+          )}
+
           {/* Desktop App Installer Button */}
           <button
             onClick={() => setIsDesktopInstallModalOpen(true)}

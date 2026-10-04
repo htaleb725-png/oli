@@ -23,6 +23,7 @@ import {
   Cloud,
   Check,
   X,
+  FolderKanban,
   Monitor,
   Download,
   Laptop,
@@ -40,13 +41,13 @@ import {
   UploadCloud,
   Zap,
   Database,
+  Palette,
   LogOut,
   CheckCircle2,
   Copy
 } from 'lucide-react';
 import { AiRequestDrafterModal } from './AiRequestDrafterModal';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
-import { SupabaseSyncModule } from './SupabaseSyncModule';
 import { 
   initGoogleAuth, 
   googleSignIn, 
@@ -55,14 +56,26 @@ import {
   createOfficeGoogleSpreadsheet, 
   createOrGetOfficeDriveFolder,
   syncAllDataToGoogleSheets,
-  uploadImageToDrive
+  uploadImageToDrive,
+  fetchAllDataFromGoogleSheets
 } from '../services/googleSheetsService';
 import { 
   getDeveloperSyncLogsHistory, 
-  subscribeToDeveloperSyncLogs 
+  subscribeToDeveloperSyncLogs,
+  pullAllDataFromGoogleSheets,
+  triggerDeveloperGoogleSync
 } from '../services/developerCloudSyncService';
+import { sheetsIntegration } from '../services/sheetsIntegrationLayer';
 import { User as FirebaseUser } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { CustomSectionsManager } from './developer/CustomSectionsManager';
+import { FirebaseManager } from './developer/FirebaseManager';
+import { MultiOfficeFirebaseSwitcher } from './developer/MultiOfficeFirebaseSwitcher';
+import { SystemIconsStudio } from './developer/SystemIconsStudio';
+import { AppsScriptCodeViewer } from './developer/AppsScriptCodeViewer';
+import { UiCustomizer } from './developer/UiCustomizer';
+import { DeveloperPasscodeManager } from './developer/DeveloperPasscodeManager';
+import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
 export const MasterAdminModule: React.FC = () => {
   const { 
@@ -87,15 +100,53 @@ export const MasterAdminModule: React.FC = () => {
     documents,
     officialLetters,
     auditLogs,
+    customSections,
+    customRecords,
     exportToExcel,
     isSystemZeroed,
     setIsSystemWipeModalOpen,
     addAuditLog,
-    syncAllToFirestoreNow,
-    triggerDeveloper3WaySync
+    logout,
+    syncAllToGoogleSheetsNow,
+    fetchAllFromGoogleSheetsNow
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'system' | 'users' | 'dropdowns' | 'sync' | 'supabase' | 'desktop' | 'data_wipe'>('system');
+  // Navigation: 'grid' (لوحة الأيقونات المركزية للمطور) or individual tool workspace
+  const [activeTab, setActiveTab] = useState<
+    | 'grid'
+    | 'sections'
+    | 'firebase'
+    | 'multi_office'
+    | 'icons_studio'
+    | 'script'
+    | 'ui_customizer'
+    | 'dev_passcode'
+    | 'system'
+    | 'users'
+    | 'dropdowns'
+    | 'sync'
+    | 'desktop'
+    | 'data_wipe'
+  >('grid');
+
+  const handleExportUnifiedExcel = () => {
+    const success = exportUnifiedSystemExcel({
+      citizens,
+      requests,
+      interviews,
+      cheques,
+      organizationRecords,
+      officialLetters,
+      customSections,
+      customRecords,
+      officeName: systemSettings.officeName || systemSettings.appName,
+      exporterName: currentUser?.FullName || 'المطور البرمجي'
+    });
+    if (success) {
+      setSuccessMessage('تم تصدير قاعدة البيانات بالكامل (كافة الأقسام، السجلات، الصور، والمرفقات) إلى ملف Excel بنجاح! 📥');
+      setTimeout(() => setSuccessMessage(''), 5000);
+    }
+  };
   const [selectedCategory, setSelectedCategory] = useState<DropdownCategory>('Entity');
   const [newItemValue, setNewItemValue] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -131,6 +182,9 @@ export const MasterAdminModule: React.FC = () => {
     const unsub = subscribeToDeveloperSyncLogs((log) => {
       setSyncLogs(prev => [log, ...prev.filter(l => l !== log)].slice(0, 100));
     });
+    const unsubSheets = sheetsIntegration.subscribeLogs((log) => {
+      setSyncLogs(prev => [log, ...prev.filter(l => l !== log)].slice(0, 100));
+    });
 
     const savedToken = localStorage.getItem('al_nashi_google_token') || sessionStorage.getItem('al_nashi_google_token');
     if (savedToken && !googleToken) {
@@ -147,7 +201,10 @@ export const MasterAdminModule: React.FC = () => {
       }
     }
 
-    return unsub;
+    return () => {
+      unsub();
+      unsubSheets();
+    };
   }, []);
 
   // Drive test image upload
@@ -162,16 +219,7 @@ export const MasterAdminModule: React.FC = () => {
     logs.push(`[${now}] تم تسجيل الدخول بنجاح بحساب المطور. جاري تهيئة الربط السحابي التلقائي...`);
 
     try {
-      // 1. Firebase Firestore Sync (Priority 1)
-      logs.push(`[${now}] جاري تأكيد وتفعيل مزامنة Firebase Firestore المركزية...`);
-      try {
-        const fsRes = await syncAllToFirestoreNow();
-        logs.push(`✓ تم بنجاح تأكيد اتصال ومزامنة Firebase Firestore (${fsRes.successCount} سجل محفوظ سحابياً).`);
-      } catch (fsErr: any) {
-        logs.push(`⚠️ تنبيه Firestore: ${fsErr.message}`);
-      }
-
-      // 2. Google Drive Folder
+      // 1. Google Drive Folder (Storage)
       let fId = activeDriveFolderId;
       let fUrl = activeDriveFolderUrl;
       try {
@@ -230,9 +278,9 @@ export const MasterAdminModule: React.FC = () => {
         logs.push(`✓ تم بنجاح تحديث وتنسيق (${syncRes.updatedSheets}) جداول في Google Sheets.`);
       }
 
-      logs.push(`⚡ اكتملت منظومة الربط السحابي الفوري والمزامنة الثلاثية بنجاح (Firebase + Google Sheets + Drive)!`);
+      logs.push(`⚡ اكتملت منظومة الربط مع Google Sheets (قاعدة البيانات) و Google Drive (مجلد الصور) بنجاح!`);
       setSyncLogs(logs);
-      addAuditLog('تهيئة المزامنة السحابية للمطور', 'لوحة تحكم المطور', 'تم تفعيل ربط Firebase و Google Sheets و Google Drive بنجاح');
+      addAuditLog('تهيئة المزامنة السحابية للمطور', 'لوحة تحكم المطور', 'تم تفعيل ربط Google Sheets و Google Drive بنجاح');
     } catch (err: any) {
       logs.push(`❌ تنبيه أثناء التهيئة: ${err.message || 'خطأ غير متوقع'}`);
       setSyncLogs(logs);
@@ -245,8 +293,20 @@ export const MasterAdminModule: React.FC = () => {
   const handleForceInstantSync = async () => {
     setIsSyncingAll(true);
     try {
-      await triggerDeveloper3WaySync();
-      addAuditLog('مزامنة فورية شاملة للمطور', 'لوحة تحكم المطور', 'تم تنفيذ مزامنة فورية كاملة عبر Firebase و Google Sheets و Drive');
+      const res = await triggerDeveloperGoogleSync({
+        citizens,
+        requests,
+        interviews,
+        organizationRecords,
+        officialLetters,
+        auditLogs,
+        users,
+        systemSettings,
+        dropdowns,
+        cheques
+      });
+      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ✓ ${res.message}`, ...prev]);
+      addAuditLog('مزامنة فورية مع Google Sheets', 'لوحة تحكم المطور', 'تم حفظ ومزامنة كافة السجلات مع Google Sheets و Google Drive');
     } catch (err: any) {
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ❌ حدث خطأ أثناء المزامنة: ${err.message || 'خطأ غير متوقع'}`, ...prev]);
     } finally {
@@ -539,127 +599,6 @@ export const MasterAdminModule: React.FC = () => {
         </div>
       </div>
 
-      {/* 5-Column Desktop Icon Grid for Developer & System Admin */}
-      <OfficeIconTilesGrid
-        title="أيقونات ومهام مركز تحكم المطور والنظام"
-        subtitle="انقر على أي أيقونة للانتقال المباشر للإعدادات، إدارة الصلاحيات، أو الأدوات السحابية"
-        columns={5}
-        items={[
-          {
-            id: 'dev_users',
-            title: 'إدارة المستخدمين والصلاحيات',
-            subtitle: 'حسابات الموظفين والـ RBAC',
-            icon: Users,
-            iconColor: 'text-blue-600 dark:text-blue-400',
-            iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-            badge: users.length,
-            badgeColor: 'bg-blue-600 text-white',
-            isActive: activeTab === 'users',
-            onClick: () => setActiveTab('users')
-          },
-          {
-            id: 'dev_system',
-            title: 'إعدادات وهوية المنظومة',
-            subtitle: 'اسم النائب والعنوان والخط الساخن',
-            icon: Settings,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            isActive: activeTab === 'system',
-            onClick: () => setActiveTab('system')
-          },
-          {
-            id: 'dev_dropdowns',
-            title: 'القوائم المنسدلة والعشائر',
-            subtitle: 'الوزارات، المهن، والأقضية',
-            icon: ListPlus,
-            iconColor: 'text-amber-600 dark:text-amber-400',
-            iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-            badge: dropdowns.length,
-            badgeColor: 'bg-amber-600 text-white',
-            isActive: activeTab === 'dropdowns',
-            onClick: () => setActiveTab('dropdowns')
-          },
-          {
-            id: 'dev_supabase',
-            title: 'قاعدة بيانات Supabase (الرئيسية)',
-            subtitle: 'PostgreSQL - استعلام وحفظ وجداول تلقائية',
-            icon: Database,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            badge: 'الرئيسية ⚡',
-            badgeColor: 'bg-emerald-600 text-white',
-            isActive: activeTab === 'supabase',
-            onClick: () => setActiveTab('supabase')
-          },
-          {
-            id: 'dev_sync',
-            title: 'المزامنة والاتصال السحابي',
-            subtitle: 'Google Sheets و Drive API',
-            icon: Cloud,
-            iconColor: 'text-cyan-600 dark:text-cyan-400',
-            iconBg: 'bg-cyan-50 dark:bg-cyan-950/50 border-cyan-200 dark:border-cyan-800',
-            isActive: activeTab === 'sync',
-            onClick: () => setActiveTab('sync')
-          },
-          {
-            id: 'dev_desktop',
-            title: 'تطبيق سطح المكتب والتشغيل',
-            subtitle: 'تثبيت PWA والتشغيل السريع',
-            icon: Monitor,
-            iconColor: 'text-purple-600 dark:text-purple-400',
-            iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
-            isActive: activeTab === 'desktop',
-            onClick: () => setActiveTab('desktop')
-          },
-          ...(currentUser?.Role === 'developer' ? [{
-            id: 'dev_wipe',
-            title: 'تصفير وحذف جميع البيانات',
-            subtitle: 'تفريغ الجداول (خاص بالمطور فقط)',
-            icon: Trash2,
-            iconColor: 'text-rose-600 dark:text-rose-400',
-            iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
-            isActive: activeTab === 'data_wipe',
-            onClick: () => setIsSystemWipeModalOpen(true)
-          }] : []),
-          {
-            id: 'dev_reset',
-            title: 'استعادة الضبط الافتراضي',
-            subtitle: 'إعادة بناء البيانات النموذجية',
-            icon: RotateCcw,
-            iconColor: 'text-orange-600 dark:text-orange-400',
-            iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800',
-            onClick: () => handleResetData()
-          },
-          {
-            id: 'dev_export',
-            title: 'تصدير قاعدة البيانات Excel',
-            subtitle: 'سحب نسخة احتياطية لكافة الجداول',
-            icon: Download,
-            iconColor: 'text-teal-600 dark:text-teal-400',
-            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-            onClick: () => exportToExcel(citizens, 'نسخة_احتياطية_شاملة')
-          },
-          {
-            id: 'dev_ai',
-            title: 'صياغة بالذكاء الاصطناعي',
-            subtitle: 'تجربة التوليد اللغوي الذكي',
-            icon: Sparkles,
-            iconColor: 'text-fuchsia-600 dark:text-fuchsia-400',
-            iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-950/50 border-fuchsia-200 dark:border-fuchsia-800',
-            onClick: () => setShowAiDrafterModal(true)
-          },
-          {
-            id: 'dev_security',
-            title: 'فحص الصلاحيات والأمان',
-            subtitle: 'تدقيق أذونات الموظفين والوصول',
-            icon: ShieldCheck,
-            iconColor: 'text-indigo-600 dark:text-indigo-400',
-            iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-            onClick: () => setActiveTab('users')
-          }
-        ]}
-      />
-
       {/* Success Notification Banner */}
       {successMessage && (
         <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center justify-between shadow-xs">
@@ -673,92 +612,386 @@ export const MasterAdminModule: React.FC = () => {
         </div>
       )}
 
-      {/* Navigation Tabs */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-2">
-        <button
-          onClick={() => setActiveTab('system')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTab === 'system' 
-              ? 'bg-orange-600 text-white shadow-xs' 
-              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <Sliders className="w-3.5 h-3.5" />
-          <span>تخصيص نصوص وبيانات المنظومة والنائب</span>
-        </button>
+      {/* ---------------- VIEW 1: CENTRAL ICONS GRID (لوحة الأيقونات المركزية للمطور) ---------------- */}
+      {activeTab === 'grid' && (
+        <OfficeIconTilesGrid
+          title="أيقونات ومهام مركز تحكم المطور والنظام"
+          subtitle="انقر على أي أيقونة لفتح محتوياتها وأدواتها حصرياً مع إمكانية الرجوع للأيقونات مباشرة"
+          columns={5}
+          items={[
+            {
+              id: 'dev_sections',
+              title: 'أقسام المنظومة والحقول المخصصة',
+              subtitle: 'إضافة، تصميم، وحذف الأقسام وقوائمها',
+              icon: FolderKanban,
+              iconColor: 'text-indigo-600 dark:text-indigo-400',
+              iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
+              badge: 'باني الأقسام ⚡',
+              badgeColor: 'bg-indigo-600 text-white',
+              onClick: () => setActiveTab('sections')
+            },
+            {
+              id: 'dev_firebase',
+              title: 'قاعدة بيانات Firebase Firestore',
+              subtitle: 'المزامنة السحابية اللحظية الحية',
+              icon: Cloud,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: 'لحظي ☁️',
+              badgeColor: 'bg-amber-600 text-white',
+              onClick: () => setActiveTab('firebase')
+            },
+            {
+              id: 'dev_multi_office',
+              title: 'ربط المكاتب المتعددة وعزل البيانات',
+              subtitle: 'تغيير رابط وقاعدة بيانات كل فرع بدون تداخل',
+              icon: Building2,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              badge: 'فروع مستقلة 🏢',
+              badgeColor: 'bg-blue-600 text-white',
+              onClick: () => setActiveTab('multi_office')
+            },
+            {
+              id: 'dev_icons_studio',
+              title: 'استوديو الأيقونات وصورة البرنامج',
+              subtitle: 'تعديل أسماء وصور الأيقونات والشعار بدون كود',
+              icon: Palette,
+              iconColor: 'text-fuchsia-600 dark:text-fuchsia-400',
+              iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-950/50 border-fuchsia-200 dark:border-fuchsia-800',
+              badge: 'تخصيص كامل 🎨',
+              badgeColor: 'bg-fuchsia-600 text-white',
+              onClick: () => setActiveTab('icons_studio')
+            },
+            {
+              id: 'dev_ui_custom',
+              title: 'تخصيص الواجهات ومقاس الأزرار',
+              subtitle: 'تكبير وتصغير الأزرار والحقول والسمة اللونية',
+              icon: Sliders,
+              iconColor: 'text-purple-600 dark:text-purple-400',
+              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
+              badge: 'أحجام الأزرار 🎛️',
+              badgeColor: 'bg-purple-600 text-white',
+              onClick: () => setActiveTab('ui_customizer')
+            },
+            {
+              id: 'dev_passcode',
+              title: 'رمز دخول المطور السري',
+              subtitle: 'تغيير وتشفير رمز دخول المطور',
+              icon: KeyRound,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: 'سري 🔒',
+              badgeColor: 'bg-amber-600 text-white',
+              onClick: () => setActiveTab('dev_passcode')
+            },
+            {
+              id: 'dev_users',
+              title: 'إدارة المستخدمين والصلاحيات',
+              subtitle: 'حسابات الموظفين والـ RBAC',
+              icon: Users,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              badge: users.length,
+              badgeColor: 'bg-blue-600 text-white',
+              onClick: () => setActiveTab('users')
+            },
+            {
+              id: 'dev_system',
+              title: 'إعدادات وهوية المنظومة',
+              subtitle: 'اسم النائب والعنوان والخط الساخن',
+              icon: Settings,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              onClick: () => setActiveTab('system')
+            },
+            {
+              id: 'dev_dropdowns',
+              title: 'القوائم المنسدلة والعشائر',
+              subtitle: 'الوزارات، المهن، والأقضية',
+              icon: ListPlus,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: dropdowns.length,
+              badgeColor: 'bg-amber-600 text-white',
+              onClick: () => setActiveTab('dropdowns')
+            },
+            {
+              id: 'dev_script',
+              title: 'سكربت Google Sheets السحابي',
+              subtitle: 'كود Apps Script والربط المباشر بدون توكن',
+              icon: FileSpreadsheet,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              badge: 'كود جاهز 📜',
+              badgeColor: 'bg-emerald-600 text-white',
+              onClick: () => setActiveTab('script')
+            },
+            {
+              id: 'dev_sync',
+              title: 'جداول Google Sheets و Google Drive',
+              subtitle: 'الجداول المركزية الرسمية ومجلد الأرشيف المباشر',
+              icon: Database,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              badge: 'الرئيسية ⚡',
+              badgeColor: 'bg-emerald-600 text-white',
+              onClick: () => setActiveTab('sync')
+            },
+            {
+              id: 'dev_desktop',
+              title: 'تطبيق سطح المكتب والتشغيل',
+              subtitle: 'تثبيت PWA والتشغيل كنافذة مستقلة',
+              icon: Monitor,
+              iconColor: 'text-purple-600 dark:text-purple-400',
+              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
+              onClick: () => setActiveTab('desktop')
+            },
+            {
+              id: 'dev_export',
+              title: 'تصدير قاعدة البيانات الشاملة Excel',
+              subtitle: 'سحب كشف كامل لكافة الجداول والصور والمرفقات',
+              icon: Download,
+              iconColor: 'text-teal-600 dark:text-teal-400',
+              iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+              badge: 'شامل Excel 📥',
+              badgeColor: 'bg-teal-600 text-white',
+              onClick: () => handleExportUnifiedExcel()
+            },
+            ...(currentUser?.Role === 'developer' ? [{
+              id: 'dev_wipe',
+              title: 'تصفير وحذف جميع البيانات',
+              subtitle: 'تفريغ الجداول (خاص بالمطور فقط)',
+              icon: Trash2,
+              iconColor: 'text-rose-600 dark:text-rose-400',
+              iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
+              onClick: () => setIsSystemWipeModalOpen(true)
+            }] : []),
+            {
+              id: 'dev_reset',
+              title: 'استعادة الضبط الافتراضي',
+              subtitle: 'إعادة بناء البيانات النموذجية',
+              icon: RotateCcw,
+              iconColor: 'text-orange-600 dark:text-orange-400',
+              iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800',
+              onClick: () => handleResetData()
+            },
+            {
+              id: 'dev_ai',
+              title: 'صياغة بالذكاء الاصطناعي',
+              subtitle: 'تجربة التوليد اللغوي الذكي',
+              icon: Sparkles,
+              iconColor: 'text-fuchsia-600 dark:text-fuchsia-400',
+              iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-950/50 border-fuchsia-200 dark:border-fuchsia-800',
+              onClick: () => setShowAiDrafterModal(true)
+            }
+          ]}
+        />
+      )}
 
-        <button
-          onClick={() => setActiveTab('users')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTab === 'users' 
-              ? 'bg-orange-600 text-white shadow-xs' 
-              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <Users className="w-3.5 h-3.5" />
-          <span>تقسيم المهام وحسابات الكادر والموظفين ({users.length})</span>
-        </button>
+      {/* ---------------- VIEW 2: INDIVIDUAL TOOL WORKSPACE (مع شريط الرجوع للأيقونات) ---------------- */}
+      {activeTab !== 'grid' && (
+        <div className="space-y-4 animate-in fade-in duration-200">
+          {/* Executive Top Banner with Return to Icons Hub Button */}
+          <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-3.5 sm:p-4 rounded-2xl border border-indigo-500/40 shadow-xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sticky top-16 z-30 backdrop-blur-md">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 flex items-center justify-center font-bold text-lg shadow-2xs shrink-0">
+                {activeTab === 'sections' && <FolderKanban className="w-5 h-5 text-indigo-300" />}
+                {activeTab === 'firebase' && <Cloud className="w-5 h-5 text-amber-300" />}
+                {activeTab === 'multi_office' && <Building2 className="w-5 h-5 text-blue-300" />}
+                {activeTab === 'icons_studio' && <Palette className="w-5 h-5 text-fuchsia-300" />}
+                {activeTab === 'ui_customizer' && <Sliders className="w-5 h-5 text-purple-300" />}
+                {activeTab === 'dev_passcode' && <KeyRound className="w-5 h-5 text-amber-300" />}
+                {activeTab === 'users' && <Users className="w-5 h-5 text-blue-300" />}
+                {activeTab === 'system' && <Settings className="w-5 h-5 text-emerald-300" />}
+                {activeTab === 'dropdowns' && <ListPlus className="w-5 h-5 text-amber-300" />}
+                {activeTab === 'script' && <FileSpreadsheet className="w-5 h-5 text-emerald-300" />}
+                {activeTab === 'sync' && <Database className="w-5 h-5 text-teal-300" />}
+                {activeTab === 'desktop' && <Monitor className="w-5 h-5 text-indigo-300" />}
+                {activeTab === 'data_wipe' && <Trash2 className="w-5 h-5 text-rose-300" />}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold text-indigo-300 bg-indigo-950/80 px-2 py-0.5 rounded-full border border-indigo-500/30">
+                    مركز تحكم المطور والنظام
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    تصفح محتويات الأداة بكامل الصلاحيات
+                  </span>
+                </div>
+                <h3 className="text-sm sm:text-base font-black text-white mt-0.5">
+                  {activeTab === 'sections' && 'باني الأقسام المخصصة والحقول الديناميكية'}
+                  {activeTab === 'firebase' && 'قاعدة بيانات Firebase Firestore اللحظية الحية'}
+                  {activeTab === 'multi_office' && 'ربط الفروع والمكاتب المتعددة وعزل البيانات'}
+                  {activeTab === 'icons_studio' && 'استوديو الأيقونات وصورة البرنامج والشعار'}
+                  {activeTab === 'ui_customizer' && 'تخصيص الواجهات ومقاس الأزرار والحقول'}
+                  {activeTab === 'dev_passcode' && 'رمز دخول المطور السري'}
+                  {activeTab === 'users' && `إدارة المستخدمين وصلاحيات الكادر (${users.length})`}
+                  {activeTab === 'system' && 'إعدادات وهوية المنظومة والنائب'}
+                  {activeTab === 'dropdowns' && `القوائم المنسدلة والعشائر (${dropdowns.length})`}
+                  {activeTab === 'script' && 'سكربت Google Sheets السحابي (Apps Script)'}
+                  {activeTab === 'sync' && 'قاعدة بيانات Google Sheets و Google Drive'}
+                  {activeTab === 'desktop' && 'تطبيق سطح المكتب والتشغيل (PWA)'}
+                  {activeTab === 'data_wipe' && 'مركز تصفير وحذف بيانات المنظومة'}
+                </h3>
+              </div>
+            </div>
 
-        <button
-          onClick={() => setActiveTab('dropdowns')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTab === 'dropdowns' 
-              ? 'bg-orange-600 text-white shadow-xs' 
-              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <ListPlus className="w-3.5 h-3.5" />
-          <span>القوائم المنسدلة والحقول الديناميكية ({dropdowns.length})</span>
-        </button>
+            <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+              <button
+                type="button"
+                onClick={handleExportUnifiedExcel}
+                className="h-9 px-3.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                title="تصدير كشف شامل لكافة السجلات والصور في ملف Excel"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>تصدير Excel الشامل</span>
+              </button>
 
-        <button
-          onClick={() => setActiveTab('supabase')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTab === 'supabase' 
-              ? 'bg-gradient-to-r from-emerald-600 to-teal-700 text-white shadow-md' 
-              : 'bg-white text-emerald-800 border border-emerald-300 hover:bg-emerald-50'
-          }`}
-        >
-          <Database className="w-3.5 h-3.5 text-emerald-500" />
-          <span>قاعدة بيانات Supabase (الرئيسية) 🚀</span>
-        </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('grid')}
+                className="h-9 px-4 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-400/20 transition-all cursor-pointer active:scale-95"
+              >
+                <span>الرجوع إلى لوحة الأيقونات ⇦</span>
+              </button>
+            </div>
+          </div>
 
-        <button
-          onClick={() => setActiveTab('sync')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTab === 'sync' 
-              ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md' 
-              : 'bg-white text-blue-800 border border-blue-200 hover:bg-blue-50'
-          }`}
-        >
-          <Lock className="w-3.5 h-3.5 text-amber-500" />
-          <span>بوابة المطور للمزامنة السحابية (Google + Firebase) ⚡</span>
-        </button>
+          {/* Quick Sub-Navigation Pills */}
+          <div className="flex flex-wrap items-center gap-1.5 bg-white dark:bg-slate-900 p-2 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
+            <button
+              onClick={() => setActiveTab('grid')}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 bg-amber-50 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:bg-amber-100"
+            >
+              <span>🌐 لوحة الأيقونات</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('sections')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'sections' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>باني الأقسام ⚡</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('firebase')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'firebase' ? 'bg-amber-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>Firebase السحابي ☁️</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('multi_office')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'multi_office' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>ربط الفروع 🏢</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('icons_studio')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'icons_studio' ? 'bg-fuchsia-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>استوديو الأيقونات 🎨</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('ui_customizer')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'ui_customizer' ? 'bg-purple-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>مقاس الأزرار 🎛️</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('dev_passcode')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'dev_passcode' ? 'bg-amber-500 text-slate-950 font-black shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>رمز المطور 🔒</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('users')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'users' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>المستخدمين ({users.length})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('system')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'system' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>نصوص المنظومة</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('dropdowns')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'dropdowns' ? 'bg-amber-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>القوائم ({dropdowns.length})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('script')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'script' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>Apps Script 📜</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('sync')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'sync' ? 'bg-teal-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>Google Sheets & Drive 📊</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('desktop')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'desktop' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>تطبيق PWA 🖥️</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('data_wipe')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'data_wipe' ? 'bg-rose-600 text-white shadow-xs' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+              }`}
+            >
+              <span>تصفير البيانات 🗑️</span>
+            </button>
+          </div>
 
-        <button
-          onClick={() => setActiveTab('desktop')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTab === 'desktop' 
-              ? 'bg-orange-600 text-white shadow-xs' 
-              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <Monitor className="w-3.5 h-3.5 text-indigo-600" />
-          <span>تثبيت سطح المكتب وحزم Windows (PWA / .EXE)</span>
-        </button>
+          {/* DEVELOPER TAB: Custom Sections & Fields Builder */}
+          {activeTab === 'sections' && <CustomSectionsManager />}
 
-        <button
-          onClick={() => setActiveTab('data_wipe')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTab === 'data_wipe' 
-              ? 'bg-red-600 text-white shadow-xs' 
-              : 'bg-white text-red-700 border border-red-200 hover:bg-red-50'
-          }`}
-        >
-          <Trash2 className="w-3.5 h-3.5 text-red-500" />
-          <span>إدارة وتصفير البيانات ({citizens.length + requests.length} سجل)</span>
-        </button>
-      </div>
+          {/* DEVELOPER TAB: Firebase Firestore Real-Time Dashboard */}
+          {activeTab === 'firebase' && <FirebaseManager />}
+
+          {/* DEVELOPER TAB: Multi-Office & Branch Firebase Switcher */}
+          {activeTab === 'multi_office' && <MultiOfficeFirebaseSwitcher />}
+
+          {/* DEVELOPER TAB: System Icons Studio & Program Image Customizer */}
+          {activeTab === 'icons_studio' && <SystemIconsStudio />}
+
+          {/* DEVELOPER TAB: Apps Script Code & Deploy */}
+          {activeTab === 'script' && <AppsScriptCodeViewer />}
+
+          {/* DEVELOPER TAB: UI Customizer */}
+          {activeTab === 'ui_customizer' && <UiCustomizer />}
+
+          {/* DEVELOPER TAB: Developer Passcode Manager */}
+          {activeTab === 'dev_passcode' && <DeveloperPasscodeManager />}
 
       {/* TAB 1: System Texts & Settings */}
       {activeTab === 'system' && (
@@ -1480,55 +1713,33 @@ export const MasterAdminModule: React.FC = () => {
         </div>
       )}
 
-      {/* TAB: Supabase Cloud Database */}
-      {activeTab === 'supabase' && (
-        <SupabaseSyncModule />
-      )}
-
-      {/* TAB 4: Developer Secret Cloud Sync & Google Workspace Matrix */}
+      {/* TAB: Developer Cloud Database (Google Sheets & Google Drive Only) */}
       {activeTab === 'sync' && (
         <div className="space-y-6 max-w-5xl">
-          {/* Quick link banner to Supabase */}
-          <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <Database className="w-6 h-6 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              <div>
-                <h4 className="text-sm font-bold text-slate-900 dark:text-white">قاعدة بيانات Supabase (الخيار الموصى به والرئيسي)</h4>
-                <p className="text-xs text-slate-600 dark:text-slate-300">تم تفعيل الربط المباشر بقاعدة بيانات Supabase لإنشاء الأعمدة والجداول والاستعلام والحفظ دون قيود توثيق النطاقات.</p>
-              </div>
-            </div>
-            <button
-              onClick={() => setActiveTab('supabase')}
-              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shrink-0 transition shadow-sm"
-            >
-              إدارة قاعدة بيانات Supabase
-            </button>
-          </div>
-
-          {/* Secret Developer Notice Banner */}
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white border border-indigo-500/30 shadow-md">
+          {/* Main Google Sheets & Drive Database Notice Banner */}
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950 via-teal-950 to-slate-900 text-white border border-emerald-500/40 shadow-md">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-lg border border-amber-500/30 shrink-0">
-                  🔒
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-lg border border-emerald-500/30 shrink-0">
+                  📊
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="font-black text-sm text-white">
-                      بوابة المطور الحصرية: المزامنة السحابية الفورية (Google Workspace & Firebase Matrix)
+                      قاعدة بيانات Google Sheets ومجلد Google Drive (الرئيسية الحصرية)
                     </h3>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                      خاص بالمطور حصراً — سرية تامة
+                    <span className="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      قاعدة البيانات الحصرية للمنظومة
                     </span>
                   </div>
                   <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                    هذا القسم خاص بالمطور البرمجي فقط ولا يظهر لبقية الكادر. يتيح تسجيل الدخول بحساب Google لربط وإنشاء قواعد بيانات Google Sheets وحفظ صور المرفقات على Google Drive مع المزامنة اللحظية الفورية مع Firebase Firestore.
+                    تم استبعاد وحذف الاعتماد على أي قواعد بيانات وسيطة، والاعتماد حصرياً على جداول <strong>Google Sheets</strong> كقاعدة بيانات مركزية لكافة السجلات (المواطنين، الطلبات، المقابلات، الصكوك، الكتب، السجل التنظيمي)، و <strong>Google Drive</strong> لحفظ وأرشفة الصور والوثائق والمرفقات بشكل مباشر.
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span className="text-[11px] font-mono font-bold text-emerald-400">نظام المزامنة اللحظية جاهز</span>
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span className="text-[11px] font-mono font-bold text-emerald-300">Google Sheets & Drive نشط</span>
               </div>
             </div>
           </div>
@@ -1559,15 +1770,16 @@ export const MasterAdminModule: React.FC = () => {
                   <button
                     type="button"
                     onClick={async () => {
-                      await googleSignOut();
-                      setGoogleUser(null);
-                      setGoogleToken(null);
-                      addAuditLog('تسجيل خروج Google للمطور', 'لوحة المطور', 'تم إنهاء جلسة حساب Google للمطور');
+                      if (window.confirm('هل أنت متأكد من تسجيل خروج الحساب؟ سيتم تصفير بيانات الجلسة الحالية وتجهيز المنظومة لفتح قاعدة بيانات جديدة لأي حساب قادم.')) {
+                        await logout();
+                        setGoogleUser(null);
+                        setGoogleToken(null);
+                      }
                     }}
                     className="h-8.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-red-50 text-slate-600 hover:text-red-600 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border border-slate-200 dark:border-slate-700"
                   >
                     <LogOut className="w-3.5 h-3.5" />
-                    <span>خروج</span>
+                    <span>خروج وتصفير البيانات</span>
                   </button>
                 </div>
               ) : null}
@@ -1666,13 +1878,14 @@ export const MasterAdminModule: React.FC = () => {
                           photoURL: null
                         };
                         setGoogleUser(devUser as any);
-                        const fsRes = await syncAllToFirestoreNow();
+                        const sheetsRes = await syncAllToGoogleSheetsNow();
                         setSyncLogs([
                           `[${new Date().toLocaleTimeString('ar-IQ')}] تم تفعيل جلسة المطور السحابية الفورية بنجاح`,
-                          `✓ تم تأكيد اتصال ومزامنة Firebase Firestore (${fsRes.successCount} سجل نشط)`,
-                          `⚡ تم تجاوز قيود auth/unauthorized-domain والمنظومة جاهزة للعمل السحابي`
+                          `✓ تم تأكيد اتصال ومزامنة قاعدة بيانات Google Sheets الحصرية (${sheetsRes.success ? 'متصل بنجاح' : 'جاري المزامنة'})`,
+                          `✓ تخزين المرفقات والصور سحابياً حصرياً في Google Drive`,
+                          `⚡ المنظومة تعمل حصرياً بـ Google Sheets و Google Drive`
                         ]);
-                        addAuditLog('تفعيل جلسة المطور الفورية', 'لوحة تحكم المطور', 'تم تجاوز خطأ auth/unauthorized-domain وتأكيد المزامنة مع Firestore بنجاح');
+                        addAuditLog('تفعيل جلسة المطور الفورية', 'لوحة تحكم المطور', 'تم تفعيل جلسة المطور وتأكيد المزامنة مع Google Sheets و Google Drive بنجاح');
                       } catch (e: any) {
                         setGoogleAuthError(e.message || 'تعذر تفعيل الجلسة');
                       } finally {
@@ -1682,7 +1895,7 @@ export const MasterAdminModule: React.FC = () => {
                     className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-sm active:scale-95"
                   >
                     <Zap className="w-4 h-4 text-amber-300" />
-                    <span>تفعيل جلسة المطور ومزامنة Firestore فوراً ⚡</span>
+                    <span>تفعيل جلسة المطور ومزامنة Google Sheets فوراً ⚡</span>
                   </button>
 
                   <button
@@ -1910,106 +2123,76 @@ export const MasterAdminModule: React.FC = () => {
             )}
           </div>
 
-          {/* 2. THE THREE-NODE CLOUD MATRIX: FIRESTORE + SHEETS + DRIVE */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* 2. THE DEDICATED TWO-NODE ARCHITECTURE: GOOGLE SHEETS (DATABASE) + GOOGLE DRIVE (STORAGE) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             
-            {/* NODE 1: FIREBASE FIRESTORE */}
-            <div className="p-4.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
+            {/* NODE 1: GOOGLE SHEETS CENTRAL DATABASE */}
+            <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border-2 border-emerald-500/40 space-y-4 shadow-sm">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-950 text-amber-600 flex items-center justify-center font-bold">
-                    🔥
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950 text-emerald-600 flex items-center justify-center font-bold">
+                    <FileSpreadsheet className="w-5 h-5" />
                   </div>
                   <div>
-                    <h5 className="font-black text-xs text-slate-900 dark:text-white">Firebase Firestore</h5>
-                    <span className="text-[10px] text-slate-400">قاعدة البيانات السحابية المركزية</span>
+                    <h5 className="font-black text-sm text-slate-900 dark:text-white">قاعدة بيانات Google Sheets</h5>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">قاعدة البيانات المركزية الوحيدة والرسمية</span>
                   </div>
                 </div>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                  <span>متصل لحظياً</span>
-                </span>
-              </div>
-
-              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 text-[11px] font-mono space-y-1">
-                <div className="flex items-center justify-between text-slate-500">
-                  <span>Database ID:</span>
-                  <span className="font-bold text-slate-800 dark:text-slate-200 truncate max-w-[150px]">
-                    {(firebaseConfig as any).firestoreDatabaseId || 'ai-studio-6f263b4b'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-slate-500">
-                  <span>إجمالي السجلات:</span>
-                  <span className="font-bold text-emerald-600">
-                    {citizens.length + requests.length + interviews.length + organizationRecords.length} سجل
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={async () => {
-                  const res = await syncAllToFirestoreNow();
-                  setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] تم تحديث Firestore بنجاح (${res.successCount} سجل)`, ...prev]);
-                }}
-                className="w-full h-8.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-all"
-              >
-                <RefreshCw className="w-3 h-3" />
-                <span>مزامنة Firestore الآن</span>
-              </button>
-            </div>
-
-            {/* NODE 2: GOOGLE SHEETS */}
-            <div className="p-4.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950 text-emerald-600 flex items-center justify-center font-bold">
-                    <FileSpreadsheet className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h5 className="font-black text-xs text-slate-900 dark:text-white">Google Sheets</h5>
-                    <span className="text-[10px] text-slate-400">جداول وقواعد البيانات الخارجية</span>
-                  </div>
-                </div>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                <span className={`px-2.5 py-1 rounded-full text-[10px] font-black ${
                   activeGoogleSheetId
-                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 flex items-center gap-1'
                     : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
                 }`}>
-                  {activeGoogleSheetId ? 'مربوط ✓' : 'بانتظار التهيئة'}
+                  {activeGoogleSheetId ? (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span>متصل ومربوط ✓</span>
+                    </>
+                  ) : 'بانتظار الربط'}
                 </span>
               </div>
 
-              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 text-[11px] font-mono space-y-1">
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 text-xs font-mono space-y-1.5 border border-slate-200 dark:border-slate-700">
                 <div className="flex items-center justify-between text-slate-500">
                   <span>Spreadsheet ID:</span>
-                  <span className="font-bold text-slate-800 dark:text-slate-200 truncate max-w-[150px]">
-                    {activeGoogleSheetId ? `${activeGoogleSheetId.slice(0, 12)}...` : 'لم يتم الإنشاء بعد'}
+                  <span className="font-bold text-slate-800 dark:text-slate-200 truncate max-w-[200px]">
+                    {activeGoogleSheetId || 'لم يتم الربط بعد'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-slate-500">
-                  <span>الجداول المنشأة:</span>
-                  <span className="font-bold text-emerald-600">7 جداول سحابية</span>
+                  <span>إجمالي السجلات بالنظام:</span>
+                  <span className="font-bold text-emerald-600 text-sm">
+                    {citizens.length + requests.length + interviews.length + organizationRecords.length + officialLetters.length + cheques.length} سجل
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-200 dark:border-slate-700 flex justify-between">
+                  <span>المواطنون: {citizens.length}</span>
+                  <span>الطلبات: {requests.length}</span>
+                  <span>المقابلات: {interviews.length}</span>
+                  <span>الكتب: {officialLetters.length}</span>
+                  <span>الصكوك: {cheques.length}</span>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {activeGoogleSheetUrl ? (
                   <a
                     href={activeGoogleSheetUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex-1 h-8.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
+                    className="flex-1 h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
                   >
-                    <span>فتح الجدول ↗</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>فتح جدول Google Sheets ↗</span>
                   </a>
                 ) : null}
 
                 <button
                   type="button"
+                  disabled={isSyncingAll}
                   onClick={async () => {
                     if (!googleToken) {
-                      alert('يرجى تسجيل الدخول بحساب Google أولاً لإنشاء الجدول');
+                      alert('يرجى تسجيل الدخول بحساب Google أولاً');
                       return;
                     }
                     setIsCreatingSpreadsheet(true);
@@ -2017,11 +2200,6 @@ export const MasterAdminModule: React.FC = () => {
                       const res = await createOfficeGoogleSpreadsheet(googleToken, 'قاعدة بيانات مكتب النائب علا الناشي - المركزية');
                       setActiveGoogleSheetId(res.spreadsheetId);
                       setActiveGoogleSheetUrl(res.spreadsheetUrl);
-                      updateSystemSettings({
-                        googleSheetId: res.spreadsheetId,
-                        activeGoogleSheetId: res.spreadsheetId,
-                        activeGoogleSheetUrl: res.spreadsheetUrl
-                      });
                       localStorage.setItem('al_nashi_sheet_id', res.spreadsheetId);
                       await syncAllDataToGoogleSheets(googleToken, res.spreadsheetId, {
                         citizens,
@@ -2029,56 +2207,92 @@ export const MasterAdminModule: React.FC = () => {
                         interviews,
                         organizationRecords,
                         officialLetters,
-                        auditLogs
+                        auditLogs,
+                        cheques
                       });
-                      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] تم إنشاء ومزامنة جدول Google Sheets: ${res.spreadsheetId}`, ...prev]);
+                      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] تم ربط وحفظ قاعدة بيانات Google Sheets: ${res.spreadsheetId}`, ...prev]);
                     } catch (e: any) {
-                      alert('خطأ إنشاء الجدول: ' + e.message);
+                      alert('خطأ: ' + e.message);
                     } finally {
                       setIsCreatingSpreadsheet(false);
                     }
                   }}
-                  className="flex-1 h-8.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer transition-all"
+                  className="px-3 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer transition-all"
                 >
-                  <FolderPlus className="w-3 h-3" />
-                  <span>{activeGoogleSheetId ? 'إعادة التوليد' : 'إنشاء الجدول'}</span>
+                  <FolderPlus className="w-3.5 h-3.5" />
+                  <span>{activeGoogleSheetId ? 'إعادة التهيئة' : 'إنشاء وتجهيز الجداول'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSyncingAll}
+                  onClick={async () => {
+                    const token = googleToken || localStorage.getItem('al_nashi_google_token');
+                    const sheetId = activeGoogleSheetId || localStorage.getItem('al_nashi_sheet_id');
+                    if (!token || !sheetId) {
+                      alert('يرجى التأكد من تسجيل الدخول بحساب Google وربط الجدول أولاً');
+                      return;
+                    }
+                    setIsSyncingAll(true);
+                    try {
+                      const res = await fetchAllFromGoogleSheetsNow();
+                      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ${res.success ? '✓' : '⚠️'} ${res.message}`, ...prev]);
+                      alert(res.message);
+                    } catch (err: any) {
+                      alert('خطأ الاستيراد: ' + err.message);
+                    } finally {
+                      setIsSyncingAll(false);
+                    }
+                  }}
+                  className="px-3 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-700 dark:text-blue-300 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer transition-all border border-blue-200 dark:border-blue-800"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAll ? 'animate-spin' : ''}`} />
+                  <span>قراءة واستيراد من Sheets</span>
                 </button>
               </div>
             </div>
 
-            {/* NODE 3: GOOGLE DRIVE */}
-            <div className="p-4.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
+            {/* NODE 2: GOOGLE DRIVE STORAGE */}
+            <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border-2 border-blue-500/40 space-y-4 shadow-sm">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950 text-blue-600 flex items-center justify-center font-bold">
-                    <Cloud className="w-4 h-4" />
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950 text-blue-600 flex items-center justify-center font-bold">
+                    <Cloud className="w-5 h-5" />
                   </div>
                   <div>
-                    <h5 className="font-black text-xs text-slate-900 dark:text-white">Google Drive</h5>
-                    <span className="text-[10px] text-slate-400">تخزين الصور والمستندات السحابية</span>
+                    <h5 className="font-black text-sm text-slate-900 dark:text-white">Google Drive</h5>
+                    <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">أرشيف الصور والوثائق والمرفقات السحابي</span>
                   </div>
                 </div>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                <span className={`px-2.5 py-1 rounded-full text-[10px] font-black ${
                   activeDriveFolderId
-                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 flex items-center gap-1'
                     : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
                 }`}>
-                  {activeDriveFolderId ? 'المجلد جاهز ✓' : 'بانتظار الربط'}
+                  {activeDriveFolderId ? (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span>المجلد نشط ومربوط ✓</span>
+                    </>
+                  ) : 'بانتظار الربط'}
                 </span>
               </div>
 
-              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 text-[11px] font-mono space-y-1">
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 text-xs font-mono space-y-1.5 border border-slate-200 dark:border-slate-700">
                 <div className="flex items-center justify-between text-slate-500">
                   <span>Folder ID:</span>
-                  <span className="font-bold text-slate-800 dark:text-slate-200 truncate max-w-[150px]">
-                    {activeDriveFolderId ? `${activeDriveFolderId.slice(0, 12)}...` : 'لم يتم الربط بعد'}
+                  <span className="font-bold text-slate-800 dark:text-slate-200 truncate max-w-[200px]">
+                    {activeDriveFolderId || 'لم يتم الربط بعد'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-slate-500">
-                  <span>اسم المجلد:</span>
-                  <span className="font-bold text-blue-600 truncate max-w-[150px]">
-                    مرفقات وصور مكتب النائب
+                  <span>اسم المجلد السحابي:</span>
+                  <span className="font-bold text-blue-600 truncate max-w-[200px]">
+                    مرفقات وصور مكتب النائب علا الناشي
                   </span>
+                </div>
+                <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-200 dark:border-slate-700">
+                  حفظ تلقائي للصور وبطاقات الهوية والمستندات المسحوبة ضوئياً
                 </div>
               </div>
 
@@ -2088,9 +2302,10 @@ export const MasterAdminModule: React.FC = () => {
                     href={activeDriveFolderUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex-1 h-8.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
+                    className="flex-1 h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
                   >
-                    <span>فتح المجلد ↗</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>فتح مجلد Drive ↗</span>
                   </a>
                 ) : null}
 
@@ -2107,6 +2322,7 @@ export const MasterAdminModule: React.FC = () => {
                       setActiveDriveFolderId(res.folderId);
                       setActiveDriveFolderUrl(res.folderUrl);
                       updateSystemSettings({ googleDriveFolderId: res.folderId });
+                      localStorage.setItem('al_nashi_drive_folder_id', res.folderId);
                       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] تم ربط مجلد Google Drive: ${res.folderId}`, ...prev]);
                     } catch (e: any) {
                       alert('خطأ إنشاء مجلد Drive: ' + e.message);
@@ -2114,10 +2330,10 @@ export const MasterAdminModule: React.FC = () => {
                       setIsCreatingDriveFolder(false);
                     }
                   }}
-                  className="flex-1 h-8.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer transition-all"
+                  className="flex-1 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer transition-all"
                 >
-                  <FolderPlus className="w-3 h-3" />
-                  <span>{activeDriveFolderId ? 'إعادة الفحص' : 'إنشاء المجلد'}</span>
+                  <FolderPlus className="w-3.5 h-3.5" />
+                  <span>{activeDriveFolderId ? 'إعادة الفحص' : 'إنشاء مجلد Drive'}</span>
                 </button>
               </div>
             </div>
@@ -2214,11 +2430,11 @@ export const MasterAdminModule: React.FC = () => {
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div>
                 <h4 className="font-black text-sm text-slate-900 dark:text-white flex items-center gap-2">
-                  <Zap className="w-4 h-4 text-amber-500" />
-                  <span>محرك المزامنة الفورية اللحظية (Real-Time Live Sync Engine)</span>
+                  <Zap className="w-4 h-4 text-emerald-500" />
+                  <span>محرك المزامنة اللحظية مع Google Sheets و Google Drive</span>
                 </h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  تزامن لحظي قوي وفوري بين Google Sheets و Google Drive و Firebase Firestore.
+                  تزامن لحظي قوي وفوري مع قاعدة بيانات Google Sheets وأرشيف Google Drive للصور والوثائق.
                 </p>
               </div>
 
@@ -2227,10 +2443,10 @@ export const MasterAdminModule: React.FC = () => {
                 type="button"
                 disabled={isSyncingAll}
                 onClick={handleForceInstantSync}
-                className="h-10 px-5 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-slate-950 font-black text-xs flex items-center gap-2 shadow-md shadow-amber-500/20 transition-all cursor-pointer active:scale-95 shrink-0"
+                className="h-10 px-5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-xs flex items-center gap-2 shadow-md shadow-emerald-500/20 transition-all cursor-pointer active:scale-95 shrink-0"
               >
-                <Zap className={`w-4 h-4 text-slate-950 ${isSyncingAll ? 'animate-bounce' : ''}`} />
-                <span>{isSyncingAll ? 'جاري تنفيذ المزامنة الشاملة...' : '⚡ تنفيذ مزامنة شاملة فورية لكافة القواعد الآن'}</span>
+                <Zap className={`w-4 h-4 text-amber-300 ${isSyncingAll ? 'animate-bounce' : ''}`} />
+                <span>{isSyncingAll ? 'جاري حفظ ومزامنة السجلات...' : '⚡ حفظ ومزامنة كافة السجلات إلى Google Sheets الآن'}</span>
               </button>
             </div>
 
@@ -2547,6 +2763,9 @@ export const MasterAdminModule: React.FC = () => {
         </div>
         )
       )}
+        </div>
+      )}
+
       {/* AI Request Drafter Modal */}
       <AiRequestDrafterModal
         isOpen={showAiDrafterModal}

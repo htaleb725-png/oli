@@ -10,7 +10,6 @@ const STORE_NAME = 'request_images';
 
 import { autoUploadImageToDriveIfConnected } from '../services/googleSheetsService';
 import { pushToGoogleSheetsRealtime } from '../services/realtimeGoogleSync';
-import { syncImageArchiveToFirestore } from '../services/firestoreSync';
 
 export interface ImageRecord {
   id: string; // usually request_id or custom image id
@@ -84,7 +83,7 @@ export async function saveImageToDB(record: ImageRecord): Promise<void> {
       req.onerror = () => reject(req.error);
     });
 
-    // Auto-sync image to Google Drive, Firebase, and Google Sheets in background
+    // Auto-sync image to Google Drive and Google Sheets in background
     if (record.dataUrl && !record.driveWebViewLink) {
       autoUploadImageToDriveIfConnected(record.dataUrl, record.fileName || `image_${record.id}.jpg`)
         .then(async (driveRes) => {
@@ -95,26 +94,23 @@ export async function saveImageToDB(record: ImageRecord): Promise<void> {
             const tx = updateDb.transaction([STORE_NAME], 'readwrite');
             tx.objectStore(STORE_NAME).put(record);
 
-            // 1. Sync metadata to Firebase Firestore
-            syncImageArchiveToFirestore(record).catch(() => {});
-
-            // 2. Realtime append to Google Sheets 'أرشيف_الصور_والمستندات_درايف'
+            // 1. Realtime append to Google Sheets 'أرشيف_الصور_والمستندات_درايف'
             pushToGoogleSheetsRealtime('drive_archive', record).catch(() => {});
 
-            // 3. Dispatch global sync event
+            // 2. Dispatch global sync event
             if (typeof window !== 'undefined') {
               window.dispatchEvent(new CustomEvent('system_image_drive_synced', { detail: record }));
             }
           } else {
-            // Even if not uploaded to Drive, sync image record metadata to Firestore
-            syncImageArchiveToFirestore(record).catch(() => {});
+            // Append record metadata to Google Sheets archive
+            pushToGoogleSheetsRealtime('drive_archive', record).catch(() => {});
           }
         })
         .catch(() => {
-          syncImageArchiveToFirestore(record).catch(() => {});
+          pushToGoogleSheetsRealtime('drive_archive', record).catch(() => {});
         });
     } else {
-      syncImageArchiveToFirestore(record).catch(() => {});
+      pushToGoogleSheetsRealtime('drive_archive', record).catch(() => {});
     }
   } catch (err) {
     console.error('Failed to save image to IndexedDB', err);
