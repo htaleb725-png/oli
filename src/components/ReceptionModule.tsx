@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { Citizen, Gender, OfficeRequest, Priority } from '../types';
+import { Citizen, Gender, OfficeRequest, Priority, CustomFieldDefinition, CustomFieldType } from '../types';
 import * as XLSX from 'xlsx';
 import { 
   UserPlus, 
@@ -37,7 +37,10 @@ import {
   CreditCard,
   BarChart3,
   LayoutDashboard,
-  Send
+  Send,
+  Sliders,
+  Settings2,
+  Upload
 } from 'lucide-react';
 import { UnifiedCitizenCardModal } from './UnifiedCitizenCardModal';
 import { SearchableSelect } from './SearchableSelect';
@@ -184,8 +187,27 @@ export const ReceptionModule: React.FC = () => {
     dropdowns,
     addDropdownItem,
     setActiveSection,
-    convertInterviewToRequest
+    convertInterviewToRequest,
+    systemSettings,
+    addReceptionCustomField,
+    deleteReceptionCustomField,
+    toggleReceptionDefaultField
   } = useApp();
+
+  const isDeveloper = currentUser?.Role === 'developer';
+  const isAuthorizedToEditSchema = isDeveloper || currentUser?.Role === 'director' || currentUser?.Role === 'admin';
+
+  // Dynamic Reception Custom Fields state
+  const [showReceptionFieldManagerModal, setShowReceptionFieldManagerModal] = useState(false);
+  const [newRecFieldLabel, setNewRecFieldLabel] = useState('');
+  const [newRecFieldType, setNewRecFieldType] = useState<CustomFieldType>('text');
+  const [newRecFieldRequired, setNewRecFieldRequired] = useState(false);
+  const [newRecFieldPlaceholder, setNewRecFieldPlaceholder] = useState('');
+  const [newRecFieldOptionsRaw, setNewRecFieldOptionsRaw] = useState('');
+
+  // Values for custom fields
+  const [regCustomFields, setRegCustomFields] = useState<Record<string, any>>({});
+  const [editCustomFields, setEditCustomFields] = useState<Record<string, any>>({});
 
   // Navigation mode within Reception:
   // 'hub' = The 4 Primary Squares requested by the user:
@@ -245,6 +267,7 @@ export const ReceptionModule: React.FC = () => {
     setEditCitProxyName(cit.ProxyName || '');
     setEditCitProxyPhone(cit.ProxyPhone || '');
     setEditCitProxyAddress(cit.ProxyAddress || '');
+    setEditCustomFields(cit.CustomFields || {});
   };
 
   const handleSaveEditCitizen = (e: React.FormEvent) => {
@@ -272,7 +295,11 @@ export const ReceptionModule: React.FC = () => {
       AttendanceType: editCitAttendanceType,
       ProxyName: editCitAttendanceType === 'بيد شخص آخر (معتمد)' ? editCitProxyName.trim() : undefined,
       ProxyPhone: editCitAttendanceType === 'بيد شخص آخر (معتمد)' ? editCitProxyPhone.trim() : undefined,
-      ProxyAddress: editCitAttendanceType === 'بيد شخص آخر (معتمد)' ? editCitProxyAddress.trim() : undefined
+      ProxyAddress: editCitAttendanceType === 'بيد شخص آخر (معتمد)' ? editCitProxyAddress.trim() : undefined,
+      CustomFields: {
+        ...(editingCitizenForSearch.CustomFields || {}),
+        ...editCustomFields
+      }
     });
     setEditingCitizenForSearch(null);
   };
@@ -699,6 +726,7 @@ export const ReceptionModule: React.FC = () => {
     setProxyPhone('');
     setProxyAddress('');
     setProxyRelation('معتمد');
+    setRegCustomFields({});
     setRequestsList([
       {
         id: 'req_1',
@@ -708,6 +736,34 @@ export const ReceptionModule: React.FC = () => {
         notes: ''
       }
     ]);
+  };
+
+  const handleAddNewReceptionField = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRecFieldLabel.trim()) return;
+
+    const parsedOptions = newRecFieldType === 'dropdown'
+      ? newRecFieldOptionsRaw.split(',').map(o => o.trim()).filter(Boolean)
+      : undefined;
+
+    addReceptionCustomField({
+      label: newRecFieldLabel.trim(),
+      type: newRecFieldType,
+      required: newRecFieldRequired,
+      placeholder: newRecFieldPlaceholder.trim() || undefined,
+      options: parsedOptions
+    });
+
+    setNewRecFieldLabel('');
+    setNewRecFieldPlaceholder('');
+    setNewRecFieldOptionsRaw('');
+    setNewRecFieldRequired(false);
+  };
+
+  const handleDeleteReceptionField = (fieldId: string, fieldLabel: string) => {
+    if (window.confirm(`هل أنت متأكد من حذف الحقل (${fieldLabel}) من الاستعلامات؟`)) {
+      deleteReceptionCustomField(fieldId);
+    }
   };
 
   // Submit New Citizen + Multi-Requests
@@ -758,7 +814,8 @@ export const ReceptionModule: React.FC = () => {
       ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
       ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
       ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
-      ReferralSource: notes.trim() ? `الاستعلامات - ${notes.trim()}` : (attendanceType === 'بيد شخص آخر (معتمد)' ? `بيد المعتمد: ${proxyName.trim()}` : 'مباشر - قسم الاستعلامات')
+      ReferralSource: notes.trim() ? `الاستعلامات - ${notes.trim()}` : (attendanceType === 'بيد شخص آخر (معتمد)' ? `بيد المعتمد: ${proxyName.trim()}` : 'مباشر - قسم الاستعلامات'),
+      CustomFields: regCustomFields
     });
 
     // 2. Add Multi-Requests under the SAME permanent Citizen Code
@@ -934,7 +991,7 @@ export const ReceptionModule: React.FC = () => {
     const reportData = reportCitizens.map((c, i) => {
       const citReqs = requests.filter(r => r.Citizen_ID === c.Citizen_ID);
       const citIntvs = interviews.filter(inv => inv.Citizen_ID === c.Citizen_ID);
-      return {
+      const rowItem: Record<string, any> = {
         'ت': i + 1,
         'الرقم التعريفي (ONA)': c.Citizen_ID,
         'الاسم الكامل': c.FullName,
@@ -949,6 +1006,10 @@ export const ReceptionModule: React.FC = () => {
         'مقابلات النائب': citIntvs.length,
         'تاريخ التسجيل': (c.CreatedAt || '').split('T')[0]
       };
+      (systemSettings.receptionCustomFields || []).forEach(f => {
+        rowItem[f.label] = c.CustomFields?.[f.id] || '-';
+      });
+      return rowItem;
     });
 
     const worksheet = XLSX.utils.json_to_sheet(reportData);
@@ -1030,6 +1091,17 @@ export const ReceptionModule: React.FC = () => {
 
         {/* Header Actions */}
         <div className="flex items-center gap-2 flex-wrap w-full md:w-auto">
+          {isAuthorizedToEditSchema && (
+            <button
+              onClick={() => setShowReceptionFieldManagerModal(true)}
+              className="px-3.5 py-2.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
+              title="تخصيص وإضافة أو حذف حقول الاستعلامات مباشرة في قاعدة البيانات بدون كود"
+            >
+              <Sliders className="w-4 h-4 text-purple-600" />
+              <span>تخصيص حقول الاستعلامات</span>
+            </button>
+          )}
+
           {currentUser?.Role && currentUser.Role !== 'reception' && currentUser.Role !== 'reception_officer' && (
             <button
               onClick={() => setActiveSection('dashboard')}
@@ -1515,6 +1587,143 @@ export const ReceptionModule: React.FC = () => {
                 className="w-full h-10 sm:h-9 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs focus:ring-2 focus:ring-blue-500 outline-none text-right shadow-2xs"
               />
             </div>
+
+            {/* DYNAMIC CUSTOM FIELDS SECTION (المعدة من قبل المطور للاستعلامات) */}
+            {(systemSettings.receptionCustomFields || []).length > 0 && (
+              <div className="p-3.5 sm:p-4 rounded-xl bg-purple-50/70 border border-purple-200 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-purple-200">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-purple-600 text-white flex items-center justify-center font-bold shrink-0">
+                      <Sliders className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <h3 className="font-black text-xs text-purple-950">
+                        الحقول الإضافية المخصصة (تم إدراجها بدون كود)
+                      </h3>
+                      <p className="text-[10px] text-purple-800">
+                        يتم حفظ هذه البيانات تلقائياً بملف المراجع وقاعدة البيانات
+                      </p>
+                    </div>
+                  </div>
+                  {isAuthorizedToEditSchema && (
+                    <button
+                      type="button"
+                      onClick={() => setShowReceptionFieldManagerModal(true)}
+                      className="px-2.5 py-1 rounded-lg bg-purple-200 hover:bg-purple-300 text-purple-900 text-[11px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <Settings2 className="w-3 h-3" />
+                      <span>إدارة الحقول</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                  {systemSettings.receptionCustomFields?.map(f => {
+                    const val = regCustomFields[f.id] || '';
+
+                    if (f.type === 'dropdown') {
+                      return (
+                        <div key={f.id} className="space-y-1">
+                          <label className="block text-slate-700 font-bold text-[11px]">
+                            {f.label} {f.required && <span className="text-rose-500">*</span>}
+                          </label>
+                          <select
+                            value={val}
+                            required={f.required}
+                            onChange={(e) => setRegCustomFields(prev => ({ ...prev, [f.id]: e.target.value }))}
+                            className="w-full h-9 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs focus:ring-2 focus:ring-purple-500 outline-none"
+                          >
+                            <option value="">-- اختر {f.label} --</option>
+                            {(f.options || []).map((opt, idx) => (
+                              <option key={idx} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    }
+
+                    if (f.type === 'image') {
+                      return (
+                        <div key={f.id} className="space-y-1 sm:col-span-2">
+                          <label className="block text-slate-700 font-bold text-[11px]">
+                            {f.label} (صورة / وثيقة) {f.required && <span className="text-rose-500">*</span>}
+                          </label>
+                          <div className="flex items-center gap-3">
+                            <label className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold cursor-pointer inline-flex items-center gap-1.5 shadow-2xs">
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>{val ? 'استبدال المستند' : 'رفع صورة أو مستند'}</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (!file) return;
+                                  const reader = new FileReader();
+                                  reader.onload = (ev) => {
+                                    setRegCustomFields(prev => ({ ...prev, [f.id]: ev.target?.result as string }));
+                                  };
+                                  reader.readAsDataURL(file);
+                                }}
+                              />
+                            </label>
+                            {val && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] text-emerald-600 font-bold flex items-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>تم إرفاق المستند</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setRegCustomFields(prev => ({ ...prev, [f.id]: '' }))}
+                                  className="text-rose-500 text-[10px] hover:underline"
+                                >
+                                  حذف
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (f.type === 'textarea') {
+                      return (
+                        <div key={f.id} className="space-y-1 sm:col-span-2">
+                          <label className="block text-slate-700 font-bold text-[11px]">
+                            {f.label} {f.required && <span className="text-rose-500">*</span>}
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={val}
+                            required={f.required}
+                            placeholder={f.placeholder || f.label}
+                            onChange={(e) => setRegCustomFields(prev => ({ ...prev, [f.id]: e.target.value }))}
+                            className="w-full p-2.5 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs focus:ring-2 focus:ring-purple-500 outline-none"
+                          />
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div key={f.id} className="space-y-1">
+                        <label className="block text-slate-700 font-bold text-[11px]">
+                          {f.label} {f.required && <span className="text-rose-500">*</span>}
+                        </label>
+                        <input
+                          type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                          value={val}
+                          required={f.required}
+                          placeholder={f.placeholder || f.label}
+                          onChange={(e) => setRegCustomFields(prev => ({ ...prev, [f.id]: e.target.value }))}
+                          className="w-full h-9 px-3 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs focus:ring-2 focus:ring-purple-500 outline-none shadow-2xs"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* SECTION 4: MULTI-REQUESTS BUILDER BY MINISTRIES */}
             <div className="p-3 sm:p-4 rounded-xl bg-blue-50/60 border border-blue-200 space-y-3">
@@ -3432,6 +3641,47 @@ export const ReceptionModule: React.FC = () => {
                 )}
               </div>
 
+              {/* Dynamic Custom Fields in Edit Citizen Modal */}
+              {(systemSettings.receptionCustomFields || []).length > 0 && (
+                <div className="p-2.5 rounded-xl bg-purple-50/60 border border-purple-200 space-y-2">
+                  <div className="text-[11px] font-bold text-purple-950">الحقول المخصصة الإضافية:</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {systemSettings.receptionCustomFields?.map(f => {
+                      const val = editCustomFields[f.id] || '';
+                      if (f.type === 'dropdown') {
+                        return (
+                          <div key={f.id} className="space-y-0.5">
+                            <label className="text-[10px] font-bold text-slate-700">{f.label}</label>
+                            <select
+                              value={val}
+                              onChange={(e) => setEditCustomFields(prev => ({ ...prev, [f.id]: e.target.value }))}
+                              className="w-full h-8 px-2 rounded-lg bg-white border border-slate-200 text-xs"
+                            >
+                              <option value="">-- اختر --</option>
+                              {(f.options || []).map((o, idx) => (
+                                <option key={idx} value={o}>{o}</option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div key={f.id} className="space-y-0.5">
+                          <label className="text-[10px] font-bold text-slate-700">{f.label}</label>
+                          <input
+                            type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                            value={val}
+                            placeholder={f.placeholder || f.label}
+                            onChange={(e) => setEditCustomFields(prev => ({ ...prev, [f.id]: e.target.value }))}
+                            className="w-full h-8 px-2 rounded-lg bg-white border border-slate-200 text-xs"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="submit"
@@ -3642,6 +3892,178 @@ export const ReceptionModule: React.FC = () => {
                 إغلاق
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- MODAL: RECEPTION FIELD MANAGER (تخصيص وإدارة حقول الاستعلامات) ---------------- */}
+      {showReceptionFieldManagerModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto" dir="rtl">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl p-5 sm:p-6 max-w-xl w-full space-y-5 max-h-[90vh] overflow-y-auto text-right my-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-purple-500/10 text-purple-600 flex items-center justify-center font-bold">
+                  <Sliders className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm sm:text-base text-slate-900 dark:text-white">
+                    تخصيص وإدارة حقول قسم الاستعلامات
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    أضف أو احذف حقولاً لمراجعين الاستعلامات ويتم حفظها مباشرة بقاعدة البيانات
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowReceptionFieldManagerModal(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-900 dark:hover:text-white flex items-center justify-center cursor-pointer text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Existing Custom Fields in Reception */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black text-slate-800 dark:text-slate-200">
+                  الحقول المخصصة النشطة في الاستعلامات ({(systemSettings.receptionCustomFields || []).length}):
+                </h4>
+              </div>
+
+              {(systemSettings.receptionCustomFields || []).length === 0 ? (
+                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-center text-xs text-slate-500">
+                  لا توجد حقول إضافية مضافة بعد. يمكنك إدراج أي حقل جديد بالأسفل!
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 dark:divide-slate-800 rounded-2xl border border-slate-200 dark:border-slate-800 p-2 max-h-48 overflow-y-auto">
+                  {systemSettings.receptionCustomFields?.map(f => (
+                    <div key={f.id} className="py-2 px-2 flex items-center justify-between text-xs">
+                      <div>
+                        <span className="font-bold text-slate-900 dark:text-white">{f.label}</span>
+                        <span className="mr-2 text-[10px] text-slate-500 font-mono">({f.type})</span>
+                        {f.required && (
+                          <span className="mr-1 text-[10px] text-rose-500 font-bold">*إلزامي</span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteReceptionField(f.id, f.label)}
+                        className="px-2.5 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 hover:bg-rose-100 text-[11px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>حذف الحقل</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Form to Add a New Custom Field to Reception */}
+            <form onSubmit={handleAddNewReceptionField} className="space-y-3.5 pt-3 border-t border-slate-200 dark:border-slate-800">
+              <h4 className="text-xs font-black text-purple-600 flex items-center gap-1.5">
+                <Plus className="w-4 h-4" />
+                <span>إدراج حقل جديد إلى استمارة الاستعلامات</span>
+              </h4>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    اسم / عنوان الحقل الجديد *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newRecFieldLabel}
+                    onChange={(e) => setNewRecFieldLabel(e.target.value)}
+                    placeholder="مثال: رقم البطاقة التموينية، اسم المختار، الدائرة الانتخابية، فئة الرعاية..."
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white outline-none focus:border-purple-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      نوع الحقل
+                    </label>
+                    <select
+                      value={newRecFieldType}
+                      onChange={(e) => setNewRecFieldType(e.target.value as CustomFieldType)}
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white outline-none focus:border-purple-500"
+                    >
+                      <option value="text">نص عادي (Text)</option>
+                      <option value="number">رقم (Number)</option>
+                      <option value="dropdown">قائمة خيارات منسدلة (Dropdown)</option>
+                      <option value="image">صورة / مستند مرفق (Image)</option>
+                      <option value="date">تاريخ (Date)</option>
+                      <option value="textarea">ملاحظات وشرح مطول (Textarea)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      نص توضيحي داخل الحقل
+                    </label>
+                    <input
+                      type="text"
+                      value={newRecFieldPlaceholder}
+                      onChange={(e) => setNewRecFieldPlaceholder(e.target.value)}
+                      placeholder="أدخل القيمة..."
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white outline-none focus:border-purple-500"
+                    />
+                  </div>
+                </div>
+
+                {newRecFieldType === 'dropdown' && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      خيارات القائمة المنسدلة (مفصولة بفارزة ,)
+                    </label>
+                    <input
+                      type="text"
+                      value={newRecFieldOptionsRaw}
+                      onChange={(e) => setNewRecFieldOptionsRaw(e.target.value)}
+                      placeholder="مشمول بالرعاية, قيد التدقيق, غير مشمول, استثناء خاص"
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white outline-none focus:border-purple-500"
+                    />
+                  </div>
+                )}
+
+                <label className="flex items-center gap-2 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={newRecFieldRequired}
+                    onChange={(e) => setNewRecFieldRequired(e.target.checked)}
+                    className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 border-slate-300"
+                  />
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    حقل إلزامي (يجب على موظف الاستعلامات ملؤه)
+                  </span>
+                </label>
+              </div>
+
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                <span className="text-[11px] text-slate-500">
+                  الحفظ يتم مباشرة في Firebase Firestore
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowReceptionFieldManagerModal(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs"
+                  >
+                    إغلاق
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-black text-xs shadow-md shadow-purple-600/30 cursor-pointer"
+                  >
+                    إضافة الحقل الآن
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

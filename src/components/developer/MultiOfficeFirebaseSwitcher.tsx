@@ -7,43 +7,106 @@ import {
   AlertTriangle, 
   Save, 
   RefreshCw, 
-  Plus, 
   Layers, 
   ExternalLink,
   ShieldCheck,
   Copy,
   Check,
   Database,
-  Radio,
   Zap,
-  Info
+  Info,
+  FileSpreadsheet,
+  FolderLock,
+  User,
+  MapPin,
+  Flame,
+  ArrowDownCircle
 } from 'lucide-react';
 import firebaseConfig from '../../../firebase-applet-config.json';
 import { setActiveOfficePartition } from '../../services/firebaseFirestoreService';
+import { sheetsIntegration } from '../../services/sheetsIntegrationLayer';
 
 interface PresetOffice {
   id: string;
   name: string;
+  deputyName: string;
+  deputyTitle: string;
   partitionKey: string;
   province: string;
+  sheetId?: string;
+  folderId?: string;
+  appsScriptUrl?: string;
 }
 
 const PRESET_OFFICES: PresetOffice[] = [
-  { id: 'office_main', name: 'مكتب النائب المهندسة علا الناشي (المقر الرئيسي - ذي قار)', partitionKey: 'office_alnashi_main', province: 'ذي قار' },
-  { id: 'office_baghdad', name: 'مكتب بغداد التشريعي - الكرخ والرصافة', partitionKey: 'office_baghdad_branch', province: 'بغداد' },
-  { id: 'office_basra', name: 'مكتب الجنوب والفرات الأوسط', partitionKey: 'office_south_branch', province: 'البصرة' },
+  { 
+    id: 'office_main', 
+    name: 'مكتب النائب المهندسة علا الناشي (المقر الرئيسي - ذي قار)', 
+    deputyName: 'علا الناشي', 
+    deputyTitle: 'النائب المهندسة', 
+    partitionKey: 'office_alnashi_main', 
+    province: 'ذي قار' 
+  },
+  { 
+    id: 'office_baghdad', 
+    name: 'مكتب بغداد التشريعي - الكرخ والرصافة', 
+    deputyName: 'علا الناشي', 
+    deputyTitle: 'النائب', 
+    partitionKey: 'office_baghdad_branch', 
+    province: 'بغداد' 
+  },
+  { 
+    id: 'office_basra', 
+    name: 'مكتب الجنوب والفرات الأوسط', 
+    deputyName: 'علا الناشي', 
+    deputyTitle: 'النائب', 
+    partitionKey: 'office_south_branch', 
+    province: 'البصرة' 
+  },
+  { 
+    id: 'office_new_deputy', 
+    name: 'مكتب النائب (مكتب جديد مخصص)', 
+    deputyName: 'اسم النائب الجديد', 
+    deputyTitle: 'النائب', 
+    partitionKey: 'office_custom_new', 
+    province: 'بغداد' 
+  },
 ];
 
 export const MultiOfficeFirebaseSwitcher: React.FC = () => {
-  const { systemSettings, updateSettings, syncAllToFirestoreNow, fetchAllFromFirestoreNow } = useApp();
+  const { 
+    systemSettings, 
+    updateSettings, 
+    syncAllToFirestoreNow, 
+    fetchAllFromFirestoreNow,
+    fetchAllFromGoogleSheetsNow
+  } = useApp();
 
   const currentPartition = systemSettings.officeWorkspaceId || 'office_alnashi_main';
   const currentOfficeName = systemSettings.officeName || systemSettings.appName;
 
+  // Identity Form State
   const [officeName, setOfficeName] = useState(currentOfficeName);
+  const [deputyName, setDeputyName] = useState(systemSettings.deputyName || 'علا الناشي');
+  const [deputyTitle, setDeputyTitle] = useState(systemSettings.deputyTitle || 'النائب المهندسة');
+  const [province, setProvince] = useState(systemSettings.province || 'ذي قار');
+
+  // Google Sheets & Drive Cloud Database State
+  const [googleSheetId, setGoogleSheetId] = useState(
+    systemSettings.googleSheetId || 
+    (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') || '' : '')
+  );
+  const [googleDriveFolderId, setGoogleDriveFolderId] = useState(
+    systemSettings.googleDriveFolderId || 
+    (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_drive_folder_id') || '' : '')
+  );
+  const [appsScriptUrl, setAppsScriptUrl] = useState(
+    systemSettings.appsScriptUrl || 
+    (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '')
+  );
+
+  // Firebase Partition Key & Custom Project State
   const [workspaceId, setWorkspaceId] = useState(currentPartition);
-  
-  // Custom external Firebase project credentials (optional for separate cloud projects)
   const [customProjectId, setCustomProjectId] = useState(systemSettings.customFirebaseConfig?.projectId || firebaseConfig.projectId || '');
   const [customDatabaseId, setCustomDatabaseId] = useState(systemSettings.customFirebaseConfig?.firestoreDatabaseId || (firebaseConfig as any).firestoreDatabaseId || '(default)');
   const [customApiKey, setCustomApiKey] = useState(systemSettings.customFirebaseConfig?.apiKey || firebaseConfig.apiKey || '');
@@ -51,23 +114,33 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
   const [copiedKey, setCopiedKey] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
   const [isSwitching, setIsSwitching] = useState(false);
-
   const [isTesting, setIsTesting] = useState(false);
+  const [isPullingSheets, setIsPullingSheets] = useState(false);
 
   const handleTestConnection = async () => {
     setIsTesting(true);
-    setStatusMsg({ type: 'info', text: 'جاري فحص الاتصال بقاعدة بيانات Firebase والمكتب المحدد...' });
+    setStatusMsg({ type: 'info', text: 'جاري فحص الاتصال بقواعد بيانات Firebase و Google Sheets للمكتب المحدد...' });
     try {
-      const res = await fetchAllFromFirestoreNow();
-      if (res.success) {
+      const fsRes = await fetchAllFromFirestoreNow();
+      let sheetsMsg = '';
+      if (googleSheetId.trim()) {
+        try {
+          const sRes = await fetchAllFromGoogleSheetsNow();
+          sheetsMsg = sRes.success ? '✓ وجدول Google Sheets متصل.' : '⚠️ تنبيه Google Sheets: ' + sRes.message;
+        } catch {
+          sheetsMsg = '⚠️ تعذر فحص Google Sheets.';
+        }
+      }
+
+      if (fsRes.success) {
         setStatusMsg({
           type: 'success',
-          text: `الاتصال السحابي بـ Firebase ناجح ومستقر 100%! قاعدة بيانات المكتب [${workspaceId}] متصلة وجاهزة للعمل.`
+          text: `الاتصال السحابي بقاعدة البيانات ناجح 100%! تم التحقق من سلامة مستودع [${workspaceId}]. ${sheetsMsg}`
         });
       } else {
         setStatusMsg({
           type: 'error',
-          text: `فشل الاتصال: ${res.error || 'تعذر القراءة من قاعدة البيانات'}`
+          text: `فحص الاتصال بـ Firebase: ${fsRes.error || 'تعذر القراءة'}. ${sheetsMsg}`
         });
       }
     } catch (e: any) {
@@ -77,9 +150,48 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
     }
   };
 
+  const handlePullGoogleSheetsNow = async () => {
+    if (!googleSheetId.trim() && !appsScriptUrl.trim()) {
+      setStatusMsg({ type: 'error', text: 'يرجى إدخال معرف جدول Google Sheets أو رابط Apps Script أولاً لجلب البيانات منه.' });
+      return;
+    }
+
+    setIsPullingSheets(true);
+    setStatusMsg({ type: 'info', text: 'جاري سحب واستيراد كافة بيانات هذا المكتب من جدول Google Sheets الآن...' });
+
+    try {
+      if (typeof window !== 'undefined') {
+        if (googleSheetId.trim()) localStorage.setItem('al_nashi_sheet_id', googleSheetId.trim());
+        if (googleDriveFolderId.trim()) localStorage.setItem('al_nashi_drive_folder_id', googleDriveFolderId.trim());
+        if (appsScriptUrl.trim()) localStorage.setItem('al_nashi_apps_script_url', appsScriptUrl.trim());
+      }
+      sheetsIntegration.refreshLocalConfig();
+
+      const res = await fetchAllFromGoogleSheetsNow();
+      if (res.success) {
+        setStatusMsg({
+          type: 'success',
+          text: `✓ ${res.message || 'تم بنجاح جلب كافة سجلات ومعاملات المكتب من جدول Google Sheets وتحديث واجهات النظام.'}`
+        });
+      } else {
+        setStatusMsg({
+          type: 'error',
+          text: `⚠️ لم نتمكن من سحب البيانات: ${res.message}`
+        });
+      }
+    } catch (err: any) {
+      setStatusMsg({ type: 'error', text: `خطأ أثناء جلب البيانات: ${err.message}` });
+    } finally {
+      setIsPullingSheets(false);
+    }
+  };
+
   const handleSelectPreset = (preset: PresetOffice) => {
     setOfficeName(preset.name);
+    setDeputyName(preset.deputyName);
+    setDeputyTitle(preset.deputyTitle);
     setWorkspaceId(preset.partitionKey);
+    setProvince(preset.province);
   };
 
   const handleApplySwitch = async (e: React.FormEvent) => {
@@ -90,15 +202,38 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
     }
 
     setIsSwitching(true);
-    setStatusMsg({ type: 'info', text: 'جاري تبديل الارتباط وتحميل قاعدة بيانات المكتب الجديد...' });
+    setStatusMsg({ type: 'info', text: 'جاري تطبيق إعدادات المكتب الجديد وربط قواعد البيانات...' });
 
     try {
       const cleanWorkspace = workspaceId.trim();
+      const cleanSheetId = googleSheetId.trim();
+      const cleanFolderId = googleDriveFolderId.trim();
+      const cleanScriptUrl = appsScriptUrl.trim();
+
       setActiveOfficePartition(cleanWorkspace);
 
+      // Save to localStorage directly for instant persistence
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('al_nashi_office_partition', cleanWorkspace);
+        if (cleanSheetId) localStorage.setItem('al_nashi_sheet_id', cleanSheetId);
+        if (cleanFolderId) localStorage.setItem('al_nashi_drive_folder_id', cleanFolderId);
+        if (cleanScriptUrl) localStorage.setItem('al_nashi_apps_script_url', cleanScriptUrl);
+      }
+
+      // Re-read configuration in Google Sheets Integration Layer
+      sheetsIntegration.refreshLocalConfig();
+
+      // Update SystemSettings in AppContext & Firestore
       updateSettings({
-        officeWorkspaceId: cleanWorkspace,
+        appName: officeName.trim(),
         officeName: officeName.trim(),
+        deputyName: deputyName.trim(),
+        deputyTitle: deputyTitle.trim(),
+        province: province.trim(),
+        googleSheetId: cleanSheetId,
+        googleDriveFolderId: cleanFolderId,
+        appsScriptUrl: cleanScriptUrl,
+        officeWorkspaceId: cleanWorkspace,
         customFirebaseConfig: {
           projectId: customProjectId.trim(),
           firestoreDatabaseId: customDatabaseId.trim(),
@@ -106,18 +241,15 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
         }
       });
 
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('al_nashi_office_partition', cleanWorkspace);
-      }
-
+      // Attempt to load the new partition records from Firestore
       await fetchAllFromFirestoreNow();
 
       setStatusMsg({
         type: 'success',
-        text: `تم بنجاح التبديل إلى قاعدة بيانات (${officeName.trim()}) بمفتاح العزل [${cleanWorkspace}]. تم عزل البيانات بالكامل ولن تتداخل سجلات هذا المكتب مع أي مكتب آخر!`
+        text: `تم بنجاح تغيير وتثبيت إعدادات (${officeName.trim()}) للنائب (${deputyName.trim()})! تم ربط جدول Google Sheets ومفتاح العزل السحابي [${cleanWorkspace}]. النظام مهيأ وجاهز للعمل للنائب الجديد دون الحاجة لأي تعديل برمجي.`
       });
     } catch (err: any) {
-      setStatusMsg({ type: 'error', text: `فشل التبديل: ${err.message || 'حدث خطأ'}` });
+      setStatusMsg({ type: 'error', text: `فشل الحفظ والتطبيق: ${err.message || 'حدث خطأ'}` });
     } finally {
       setIsSwitching(false);
     }
@@ -139,14 +271,14 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
           </div>
           <div>
             <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
-              <span>إدارة وتشغيل المنظومة لعدة مكاتب (Multi-Office Database Manager)</span>
+              <span>مركز تهيئة وتغيير المكتب وقواعد البيانات للنائب الجديد (بدون تعديل الكود)</span>
               <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
-                عزل بيانات كامل 100% 🔒
+                100% Zero-Code Multi-Office Deployment
               </span>
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
-              يمكنك تشغيل هذا البرنامج نفسه لأي عدد من المكاتب أو الفروع. بمجرد تغيير معرف أو رابط المكتب، 
-              تتغير قاعدة البيانات بالكامل وتصبح مستقلة تماماً بدون أي تداخل في السجلات.
+              يمكنك نشر هذا البرنامج لأي نائب أو مكتب تشريعي جديد. من هذه الشاشة يمكنك تعديل اسم النائب، صفته، اسم المكتب، 
+              وربط جدول Google Sheets ومجلد Drive ومفتاح قاعدة البيانات السحابية بالكامل بضغطة زر دون الرجوع للكود.
             </p>
           </div>
         </div>
@@ -168,7 +300,11 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
             : 'bg-blue-50 border border-blue-200 text-blue-900'
         }`}>
           <div className="flex items-center gap-2">
-            {statusMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-600" /> : <Server className="w-4 h-4 text-blue-600 animate-spin" />}
+            {statusMsg.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <Server className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+            )}
             <span>{statusMsg.text}</span>
           </div>
           <button onClick={() => setStatusMsg(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
@@ -177,13 +313,13 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
         </div>
       )}
 
-      {/* Method 1: Ready Office Presets */}
+      {/* Preset Quick Selectors */}
       <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
         <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
           <Layers className="w-4 h-4 text-amber-500" />
-          <span>التبديل السريع بين المكاتب المجهزة (One-Click Office Switch):</span>
+          <span>نماذج مكاتب سريعة جاهزة للاختيار (Presets):</span>
         </h4>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
           {PRESET_OFFICES.map((p) => {
             const isSelected = workspaceId === p.partitionKey;
             return (
@@ -194,7 +330,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
                 className={`p-3.5 rounded-2xl border text-right transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
                   isSelected 
                     ? 'border-amber-500 bg-amber-50/50 dark:bg-amber-950/30 shadow-xs' 
-                    : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50'
+                    : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50'
                 }`}
               >
                 <div>
@@ -212,9 +348,12 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
                   <h5 className="text-xs font-bold text-slate-900 dark:text-white mt-1.5 leading-snug">
                     {p.name}
                   </h5>
+                  <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium block mt-0.5">
+                    {p.deputyTitle} {p.deputyName}
+                  </span>
                 </div>
-                <span className="text-[10px] text-slate-400 font-mono block">
-                  مفتاح العزل: {p.partitionKey}
+                <span className="text-[10px] text-slate-400 font-mono block truncate">
+                  مفتاح: {p.partitionKey}
                 </span>
               </button>
             );
@@ -222,101 +361,210 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Switcher Form */}
-      <form onSubmit={handleApplySwitch} className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-5 shadow-xs">
-        <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
-          <Database className="w-4 h-4 text-emerald-600" />
-          <span>تخصيص مكتب جديد وتحديد مفتاح قاعدة البيانات السحابية:</span>
-        </h4>
+      {/* Main Multi-Office & Database Form */}
+      <form onSubmit={handleApplySwitch} className="space-y-5">
+        
+        {/* SECTION 1: Deputy & Office Identity */}
+        <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
+          <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+            <User className="w-4 h-4 text-blue-600" />
+            <span>1. هوية النائب والمكتب الجديد (تظهر في الواجهات والطباعة والتقارير):</span>
+          </h4>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1.5">
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-              اسم المكتب المعتمد (Office Title) *
-            </label>
-            <input
-              type="text"
-              value={officeName}
-              onChange={(e) => setOfficeName(e.target.value)}
-              placeholder="مثال: مكتب النائب علا الناشي - ذي قار"
-              className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-900 dark:text-white font-medium focus:outline-none focus:border-amber-500"
-              required
-            />
-            <span className="text-[10px] text-slate-400 block">
-              الاسم الرسمي الذي يظهر في أعلى المنظومة وتقارير هذا المكتب.
-            </span>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-              مفتاح عزل قاعدة البيانات (Office Partition / Workspace Key) *
-            </label>
-            <div className="relative">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                اسم النائب *
+              </label>
               <input
                 type="text"
-                value={workspaceId}
-                onChange={(e) => setWorkspaceId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
-                placeholder="office_alnashi_main"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500 text-left"
-                dir="ltr"
+                value={deputyName}
+                onChange={(e) => setDeputyName(e.target.value)}
+                placeholder="مثال: علا الناشي"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
                 required
               />
-              <button
-                type="button"
-                onClick={handleCopyPartitionKey}
-                className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 p-1"
-                title="نسخ المفتاح"
-              >
-                {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
             </div>
-            <span className="text-[10px] text-slate-400 block">
-              رمز باللغة الإنجليزية يفصل مستودع بيانات هذا المكتب عن غيره (تلقائياً في Firebase).
-            </span>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                الصفة / اللقب الرسمي للنائب *
+              </label>
+              <input
+                type="text"
+                value={deputyTitle}
+                onChange={(e) => setDeputyTitle(e.target.value)}
+                placeholder="مثال: النائب المهندسة أو عضو مجلس النواب"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
+                required
+              />
+            </div>
+
+            <div className="space-y-1 sm:col-span-2">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                اسم المكتب المعتمد بالكامل (Office Title) *
+              </label>
+              <input
+                type="text"
+                value={officeName}
+                onChange={(e) => setOfficeName(e.target.value)}
+                placeholder="مثال: مكتب النائب المهندسة علا الناشي - المقر الرئيسي"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
+                required
+              />
+            </div>
+
+            <div className="space-y-1 sm:col-span-2">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                المحافظة / المدينة المعتمدة *
+              </label>
+              <input
+                type="text"
+                value={province}
+                onChange={(e) => setProvince(e.target.value)}
+                placeholder="مثال: ذي قار، بغداد، البصرة..."
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
+                required
+              />
+            </div>
           </div>
         </div>
 
-        {/* Optional External Firebase Cloud Project */}
-        <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <h5 className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-              <Server className="w-3.5 h-3.5 text-indigo-500" />
-              <span>ربط مشروع Firebase سحابي مستقل تماماً (اختياري لمشاريع Cloud أخرى):</span>
-            </h5>
-            <span className="text-[10px] text-slate-400">Default Cloud: {firebaseConfig.projectId}</span>
+        {/* SECTION 2: Google Sheets & Drive Database for the New Office */}
+        <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+            <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              <span>2. قاعدة بيانات Google Sheets ومجلد Drive الخاصة بهذا المكتب:</span>
+            </h4>
+            <span className="text-[10px] text-slate-400 font-mono">Google Cloud Real-time Layer</span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div className="space-y-1">
-              <label className="text-[11px] font-bold text-slate-600 dark:text-slate-400">معرف مشروع Firebase (Project ID)</label>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                معرّف جدول Google Sheets (Spreadsheet ID)
+              </label>
+              <input
+                type="text"
+                value={googleSheetId}
+                onChange={(e) => setGoogleSheetId(e.target.value.trim())}
+                placeholder="مثال: 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 text-left"
+                dir="ltr"
+              />
+              <span className="text-[10px] text-slate-400 block">
+                المعرف المستخرج من رابط الجدول في المتصفح بين /d/ و /edit
+              </span>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                معرّف مجلد صور ومرفقات Google Drive (Folder ID)
+              </label>
+              <input
+                type="text"
+                value={googleDriveFolderId}
+                onChange={(e) => setGoogleDriveFolderId(e.target.value.trim())}
+                placeholder="مثال: 1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 text-left"
+                dir="ltr"
+              />
+              <span className="text-[10px] text-slate-400 block">
+                مجلد Drive لحفظ المستمسكات وصور المراجعين المرفوعة عبر السكنر
+              </span>
+            </div>
+
+            <div className="space-y-1.5 md:col-span-2">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                رابط Google Apps Script Web App URL (للمزامنة الفورية التلقائية بدون الحاجة لتسجيل دخول Google)
+              </label>
+              <input
+                type="text"
+                value={appsScriptUrl}
+                onChange={(e) => setAppsScriptUrl(e.target.value.trim())}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 text-left"
+                dir="ltr"
+              />
+            </div>
+          </div>
+
+          <div className="pt-2 flex items-center justify-between flex-wrap gap-2">
+            <p className="text-[11px] text-slate-500">
+              💡 عند تغيير الجدول، يمكنك جلب البيانات السابقة أو إرسال سجلات المنظومة إليه مباشرة.
+            </p>
+            <button
+              type="button"
+              onClick={handlePullGoogleSheetsNow}
+              disabled={isPullingSheets}
+              className="px-4 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50"
+            >
+              <ArrowDownCircle className={`w-3.5 h-3.5 ${isPullingSheets ? 'animate-bounce' : ''}`} />
+              <span>{isPullingSheets ? 'جاري سحب البيانات...' : 'سحب وقراءة بيانات هذا الجدول الآن'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* SECTION 3: Firebase Partitioning & Security */}
+        <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
+          <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+            <Flame className="w-4 h-4 text-amber-500" />
+            <span>3. مفتاح عزل قاعدة البيانات السحابية (Firebase Partition Key):</span>
+          </h4>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                مفتاح عزل المكتب بالإنجليزية (Partition Key) *
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={workspaceId}
+                  onChange={(e) => setWorkspaceId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
+                  placeholder="office_custom_branch"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500 text-left"
+                  dir="ltr"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyPartitionKey}
+                  className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 p-1"
+                  title="نسخ المفتاح"
+                >
+                  {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <span className="text-[10px] text-slate-400 block">
+                مفتاح إنجليزي فريد يعزل كافة بيانات هذا المكتب في السحابة عن أي نائب أو مكتب آخر.
+              </span>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                مشروع Firebase السحابي (Project ID)
+              </label>
               <input
                 type="text"
                 value={customProjectId}
-                onChange={(e) => setCustomProjectId(e.target.value)}
+                onChange={(e) => setCustomProjectId(e.target.value.trim())}
                 placeholder={firebaseConfig.projectId}
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-left"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:border-amber-500 text-left"
                 dir="ltr"
               />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-[11px] font-bold text-slate-600 dark:text-slate-400">معرف قاعدة بيانات Firestore (Database ID)</label>
-              <input
-                type="text"
-                value={customDatabaseId}
-                onChange={(e) => setCustomDatabaseId(e.target.value)}
-                placeholder="(default)"
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-left"
-                dir="ltr"
-              />
+              <span className="text-[10px] text-slate-400 block">
+                المشروع الافتراضي: {firebaseConfig.projectId}
+              </span>
             </div>
           </div>
         </div>
 
-        {/* Action Buttons */}
-        <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+        {/* Action Controls */}
+        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 shadow-xs">
           <p className="text-[11px] text-slate-500">
-            🔒 عند الحفظ، سيبدأ النظام فورياً بحفظ واسترجاع البيانات الخاصة بهذا المكتب فقط.
+            🔒 عند النقر على الحفظ والتطبيق، تتغير هوية المنظومة وقواعد البيانات لكافة المستخدمين والأقسام فوراً.
           </p>
 
           <div className="flex items-center gap-2">
@@ -327,39 +575,39 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
               className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50"
             >
               <Zap className={`w-3.5 h-3.5 text-amber-500 ${isTesting ? 'animate-bounce' : ''}`} />
-              <span>{isTesting ? 'جاري الفحص...' : 'فحص الاتصال بقاعدة البيانات'}</span>
+              <span>{isTesting ? 'جاري الفحص...' : 'فحص الاتصال بقواعد البيانات'}</span>
             </button>
 
             <button
               type="submit"
               disabled={isSwitching}
-              className="px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center gap-2 shadow-md transition-all cursor-pointer active:scale-95 disabled:opacity-50"
             >
               <Save className="w-4 h-4 text-slate-950" />
-              <span>{isSwitching ? 'جاري تطبيق الإعدادات...' : 'تأكيد وحفظ ارتباط قاعدة بيانات هذا المكتب'}</span>
+              <span>{isSwitching ? 'جاري تطبيق الإعدادات السحابية...' : 'حفظ وتطبيق إعدادات المكتب الجديد فوراً 🚀'}</span>
             </button>
           </div>
         </div>
       </form>
 
-      {/* Developer Multi-Office Practical Guide Card */}
+      {/* Developer Guidance */}
       <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-xs space-y-3">
         <h4 className="font-black text-slate-900 dark:text-white flex items-center gap-2 text-xs">
           <Info className="w-4 h-4 text-blue-500" />
-          <span>دليل المطور: كيفية تشغيل واستنساخ المنظومة لعدة مكاتب مستقلة بدون تداخل:</span>
+          <span>دليل المطور لنشر المنظومة لمكتب نائب جديد بدون تعديل الكود:</span>
         </h4>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] text-slate-600 dark:text-slate-300">
           <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-750 space-y-1">
-            <span className="font-bold text-slate-900 dark:text-white block">1. تخصيص اسم ومفتاح المكتب</span>
-            <p>عند تسليم البرنامج لمكتب فرعي أو محافظة أخرى، قم فقط بإدخال اسم المكتب ومفتاح عزل إنجليزي فريد مثل (office_basra أو office_kut).</p>
+            <span className="font-bold text-slate-900 dark:text-white block">1. هوية النائب</span>
+            <p>أدخل اسم النائب وصفته واسم المكتب، وسيتم تحديث شريط الأخبار، الترويسات، والباجات فوراً.</p>
           </div>
           <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-750 space-y-1">
-            <span className="font-bold text-slate-900 dark:text-white block">2. عزل البيانات التلقائي</span>
-            <p>يقوم النظام آلياً بإنشاء جداول ومجموعات خاصة بهذا الفرع، بحيث لا يرى موظف هذا المكتب سجلات أي مكتب آخر أبداً.</p>
+            <span className="font-bold text-slate-900 dark:text-white block">2. جدول Google Sheets</span>
+            <p>ضع معرّف جدول البيانات الجديد الخاص بالنائب، وسيقوم النظام بتخزين واسترجاع بياناته حصراً من هذا الجدول.</p>
           </div>
           <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-750 space-y-1">
-            <span className="font-bold text-slate-900 dark:text-white block">3. تبديل مشروع Firebase</span>
-            <p>إذا رغبت بربط حساب أو مشروع Firebase مستقل كلياً، الصق معرف المشروع (Project ID) ومعرف قاعدة البيانات واضغط حفظ مباشرة.</p>
+            <span className="font-bold text-slate-900 dark:text-white block">3. عزل البيانات التام</span>
+            <p>مفتاح العزل يضمن عدم اختلاط سجلات أو مواطني أي نائب مع نائب آخر في قاعدة البيانات السحابية.</p>
           </div>
         </div>
       </div>

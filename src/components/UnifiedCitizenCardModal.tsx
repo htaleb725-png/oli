@@ -50,7 +50,8 @@ export const UnifiedCitizenCardModal: React.FC<Props> = ({
     setPrintableCitizenCard, 
     addRequest, 
     currentUser,
-    addAuditLog 
+    addAuditLog,
+    systemSettings
   } = useApp();
 
   const isReception = receptionMode || currentUser?.Role === 'reception' || currentUser?.Role === 'reception_officer' || currentUser?.Department?.includes('الاستعلامات');
@@ -152,6 +153,20 @@ export const UnifiedCitizenCardModal: React.FC<Props> = ({
                 <span>•</span>
                 <span>مسجل الاستعلامات: {citizen.CreatedBy || 'الاستعلامات'}</span>
               </p>
+              {citizen.CustomFields && Object.keys(citizen.CustomFields).length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-2 pt-2 border-t border-slate-700/60 text-[11px]">
+                  {Object.entries(citizen.CustomFields).map(([k, v]) => {
+                    if (v === undefined || v === null || v === '') return null;
+                    const fieldDef = systemSettings.receptionCustomFields?.find(f => f.id === k);
+                    const label = fieldDef?.label || k;
+                    return (
+                      <span key={k} className="px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-200 border border-purple-500/30">
+                        {label}: <strong className="text-white font-bold">{String(v)}</strong>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 

@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 export const ReportsModule: React.FC = () => {
-  const { citizens, requests, interviews, organizationRecords, addAuditLog, currentUser } = useApp();
+  const { citizens, requests, interviews, organizationRecords, addAuditLog, currentUser, canDownloadDatabase } = useApp();
 
   // Role and Department Isolation: Developer & Director can access all reports; others can only access their department's reports
   const isSuperUser = ['developer', 'director', 'deputy'].includes(currentUser?.Role || '');
@@ -328,13 +328,15 @@ export const ReportsModule: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                onClick={exportToExcel}
-                className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
-              >
-                <FileSpreadsheet className="w-4 h-4" />
-                <span>تصدير ملف Excel (.xlsx)</span>
-              </button>
+              {canDownloadDatabase(currentUser?.Role) && (
+                <button
+                  onClick={exportToExcel}
+                  className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>تصدير ملف Excel (.xlsx)</span>
+                </button>
+              )}
 
               <button
                 onClick={handlePrintReport}

@@ -155,6 +155,7 @@ export interface OfficeRequest {
   CustomFields?: Record<string, string | number | boolean>;
   DirectorDecision?: 'خاص' | 'عام' | 'رفض' | string; // قرار المدير: خاص، عام، أو رفض
   DirectorNotes?: string; // ملاحظات وتوجيهات المدير التنفيذي
+  RejectionReason?: string; // سبب الرفض المعتمد من قبل المدير
   DirectorDecisionDate?: string; // تاريخ قرار المدير
   DirectorDecisionBy?: string; // اسم المدير الذي اتخذ القرار
   ReceptionNotes?: string; // الملاحظات الأصلية التي أدلى بها قسم الاستعلامات

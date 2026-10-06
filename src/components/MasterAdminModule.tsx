@@ -643,12 +643,12 @@ export const MasterAdminModule: React.FC = () => {
             },
             {
               id: 'dev_multi_office',
-              title: 'ربط المكاتب المتعددة وعزل البيانات',
-              subtitle: 'تغيير رابط وقاعدة بيانات كل فرع بدون تداخل',
+              title: 'تهيئة وتغيير المكتب وقواعد البيانات (للنائب الجديد)',
+              subtitle: 'تغيير اسم النائب، جداول Google Sheets، وعزل البيانات بدون كود',
               icon: Building2,
               iconColor: 'text-blue-600 dark:text-blue-400',
               iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-              badge: 'فروع مستقلة 🏢',
+              badge: 'نشر المكاتب 🚀',
               badgeColor: 'bg-blue-600 text-white',
               onClick: () => setActiveTab('multi_office')
             },
@@ -822,7 +822,7 @@ export const MasterAdminModule: React.FC = () => {
                 <h3 className="text-sm sm:text-base font-black text-white mt-0.5">
                   {activeTab === 'sections' && 'باني الأقسام المخصصة والحقول الديناميكية'}
                   {activeTab === 'firebase' && 'قاعدة بيانات Firebase Firestore اللحظية الحية'}
-                  {activeTab === 'multi_office' && 'ربط الفروع والمكاتب المتعددة وعزل البيانات'}
+                  {activeTab === 'multi_office' && 'تهيئة وتغيير المكتب وقواعد البيانات (للنائب الجديد)'}
                   {activeTab === 'icons_studio' && 'استوديو الأيقونات وصورة البرنامج والشعار'}
                   {activeTab === 'ui_customizer' && 'تخصيص الواجهات ومقاس الأزرار والحقول'}
                   {activeTab === 'dev_passcode' && 'رمز دخول المطور السري'}
@@ -888,7 +888,7 @@ export const MasterAdminModule: React.FC = () => {
                 activeTab === 'multi_office' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
-              <span>ربط الفروع 🏢</span>
+              <span>تهيئة المكتب والنائب 🏢</span>
             </button>
             <button
               onClick={() => setActiveTab('icons_studio')}

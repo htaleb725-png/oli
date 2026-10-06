@@ -31,6 +31,41 @@ export interface SyncPayload {
 const syncQueue: SyncPayload[] = [];
 let isProcessingQueue = false;
 
+// Helper to reliably resolve Google Sheet ID from multiple fallbacks
+export function resolveTargetSheetId(customSheetId?: string): string {
+  if (customSheetId && customSheetId.trim()) return customSheetId.trim();
+  if (typeof window !== 'undefined') {
+    const direct = localStorage.getItem('al_nashi_sheet_id');
+    if (direct && direct.trim()) return direct.trim();
+    try {
+      const savedSettings = localStorage.getItem('al_nashi_office_settings');
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        if (parsed.googleSheetId && parsed.googleSheetId.trim()) return parsed.googleSheetId.trim();
+        if (parsed.activeGoogleSheetId && parsed.activeGoogleSheetId.trim()) return parsed.activeGoogleSheetId.trim();
+      }
+    } catch {}
+  }
+  return '';
+}
+
+// Helper to reliably resolve Apps Script Webhook URL from multiple fallbacks
+export function resolveAppsScriptUrl(customUrl?: string): string {
+  if (customUrl && customUrl.trim()) return customUrl.trim();
+  if (typeof window !== 'undefined') {
+    const direct = localStorage.getItem('al_nashi_apps_script_url');
+    if (direct && direct.trim()) return direct.trim();
+    try {
+      const savedSettings = localStorage.getItem('al_nashi_office_settings');
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        if (parsed.appsScriptUrl && parsed.appsScriptUrl.trim()) return parsed.appsScriptUrl.trim();
+      }
+    } catch {}
+  }
+  return '';
+}
+
 export async function pushToGoogleSheetsRealtime(
   entityType: RealtimeEntityType,
   data: any,
@@ -60,27 +95,29 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
       return;
     }
 
+    const resolvedSheetId = resolveTargetSheetId(targetSheetId);
+    const resolvedUrl = resolveAppsScriptUrl(customUrl);
+
     // 1. Direct Google Sheets REST API sync via Developer Google OAuth token
-    try {
-      const token = await getAccessToken();
-      const sheetId = targetSheetId || (typeof window !== 'undefined' ? (localStorage.getItem('al_nashi_sheet_id') || '') : '');
-      if (token && sheetId) {
-        await pushSingleRecordToSheetsRealtime(token, sheetId, item.entityType, item.data);
+    if (resolvedSheetId) {
+      try {
+        const token = await getAccessToken();
+        if (token) {
+          await pushSingleRecordToSheetsRealtime(token, resolvedSheetId, item.entityType, item.data);
+        }
+      } catch (e) {
+        console.warn('Realtime Direct Google Sheets sync notification:', e);
       }
-    } catch (e) {
-      console.warn('Realtime Direct Google Sheets sync notification:', e);
     }
 
     // 2. Webhook / Apps Script Web App sync (if configured)
-    const targetUrl = customUrl || (typeof window !== 'undefined' ? (localStorage.getItem('al_nashi_apps_script_url') || '') : '');
-
-    if (targetUrl && targetUrl.startsWith('http')) {
+    if (resolvedUrl && resolvedUrl.startsWith('http')) {
       try {
-        await fetch(targetUrl, {
+        await fetch(resolvedUrl, {
           method: 'POST',
           mode: 'no-cors',
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'text/plain;charset=utf-8'
           },
           body: JSON.stringify({
             action: item.action === 'insert' ? 'appendRow' : 'updateRow',
@@ -99,5 +136,24 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
     if (syncQueue.length > 0) {
       setTimeout(() => processSyncQueue(customUrl, targetSheetId), 300);
     }
+  }
+}
+
+/**
+ * Pull all data from Google Apps Script Web App (if configured with doGet)
+ */
+export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promise<any> {
+  if (!appsScriptUrl || !appsScriptUrl.startsWith('http')) return null;
+  try {
+    const separator = appsScriptUrl.includes('?') ? '&' : '?';
+    const response = await fetch(`${appsScriptUrl}${separator}action=getAllData`, {
+      method: 'GET'
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data;
+  } catch (err) {
+    console.warn('pullDataFromGoogleAppsScript error:', err);
+    return null;
   }
 }

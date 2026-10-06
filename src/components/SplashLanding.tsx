@@ -30,6 +30,8 @@ import {
 } from 'lucide-react';
 import { DesktopInstallModal } from './DesktopInstallModal';
 import { Interactive3DBackground } from './Interactive3DBackground';
+import { D3InteractiveNetwork } from './D3InteractiveNetwork';
+import { SessionLoadingOverlay } from './SessionLoadingOverlay';
 import { playWelcomeChime } from '../utils/audio';
 import { User } from '../types';
 
@@ -44,7 +46,9 @@ export const SplashLanding: React.FC = () => {
     assignWorkstationUser,
     directLoginAsAssigned,
     loginWithDeveloperPasscode,
-    developerPasscode
+    developerPasscode,
+    isSessionLoading,
+    sessionLoadingMessage
   } = useApp();
 
   const [loginMode, setLoginMode] = useState<'developer' | 'staff' | 'biometric'>('developer');
@@ -56,6 +60,7 @@ export const SplashLanding: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
   const [currentDate, setCurrentDate] = useState('');
+  const [visualMode, setVisualMode] = useState<'d3' | 'three' | 'none'>('d3');
 
   // 3D Card Interactive Tilt & Glare Tracking
   const cardRef = useRef<HTMLDivElement>(null);
@@ -211,12 +216,14 @@ export const SplashLanding: React.FC = () => {
 
   return (
     <div className="min-h-screen relative overflow-x-hidden bg-slate-950 text-slate-100 flex flex-col justify-between selection:bg-amber-500 selection:text-slate-950">
-      {/* Background Animated Gradient Aura */}
-      <div className="absolute inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute -top-40 -right-40 w-96 h-96 bg-blue-600/20 rounded-full blur-3xl animate-pulse"></div>
-        <div className="absolute top-1/2 -left-40 w-96 h-96 bg-emerald-600/15 rounded-full blur-3xl"></div>
-        <div className="absolute -bottom-40 right-1/3 w-96 h-96 bg-amber-600/15 rounded-full blur-3xl"></div>
-        <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:24px_24px] opacity-25"></div>
+      {/* Background Interactive Graphics (D3 / Three.js) */}
+      <div className="absolute inset-0 z-0 overflow-hidden">
+        {visualMode === 'd3' && <D3InteractiveNetwork />}
+        {visualMode === 'three' && <Interactive3DBackground />}
+        {/* Background Animated Gradient Aura */}
+        <div className="absolute -top-40 -right-40 w-96 h-96 bg-blue-600/15 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute top-1/2 -left-40 w-96 h-96 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute -bottom-40 right-1/3 w-96 h-96 bg-amber-600/15 rounded-full blur-3xl pointer-events-none"></div>
       </div>
 
       {/* Top Header */}
@@ -240,6 +247,34 @@ export const SplashLanding: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Visual Mode Selector (D3 vs 3D) */}
+            <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-800/90 border border-slate-700 text-xs">
+              <button
+                type="button"
+                onClick={() => setVisualMode('d3')}
+                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
+                  visualMode === 'd3'
+                    ? 'bg-amber-500 text-slate-950 shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="تفعيل شبكة D3 التفاعلية الحديثة"
+              >
+                شبكة D3 تفاعلية
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisualMode('three')}
+                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
+                  visualMode === 'three'
+                    ? 'bg-amber-500 text-slate-950 shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="تفعيل الفضاء ثلاثي الأبعاد 3D"
+              >
+                فضاء 3D
+              </button>
+            </div>
+
             {/* Live Clock */}
             <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-800/80 border border-slate-700 text-slate-300 text-xs font-mono">
               <Clock className="w-3.5 h-3.5 text-amber-400" />
@@ -765,6 +800,14 @@ export const SplashLanding: React.FC = () => {
       <DesktopInstallModal
         isOpen={isDesktopInstallModalOpen}
         onClose={() => setIsDesktopInstallModalOpen(false)}
+      />
+
+      {/* 2-Second Employee Entry Loading Message Overlay */}
+      <SessionLoadingOverlay 
+        isLoading={isSessionLoading} 
+        message={sessionLoadingMessage}
+        userName={assignedWorkstationUser?.FullName}
+        officeName={systemSettings?.officeName || systemSettings?.appName}
       />
     </div>
   );

@@ -70,7 +70,8 @@ export const AdminModule: React.FC = () => {
     setActiveSection,
     forwardCitizenWorkflow,
     forwardRequestWorkflow,
-    exportToExcel
+    exportToExcel,
+    canDownloadDatabase
   } = useApp();
 
   const handleExportComprehensiveExcel = () => {
@@ -642,7 +643,7 @@ export const AdminModule: React.FC = () => {
             isActive: activeTab === 'referrers',
             onClick: () => setActiveTab('referrers')
           },
-          {
+          ...(canDownloadDatabase(currentUser?.Role) ? [{
             id: 'adm_export',
             title: 'تصدير قاعدة البيانات الشاملة Excel',
             subtitle: 'سحب كشف كامل لكافة الجداول والصور والمرفقات',
@@ -652,7 +653,7 @@ export const AdminModule: React.FC = () => {
             badge: 'شامل Excel 📥',
             badgeColor: 'bg-teal-600 text-white',
             onClick: handleExportComprehensiveExcel
-          },
+          }] : []),
           {
             id: 'adm_ai_drafter',
             title: 'صياغة بالذكاء الاصطناعي',
@@ -1068,6 +1069,11 @@ export const AdminModule: React.FC = () => {
                               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-red-600 text-white shadow-2xs inline-flex items-center gap-1">
                                 <span>⛔ مرفوض من قبل مدير المكتب</span>
                               </span>
+                              {(req.DirectorNotes || req.DeputyNotes) && (
+                                <div className="text-[10px] font-bold text-red-800 dark:text-red-300 bg-red-50 dark:bg-red-950/60 p-1.5 rounded-lg border border-red-200 dark:border-red-900 mt-1 leading-relaxed">
+                                  سبب الرفض: {req.DirectorNotes || req.DeputyNotes}
+                                </div>
+                              )}
                               {req.DirectorDecisionDate && (
                                 <div className="text-[10px] text-red-700 dark:text-red-400 font-mono">
                                   بتاريخ: {req.DirectorDecisionDate}

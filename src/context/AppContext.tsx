@@ -19,6 +19,7 @@ import {
   ChequeRecord,
   CustomSection,
   CustomSectionRecord,
+  CustomFieldDefinition,
   UiCustomizationSettings
 } from '../types';
 import {
@@ -63,7 +64,7 @@ import {
 } from '../data/initialData';
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
-import { pushToGoogleSheetsRealtime } from '../services/realtimeGoogleSync';
+import { pushToGoogleSheetsRealtime, pullDataFromGoogleAppsScript } from '../services/realtimeGoogleSync';
 import { sheetsIntegration } from '../services/sheetsIntegrationLayer';
 import { 
   loginAndSetupDeveloperCloud, 
@@ -215,8 +216,20 @@ interface AppContextType {
   setDeveloperPasscode: (code: string) => Promise<boolean>;
   loginWithDeveloperPasscode: (code: string) => boolean;
 
+  // Reception Custom Fields (حقول الاستعلامات والمراجعين المخصصة)
+  addReceptionCustomField: (field: Omit<CustomFieldDefinition, 'id' | 'name'>) => CustomFieldDefinition;
+  deleteReceptionCustomField: (fieldId: string) => void;
+  toggleReceptionDefaultField: (fieldKey: string) => void;
+
   // UI Customizations
   updateUiCustomizations: (customizations: Partial<UiCustomizationSettings>) => void;
+
+  // 2-Second Employee Entry Loading Message & Data Hydration
+  isSessionLoading: boolean;
+  sessionLoadingMessage: string;
+  triggerSessionDataLoad: (customMsg?: string) => void;
+  canDownloadDatabase: (role?: string) => boolean;
+  refreshAllDataFromAllSources: () => Promise<void>;
 
   // Firestore Direct Sync
   isFirestoreSyncing: boolean;
@@ -359,6 +372,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [isSplashOpen, setIsSplashOpen] = useState<boolean>(true);
   const [activeSection, setActiveSection] = useState<string>('dashboard');
+  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(false);
+  const [sessionLoadingMessage, setSessionLoadingMessage] = useState<string>('يرجى الانتظار لتحميل بياناتك...');
   const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(() => {
     return localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true';
   });
@@ -828,6 +843,81 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
+  const canDownloadDatabase = (role?: string): boolean => {
+    if (!role) return false;
+    return ['developer', 'director', 'deputy', 'admin', 'admin_officer'].includes(role);
+  };
+
+  const refreshAllDataFromAllSources = async () => {
+    // 1. Safe hydration from localStorage or initial defaults if empty
+    try {
+      const savedCitizens = localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens');
+      if (savedCitizens) {
+        const parsed = JSON.parse(savedCitizens);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setCitizens(parsed);
+        } else if (citizens.length === 0) {
+          setCitizens(INITIAL_CITIZENS);
+        }
+      } else if (citizens.length === 0) {
+        setCitizens(INITIAL_CITIZENS);
+      }
+    } catch {
+      if (citizens.length === 0) setCitizens(INITIAL_CITIZENS);
+    }
+
+    try {
+      const savedRequests = localStorage.getItem(STORAGE_KEY_PREFIX + 'requests');
+      if (savedRequests) {
+        const parsed = JSON.parse(savedRequests);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setRequests(parsed);
+        } else if (requests.length === 0) {
+          setRequests(INITIAL_REQUESTS);
+        }
+      } else if (requests.length === 0) {
+        setRequests(INITIAL_REQUESTS);
+      }
+    } catch {
+      if (requests.length === 0) setRequests(INITIAL_REQUESTS);
+    }
+
+    // 2. Fetch from Google Sheets if configured
+    try {
+      const targetSheet = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
+      const targetScript = systemSettings.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+      if (targetSheet || targetScript) {
+        await fetchAllFromGoogleSheetsNow();
+      }
+    } catch (e) {
+      console.warn('Background Google Sheets load:', e);
+    }
+
+    // 3. Fetch from Firestore if active
+    try {
+      await fetchAllFromFirestoreNow();
+    } catch (e) {
+      console.warn('Background Firestore load:', e);
+    }
+  };
+
+  const triggerSessionDataLoad = (customMsg?: string) => {
+    setIsSessionLoading(true);
+    setSessionLoadingMessage(customMsg || 'يرجى الانتظار لتحميل بياناتك...');
+
+    refreshAllDataFromAllSources().catch(() => {});
+
+    // Exactly 2 seconds as requested by the user
+    setTimeout(() => {
+      setIsSessionLoading(false);
+    }, 2000);
+  };
+
+  // Run initial hydration on mount
+  useEffect(() => {
+    refreshAllDataFromAllSources().catch(() => {});
+  }, []);
+
   const addAuditLog = (action: string, section: string, details: string) => {
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
@@ -856,6 +946,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveSection('master_admin');
       addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `قام المطور بتسجيل الدخول برمز المطور المعتمد`);
       triggerDepartmentGreeting(devUser);
+      triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
       return true;
     }
 
@@ -899,6 +990,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `قام المستخدم ${user.FullName} (${user.RoleArabic}) بتسجيل الدخول`);
       triggerDepartmentGreeting(user);
+      triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
       return true;
     }
     return false;
@@ -998,6 +1090,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveSection('dashboard');
     }
     triggerDepartmentGreeting(user);
+    triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
     addAuditLog('تبديل مستخدم سريع', 'إدارة الجلسة', `تم التبديل إلى حساب ${user.FullName}`);
   };
 
@@ -1896,6 +1989,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushToGoogleSheetsRealtime('custom_records', { id: recordId }, 'delete', systemSettings.appsScriptUrl);
   };
 
+  // Dynamic Reception Fields (تخصيص وإدارة حقول قسم الاستعلامات والمراجعين)
+  const addReceptionCustomField = (fieldData: Omit<CustomFieldDefinition, 'id' | 'name'>): CustomFieldDefinition => {
+    const id = `rcf_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
+    const newField: CustomFieldDefinition = {
+      ...fieldData,
+      id,
+      name: id
+    };
+    const currentFields = systemSettings.receptionCustomFields || [];
+    const updatedFields = [...currentFields, newField];
+    updateSettings({ receptionCustomFields: updatedFields });
+    addAuditLog('إضافة حقل بالاستعلامات', 'لوحة المطور', `تم إضافة الحقل المخصص الجديد (${newField.label}) في الاستعلامات`);
+    return newField;
+  };
+
+  const deleteReceptionCustomField = (fieldId: string) => {
+    const currentFields = systemSettings.receptionCustomFields || [];
+    const target = currentFields.find(f => f.id === fieldId);
+    const updatedFields = currentFields.filter(f => f.id !== fieldId);
+    updateSettings({ receptionCustomFields: updatedFields });
+    addAuditLog('حذف حقل بالاستعلامات', 'لوحة المطور', `تم حذف الحقل (${target?.label || fieldId}) من الاستعلامات`);
+  };
+
+  const toggleReceptionDefaultField = (fieldKey: string) => {
+    const hidden = systemSettings.receptionHiddenDefaultFields || [];
+    const updated = hidden.includes(fieldKey)
+      ? hidden.filter(k => k !== fieldKey)
+      : [...hidden, fieldKey];
+    updateSettings({ receptionHiddenDefaultFields: updated });
+    addAuditLog('تعديل ظهور حقول الاستعلامات', 'لوحة المطور', `تعديل حالة الحقل: ${fieldKey}`);
+  };
+
   // Developer Passcode Management (رمز دخول المطور السري)
   const setDeveloperPasscode = async (newCode: string): Promise<boolean> => {
     if (!newCode || newCode.trim().length < 3) return false;
@@ -1920,6 +2045,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsSplashOpen(false);
       setActiveSection('master_admin');
       addAuditLog('تسجيل دخول ناجح برمز المطور', 'نظام المصادقة', 'دخول المطور بالرمز السري المعتمد');
+      triggerDepartmentGreeting(devUser);
+      triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
       return true;
     }
     return false;
@@ -2277,6 +2404,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         developerPasscode,
         setDeveloperPasscode,
         loginWithDeveloperPasscode,
+        // Reception Custom Fields
+        addReceptionCustomField,
+        deleteReceptionCustomField,
+        toggleReceptionDefaultField,
+        // 2-Second Employee Entry Loading Message & Data Hydration
+        isSessionLoading,
+        sessionLoadingMessage,
+        triggerSessionDataLoad,
+        canDownloadDatabase,
+        refreshAllDataFromAllSources,
         // UI Customizations
         updateUiCustomizations,
         // Firestore Direct Live Sync

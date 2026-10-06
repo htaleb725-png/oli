@@ -43,7 +43,8 @@ export const Navbar: React.FC = () => {
     organizationRecords,
     officialLetters,
     customSections,
-    customRecords
+    customRecords,
+    canDownloadDatabase
   } = useApp();
 
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
@@ -250,8 +251,8 @@ export const Navbar: React.FC = () => {
 
         {/* Left Section (in RTL): User Profile, Notifications, Dark Mode & Language */}
         <div className="flex items-center gap-2 sm:gap-2.5">
-          {/* Universal Full Database Excel Export Button for Admin, Deputy, Developer */}
-          {(currentUser?.Role === 'admin' || currentUser?.Role === 'deputy' || currentUser?.Role === 'developer') && (
+          {/* Universal Full Database Excel Export Button for Manager, Developer, Admin */}
+          {canDownloadDatabase(currentUser?.Role) && (
             <button
               onClick={() => {
                 const success = exportUnifiedSystemExcel({

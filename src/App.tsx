@@ -25,6 +25,7 @@ import { DesktopInstallModal } from './components/DesktopInstallModal';
 import { SystemWipeModal } from './components/SystemWipeModal';
 import { NetworkStatusModal } from './components/NetworkStatusModal';
 import { AppUpdateNotification } from './components/AppUpdateNotification';
+import { SessionLoadingOverlay } from './components/SessionLoadingOverlay';
 import { playUiClickSound } from './utils/audio';
 
 const MainAppLayout: React.FC = () => {
@@ -39,7 +40,10 @@ const MainAppLayout: React.FC = () => {
     setIsSystemWipeModalOpen,
     departmentGreeting,
     setDepartmentGreeting,
-    syncAllToFirestoreNow
+    syncAllToFirestoreNow,
+    isSessionLoading,
+    sessionLoadingMessage,
+    systemSettings
   } = useApp();
 
   const [isCloudSyncing, setIsCloudSyncing] = React.useState(false);
@@ -328,6 +332,15 @@ const MainAppLayout: React.FC = () => {
 
       {/* Live System Update Notification */}
       <AppUpdateNotification />
+
+      {/* 2-Second Employee Entry Loading Message Overlay */}
+      <SessionLoadingOverlay 
+        isLoading={isSessionLoading} 
+        message={sessionLoadingMessage}
+        userName={currentUser?.FullName}
+        userRole={currentUser?.RoleArabic}
+        officeName={systemSettings?.officeName || systemSettings?.appName}
+      />
     </div>
   );
 };

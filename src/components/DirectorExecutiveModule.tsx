@@ -118,6 +118,19 @@ export const DirectorExecutiveModule: React.FC = () => {
   const [directorNotesMap, setDirectorNotesMap] = useState<Record<string, string>>({});
   const [savedFeedbackId, setSavedFeedbackId] = useState<string | null>(null);
 
+  // Rejection Reason Modal & Prompt State
+  const [rejectModalRequest, setRejectModalRequest] = useState<OfficeRequest | null>(null);
+  const [rejectionReasonText, setRejectionReasonText] = useState<string>('');
+
+  const PRESET_REJECTION_REASONS = [
+    'عدم استيفاء الشروط والضوابط القانونية النافذة',
+    'خارج الاختصاص التشريعي والخدمي لمكتب النائب',
+    'نقص في المستمسكات والوثائق الرسمية المطلوبة',
+    'تم إنجاز الطلب والتنسيق مسبقاً مع الدائرة المعنية',
+    'اعتذار لعدم توفر التخصيص أو الإمكانية في الوقت الحالي',
+    'مكرر لنفس المواطن وتم اتخاذ الإجراء فيه سابقاً'
+  ];
+
   // Map of citizens for fast lookup
   const citizenMap = useMemo(() => {
     const map = new Map<string, Citizen>();
@@ -170,10 +183,14 @@ export const DirectorExecutiveModule: React.FC = () => {
   }, [requests]);
 
   // Handle Director Decision action: 'خاص' | 'عام' | 'رفض'
-  const handleDirectorDecision = (request: OfficeRequest, decision: 'خاص' | 'عام' | 'رفض') => {
-    const noteText = directorNotesMap[request.Request_ID] !== undefined 
+  const handleDirectorDecision = (request: OfficeRequest, decision: 'خاص' | 'عام' | 'رفض', explicitRejectionReason?: string) => {
+    let noteText = directorNotesMap[request.Request_ID] !== undefined 
       ? directorNotesMap[request.Request_ID] 
       : (request.DirectorNotes || '');
+
+    if (decision === 'رفض' && explicitRejectionReason && explicitRejectionReason.trim()) {
+      noteText = explicitRejectionReason.trim();
+    }
 
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -186,16 +203,18 @@ export const DirectorExecutiveModule: React.FC = () => {
       DirectorDecisionBy: currentUser ? `${currentUser.FullName} (مدير المكتب)` : 'مدير المكتب',
       CurrentStage: decision === 'رفض' ? 'مكتمل' : 'مدير الإدارة',
       ProcessingStatus: decision === 'رفض' ? 'مرفوض' : request.ProcessingStatus,
-      DeputyNotes: noteText.trim() 
-        ? `[توجيه المدير - ${decision}]: ${noteText.trim()}` 
-        : `[قرار المدير]: ${decision}`
+      DeputyNotes: decision === 'رفض'
+        ? `[سبب الرفض من قبل مدير المكتب]: ${noteText.trim() || 'عدم استيفاء الشروط والضوابط'}`
+        : noteText.trim() 
+          ? `[توجيه المدير - ${decision}]: ${noteText.trim()}` 
+          : `[قرار المدير]: ${decision}`
     };
 
     updateRequest(updatedRequest);
     addAuditLog(
       `قرار مدير المكتب (${decision})`,
       'قسم مدير المكتب',
-      `تم اعتماد قرار (${decision}) للطلب رقم ${request.Request_ID} الخاص بالمواطن ${request.CitizenName}${noteText.trim() ? ` مع توجيه: ${noteText.trim()}` : ''}`
+      `تم اعتماد قرار (${decision}) للطلب رقم ${request.Request_ID} الخاص بالمواطن ${request.CitizenName}${noteText.trim() ? ` مع بيان السبب/التوجيه: ${noteText.trim()}` : ''}`
     );
 
     setDecisionBanner({
@@ -758,6 +777,19 @@ export const DirectorExecutiveModule: React.FC = () => {
                           </div>
                         )}
 
+                        {/* Director Rejection Reason Banner if Rejected */}
+                        {(req.DirectorDecision === 'رفض' || req.ProcessingStatus === 'مرفوض') && (
+                          <div className="text-xs text-rose-950 dark:text-rose-100 bg-rose-50 dark:bg-rose-950/60 p-2.5 rounded-xl border border-rose-300 dark:border-rose-850 flex items-start gap-2 shadow-2xs">
+                            <span className="font-black text-rose-700 dark:text-rose-400 shrink-0 flex items-center gap-1">
+                              <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                              <span>سبب الرفض:</span>
+                            </span>
+                            <span className="font-bold leading-relaxed">
+                              {req.DirectorNotes || req.DeputyNotes || 'لم يُحدد سبب مفصل'}
+                            </span>
+                          </div>
+                        )}
+
                         <div className="text-[10px] text-slate-400 flex items-center gap-2">
                           <span>المستلم في الاستعلامات: {req.CreatedBy || 'موظف الاستعلامات'}</span>
                           {req.DirectorDecisionDate && (
@@ -827,19 +859,22 @@ export const DirectorExecutiveModule: React.FC = () => {
                             <span>عام</span>
                           </button>
 
-                          {/* 3. رفض */}
+                          {/* 3. رفض مع إدخال سبب الرفض */}
                           <button
                             type="button"
-                            onClick={() => handleDirectorDecision(req, 'رفض')}
+                            onClick={() => {
+                              setRejectModalRequest(req);
+                              setRejectionReasonText(req.DirectorNotes || '');
+                            }}
                             className={`flex-1 h-9 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 ${
                               currentDecision === 'رفض'
                                 ? 'bg-red-700 text-white ring-2 ring-red-400 shadow-red-600/30'
                                 : 'bg-red-600 hover:bg-red-700 text-white'
                             }`}
-                            title="رفض الطلب وإشعار الإدارة باللون الأحمر"
+                            title="رفض الطلب وتحديد سبب الرفض لتبليغ الإدارة والمواطن به"
                           >
                             <XCircle className="w-3.5 h-3.5" />
-                            <span>رفض</span>
+                            <span>رفض الطلب</span>
                           </button>
                         </div>
 
@@ -1088,6 +1123,90 @@ export const DirectorExecutiveModule: React.FC = () => {
             </div>
           )}
 
+        </div>
+      )}
+
+      {/* Rejection Reason Input Modal (ظهور نص ما سبب الرفض عند ضغط المدير على رفض الطلب) */}
+      {rejectModalRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs animate-in fade-in duration-200" dir="rtl">
+          <div className="bg-white dark:bg-slate-900 border border-red-500/40 rounded-3xl p-5 sm:p-6 max-w-lg w-full shadow-2xl text-right space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-rose-600">
+                <XCircle className="w-5 h-5 text-rose-600" />
+                <h3 className="font-black text-sm text-slate-900 dark:text-white">
+                  قرار رفض الطلب وتحديد سبب الرفض
+                </h3>
+              </div>
+              <button 
+                onClick={() => setRejectModalRequest(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3 bg-rose-50/70 dark:bg-rose-950/30 rounded-2xl border border-rose-200 dark:border-rose-900/50 space-y-1 text-xs">
+              <div className="flex items-center justify-between font-bold text-slate-700 dark:text-slate-300">
+                <span>المواطن: <strong className="text-rose-700 dark:text-rose-400">{rejectModalRequest.CitizenName}</strong></span>
+                <span className="font-mono text-[11px] text-slate-500">{rejectModalRequest.Request_ID}</span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                موضوع الطلب: {rejectModalRequest.Details}
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-black text-slate-800 dark:text-slate-200">
+                ما سبب الرفض؟ (يرجى توضيح السبب لتبليغ المواطن والإدارة به) *
+              </label>
+              <textarea
+                value={rejectionReasonText}
+                onChange={(e) => setRejectionReasonText(e.target.value)}
+                placeholder="اكتب هنا سبب رفض المعاملة بدقة..."
+                rows={3}
+                className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-white focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            {/* Quick Reason Selection Chips */}
+            <div className="space-y-1.5">
+              <span className="text-[10px] font-bold text-slate-500 block">أسباب شائعة للاختيار السريع:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {PRESET_REJECTION_REASONS.map((reason, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setRejectionReasonText(reason)}
+                    className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-rose-100 hover:text-rose-700 dark:hover:bg-rose-950 text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700 cursor-pointer"
+                  >
+                    + {reason}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setRejectModalRequest(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                إلغاء وتراجع
+              </button>
+              <button
+                type="button"
+                disabled={!rejectionReasonText.trim()}
+                onClick={() => {
+                  handleDirectorDecision(rejectModalRequest, 'رفض', rejectionReasonText.trim());
+                  setRejectModalRequest(null);
+                }}
+                className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-black text-xs flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-95"
+              >
+                <XCircle className="w-4 h-4 text-white" />
+                <span>تأكيد الرفض مع حفظ السبب ⛔</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
