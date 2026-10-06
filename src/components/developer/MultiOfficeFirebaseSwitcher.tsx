@@ -20,7 +20,8 @@ import {
   User,
   MapPin,
   Flame,
-  ArrowDownCircle
+  ArrowDownCircle,
+  UploadCloud
 } from 'lucide-react';
 import firebaseConfig from '../../../firebase-applet-config.json';
 import { setActiveOfficePartition } from '../../services/firebaseFirestoreService';
@@ -79,7 +80,8 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
     updateSettings, 
     syncAllToFirestoreNow, 
     fetchAllFromFirestoreNow,
-    fetchAllFromGoogleSheetsNow
+    fetchAllFromGoogleSheetsNow,
+    syncAllToGoogleSheetsNow
   } = useApp();
 
   const currentPartition = systemSettings.officeWorkspaceId || 'office_alnashi_main';
@@ -116,6 +118,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
   const [isSwitching, setIsSwitching] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isPullingSheets, setIsPullingSheets] = useState(false);
+  const [isPushingSheets, setIsPushingSheets] = useState(false);
 
   const handleTestConnection = async () => {
     setIsTesting(true);
@@ -183,6 +186,42 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
       setStatusMsg({ type: 'error', text: `خطأ أثناء جلب البيانات: ${err.message}` });
     } finally {
       setIsPullingSheets(false);
+    }
+  };
+
+  const handlePushGoogleSheetsNow = async () => {
+    if (!googleSheetId.trim() && !appsScriptUrl.trim()) {
+      setStatusMsg({ type: 'error', text: 'يرجى إدخال معرف جدول Google Sheets أو رابط Apps Script أولاً لحفظ السجلات فيه.' });
+      return;
+    }
+
+    setIsPushingSheets(true);
+    setStatusMsg({ type: 'info', text: 'جاري إرسال وتحديث سجلات المنظومة في جدول Google Sheets ومجلد Drive الآن...' });
+
+    try {
+      if (typeof window !== 'undefined') {
+        if (googleSheetId.trim()) localStorage.setItem('al_nashi_sheet_id', googleSheetId.trim());
+        if (googleDriveFolderId.trim()) localStorage.setItem('al_nashi_drive_folder_id', googleDriveFolderId.trim());
+        if (appsScriptUrl.trim()) localStorage.setItem('al_nashi_apps_script_url', appsScriptUrl.trim());
+      }
+      sheetsIntegration.refreshLocalConfig();
+
+      const res = await syncAllToGoogleSheetsNow();
+      if (res.success) {
+        setStatusMsg({
+          type: 'success',
+          text: `✓ ${res.message || 'تم بنجاح إرسال وحفظ كافة السجلات في جدول Google Sheets ومجلد Drive.'}`
+        });
+      } else {
+        setStatusMsg({
+          type: 'error',
+          text: `⚠️ تنبيه الإرسال: ${res.message}`
+        });
+      }
+    } catch (err: any) {
+      setStatusMsg({ type: 'error', text: `خطأ أثناء إرسال البيانات: ${err.message}` });
+    } finally {
+      setIsPushingSheets(false);
     }
   };
 
@@ -492,17 +531,29 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
 
           <div className="pt-2 flex items-center justify-between flex-wrap gap-2">
             <p className="text-[11px] text-slate-500">
-              💡 عند تغيير الجدول، يمكنك جلب البيانات السابقة أو إرسال سجلات المنظومة إليه مباشرة.
+              💡 يمكنك جلب السجلات السابقة من الجدول أو إرسال وحفظ بيانات المنظومة الحالية إليه مباشرة.
             </p>
-            <button
-              type="button"
-              onClick={handlePullGoogleSheetsNow}
-              disabled={isPullingSheets}
-              className="px-4 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50"
-            >
-              <ArrowDownCircle className={`w-3.5 h-3.5 ${isPullingSheets ? 'animate-bounce' : ''}`} />
-              <span>{isPullingSheets ? 'جاري سحب البيانات...' : 'سحب وقراءة بيانات هذا الجدول الآن'}</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handlePullGoogleSheetsNow}
+                disabled={isPullingSheets || isPushingSheets}
+                className="px-4 py-2 rounded-xl bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50"
+              >
+                <ArrowDownCircle className={`w-3.5 h-3.5 ${isPullingSheets ? 'animate-bounce' : ''}`} />
+                <span>{isPullingSheets ? 'جاري جلب البيانات...' : 'جلب وقراءة بيانات الجدول (استيراد)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handlePushGoogleSheetsNow}
+                disabled={isPullingSheets || isPushingSheets}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50 shadow-sm"
+              >
+                <UploadCloud className={`w-3.5 h-3.5 ${isPushingSheets ? 'animate-spin' : ''}`} />
+                <span>{isPushingSheets ? 'جاري إرسال السجلات...' : 'إرسال ومزامنة السجلات للجدول (تصدير)'}</span>
+              </button>
+            </div>
           </div>
         </div>
 

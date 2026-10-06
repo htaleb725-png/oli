@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import * as XLSX from 'xlsx';
+import { APPS_SCRIPT_PRODUCTION_CODE } from '../services/appsScriptTemplate';
 import { 
   FileSpreadsheet, 
   Copy, 
@@ -302,53 +303,7 @@ export const AppsScriptSyncModule: React.FC = () => {
     reader.readAsBinaryString(file);
   };
 
-  const appsScriptCode = `/**
- * =========================================================================
- * منظومة مكتب النائب المهندسة علا عودة الناشي - الإصدار السحابي
- * Google Apps Script Back-end & Google Sheets Database Engine
- * =========================================================================
- */
-const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
-
-function doGet(e) {
-  const action = e.parameter.action;
-  if (action === 'getCitizens') return jsonResponse(getSheetData('المراجعين_Citizens'));
-  if (action === 'getRequests') return jsonResponse(getSheetData('المعاملات_Requests'));
-  if (action === 'getInterviews') return jsonResponse(getSheetData('المقابلات_Interviews'));
-  return HtmlService.createHtmlOutput('<h3>منظومة مكتب النائب علا الناشي تعمل بكفاءة على Google Apps Script!</h3>');
-}
-
-function doPost(e) {
-  try {
-    const data = JSON.parse(e.postData.contents);
-    if (data.action === 'addCitizen') return jsonResponse(insertCitizen(data.payload));
-    if (data.action === 'addRequest') return jsonResponse(insertRequest(data.payload));
-    return jsonResponse({ status: 'error', message: 'Action not found' });
-  } catch (err) {
-    return jsonResponse({ status: 'error', error: err.toString() });
-  }
-}
-
-function getSheetData(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) return [];
-  const values = sheet.getDataRange().getValues();
-  if (values.length <= 1) return [];
-  const headers = values[0];
-  const results = [];
-  for (let i = 1; i < values.length; i++) {
-    let row = values[i];
-    let obj = {};
-    for (let j = 0; j < headers.length; j++) obj[headers[j]] = row[j];
-    results.push(obj);
-  }
-  return results;
-}
-
-function jsonResponse(data) {
-  return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
-}
-`;
+  const appsScriptCode = APPS_SCRIPT_PRODUCTION_CODE;
 
   return (
     <div className="space-y-4 text-right">

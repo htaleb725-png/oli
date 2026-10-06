@@ -293,20 +293,11 @@ export const MasterAdminModule: React.FC = () => {
   const handleForceInstantSync = async () => {
     setIsSyncingAll(true);
     try {
-      const res = await triggerDeveloperGoogleSync({
-        citizens,
-        requests,
-        interviews,
-        organizationRecords,
-        officialLetters,
-        auditLogs,
-        users,
-        systemSettings,
-        dropdowns,
-        cheques
-      });
-      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ✓ ${res.message}`, ...prev]);
-      addAuditLog('مزامنة فورية مع Google Sheets', 'لوحة تحكم المطور', 'تم حفظ ومزامنة كافة السجلات مع Google Sheets و Google Drive');
+      const res = await syncAllToGoogleSheetsNow();
+      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ${res.success ? '✓' : '⚠️'} ${res.message}`, ...prev]);
+      if (res.success) {
+        addAuditLog('مزامنة فورية مع Google Sheets', 'لوحة تحكم المطور', 'تم حفظ ومزامنة كافة السجلات مع Google Sheets و Google Drive بنجاح');
+      }
     } catch (err: any) {
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ❌ حدث خطأ أثناء المزامنة: ${err.message || 'خطأ غير متوقع'}`, ...prev]);
     } finally {
@@ -1869,23 +1860,21 @@ export const MasterAdminModule: React.FC = () => {
                       setGoogleAuthError(null);
                       setIsUnauthorizedDomain(false);
                       try {
-                        const devToken = 'ya29.al_nashi_dev_session_' + Date.now();
-                        localStorage.setItem('al_nashi_google_token', devToken);
-                        setGoogleToken(devToken);
-                        const devUser = {
-                          displayName: 'م. حيدر العراقي (مطور المنظومة)',
-                          email: 'htaleb725@gmail.com',
-                          photoURL: null
-                        };
-                        setGoogleUser(devUser as any);
-                        const sheetsRes = await syncAllToGoogleSheetsNow();
-                        setSyncLogs([
-                          `[${new Date().toLocaleTimeString('ar-IQ')}] تم تفعيل جلسة المطور السحابية الفورية بنجاح`,
-                          `✓ تم تأكيد اتصال ومزامنة قاعدة بيانات Google Sheets الحصرية (${sheetsRes.success ? 'متصل بنجاح' : 'جاري المزامنة'})`,
-                          `✓ تخزين المرفقات والصور سحابياً حصرياً في Google Drive`,
-                          `⚡ المنظومة تعمل حصرياً بـ Google Sheets و Google Drive`
-                        ]);
-                        addAuditLog('تفعيل جلسة المطور الفورية', 'لوحة تحكم المطور', 'تم تفعيل جلسة المطور وتأكيد المزامنة مع Google Sheets و Google Drive بنجاح');
+                        const res = await googleSignIn();
+                        if (res.accessToken) {
+                          setGoogleToken(res.accessToken);
+                          if (res.user) setGoogleUser(res.user);
+                          const sheetsRes = await syncAllToGoogleSheetsNow();
+                          setSyncLogs([
+                            `[${new Date().toLocaleTimeString('ar-IQ')}] تم ربط وتفعيل حساب Google بنجاح (${res.user?.email || 'المطور'})`,
+                            `✓ تم تأكيد اتصال ومزامنة قاعدة بيانات Google Sheets (${sheetsRes.success ? 'متصل بنجاح' : 'جاري المزامنة'})`,
+                            `✓ تخزين المرفقات والصور سحابياً في Google Drive`,
+                            `⚡ ${sheetsRes.message}`
+                          ]);
+                          addAuditLog('تفعيل ومزامنة Google', 'لوحة تحكم المطور', 'تم تفعيل ومزامنة Google Sheets و Google Drive');
+                        } else if (res.error) {
+                          setGoogleAuthError(res.error);
+                        }
                       } catch (e: any) {
                         setGoogleAuthError(e.message || 'تعذر تفعيل الجلسة');
                       } finally {
@@ -1895,7 +1884,7 @@ export const MasterAdminModule: React.FC = () => {
                     className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-sm active:scale-95"
                   >
                     <Zap className="w-4 h-4 text-amber-300" />
-                    <span>تفعيل جلسة المطور ومزامنة Google Sheets فوراً ⚡</span>
+                    <span>تسجيل الدخول ومزامنة Google Sheets فوراً ⚡</span>
                   </button>
 
                   <button
@@ -2229,8 +2218,9 @@ export const MasterAdminModule: React.FC = () => {
                   onClick={async () => {
                     const token = googleToken || localStorage.getItem('al_nashi_google_token');
                     const sheetId = activeGoogleSheetId || localStorage.getItem('al_nashi_sheet_id');
-                    if (!token || !sheetId) {
-                      alert('يرجى التأكد من تسجيل الدخول بحساب Google وربط الجدول أولاً');
+                    const scriptUrl = appsScriptUrl || systemSettings.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+                    if (!token && !scriptUrl) {
+                      alert('يرجى تسجيل الدخول بحساب Google أو إدخال رابط Google Apps Script أولاً لجلب البيانات.');
                       return;
                     }
                     setIsSyncingAll(true);

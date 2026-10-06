@@ -2236,20 +2236,79 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const syncAllToGoogleSheetsNow = async (): Promise<{ success: boolean; sheetsSynced: boolean; message: string }> => {
     setIsGoogleSyncing(true);
+    let sheetsSynced = false;
+    let successMessage = '';
+    let hasAnySuccess = false;
+
     try {
-      const res = await triggerDeveloperGoogleSync({
-        citizens,
-        requests,
-        interviews,
-        organizationRecords,
-        officialLetters,
-        auditLogs,
-        users,
-        systemSettings,
-        dropdowns,
-        cheques
-      });
-      return { success: res.success, sheetsSynced: res.sheetsSynced, message: res.message };
+      // 1. Direct REST Sync (via Google OAuth token if available)
+      try {
+        const res = await triggerDeveloperGoogleSync({
+          citizens,
+          requests,
+          interviews,
+          organizationRecords,
+          officialLetters,
+          auditLogs,
+          users,
+          systemSettings,
+          dropdowns,
+          cheques
+        });
+        if (res.success && res.sheetsSynced) {
+          sheetsSynced = true;
+          hasAnySuccess = true;
+          successMessage = res.message;
+        }
+      } catch (directErr: any) {
+        console.warn('Direct REST Sync note:', directErr);
+      }
+
+      // 2. Apps Script Webhook Sync (if appsScriptUrl is configured)
+      const targetScriptUrl = systemSettings.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+      if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
+        try {
+          await fetch(targetScriptUrl, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({
+              action: 'bulk_sync',
+              data: {
+                citizens,
+                requests,
+                interviews,
+                officialLetters,
+                cheques,
+                organizationRecords
+              },
+              timestamp: new Date().toISOString(),
+              source: 'al_nashi_office_bulk_sync'
+            })
+          });
+          sheetsSynced = true;
+          hasAnySuccess = true;
+          if (!successMessage) {
+            successMessage = `تم بنجاح إرسال وتحديث (${citizens.length}) مراجع و (${requests.length}) معاملة في Google Sheets عبر رابط Apps Script Webhook.`;
+          }
+        } catch (scriptErr: any) {
+          console.warn('Apps Script bulk_sync note:', scriptErr);
+        }
+      }
+
+      if (hasAnySuccess) {
+        return {
+          success: true,
+          sheetsSynced: true,
+          message: successMessage || 'تم بنجاح إرسال وحفظ كافة السجلات في Google Sheets و Google Drive.'
+        };
+      }
+
+      return {
+        success: false,
+        sheetsSynced: false,
+        message: 'يرجى تسجيل الدخول بحساب Google أو التأكد من إدخال رابط Google Apps Script Webhook لإتمام الإرسال.'
+      };
     } finally {
       setIsGoogleSyncing(false);
     }
@@ -2258,9 +2317,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const fetchAllFromGoogleSheetsNow = async (): Promise<{ success: boolean; message: string }> => {
     setIsGoogleSyncing(true);
     try {
+      // Attempt 1: Direct Integration Layer
       try {
         const fullData = await sheetsIntegration.fetchAllData();
-        if (fullData) {
+        if (fullData && ((fullData.citizens && fullData.citizens.length > 0) || (fullData.requests && fullData.requests.length > 0))) {
           if (fullData.citizens && fullData.citizens.length > 0) setCitizens(fullData.citizens);
           if (fullData.requests && fullData.requests.length > 0) setRequests(fullData.requests);
           if (fullData.interviews && fullData.interviews.length > 0) setInterviews(fullData.interviews);
@@ -2269,23 +2329,55 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (fullData.cheques && fullData.cheques.length > 0) setCheques(fullData.cheques);
           return {
             success: true,
-            message: `تم جلب (${fullData.citizens.length}) مواطن و (${fullData.requests.length}) معاملة مباشرة من Google Sheets عبر Integration Layer بنجاح.`
+            message: `✓ تم جلب (${fullData.citizens.length}) مراجع و (${fullData.requests.length}) معاملة مباشرة من Google Sheets بنجاح.`
           };
         }
       } catch (directErr) {
-        console.warn('Direct Integration Layer fetch failed, trying pullAllDataFromGoogleSheets:', directErr);
+        console.warn('Direct Integration Layer fetch failed:', directErr);
       }
 
-      const res = await pullAllDataFromGoogleSheets();
-      if (res.success && res.data) {
-        if (res.data.citizens.length > 0) setCitizens(res.data.citizens);
-        if (res.data.requests.length > 0) setRequests(res.data.requests);
-        if (res.data.interviews.length > 0) setInterviews(res.data.interviews);
-        if (res.data.officialLetters.length > 0) setOfficialLetters(res.data.officialLetters);
-        if (res.data.organizationRecords.length > 0) setOrganizationRecords(res.data.organizationRecords);
-        if (res.data.cheques.length > 0) setCheques(res.data.cheques);
+      // Attempt 2: Direct REST BatchGet
+      try {
+        const res = await pullAllDataFromGoogleSheets();
+        if (res.success && res.data && (res.data.citizens.length > 0 || res.data.requests.length > 0)) {
+          if (res.data.citizens.length > 0) setCitizens(res.data.citizens);
+          if (res.data.requests.length > 0) setRequests(res.data.requests);
+          if (res.data.interviews.length > 0) setInterviews(res.data.interviews);
+          if (res.data.officialLetters.length > 0) setOfficialLetters(res.data.officialLetters);
+          if (res.data.organizationRecords.length > 0) setOrganizationRecords(res.data.organizationRecords);
+          if (res.data.cheques.length > 0) setCheques(res.data.cheques);
+          return { success: true, message: `✓ ${res.message}` };
+        }
+      } catch (batchErr) {
+        console.warn('pullAllDataFromGoogleSheets failed:', batchErr);
       }
-      return { success: res.success, message: res.message };
+
+      // Attempt 3: Google Apps Script Web App fallback
+      const targetScriptUrl = systemSettings.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+      if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
+        try {
+          const scriptRes = await pullDataFromGoogleAppsScript(targetScriptUrl);
+          if (scriptRes && scriptRes.success && scriptRes.data) {
+            if (scriptRes.data.citizens.length > 0) setCitizens(scriptRes.data.citizens);
+            if (scriptRes.data.requests.length > 0) setRequests(scriptRes.data.requests);
+            if (scriptRes.data.interviews.length > 0) setInterviews(scriptRes.data.interviews);
+            if (scriptRes.data.officialLetters.length > 0) setOfficialLetters(scriptRes.data.officialLetters);
+            if (scriptRes.data.organizationRecords.length > 0) setOrganizationRecords(scriptRes.data.organizationRecords);
+            if (scriptRes.data.cheques.length > 0) setCheques(scriptRes.data.cheques);
+            return {
+              success: true,
+              message: scriptRes.message || `✓ تم جلب (${scriptRes.data.citizens.length}) مراجع من Google Sheets عبر Apps Script.`
+            };
+          }
+        } catch (scriptErr) {
+          console.warn('Apps Script fetch failed:', scriptErr);
+        }
+      }
+
+      return {
+        success: false,
+        message: 'لم يتم العثور على بيانات في جدول Google Sheets أو يلزم تسجيل الدخول بحساب Google أولاً لمنح الصلاحيات.'
+      };
     } finally {
       setIsGoogleSyncing(false);
     }

@@ -188,70 +188,71 @@ export const googleSignIn = async (forceGIS = false): Promise<GoogleSignInResult
   try {
     isSigningIn = true;
 
-    // Check if we already have a cached token in storage
+    // Check if we already have a valid real token in storage
     const storedToken = typeof window !== 'undefined' ? (localStorage.getItem('al_nashi_google_token') || sessionStorage.getItem('al_nashi_google_token')) : null;
-
-    // Strategy 1: Check if running on Cloud Run preview (*.run.app) or external domain
-    // where Google OAuth popups and Firebase Auth throw origin/unauthorized-domain restrictions
-    const isCloudPreview = typeof window !== 'undefined' && (
-      window.location.hostname.includes('.run.app') ||
-      window.location.hostname.includes('.dev') ||
-      window.location.hostname.includes('usercontent.goog') ||
-      window.location.hostname === 'localhost' ||
-      !window.location.hostname.endsWith('firebaseapp.com')
-    );
-
-    // If on Cloud Run or preview domain and not forced to use GIS, immediately connect the verified Developer Session!
-    if (isCloudPreview && !forceGIS) {
-      const devToken = storedToken || ('ya29.al_nashi_session_' + Date.now());
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('al_nashi_google_token', devToken);
-        localStorage.setItem('al_nashi_google_token', devToken);
-        localStorage.setItem('al_nashi_google_user_email', 'htaleb725@gmail.com');
-        localStorage.setItem('al_nashi_google_user_name', 'م. حيدر العراقي (مطور المنظومة)');
-      }
+    if (storedToken && !storedToken.startsWith('ya29.al_nashi_') && !forceGIS) {
+      cachedAccessToken = storedToken;
+      const email = localStorage.getItem('al_nashi_google_user_email') || 'htaleb725@gmail.com';
+      const name = localStorage.getItem('al_nashi_google_user_name') || 'مطور المنظومة';
       return {
-        user: {
-          displayName: 'م. حيدر العراقي (مطور المنظومة)',
-          email: 'htaleb725@gmail.com',
-          photoURL: null
-        },
-        accessToken: devToken,
+        user: { displayName: name, email, photoURL: null },
+        accessToken: storedToken,
         cancelled: false
       };
     }
 
-    // Strategy 2: If explicitly forced or on whitelisted custom domain, try Google Identity Services
+    // Attempt 1: Google Identity Services (GIS) Token Client
     try {
       const gisResult = await signInWithGoogleIdentityServices();
       if (gisResult.accessToken) {
+        cachedAccessToken = gisResult.accessToken;
         return gisResult;
+      }
+      if (gisResult.cancelled) {
+        return { user: null, accessToken: null, cancelled: true };
       }
     } catch (gisErr) {
       console.warn('GIS attempt note:', gisErr);
     }
 
-    // Default seamless fallback for developer
-    const token = storedToken || ('ya29.al_nashi_session_' + Date.now());
+    // Attempt 2: Firebase Auth signInWithPopup
+    try {
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      const token = credential?.accessToken || null;
+      if (token) {
+        cachedAccessToken = token;
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('al_nashi_google_token', token);
+          localStorage.setItem('al_nashi_google_token', token);
+          if (result.user.email) localStorage.setItem('al_nashi_google_user_email', result.user.email);
+          if (result.user.displayName) localStorage.setItem('al_nashi_google_user_name', result.user.displayName);
+        }
+        return {
+          user: result.user,
+          accessToken: token,
+          cancelled: false
+        };
+      }
+    } catch (fbErr: any) {
+      console.warn('Firebase popup sign-in warning:', fbErr);
+      if (fbErr.code === 'auth/popup-closed-by-user') {
+        return { user: null, accessToken: null, cancelled: true };
+      }
+    }
+
     return {
-      user: {
-        displayName: 'م. حيدر العراقي (مطور المنظومة)',
-        email: 'htaleb725@gmail.com',
-        photoURL: null
-      },
-      accessToken: token,
-      cancelled: false
+      user: null,
+      accessToken: null,
+      cancelled: false,
+      error: 'يرجى السماح بالنوافذ المنبثقة (Popups) أو تسجيل الدخول بحساب Google لمنح صلاحيات Google Sheets و Drive.'
     };
   } catch (error: any) {
-    const token = 'ya29.al_nashi_session_' + Date.now();
     return {
-      user: {
-        displayName: 'م. حيدر العراقي (مطور المنظومة)',
-        email: 'htaleb725@gmail.com',
-        photoURL: null
-      },
-      accessToken: token,
-      cancelled: false
+      user: null,
+      accessToken: null,
+      cancelled: false,
+      error: error.message || 'حدث خطأ أثناء الاتصال بحساب Google'
     };
   } finally {
     isSigningIn = false;
@@ -259,7 +260,9 @@ export const googleSignIn = async (forceGIS = false): Promise<GoogleSignInResult
 };
 
 export const googleSignOut = async (): Promise<void> => {
-  await signOut(auth);
+  try {
+    await signOut(auth);
+  } catch (_) {}
   cachedAccessToken = null;
   if (typeof window !== 'undefined') {
     sessionStorage.removeItem('al_nashi_google_token');
@@ -268,10 +271,17 @@ export const googleSignOut = async (): Promise<void> => {
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  if (cachedAccessToken) return cachedAccessToken;
+  if (cachedAccessToken && !cachedAccessToken.startsWith('ya29.al_nashi_')) return cachedAccessToken;
   if (typeof window !== 'undefined') {
     const saved = sessionStorage.getItem('al_nashi_google_token') || localStorage.getItem('al_nashi_google_token');
     if (saved) {
+      if (saved.startsWith('ya29.al_nashi_')) {
+        // Clear old invalid dummy tokens
+        sessionStorage.removeItem('al_nashi_google_token');
+        localStorage.removeItem('al_nashi_google_token');
+        cachedAccessToken = null;
+        return null;
+      }
       cachedAccessToken = saved;
       return saved;
     }
@@ -1129,43 +1139,47 @@ export const fetchAllDataFromGoogleSheets = async (
 
     // Map citizens
     const citizensRows = valueRanges[0]?.values || [];
-    const citizens: Citizen[] = citizensRows.filter((r: any[]) => r && r[0] && r[6]).map((r: any[]) => ({
-      Citizen_ID: r[0] || '',
-      FirstName: r[1] || '',
-      FatherName: r[2] || '',
-      GrandFatherName: r[3] || '',
-      GreatGrandFatherName: r[4] || '',
-      Surname: r[5] || '',
-      FullName: r[6] || '',
-      Phone1: r[7] || '',
-      Phone2: r[8] || '',
-      Gender: (r[9] as any) || 'ذكر',
-      Job: r[10] || '',
-      Education: r[11] || '',
-      Rating: (r[12] as any) || 'A',
-      District: r[13] || '',
-      SubDistrict: r[14] || '',
-      ReferralSource: r[15] || '',
-      CreatedAt: r[16] || new Date().toISOString(),
-      CreatedBy: r[17] || 'الاستعلامات'
-    }));
+    const citizens: Citizen[] = citizensRows.filter((r: any[]) => r && (r[0] || r[1] || r[6])).map((r: any[]) => {
+      const name = r[6] || r[1] || r[0] || 'مواطن';
+      return {
+        Citizen_ID: r[0] ? String(r[0]).trim() : `ONA-${Math.floor(1000 + Math.random() * 9000)}`,
+        FirstName: r[1] || name.split(' ')[0] || '',
+        FatherName: r[2] || '',
+        GrandFatherName: r[3] || '',
+        GreatGrandFatherName: r[4] || '',
+        Surname: r[5] || '',
+        FullName: name,
+        Phone1: r[7] ? String(r[7]).trim() : '',
+        Phone2: r[8] ? String(r[8]).trim() : '',
+        Gender: (r[9] as any) || 'ذكر',
+        Job: r[10] || '',
+        Education: r[11] || '',
+        Rating: (r[12] as any) || 'لائق',
+        District: r[13] || '',
+        SubDistrict: r[14] || '',
+        ReferralSource: r[15] || '',
+        CreatedAt: r[16] || new Date().toISOString().split('T')[0],
+        CreatedBy: r[17] || 'الاستعلامات',
+        PhotoUrl: r[18] ? String(r[18]).trim() : undefined
+      };
+    });
 
     // Map requests
     const requestsRows = valueRanges[1]?.values || [];
-    const requests: OfficeRequest[] = requestsRows.filter((r: any[]) => r && r[0] && r[1]).map((r: any[]) => ({
-      Request_ID: r[0] || '',
-      Citizen_ID: r[1] || '',
-      CitizenName: r[2] || '',
-      CitizenPhone: r[3] || '',
+    const requests: OfficeRequest[] = requestsRows.filter((r: any[]) => r && (r[0] || r[1] || r[2])).map((r: any[]) => ({
+      Request_ID: r[0] ? String(r[0]).trim() : `REQ-${Math.floor(1000 + Math.random() * 9000)}`,
+      Citizen_ID: r[1] ? String(r[1]).trim() : '',
+      CitizenName: r[2] || r[1] || '',
+      CitizenPhone: r[3] ? String(r[3]).trim() : '',
       Entity: r[4] || '',
-      RequestStatus: (r[5] as any) || 'قيد المتابعة',
-      ProcessingStatus: (r[6] as any) || 'وارد',
-      Priority: (r[7] as any) || 'متوسطة',
+      RequestStatus: (r[5] as any) || 'مستلم',
+      ProcessingStatus: (r[6] as any) || 'قيد التدقيق',
+      Priority: (r[7] as any) || 'عادي',
       Details: r[8] || '',
       AttachmentRequest: r[9] || undefined,
       AttachmentResponse: r[10] || undefined,
       DeputyNotes: r[11] || '',
-      CreatedAt: r[12] || new Date().toISOString(),
+      CreatedAt: r[12] || new Date().toISOString().split('T')[0],
       CreatedBy: r[13] || 'الإدارة'
     }));
 
