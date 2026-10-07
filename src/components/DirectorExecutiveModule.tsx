@@ -34,8 +34,11 @@ import {
   ChevronLeft,
   LayoutGrid,
   Download,
-  Printer
+  Printer,
+  Trash2,
+  FolderPlus
 } from 'lucide-react';
+import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
@@ -75,6 +78,8 @@ export const DirectorExecutiveModule: React.FC = () => {
     citizens, 
     requests, 
     updateRequest,
+    deleteRequest,
+    deleteCitizen,
     interviews, 
     organizationRecords, 
     cheques,
@@ -105,9 +110,13 @@ export const DirectorExecutiveModule: React.FC = () => {
     });
   };
 
-  // Navigation mode: 'inbox' (وارد الاستعلامات) | 'icon_hub' (شبكة الأيقونات) | individual department
-  const [directorMainTab, setDirectorMainTab] = useState<'inbox' | 'icon_hub'>('inbox');
+  // Navigation mode: 'inbox' (وارد الاستعلامات) | 'icon_hub' (شبكة الأيقونات) | 'manage_sections' (إدارة واستحداث الأقسام)
+  const [directorMainTab, setDirectorMainTab] = useState<'inbox' | 'icon_hub' | 'manage_sections'>('inbox');
   const [activeDepartment, setActiveDepartment] = useState<DirectorDepartment>('hub');
+
+  // Deletion modals state for permanent removal
+  const [requestToDelete, setRequestToDelete] = useState<OfficeRequest | null>(null);
+  const [citizenToDelete, setCitizenToDelete] = useState<Citizen | null>(null);
 
   // Search & Filter state for Director Inbox: default to 'pending' so decided items disappear
   const [searchQuery, setSearchQuery] = useState('');
@@ -392,6 +401,22 @@ export const DirectorExecutiveModule: React.FC = () => {
           >
             <Layers className="w-4 h-4" />
             <span>تصفح الأقسام (عرض داخلي)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setDirectorMainTab('manage_sections');
+              setActiveDepartment('hub');
+            }}
+            className={`flex-1 md:flex-initial h-10 px-4 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              directorMainTab === 'manage_sections'
+                ? 'bg-purple-600 text-white shadow-md shadow-purple-600/25 ring-2 ring-purple-500/40'
+                : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+            }`}
+          >
+            <FolderPlus className="w-4 h-4 text-amber-300" />
+            <span>إدارة وتطوير الأقسام ⚡</span>
           </button>
 
           {/* Direct Exit to System Icon Hub */}
@@ -695,9 +720,21 @@ export const DirectorExecutiveModule: React.FC = () => {
                           </span>
                         </div>
 
-                        <h3 className="font-black text-sm text-slate-900 dark:text-white leading-tight">
-                          {req.CitizenName}
-                        </h3>
+                        <div className="flex items-center justify-between gap-2">
+                          <h3 className="font-black text-sm text-slate-900 dark:text-white leading-tight">
+                            {req.CitizenName}
+                          </h3>
+                          {cit && (
+                            <button
+                              type="button"
+                              onClick={() => setCitizenToDelete(cit)}
+                              className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer shrink-0"
+                              title="حذف هذا المراجع نهائياً من قاعدة البيانات والمنظومة"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
 
                         <div className="flex items-center gap-2 text-xs font-bold text-slate-600 dark:text-slate-300">
                           <Phone className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
@@ -876,6 +913,17 @@ export const DirectorExecutiveModule: React.FC = () => {
                             <XCircle className="w-3.5 h-3.5" />
                             <span>رفض الطلب</span>
                           </button>
+
+                          {/* 4. حذف نهائي من كافة النظام */}
+                          <button
+                            type="button"
+                            onClick={() => setRequestToDelete(req)}
+                            className="h-9 px-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 font-bold text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
+                            title="حذف هذا الطلب نهائياً من قاعدة البيانات والمنظومة"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">حذف</span>
+                          </button>
                         </div>
 
                         {/* Confirmation Toast */}
@@ -893,6 +941,35 @@ export const DirectorExecutiveModule: React.FC = () => {
             )}
           </div>
 
+        </div>
+      )}
+
+      {/* ---------------- VIEW: MANAGE & DEVELOP SECTIONS (إدارة واستحداث الأقسام مباشرة في قاعدة البيانات) ---------------- */}
+      {directorMainTab === 'manage_sections' && (
+        <div className="space-y-4 animate-in fade-in duration-200">
+          <div className="bg-gradient-to-r from-purple-900 to-indigo-950 p-4 sm:p-5 rounded-2xl sm:rounded-3xl text-white flex items-center justify-between border border-purple-400/30 shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-white/10 flex items-center justify-center text-white border border-white/20">
+                <FolderPlus className="w-6 h-6 text-amber-300" />
+              </div>
+              <div>
+                <h3 className="font-black text-base sm:text-lg">إدارة واستحداث الأقسام وتطوير المنظومة</h3>
+                <p className="text-xs text-purple-200 mt-0.5 font-medium">
+                  أي قسم أو خدمة جديدة تضيفها هنا يتم حفظها لحظياً ومباشرة في قاعدة البيانات (Firestore و Google Sheets) وتظهر فوراً لكافة مستخدمي المنظومة
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDirectorMainTab('inbox')}
+              className="px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>العودة للوارد</span>
+            </button>
+          </div>
+
+          <CustomSectionsManager />
         </div>
       )}
 
@@ -1204,6 +1281,118 @@ export const DirectorExecutiveModule: React.FC = () => {
               >
                 <XCircle className="w-4 h-4 text-white" />
                 <span>تأكيد الرفض مع حفظ السبب ⛔</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Permanent Delete Confirmation Dialog for Director: Request */}
+      {requestToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl border border-rose-200 dark:border-rose-900 shadow-2xl p-6 space-y-4 text-right" dir="rtl">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">حذف المعاملة نهائياً من قاعدة البيانات</h3>
+                <p className="text-xs text-rose-600 font-bold">إجراء حذف نهائي وشامل من كافة النظام</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs space-y-2">
+              <div>
+                <span className="font-bold text-slate-500">رقم الطلب: </span>
+                <span className="font-mono text-blue-600 font-bold">{requestToDelete.Request_ID}</span>
+              </div>
+              <div>
+                <span className="font-bold text-slate-500">صاحب المعاملة: </span>
+                <span className="font-bold text-slate-900 dark:text-white">{requestToDelete.CitizenName}</span>
+              </div>
+              <div>
+                <span className="font-bold text-slate-500">الجهة المعنية: </span>
+                <span>{requestToDelete.Entity}</span>
+              </div>
+              <p className="text-[11px] text-rose-600 dark:text-rose-400 pt-2 border-t border-slate-200 dark:border-slate-700 font-bold">
+                ⚠️ تنبيه: سيتم حذف هذا السجل بشكل نهائي لا رجعة فيه من Firestore و Google Sheets وكافة أجهزة النظام.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setRequestToDelete(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                تراجع وإلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteRequest(requestToDelete.Request_ID);
+                  setRequestToDelete(null);
+                }}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/25 active:scale-95"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>تأكيد الحذف النهائي الشامل</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Permanent Delete Confirmation Dialog for Director: Citizen */}
+      {citizenToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl border border-rose-200 dark:border-rose-900 shadow-2xl p-6 space-y-4 text-right" dir="rtl">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">حذف المواطن نهائياً من قاعدة البيانات</h3>
+                <p className="text-xs text-rose-600 font-bold">حذف شامل للسجل وكافة طلباته ومقابلاته</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs space-y-2">
+              <div>
+                <span className="font-bold text-slate-500">اسم المواطن: </span>
+                <span className="font-bold text-slate-900 dark:text-white">{citizenToDelete.FullName}</span>
+              </div>
+              <div>
+                <span className="font-bold text-slate-500">الرقم التعريفي: </span>
+                <span className="font-mono text-blue-600 font-bold">{citizenToDelete.Citizen_ID}</span>
+              </div>
+              <div>
+                <span className="font-bold text-slate-500">الهاتف: </span>
+                <span className="font-mono">{citizenToDelete.Phone1}</span>
+              </div>
+              <p className="text-[11px] text-rose-600 dark:text-rose-400 pt-2 border-t border-slate-200 dark:border-slate-700 font-bold">
+                ⚠️ تنبيه: سيتم حذف سجل المواطن وجميع معاملاته ومقابلاته نهائياً من Firestore و Google Sheets وجميع شاشات النظام.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setCitizenToDelete(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                تراجع وإلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteCitizen(citizenToDelete.Citizen_ID);
+                  setCitizenToDelete(null);
+                }}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/25 active:scale-95"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>تأكيد الحذف النهائي الشامل</span>
               </button>
             </div>
           </div>

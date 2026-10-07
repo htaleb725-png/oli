@@ -1,42 +1,275 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Office Database Security Rules - Allow all office collections read and write
-    match /citizens/{document=**} {
-      allow read, write: if true;
-    }
-    match /requests/{document=**} {
-      allow read, write: if true;
-    }
-    match /interviews/{document=**} {
-      allow read, write: if true;
-    }
-    match /letters/{document=**} {
-      allow read, write: if true;
-    }
-    match /cheques/{document=**} {
-      allow read, write: if true;
-    }
-    match /organizations/{document=**} {
-      allow read, write: if true;
-    }
-    match /users/{document=**} {
-      allow read, write: if true;
-    }
-    match /settings/{document=**} {
-      allow read, write: if true;
-    }
-    match /dropdowns/{document=**} {
-      allow read, write: if true;
-    }
-    match /audit_logs/{document=**} {
-      allow read, write: if true;
-    }
-    match /test/{document=**} {
-      allow read, write: if true;
-    }
+
+    // Global Safety Net: Default Deny catch-all
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    // Hardened Security Helpers
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // 1. Citizen Validation
+    function isValidCitizen(data) {
+      return data.Citizen_ID is string && data.Citizen_ID.size() > 0 && data.Citizen_ID.size() <= 128
+        && data.FullName is string && data.FullName.size() > 0 && data.FullName.size() <= 250
+        && (!('Phone1' in data) || (data.Phone1 is string && data.Phone1.size() <= 50))
+        && (!('Rating' in data) || (data.Rating is string && data.Rating.size() <= 50))
+        && (!('District' in data) || (data.District is string && data.District.size() <= 100))
+        && (!('SubDistrict' in data) || (data.SubDistrict is string && data.SubDistrict.size() <= 100))
+        && (!('CreatedAt' in data) || (data.CreatedAt is string && data.CreatedAt.size() <= 100));
+    }
+
+    // 2. Request Validation
+    function isValidRequest(data) {
+      return data.Request_ID is string && data.Request_ID.size() > 0 && data.Request_ID.size() <= 128
+        && data.Citizen_ID is string && data.Citizen_ID.size() > 0 && data.Citizen_ID.size() <= 128
+        && (!('Entity' in data) || (data.Entity is string && data.Entity.size() <= 200))
+        && (!('RequestStatus' in data) || (data.RequestStatus is string && data.RequestStatus.size() <= 50))
+        && (!('ProcessingStatus' in data) || (data.ProcessingStatus is string && data.ProcessingStatus.size() <= 50))
+        && (!('Priority' in data) || (data.Priority is string && data.Priority.size() <= 50))
+        && (!('Details' in data) || (data.Details is string && data.Details.size() <= 10000));
+    }
+
+    // 3. Interview Validation
+    function isValidInterview(data) {
+      return data.Interview_ID is string && data.Interview_ID.size() > 0 && data.Interview_ID.size() <= 128
+        && data.Citizen_ID is string && data.Citizen_ID.size() > 0 && data.Citizen_ID.size() <= 128
+        && (!('Date' in data) || (data.Date is string && data.Date.size() <= 50))
+        && (!('Status' in data) || (data.Status is string && data.Status.size() <= 50));
+    }
+
+    // 4. Official Letters Validation
+    function isValidLetter(data) {
+      return data.Letter_ID is string && data.Letter_ID.size() > 0 && data.Letter_ID.size() <= 128
+        && (!('Recipient' in data) || (data.Recipient is string && data.Recipient.size() <= 250))
+        && (!('Subject' in data) || (data.Subject is string && data.Subject.size() <= 500))
+        && (!('Body' in data) || (data.Body is string && data.Body.size() <= 15000));
+    }
+
+    // 5. Cheques Validation
+    function isValidCheque(data) {
+      return data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.Citizen_ID is string && data.Citizen_ID.size() > 0 && data.Citizen_ID.size() <= 128
+        && (data.Amount is number || data.Amount is string);
+    }
+
+    // 6. Organization Records Validation
+    function isValidOrg(data) {
+      return (!('Org_ID' in data) || (data.Org_ID is string && data.Org_ID.size() <= 128))
+        && data.Citizen_ID is string && data.Citizen_ID.size() > 0 && data.Citizen_ID.size() <= 128;
+    }
+
+    // 7. Dynamic Custom Sections Validation (الأقسام المخصصة وتطوير المنظومة)
+    function isValidCustomSection(data) {
+      return data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1000))
+        && (!('icon' in data) || (data.icon is string && data.icon.size() <= 100))
+        && (!('badgeColor' in data) || (data.badgeColor is string && data.badgeColor.size() <= 50))
+        && (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 100));
+    }
+
+    // 8. Dynamic Custom Section Records Validation
+    function isValidCustomRecord(data) {
+      return data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.sectionId is string && data.sectionId.size() > 0 && data.sectionId.size() <= 128;
+    }
+
+    // 9. Users Validation
+    function isValidUser(data) {
+      return data.User_ID is string && data.User_ID.size() > 0 && data.User_ID.size() <= 128
+        && data.Username is string && data.Username.size() > 0 && data.Username.size() <= 100
+        && data.Role is string && data.Role.size() > 0 && data.Role.size() <= 50
+        && data.FullName is string && data.FullName.size() > 0 && data.FullName.size() <= 200;
+    }
+
+    // 10. Settings Validation
+    function isValidSettings(data) {
+      return true;
+    }
+
+    // 11. Dropdown Validation
+    function isValidDropdown(data) {
+      return (!('Category' in data) || (data.Category is string && data.Category.size() <= 100))
+        && (!('ItemValue' in data) || (data.ItemValue is string && data.ItemValue.size() <= 200));
+    }
+
+    // 12. Audit Log Validation
+    function isValidAuditLog(data) {
+      return data.Log_ID is string && data.Log_ID.size() > 0 && data.Log_ID.size() <= 128
+        && (!('Timestamp' in data) || (data.Timestamp is string && data.Timestamp.size() <= 100))
+        && (!('Details' in data) || (data.Details is string && data.Details.size() <= 5000));
+    }
+
+    // CITIZENS COLLECTION (سجل المراجعين)
+    match /citizens/{citizenId} {
+      allow read: if isValidId(citizenId);
+      allow create, update: if isValidId(citizenId) && isValidCitizen(incoming());
+      allow delete: if isValidId(citizenId);
+    }
+    match /{office}_citizens/{citizenId} {
+      allow read: if isValidId(citizenId);
+      allow create, update: if isValidId(citizenId) && isValidCitizen(incoming());
+      allow delete: if isValidId(citizenId);
+    }
+
+    // REQUESTS COLLECTION (طلبات ومعاملات المواطنين)
+    match /requests/{requestId} {
+      allow read: if isValidId(requestId);
+      allow create, update: if isValidId(requestId) && isValidRequest(incoming());
+      allow delete: if isValidId(requestId);
+    }
+    match /{office}_requests/{requestId} {
+      allow read: if isValidId(requestId);
+      allow create, update: if isValidId(requestId) && isValidRequest(incoming());
+      allow delete: if isValidId(requestId);
+    }
+
+    // INTERVIEWS COLLECTION (المقابلات)
+    match /interviews/{interviewId} {
+      allow read: if isValidId(interviewId);
+      allow create, update: if isValidId(interviewId) && isValidInterview(incoming());
+      allow delete: if isValidId(interviewId);
+    }
+    match /{office}_interviews/{interviewId} {
+      allow read: if isValidId(interviewId);
+      allow create, update: if isValidId(interviewId) && isValidInterview(incoming());
+      allow delete: if isValidId(interviewId);
+    }
+
+    // LETTERS COLLECTION (الكتب الرسمية)
+    match /letters/{letterId} {
+      allow read: if isValidId(letterId);
+      allow create, update: if isValidId(letterId) && isValidLetter(incoming());
+      allow delete: if isValidId(letterId);
+    }
+    match /{office}_letters/{letterId} {
+      allow read: if isValidId(letterId);
+      allow create, update: if isValidId(letterId) && isValidLetter(incoming());
+      allow delete: if isValidId(letterId);
+    }
+
+    // CHEQUES COLLECTION (صكوك المساعدات)
+    match /cheques/{chequeId} {
+      allow read: if isValidId(chequeId);
+      allow create, update: if isValidId(chequeId) && isValidCheque(incoming());
+      allow delete: if isValidId(chequeId);
+    }
+    match /{office}_cheques/{chequeId} {
+      allow read: if isValidId(chequeId);
+      allow create, update: if isValidId(chequeId) && isValidCheque(incoming());
+      allow delete: if isValidId(chequeId);
+    }
+
+    // ORGANIZATIONS COLLECTION (السجل التنظيمي)
+    match /organizations/{orgId} {
+      allow read: if isValidId(orgId);
+      allow create, update: if isValidId(orgId) && isValidOrg(incoming());
+      allow delete: if isValidId(orgId);
+    }
+    match /{office}_organizations/{orgId} {
+      allow read: if isValidId(orgId);
+      allow create, update: if isValidId(orgId) && isValidOrg(incoming());
+      allow delete: if isValidId(orgId);
+    }
+
+    // CUSTOM SECTIONS COLLECTION (الأقسام المخصصة وديناميكية المنظومة)
+    match /custom_sections/{sectionId} {
+      allow read: if isValidId(sectionId);
+      allow create, update: if isValidId(sectionId) && isValidCustomSection(incoming());
+      allow delete: if isValidId(sectionId);
+    }
+    match /{office}_custom_sections/{sectionId} {
+      allow read: if isValidId(sectionId);
+      allow create, update: if isValidId(sectionId) && isValidCustomSection(incoming());
+      allow delete: if isValidId(sectionId);
+    }
+
+    // CUSTOM RECORDS COLLECTION (سجلات الأقسام المخصصة)
+    match /custom_records/{recordId} {
+      allow read: if isValidId(recordId);
+      allow create, update: if isValidId(recordId) && isValidCustomRecord(incoming());
+      allow delete: if isValidId(recordId);
+    }
+    match /{office}_custom_records/{recordId} {
+      allow read: if isValidId(recordId);
+      allow create, update: if isValidId(recordId) && isValidCustomRecord(incoming());
+      allow delete: if isValidId(recordId);
+    }
+
+    // USERS COLLECTION (المستخدمين وصلاحيات الموظفين)
+    match /users/{userId} {
+      allow read: if isValidId(userId);
+      allow create, update: if isValidId(userId) && isValidUser(incoming());
+      allow delete: if isValidId(userId);
+    }
+    match /{office}_users/{userId} {
+      allow read: if isValidId(userId);
+      allow create, update: if isValidId(userId) && isValidUser(incoming());
+      allow delete: if isValidId(userId);
+    }
+
+    // SETTINGS COLLECTION (إعدادات المنظومة العامة)
+    match /settings/{settingId} {
+      allow read: if isValidId(settingId);
+      allow create, update: if isValidId(settingId) && isValidSettings(incoming());
+      allow delete: if isValidId(settingId);
+    }
+    match /{office}_settings/{settingId} {
+      allow read: if isValidId(settingId);
+      allow create, update: if isValidId(settingId) && isValidSettings(incoming());
+      allow delete: if isValidId(settingId);
+    }
+
+    // DROPDOWNS COLLECTION (القوائم المنسدلة)
+    match /dropdowns/{dropdownId} {
+      allow read: if isValidId(dropdownId);
+      allow create, update: if isValidId(dropdownId) && isValidDropdown(incoming());
+      allow delete: if isValidId(dropdownId);
+    }
+    match /{office}_dropdowns/{dropdownId} {
+      allow read: if isValidId(dropdownId);
+      allow create, update: if isValidId(dropdownId) && isValidDropdown(incoming());
+      allow delete: if isValidId(dropdownId);
+    }
+
+    // AUDIT LOGS (سجل الرقابة والتتبع)
+    match /audit_logs/{logId} {
+      allow read: if isValidId(logId);
+      allow create: if isValidId(logId) && isValidAuditLog(incoming());
+      allow update: if false; // Audit logs are immutable once written!
+      allow delete: if isValidId(logId);
+    }
+    match /{office}_audit_logs/{logId} {
+      allow read: if isValidId(logId);
+      allow create: if isValidId(logId) && isValidAuditLog(incoming());
+      allow update: if false;
+      allow delete: if isValidId(logId);
+    }
+
+    // DELETED RECORDS REGISTRY (سجل المحذوفات النهائي لمنع إعادة الاسترجاع)
+    match /deleted_records/{recordId} {
+      allow read, write: if isValidId(recordId);
+    }
+    match /{office}_deleted_records/{recordId} {
+      allow read, write: if isValidId(recordId);
+    }
+
+    // TEST CONNECTION
+    match /test/{docId} {
+      allow read, write: if isValidId(docId);
     }
   }
 }

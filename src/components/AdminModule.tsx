@@ -35,8 +35,10 @@ import {
   BarChart2,
   Lock,
   ShieldAlert,
-  Flame
+  Flame,
+  Layers
 } from 'lucide-react';
+import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { DirectScannerPrinter } from './DirectScannerPrinter';
 import { AiRequestDrafterModal } from './AiRequestDrafterModal';
 import { SmartImageArchiveModule } from './SmartImageArchiveModule';
@@ -53,6 +55,7 @@ export const AdminModule: React.FC = () => {
     deleteRequest,
     citizens, 
     updateCitizen,
+    deleteCitizen,
     interviews,
     cheques,
     organizationRecords,
@@ -89,7 +92,7 @@ export const AdminModule: React.FC = () => {
     });
   };
 
-  const [activeTab, setActiveTab] = useState<'requests_list' | 'reception_citizens' | 'direct_scanner' | 'smart_images' | 'referrers' | 'department_staff'>('requests_list');
+  const [activeTab, setActiveTab] = useState<'requests_list' | 'reception_citizens' | 'direct_scanner' | 'smart_images' | 'referrers' | 'department_staff' | 'manage_departments'>('requests_list');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [receptionSearch, setReceptionSearch] = useState('');
@@ -103,6 +106,7 @@ export const AdminModule: React.FC = () => {
   const [showAiDrafterModal, setShowAiDrafterModal] = useState(false);
   const [editingRequest, setEditingRequest] = useState<OfficeRequest | null>(null);
   const [requestToDelete, setRequestToDelete] = useState<OfficeRequest | null>(null);
+  const [citizenToDelete, setCitizenToDelete] = useState<Citizen | null>(null);
   const [scannerCitizenId, setScannerCitizenId] = useState<string>('');
 
   // Scanner image in Request state (حفظ صورة الاسكنر كما هي مع توثيق اسم الموظف والتاريخ)
@@ -739,6 +743,18 @@ export const AdminModule: React.FC = () => {
           <Users className="w-4 h-4 text-amber-600" />
           <span>كادر قسم الإدارة والصلاحيات ({users.filter(u => u.Role === 'admin' || u.Department?.includes('الإدارة')).length} موظفين)</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('manage_departments')}
+          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+            activeTab === 'manage_departments'
+              ? 'bg-purple-600 text-white shadow-xs'
+              : 'bg-white text-purple-900 hover:bg-purple-50 border border-purple-200'
+          }`}
+        >
+          <Layers className="w-4 h-4 text-purple-600" />
+          <span>إدارة وتطوير أقسام المكتب ({customSections.length}) ⚡</span>
+        </button>
       </div>
 
       {/* Tab 1: Requests List */}
@@ -1296,6 +1312,14 @@ export const AdminModule: React.FC = () => {
                         <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded font-semibold text-slate-600">
                           مسجل بواسطة: {cit.CreatedBy || 'الاستعلامات'}
                         </span>
+                        <button
+                          type="button"
+                          onClick={() => setCitizenToDelete(cit)}
+                          className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                          title="حذف هذا المراجع نهائياً من قاعدة البيانات والمنظومة"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                        </button>
                       </div>
                     </div>
 
@@ -1676,6 +1700,24 @@ export const AdminModule: React.FC = () => {
                 );
               })}
           </div>
+        </div>
+      )}
+
+      {/* Tab 7: Manage & Develop Dynamic Sections */}
+      {activeTab === 'manage_departments' && (
+        <div className="space-y-4">
+          <div className="bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 text-white p-5 rounded-2xl border border-purple-800/40 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1 text-right">
+              <h3 className="font-black text-base flex items-center gap-2">
+                <Layers className="w-5 h-5 text-amber-300" />
+                <span>إدارة واستحداث أقسام المكتب وتطوير المنظومة</span>
+              </h3>
+              <p className="text-xs text-purple-200">
+                إضافة أقسام جديدة أو حقول مخصصة ترتبط مباشرة بقاعدة البيانات وتظهر فوراً لكافة الموظفين
+              </p>
+            </div>
+          </div>
+          <CustomSectionsManager />
         </div>
       )}
 
@@ -2157,6 +2199,56 @@ export const AdminModule: React.FC = () => {
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>تأكيد حذف الطلب</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Citizen Permanent Delete Confirmation Modal for Admin Manager */}
+      {citizenToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-rose-100 p-5 space-y-4 text-right animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center justify-between pb-3 border-b border-rose-100">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center border border-rose-200">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="font-black text-sm text-slate-900">تأكيد الحذف النهائي الشامل للمراجع</h3>
+                <p className="text-[11px] text-slate-500 font-medium">سيتم مسحه نهائياً من قاعدة البيانات والسحابة وجميع الأقسام</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-rose-50/60 border border-rose-200/80 text-xs text-rose-900 space-y-2">
+              <p className="font-bold">هل أنت متأكد من الحذف النهائي لسجل المراجع التالي؟</p>
+              <div className="font-semibold text-slate-800 bg-white p-2 rounded-lg border border-rose-100 space-y-0.5">
+                <div>الاسم الكامل: <span className="text-blue-800 font-bold">{citizenToDelete.FullName}</span></div>
+                <div>الرقم التعريفي: <span className="font-mono text-slate-600 font-bold">{citizenToDelete.Citizen_ID}</span></div>
+                {citizenToDelete.Phone1 && <div>الهاتف: <span className="font-mono text-slate-600">{citizenToDelete.Phone1}</span></div>}
+              </div>
+              <p className="text-[11px] text-rose-700 leading-relaxed font-bold">
+                ⚠️ تحذير: الحذف نهائي وشامل (من فايربيس وكوكل شيت والمنظومة وكافة المعاملات والطلبات والمقابلات التابعة له) ولا يمكن التراجع عنه.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setCitizenToDelete(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold cursor-pointer transition-colors"
+              >
+                تراجع وإلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteCitizen(citizenToDelete.Citizen_ID);
+                  setCitizenToDelete(null);
+                }}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/25 active:scale-95 transition-all"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>تأكيد الحذف النهائي الشامل</span>
               </button>
             </div>
           </div>

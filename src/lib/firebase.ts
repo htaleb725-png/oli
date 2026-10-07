@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { initializeFirestore, getFirestore, doc, getDocFromServer, Firestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -9,6 +9,15 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Firebase Auth
 export const auth = getAuth(app);
 export const googleAuthProvider = new GoogleAuthProvider();
+
+// Auto sign-in anonymously for app session security if not signed in
+onAuthStateChanged(auth, (user) => {
+  if (!user) {
+    signInAnonymously(auth).catch((err) => {
+      console.warn('Anonymous auth initialization:', err?.message || err);
+    });
+  }
+});
 
 // Target database ID
 const dbId = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== '(default)'

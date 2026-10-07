@@ -1,4 +1,4 @@
-import { getAccessToken, pushSingleRecordToSheetsRealtime } from './googleSheetsService';
+import { getAccessToken, pushSingleRecordToSheetsRealtime, deleteRecordFromSheetsRealtime } from './googleSheetsService';
 import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord } from '../types';
 
 /**
@@ -100,12 +100,20 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
     const resolvedSheetId = resolveTargetSheetId(targetSheetId);
     const resolvedUrl = resolveAppsScriptUrl(customUrl);
 
+    const targetId = item.data?.id || item.data?.Citizen_ID || item.data?.Request_ID || item.data?.Interview_ID || item.data?.Letter_ID || (typeof item.data === 'string' ? item.data : '');
+
     // 1. Direct Google Sheets REST API sync via Developer Google OAuth token
     if (resolvedSheetId) {
       try {
         const token = await getAccessToken();
         if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
-          await pushSingleRecordToSheetsRealtime(token, resolvedSheetId, item.entityType, item.data);
+          if (item.action === 'delete') {
+            if (targetId) {
+              await deleteRecordFromSheetsRealtime(token, resolvedSheetId, item.entityType, targetId);
+            }
+          } else {
+            await pushSingleRecordToSheetsRealtime(token, resolvedSheetId, item.entityType, item.data);
+          }
         }
       } catch (e) {
         console.warn('Realtime Direct Google Sheets sync notification:', e);
@@ -122,9 +130,12 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
             'Content-Type': 'text/plain;charset=utf-8'
           },
           body: JSON.stringify({
-            action: item.action === 'insert' ? 'appendRow' : 'updateRow',
+            action: item.action === 'delete' ? 'delete' : item.action === 'insert' ? 'appendRow' : 'updateRow',
             table: item.entityType,
             sheetType: item.entityType,
+            id: targetId,
+            Citizen_ID: targetId,
+            Request_ID: targetId,
             data: item.data,
             record: item.data,
             timestamp: item.timestamp,

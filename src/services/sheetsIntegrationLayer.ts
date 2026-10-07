@@ -507,7 +507,11 @@ class SheetsIntegrationLayer {
         const citizens: Citizen[] = [];
         for (const row of rawRows) {
           if (row && row[0] && String(row[0]).trim()) {
-            citizens.push(this.rowToCitizen(row));
+            const firstCell = String(row[0]).trim();
+            const secondCell = String(row[1] || '').trim();
+            if (!firstCell.startsWith('[محذوف') && !firstCell.startsWith('[deleted') && !secondCell.includes('تم حذف')) {
+              citizens.push(this.rowToCitizen(row));
+            }
           }
         }
         this.status.lastSyncTime = new Date().toLocaleTimeString('ar-IQ');
@@ -678,7 +682,11 @@ class SheetsIntegrationLayer {
         const requests: OfficeRequest[] = [];
         for (const row of rawRows) {
           if (row && row[0] && String(row[0]).trim()) {
-            requests.push(this.rowToRequest(row));
+            const firstCell = String(row[0]).trim();
+            const thirdCell = String(row[2] || '').trim();
+            if (!firstCell.startsWith('[محذوف') && !firstCell.startsWith('[deleted') && !thirdCell.includes('تم حذف')) {
+              requests.push(this.rowToRequest(row));
+            }
           }
         }
         this.status.lastSyncTime = new Date().toLocaleTimeString('ar-IQ');

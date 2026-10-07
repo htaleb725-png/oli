@@ -87,7 +87,8 @@ export const FS_COLLECTIONS = {
   DROPDOWNS: 'dropdowns',
   AUDIT_LOGS: 'audit_logs',
   CUSTOM_SECTIONS: 'custom_sections',
-  CUSTOM_RECORDS: 'custom_records'
+  CUSTOM_RECORDS: 'custom_records',
+  DELETED_RECORDS: 'deleted_records'
 } as const;
 
 // Multi-Office Partition and Database Isolation Manager
@@ -127,6 +128,31 @@ export function getFSCol(baseName: string): string {
   return `${part}_${baseName}`;
 }
 
+// Registry of Permanently Deleted Records (لمنع استرجاع أو انبعاث السجلات المحذوفة)
+export async function fsRegisterDeletedRecord(id: string, entityType: string): Promise<void> {
+  if (!id) return;
+  const col = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
+  try {
+    await setDoc(doc(db, col, id), {
+      id,
+      entityType,
+      deletedAt: new Date().toISOString()
+    });
+  } catch (e) {
+    console.warn('fsRegisterDeletedRecord warning:', e);
+  }
+}
+
+export async function fsGetDeletedRecordIds(): Promise<string[]> {
+  try {
+    const col = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
+    const snap = await getDocs(collection(db, col));
+    return snap.docs.map(d => d.id);
+  } catch {
+    return [];
+  }
+}
+
 // 1. Citizen Operations
 export async function fsSaveCitizen(citizen: Citizen): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.CITIZENS);
@@ -146,6 +172,7 @@ export async function fsDeleteCitizen(citizenId: string): Promise<void> {
   const path = `${col}/${citizenId}`;
   try {
     await deleteDoc(doc(db, col, citizenId));
+    await fsRegisterDeletedRecord(citizenId, 'citizens');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -170,6 +197,7 @@ export async function fsDeleteRequest(requestId: string): Promise<void> {
   const path = `${col}/${requestId}`;
   try {
     await deleteDoc(doc(db, col, requestId));
+    await fsRegisterDeletedRecord(requestId, 'requests');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -194,6 +222,7 @@ export async function fsDeleteInterview(interviewId: string): Promise<void> {
   const path = `${col}/${interviewId}`;
   try {
     await deleteDoc(doc(db, col, interviewId));
+    await fsRegisterDeletedRecord(interviewId, 'interviews');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -218,6 +247,7 @@ export async function fsDeleteOfficialLetter(letterId: string): Promise<void> {
   const path = `${col}/${letterId}`;
   try {
     await deleteDoc(doc(db, col, letterId));
+    await fsRegisterDeletedRecord(letterId, 'letters');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -242,6 +272,7 @@ export async function fsDeleteCheque(chequeId: string): Promise<void> {
   const path = `${col}/${chequeId}`;
   try {
     await deleteDoc(doc(db, col, chequeId));
+    await fsRegisterDeletedRecord(chequeId, 'cheques');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -357,6 +388,7 @@ export async function fsDeleteCustomSection(sectionId: string): Promise<void> {
   try {
     // 1. Delete section document
     await deleteDoc(doc(db, colSec, sectionId));
+    await fsRegisterDeletedRecord(sectionId, 'custom_sections');
     
     // 2. Cascade delete all records in this section
     const q = query(collection(db, colRec), where('sectionId', '==', sectionId));
@@ -390,6 +422,7 @@ export async function fsDeleteCustomRecord(recordId: string): Promise<void> {
   const path = `${col}/${recordId}`;
   try {
     await deleteDoc(doc(db, col, recordId));
+    await fsRegisterDeletedRecord(recordId, 'custom_records');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -533,17 +566,19 @@ export async function fsBulkPullAll(): Promise<{
     const colSections = getFSCol(FS_COLLECTIONS.CUSTOM_SECTIONS);
     const colRecords = getFSCol(FS_COLLECTIONS.CUSTOM_RECORDS);
     const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
+    const colDeleted = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
 
     const [
-      citizens,
-      requests,
-      interviews,
-      officialLetters,
-      cheques,
-      organizationRecords,
+      rawCitizens,
+      rawRequests,
+      rawInterviews,
+      rawOfficialLetters,
+      rawCheques,
+      rawOrganizationRecords,
       users,
-      customSections,
-      customRecords,
+      rawCustomSections,
+      rawCustomRecords,
+      deletedDocsSnap,
       settingsSnap,
       passcodeSnap
     ] = await Promise.all([
@@ -556,9 +591,29 @@ export async function fsBulkPullAll(): Promise<{
       fetchCol<User>(colUsers),
       fetchCol<CustomSection>(colSections),
       fetchCol<CustomSectionRecord>(colRecords),
+      getDocs(collection(db, colDeleted)).catch(() => null),
       getDoc(doc(db, colSettings, 'general')).catch(() => null),
       getDoc(doc(db, colSettings, 'developer_auth')).catch(() => null)
     ]);
+
+    const deletedIds = new Set<string>();
+    if (deletedDocsSnap && !deletedDocsSnap.empty) {
+      deletedDocsSnap.docs.forEach(d => {
+        deletedIds.add(d.id);
+        const data = d.data();
+        if (data?.id) deletedIds.add(String(data.id));
+      });
+    }
+
+    // Strictly filter out any permanently deleted records
+    const citizens = rawCitizens.filter(c => c && c.Citizen_ID && !deletedIds.has(c.Citizen_ID));
+    const requests = rawRequests.filter(r => r && r.Request_ID && !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID));
+    const interviews = rawInterviews.filter(i => i && i.Interview_ID && !deletedIds.has(i.Interview_ID) && !deletedIds.has(i.Citizen_ID));
+    const officialLetters = rawOfficialLetters.filter(l => l && l.Letter_ID && !deletedIds.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIds.has(l.Citizen_ID)));
+    const cheques = rawCheques.filter(ch => ch && ch.id && !deletedIds.has(ch.id) && !deletedIds.has(ch.Citizen_ID));
+    const organizationRecords = rawOrganizationRecords.filter(o => o && o.Org_ID && !deletedIds.has(o.Org_ID) && !deletedIds.has(o.Citizen_ID));
+    const customSections = rawCustomSections.filter(s => s && s.id && !deletedIds.has(s.id));
+    const customRecords = rawCustomRecords.filter(cr => cr && cr.id && !deletedIds.has(cr.id) && !deletedIds.has(cr.sectionId));
 
     const systemSettings = settingsSnap && settingsSnap.exists() ? (settingsSnap.data() as Partial<SystemSettings>) : undefined;
     const developerPasscode = passcodeSnap && passcodeSnap.exists() ? (passcodeSnap.data()?.developerPasscode as string) : undefined;

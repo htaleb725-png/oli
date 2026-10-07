@@ -1092,6 +1092,125 @@ export const pushSingleRecordToSheetsRealtime = async (
 };
 
 /**
+ * Permanently deletes or blanks a record row in connected Google Sheet
+ */
+export const deleteRecordFromSheetsRealtime = async (
+  token: string,
+  spreadsheetId: string,
+  entityType: string,
+  recordId: string
+): Promise<boolean> => {
+  try {
+    let sheetName = '';
+    switch (entityType) {
+      case 'citizens': sheetName = 'سجل_المراجعين_Citizens'; break;
+      case 'requests': sheetName = 'طلبات_المواطنين_Requests'; break;
+      case 'interviews': sheetName = 'مقابلات_النائب_Interviews'; break;
+      case 'letters': sheetName = 'الكتب_الرسمية_OfficialLetters'; break;
+      case 'cheques': sheetName = 'صكوك_المساعدات_المالية_Cheques'; break;
+      case 'organization': sheetName = 'الموقف_الجماهيري_Organization'; break;
+      case 'custom_sections': sheetName = 'الأقسام_المخصصة_Sections'; break;
+      case 'custom_records': sheetName = 'سجلات_الأقسام_Records'; break;
+      default: return false;
+    }
+
+    const response = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!A:B`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!response.ok) return false;
+    const data = await response.json();
+    const rows = data.values || [];
+    let targetRowIndex = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i] && String(rows[i][0]).trim() === String(recordId).trim()) {
+        targetRowIndex = i + 1;
+        break;
+      }
+    }
+
+    if (targetRowIndex > 0) {
+      // Clear this row completely
+      await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!A${targetRowIndex}:S${targetRowIndex}:clear`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      );
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.warn('deleteRecordFromSheetsRealtime warning:', error);
+    return false;
+  }
+};
+
+/**
+ * Creates a tab in Google Sheet if it does not already exist (e.g. for dynamic departments)
+ */
+export const ensureSheetTabExists = async (
+  token: string,
+  spreadsheetId: string,
+  tabTitle: string,
+  headers: string[] = []
+): Promise<boolean> => {
+  try {
+    const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!metaRes.ok) return false;
+    const meta = await metaRes.json();
+    const existingTitles = (meta.sheets || []).map((s: any) => s.properties?.title);
+    if (existingTitles.includes(tabTitle)) return true;
+
+    // Create new tab
+    const addRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        requests: [
+          {
+            addSheet: {
+              properties: {
+                title: tabTitle,
+                rightToLeft: true
+              }
+            }
+          }
+        ]
+      })
+    });
+    if (!addRes.ok) return false;
+
+    // Set headers if provided
+    if (headers.length > 0) {
+      await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tabTitle)}!A1?valueInputOption=USER_ENTERED`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            values: [headers]
+          })
+        }
+      );
+    }
+    return true;
+  } catch (e) {
+    console.warn('ensureSheetTabExists note:', e);
+    return false;
+  }
+};
+
+/**
  * Fetches all sheets data from Google Sheets spreadsheet and parses it into typed entities
  */
 export const fetchAllDataFromGoogleSheets = async (
@@ -1137,103 +1256,119 @@ export const fetchAllDataFromGoogleSheets = async (
     const resJson = await response.json();
     const valueRanges = resJson.valueRanges || [];
 
+    const isNonDeletedId = (val: any): boolean => {
+      if (!val) return false;
+      const str = String(val).trim();
+      return str.length > 0 && !str.startsWith('[محذوف') && !str.startsWith('[deleted') && !str.includes('تم حذف');
+    };
+
     // Map citizens
     const citizensRows = valueRanges[0]?.values || [];
-    const citizens: Citizen[] = citizensRows.filter((r: any[]) => r && (r[0] || r[1] || r[6])).map((r: any[]) => {
-      const name = r[6] || r[1] || r[0] || 'مواطن';
-      return {
-        Citizen_ID: r[0] ? String(r[0]).trim() : `ONA-${Math.floor(1000 + Math.random() * 9000)}`,
-        FirstName: r[1] || name.split(' ')[0] || '',
-        FatherName: r[2] || '',
-        GrandFatherName: r[3] || '',
-        GreatGrandFatherName: r[4] || '',
-        Surname: r[5] || '',
-        FullName: name,
-        Phone1: r[7] ? String(r[7]).trim() : '',
-        Phone2: r[8] ? String(r[8]).trim() : '',
-        Gender: (r[9] as any) || 'ذكر',
-        Job: r[10] || '',
-        Education: r[11] || '',
-        Rating: (r[12] as any) || 'لائق',
-        District: r[13] || '',
-        SubDistrict: r[14] || '',
-        ReferralSource: r[15] || '',
-        CreatedAt: r[16] || new Date().toISOString().split('T')[0],
-        CreatedBy: r[17] || 'الاستعلامات',
-        PhotoUrl: r[18] ? String(r[18]).trim() : undefined
-      };
-    });
+    const citizens: Citizen[] = citizensRows
+      .filter((r: any[]) => r && isNonDeletedId(r[0]) && (r[1] || r[6]))
+      .map((r: any[]) => {
+        const name = r[6] || r[1] || r[0] || 'مواطن';
+        return {
+          Citizen_ID: String(r[0]).trim(),
+          FirstName: r[1] || name.split(' ')[0] || '',
+          FatherName: r[2] || '',
+          GrandFatherName: r[3] || '',
+          GreatGrandFatherName: r[4] || '',
+          Surname: r[5] || '',
+          FullName: name,
+          Phone1: r[7] ? String(r[7]).trim() : '',
+          Phone2: r[8] ? String(r[8]).trim() : '',
+          Gender: (r[9] as any) || 'ذكر',
+          Job: r[10] || '',
+          Education: r[11] || '',
+          Rating: (r[12] as any) || 'لائق',
+          District: r[13] || '',
+          SubDistrict: r[14] || '',
+          ReferralSource: r[15] || '',
+          CreatedAt: r[16] || new Date().toISOString().split('T')[0],
+          CreatedBy: r[17] || 'الاستعلامات',
+          PhotoUrl: r[18] ? String(r[18]).trim() : undefined
+        };
+      });
 
     // Map requests
     const requestsRows = valueRanges[1]?.values || [];
-    const requests: OfficeRequest[] = requestsRows.filter((r: any[]) => r && (r[0] || r[1] || r[2])).map((r: any[]) => ({
-      Request_ID: r[0] ? String(r[0]).trim() : `REQ-${Math.floor(1000 + Math.random() * 9000)}`,
-      Citizen_ID: r[1] ? String(r[1]).trim() : '',
-      CitizenName: r[2] || r[1] || '',
-      CitizenPhone: r[3] ? String(r[3]).trim() : '',
-      Entity: r[4] || '',
-      RequestStatus: (r[5] as any) || 'مستلم',
-      ProcessingStatus: (r[6] as any) || 'قيد التدقيق',
-      Priority: (r[7] as any) || 'عادي',
-      Details: r[8] || '',
-      AttachmentRequest: r[9] || undefined,
-      AttachmentResponse: r[10] || undefined,
-      DeputyNotes: r[11] || '',
-      CreatedAt: r[12] || new Date().toISOString().split('T')[0],
-      CreatedBy: r[13] || 'الإدارة'
-    }));
+    const requests: OfficeRequest[] = requestsRows
+      .filter((r: any[]) => r && isNonDeletedId(r[0]) && (r[1] || r[2]))
+      .map((r: any[]) => ({
+        Request_ID: String(r[0]).trim(),
+        Citizen_ID: r[1] ? String(r[1]).trim() : '',
+        CitizenName: r[2] || r[1] || '',
+        CitizenPhone: r[3] ? String(r[3]).trim() : '',
+        Entity: r[4] || '',
+        RequestStatus: (r[5] as any) || 'مستلم',
+        ProcessingStatus: (r[6] as any) || 'قيد التدقيق',
+        Priority: (r[7] as any) || 'عادي',
+        Details: r[8] || '',
+        AttachmentRequest: r[9] || undefined,
+        AttachmentResponse: r[10] || undefined,
+        DeputyNotes: r[11] || '',
+        CreatedAt: r[12] || new Date().toISOString().split('T')[0],
+        CreatedBy: r[13] || 'الإدارة'
+      }));
 
     // Map interviews
     const interviewsRows = valueRanges[2]?.values || [];
-    const interviews: Interview[] = interviewsRows.filter((r: any[]) => r && r[0] && r[2]).map((r: any[]) => ({
-      Interview_ID: r[0] || '',
-      Citizen_ID: r[1] || '',
-      FullName: r[2] || '',
-      Subject: r[3] || '',
-      Phone1: r[4] || '',
-      Phone2: r[5] || '',
-      Address: r[6] || '',
-      Referrer: r[7] || '',
-      InterviewDate: r[8] || new Date().toISOString().split('T')[0],
-      InterviewTime: r[9] || '',
-      Priority: (r[10] as any) || 'متوسطة',
-      Status: (r[11] as any) || 'مكتملة',
-      DeputyNotes: r[12] || '',
-      Outcome: r[13] || '',
-      ConvertedToRequest: r[14] === 'نعم'
-    }));
+    const interviews: Interview[] = interviewsRows
+      .filter((r: any[]) => r && isNonDeletedId(r[0]) && r[2])
+      .map((r: any[]) => ({
+        Interview_ID: String(r[0]).trim(),
+        Citizen_ID: r[1] || '',
+        FullName: r[2] || '',
+        Subject: r[3] || '',
+        Phone1: r[4] || '',
+        Phone2: r[5] || '',
+        Address: r[6] || '',
+        Referrer: r[7] || '',
+        InterviewDate: r[8] || new Date().toISOString().split('T')[0],
+        InterviewTime: r[9] || '',
+        Priority: (r[10] as any) || 'متوسطة',
+        Status: (r[11] as any) || 'مكتملة',
+        DeputyNotes: r[12] || '',
+        Outcome: r[13] || '',
+        ConvertedToRequest: r[14] === 'نعم'
+      }));
 
     // Map official letters
     const lettersRows = valueRanges[3]?.values || [];
-    const officialLetters: OfficialLetter[] = lettersRows.filter((r: any[]) => r && r[0] && r[3]).map((r: any[]) => ({
-      Letter_ID: r[0] || '',
-      LetterNumber: r[1] || '',
-      LetterDate: r[2] || '',
-      Recipient: r[3] || '',
-      Subject: r[4] || '',
-      Body: r[5] || '',
-      Citizen_ID: r[6] || undefined,
-      CitizenName: r[7] || undefined,
-      Status: (r[8] as any) || 'صادر',
-      ClerkName: r[9] || 'الطباعة'
-    }));
+    const officialLetters: OfficialLetter[] = lettersRows
+      .filter((r: any[]) => r && isNonDeletedId(r[0]) && r[3])
+      .map((r: any[]) => ({
+        Letter_ID: String(r[0]).trim(),
+        LetterNumber: r[1] || '',
+        LetterDate: r[2] || '',
+        Recipient: r[3] || '',
+        Subject: r[4] || '',
+        Body: r[5] || '',
+        Citizen_ID: r[6] || undefined,
+        CitizenName: r[7] || undefined,
+        Status: (r[8] as any) || 'صادر',
+        ClerkName: r[9] || 'الطباعة'
+      }));
 
     // Map cheques
     const chequesRows = valueRanges[4]?.values || [];
-    const cheques: ChequeRecord[] = chequesRows.filter((r: any[]) => r && r[0] && r[1]).map((r: any[]) => ({
-      id: r[0] || '',
-      ChequeNumber: r[1] || '',
-      Citizen_ID: r[2] || '',
-      CitizenName: r[3] || '',
-      CitizenPhone: r[4] || '',
-      Amount: Number(r[5]) || 0,
-      AmountInWords: r[6] || '',
-      BankName: r[7] || '',
-      Purpose: r[8] || '',
-      IssueDate: r[9] || '',
-      Status: (r[10] as any) || 'مصروف',
-      CreatedBy: r[11] || 'المالية'
-    }));
+    const cheques: ChequeRecord[] = chequesRows
+      .filter((r: any[]) => r && isNonDeletedId(r[0]) && r[1])
+      .map((r: any[]) => ({
+        id: String(r[0]).trim(),
+        ChequeNumber: r[1] || '',
+        Citizen_ID: r[2] || '',
+        CitizenName: r[3] || '',
+        CitizenPhone: r[4] || '',
+        Amount: Number(r[5]) || 0,
+        AmountInWords: r[6] || '',
+        BankName: r[7] || '',
+        Purpose: r[8] || '',
+        IssueDate: r[9] || '',
+        Status: (r[10] as any) || 'مصروف',
+        CreatedBy: r[11] || 'المالية'
+      }));
 
     // Map organization
     const orgRows = valueRanges[5]?.values || [];

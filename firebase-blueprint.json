@@ -139,6 +139,31 @@
         "Details": { "type": "string" }
       },
       "required": ["Log_ID", "Timestamp", "Action"]
+    },
+    "CustomSection": {
+      "title": "CustomSection",
+      "description": "Dynamically added office departments and custom functional sections",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "icon": { "type": "string" },
+        "badgeColor": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "createdAt"]
+    },
+    "CustomSectionRecord": {
+      "title": "CustomSectionRecord",
+      "description": "Data records entered within dynamic custom sections",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sectionId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "sectionId", "createdAt"]
     }
   },
   "firestore": {
@@ -181,6 +206,14 @@
     "/audit_logs/{logId}": {
       "schema": "AuditLog",
       "description": "System audit logs"
+    },
+    "/custom_sections/{sectionId}": {
+      "schema": "CustomSection",
+      "description": "Dynamic office departments and custom modules"
+    },
+    "/custom_records/{recordId}": {
+      "schema": "CustomSectionRecord",
+      "description": "Records belonging to dynamic custom departments"
     }
   }
 }
