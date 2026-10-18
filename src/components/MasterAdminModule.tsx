@@ -75,6 +75,7 @@ import { SystemIconsStudio } from './developer/SystemIconsStudio';
 import { AppsScriptCodeViewer } from './developer/AppsScriptCodeViewer';
 import { UiCustomizer } from './developer/UiCustomizer';
 import { DeveloperPasscodeManager } from './developer/DeveloperPasscodeManager';
+import { GoogleDriveFolderManager } from './developer/GoogleDriveFolderManager';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
 export const MasterAdminModule: React.FC = () => {
@@ -116,6 +117,7 @@ export const MasterAdminModule: React.FC = () => {
     | 'grid'
     | 'sections'
     | 'firebase'
+    | 'drive_folder'
     | 'multi_office'
     | 'icons_studio'
     | 'script'
@@ -730,6 +732,17 @@ export const MasterAdminModule: React.FC = () => {
               onClick: () => setActiveTab('sync')
             },
             {
+              id: 'dev_drive_folder',
+              title: 'ربط Google Drive بالآيدي (ايبي المجلد)',
+              subtitle: 'ربط مجلد الصور والمستندات عبر معرف المجلد (Folder ID) واختباره وتثبيته',
+              icon: Cloud,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              badge: 'Folder ID 📁',
+              badgeColor: 'bg-blue-600 text-white',
+              onClick: () => setActiveTab('drive_folder')
+            },
+            {
               id: 'dev_desktop',
               title: 'تطبيق سطح المكتب والتشغيل',
               subtitle: 'تثبيت PWA والتشغيل كنافذة مستقلة',
@@ -789,6 +802,7 @@ export const MasterAdminModule: React.FC = () => {
               <div className="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 flex items-center justify-center font-bold text-lg shadow-2xs shrink-0">
                 {activeTab === 'sections' && <FolderKanban className="w-5 h-5 text-indigo-300" />}
                 {activeTab === 'firebase' && <Cloud className="w-5 h-5 text-amber-300" />}
+                {activeTab === 'drive_folder' && <Cloud className="w-5 h-5 text-blue-300" />}
                 {activeTab === 'multi_office' && <Building2 className="w-5 h-5 text-blue-300" />}
                 {activeTab === 'icons_studio' && <Palette className="w-5 h-5 text-fuchsia-300" />}
                 {activeTab === 'ui_customizer' && <Sliders className="w-5 h-5 text-purple-300" />}
@@ -813,6 +827,7 @@ export const MasterAdminModule: React.FC = () => {
                 <h3 className="text-sm sm:text-base font-black text-white mt-0.5">
                   {activeTab === 'sections' && 'باني الأقسام المخصصة والحقول الديناميكية'}
                   {activeTab === 'firebase' && 'قاعدة بيانات Firebase Firestore اللحظية الحية'}
+                  {activeTab === 'drive_folder' && 'ربط وتثبيت Google Drive عبر معرف المجلد (Folder ID)'}
                   {activeTab === 'multi_office' && 'تهيئة وتغيير المكتب وقواعد البيانات (للنائب الجديد)'}
                   {activeTab === 'icons_studio' && 'استوديو الأيقونات وصورة البرنامج والشعار'}
                   {activeTab === 'ui_customizer' && 'تخصيص الواجهات ومقاس الأزرار والحقول'}
@@ -944,6 +959,14 @@ export const MasterAdminModule: React.FC = () => {
               }`}
             >
               <span>Google Sheets & Drive 📊</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('drive_folder')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'drive_folder' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <span>ربط Drive بالآيدي 📁</span>
             </button>
             <button
               onClick={() => setActiveTab('desktop')}
@@ -2326,6 +2349,16 @@ export const MasterAdminModule: React.FC = () => {
                   <span>{activeDriveFolderId ? 'إعادة الفحص' : 'إنشاء مجلد Drive'}</span>
                 </button>
               </div>
+
+              {/* Quick direct link to Folder ID manager */}
+              <button
+                type="button"
+                onClick={() => setActiveTab('drive_folder')}
+                className="w-full mt-2 h-9 px-3 rounded-xl bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-700 dark:text-blue-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-all border border-blue-200 dark:border-blue-800 cursor-pointer shadow-xs"
+              >
+                <Cloud className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <span>ربط مجلد Google Drive بالآيدي البرمجي (Folder ID) 📁</span>
+              </button>
             </div>
 
           </div>
@@ -2540,6 +2573,11 @@ export const MasterAdminModule: React.FC = () => {
             </form>
           </details>
         </div>
+      )}
+
+      {/* TAB: Dedicated Google Drive Folder Manager (ربط Google Drive بالآيدي) */}
+      {activeTab === 'drive_folder' && (
+        <GoogleDriveFolderManager onBackToGrid={() => setActiveTab('grid')} />
       )}
 
       {/* TAB 5: Desktop App Deployment & Windows Packages */}

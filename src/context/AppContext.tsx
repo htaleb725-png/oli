@@ -79,6 +79,17 @@ import {
   ensureSheetTabExists
 } from '../services/googleSheetsService';
 import { safeLocalStorageSet, sanitizeRequestsForStorage, cleanBloatedLocalStorage } from '../utils/safeStorage';
+import {
+  mergeCitizens,
+  mergeRequests,
+  mergeInterviews,
+  mergeOfficialLetters,
+  mergeCheques,
+  mergeOrganizationRecords,
+  mergeCustomSections,
+  mergeCustomRecords,
+  mergeUsers
+} from '../services/dataMerge';
 
 // Run storage cleanup immediately on module evaluation to fix any existing quota issue
 cleanBloatedLocalStorage();
@@ -89,17 +100,20 @@ export const getStoredDeletedIds = (): Set<string> => {
     const raw = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_deleted_ids') : null;
     if (raw) {
       const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) return new Set(arr);
+      if (Array.isArray(arr)) {
+        const clean = arr.filter(id => id && typeof id === 'string' && id.trim().length > 0 && id.trim() !== 'undefined' && id.trim() !== 'null');
+        return new Set(clean);
+      }
     }
   } catch {}
   return new Set();
 };
 
 export const recordDeletedId = (id: string) => {
-  if (!id) return;
+  if (!id || typeof id !== 'string' || !id.trim() || id.trim() === 'undefined' || id.trim() === 'null') return;
   try {
     const set = getStoredDeletedIds();
-    set.add(id);
+    set.add(id.trim());
     if (typeof window !== 'undefined') {
       localStorage.setItem('al_nashi_deleted_ids', JSON.stringify(Array.from(set)));
     }
@@ -141,6 +155,9 @@ interface AppContextType {
   updateCitizen: (citizen: Citizen) => void;
   deleteCitizen: (citizenId: string) => void;
   findCitizenByIdOrName: (query: string) => Citizen[];
+  blockCitizen: (citizenId: string, reason: string, blockedBy?: string) => void;
+  unblockCitizen: (citizenId: string) => void;
+  checkIfCitizenBlocked: (nameOrId: string) => { isBlocked: boolean; citizen?: Citizen; reason?: string };
 
   requests: OfficeRequest[];
   addRequest: (req: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string }) => OfficeRequest;
@@ -222,6 +239,7 @@ interface AppContextType {
   googleUserEmail: string;
   spreadsheetId: string | null;
   driveFolderId: string | null;
+  setGoogleDriveFolderId: (folderId: string) => void;
   syncAllToGoogleSheetsNow: () => Promise<{ success: boolean; sheetsSynced?: boolean; message: string }>;
   fetchAllFromGoogleSheetsNow: () => Promise<{ success: boolean; message: string }>;
   loginWithGoogleDeveloper: (onProgress?: (step: number, totalSteps: number, message: string) => void) => Promise<{ success: boolean; cancelled?: boolean; error?: string | null }>;
@@ -388,7 +406,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSessionLoading, setIsSessionLoading] = useState<boolean>(false);
   const [sessionLoadingMessage, setSessionLoadingMessage] = useState<string>('يرجى الانتظار لتحميل بياناتك...');
   const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(() => {
-    return localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true';
+    const raw = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') : null;
+    if (raw === 'true') {
+      try {
+        const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens') : null;
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            localStorage.removeItem(STORAGE_KEY_PREFIX + 'is_zeroed');
+            return false;
+          }
+        }
+      } catch {}
+    }
+    return raw === 'true';
   });
 
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => {
@@ -407,33 +438,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [citizens, setCitizens] = useState<Citizen[]>(() => {
     const deletedIds = getStoredDeletedIds();
-    const hasRealData = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_has_real_data') === 'true' : false;
-
-    if (typeof window !== 'undefined' && localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) return parsed.filter((c: any) => c && !deletedIds.has(c.Citizen_ID));
-        }
-      } catch {}
-      return [];
-    }
     try {
       const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens') : null;
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          if (parsed.length > 0) {
-            const parsedCitizens = parsed.filter(Boolean).filter(c => !deletedIds.has(c.Citizen_ID)).map((c: any) => {
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const existingIds = new Set<string>();
+          const uniqueParsedCitizens: Citizen[] = [];
+          for (const c of parsed) {
+            if (!c || typeof c !== 'object') continue;
+            const cid = String(c.Citizen_ID || '').trim();
+            if (cid && !existingIds.has(cid) && !deletedIds.has(cid)) {
+              existingIds.add(cid);
               const parts = (c.FullName || '').trim().split(/\s+/);
               const firstName = c.FirstName || parts[0] || 'مراجع';
               const fatherName = c.FatherName || parts[1] || '';
               const grandFatherName = c.GrandFatherName || parts[2] || '';
               const greatGrandFatherName = c.GreatGrandFatherName || parts[3] || '';
               const surname = c.Surname || (parts.length > 4 ? parts.slice(4).join(' ') : 'عام');
-              return {
-                Citizen_ID: c.Citizen_ID || `ONA-${Math.floor(10000 + Math.random() * 90000)}`,
+              uniqueParsedCitizens.push({
+                ...c,
+                Citizen_ID: cid,
                 FirstName: firstName,
                 FatherName: fatherName,
                 GrandFatherName: grandFatherName,
@@ -441,181 +466,97 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 Surname: surname,
                 FullName: c.FullName || `${firstName} ${fatherName} ${grandFatherName} ${greatGrandFatherName} ${surname}`.replace(/\s+/g, ' ').trim(),
                 Phone1: c.Phone1 || '07800000000',
-                Phone2: c.Phone2 || undefined,
-                Gender: c.Gender || 'ذكر',
-                Job: c.Job || 'كاسب',
-                Education: c.Education || 'إعدادية فما دون',
                 Rating: c.Rating || 'مؤيد',
                 District: c.District || 'الناصرية',
                 SubDistrict: c.SubDistrict || 'المركز',
-                ReferralSource: c.ReferralSource || 'مباشر بدون معرف',
-                CreatedAt: c.CreatedAt || new Date().toISOString(),
-                CreatedBy: c.CreatedBy || 'الاستعلامات'
-              } as Citizen;
-            });
-            const existingIds = new Set<string>();
-            const uniqueParsedCitizens: Citizen[] = [];
-            for (const c of parsedCitizens) {
-              let id = c.Citizen_ID ? String(c.Citizen_ID).trim() : '';
-              if (!id) {
-                id = `ONA-${Math.floor(10000 + Math.random() * 90000)}`;
-              }
-              if (!existingIds.has(id) && !deletedIds.has(id)) {
-                existingIds.add(id);
-                uniqueParsedCitizens.push({ ...c, Citizen_ID: id });
-              }
+                CreatedAt: c.CreatedAt || new Date().toISOString()
+              } as Citizen);
             }
+          }
+          if (uniqueParsedCitizens.length > 0) {
             return uniqueParsedCitizens;
-          } else if (hasRealData) {
-            return [];
           }
         }
       }
     } catch (err) {
       console.error('Failed parsing citizens from localStorage', err);
     }
-    return hasRealData ? [] : INITIAL_CITIZENS.filter(c => !deletedIds.has(c.Citizen_ID));
+    return [];
   });
 
   const [requests, setRequests] = useState<OfficeRequest[]>(() => {
     const deletedIds = getStoredDeletedIds();
-    const hasRealData = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_has_real_data') === 'true' : false;
-
-    if (typeof window !== 'undefined' && localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'requests');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) return parsed.filter((r: any) => r && !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID));
-        }
-      } catch {}
-      return [];
-    }
     try {
       const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'requests') : null;
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          if (parsed.length > 0) {
-            const seenIds = new Set<string>();
-            const uniqueParsed: OfficeRequest[] = [];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const seenIds = new Set<string>();
+          const uniqueParsed: OfficeRequest[] = [];
 
-            for (const r of parsed) {
-              if (!r || typeof r !== 'object') continue;
-              let id = r.Request_ID ? String(r.Request_ID).trim() : '';
-              if (id && !seenIds.has(id) && !deletedIds.has(id) && !deletedIds.has(r.Citizen_ID)) {
-                seenIds.add(id);
-                uniqueParsed.push({ ...r, Request_ID: id });
-              }
+          for (const r of parsed) {
+            if (!r || typeof r !== 'object') continue;
+            const rid = String(r.Request_ID || '').trim();
+            if (rid && !seenIds.has(rid) && !deletedIds.has(rid)) {
+              if (r.Citizen_ID && deletedIds.has(String(r.Citizen_ID).trim())) continue;
+              seenIds.add(rid);
+              uniqueParsed.push({ ...r, Request_ID: rid });
             }
+          }
 
-            try {
-              const sanitized = sanitizeRequestsForStorage(uniqueParsed);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(sanitized));
-            } catch {}
-
+          if (uniqueParsed.length > 0) {
             return uniqueParsed;
-          } else if (hasRealData) {
-            return [];
           }
         }
       }
     } catch (err) {
       console.error('Failed parsing requests', err);
     }
-    return hasRealData ? [] : INITIAL_REQUESTS.filter(r => !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID));
+    return [];
   });
 
   const [cheques, setCheques] = useState<ChequeRecord[]>(() => {
     const deletedIds = getStoredDeletedIds();
-    const hasRealData = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_has_real_data') === 'true' : false;
-
-    if (typeof window !== 'undefined' && localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'cheques');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) return parsed.filter((c: any) => c && !deletedIds.has(c.id) && !deletedIds.has(c.Citizen_ID));
-        }
-      } catch {}
-      return [];
-    }
     try {
       const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'cheques') : null;
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          if (parsed.length > 0) {
-            return parsed.filter((c: ChequeRecord) => c && !deletedIds.has(c.id) && !deletedIds.has(c.Citizen_ID));
-          } else if (hasRealData) {
-            return [];
-          }
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter((c: ChequeRecord) => c && c.id && !deletedIds.has(String(c.id).trim()));
         }
       }
     } catch (err) {
       console.error('Failed parsing cheques', err);
     }
-    return hasRealData ? [] : INITIAL_CHEQUES.filter(c => !deletedIds.has(c.id) && !deletedIds.has(c.Citizen_ID));
+    return [];
   });
 
   const [interviews, setInterviews] = useState<Interview[]>(() => {
     const deletedIds = getStoredDeletedIds();
-    const hasRealData = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_has_real_data') === 'true' : false;
-
-    if (typeof window !== 'undefined' && localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'interviews');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) return parsed.filter((i: any) => i && !deletedIds.has(i.Interview_ID) && !deletedIds.has(i.Citizen_ID));
-        }
-      } catch {}
-      return [];
-    }
     try {
       const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'interviews') : null;
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          if (parsed.length > 0) {
-            return parsed.filter((i: Interview) => i && !deletedIds.has(i.Interview_ID) && !deletedIds.has(i.Citizen_ID));
-          } else if (hasRealData) {
-            return [];
-          }
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter((i: Interview) => i && i.Interview_ID && !deletedIds.has(String(i.Interview_ID).trim()));
         }
       }
     } catch {}
-    return hasRealData ? [] : INITIAL_INTERVIEWS.filter(i => !deletedIds.has(i.Interview_ID) && !deletedIds.has(i.Citizen_ID));
+    return [];
   });
 
   const [organizationRecords, setOrganizationRecords] = useState<OrganizationRecord[]>(() => {
     const deletedIds = getStoredDeletedIds();
-    const hasRealData = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_has_real_data') === 'true' : false;
-
-    if (typeof window !== 'undefined' && localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'org');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) return parsed.filter((o: any) => o && !deletedIds.has(o.Org_ID) && !deletedIds.has(o.Citizen_ID));
-        }
-      } catch {}
-      return [];
-    }
     try {
       const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'org') : null;
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          if (parsed.length > 0) {
-            return parsed.filter((o: OrganizationRecord) => o && !deletedIds.has(o.Org_ID) && !deletedIds.has(o.Citizen_ID));
-          } else if (hasRealData) {
-            return [];
-          }
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter((o: OrganizationRecord) => o && (o.Org_ID ? !deletedIds.has(String(o.Org_ID).trim()) : true) && (o.Citizen_ID ? !deletedIds.has(String(o.Citizen_ID).trim()) : true));
         }
       }
     } catch {}
-    return hasRealData ? [] : INITIAL_ORGANIZATION.filter(o => !deletedIds.has(o.Org_ID) && !deletedIds.has(o.Citizen_ID));
+    return [];
   });
 
   const [dropdowns, setDropdowns] = useState<DropdownItem[]>(() => {
@@ -682,28 +623,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [officialLetters, setOfficialLetters] = useState<OfficialLetter[]>(() => {
     const deletedIds = getStoredDeletedIds();
-    const hasRealData = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_has_real_data') === 'true' : false;
-
-    if (typeof window !== 'undefined' && localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'letters');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) return parsed.filter((l: any) => l && !deletedIds.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIds.has(l.Citizen_ID)));
-        }
-      } catch {}
-      return [];
-    }
     try {
       const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'letters') : null;
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          if (parsed.length > 0) {
-            return parsed.filter((l: OfficialLetter) => l && !deletedIds.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIds.has(l.Citizen_ID)));
-          } else if (hasRealData) {
-            return [];
-          }
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter((l: OfficialLetter) => l && l.Letter_ID && !deletedIds.has(String(l.Letter_ID).trim()));
         }
       }
     } catch {}
@@ -723,7 +648,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     ];
 
-    return hasRealData ? [] : defaultLetters.filter(l => !deletedIds.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIds.has(l.Citizen_ID)));
+    return defaultLetters.filter(l => !deletedIds.has(l.Letter_ID));
   });
 
   const [whatsappTemplates] = useState<WhatsAppTemplate[]>(INITIAL_WHATSAPP_TEMPLATES);
@@ -815,34 +740,84 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(customRecords));
   }, [customRecords]);
 
-  // Real-Time Firestore Synchronization Listener (مزامنة فورية حية مع Firestore)
+  // Real-Time Firestore Synchronization Listener (مزامنة فورية حية مع Firestore بدون فقدان أو تعارض)
   useEffect(() => {
     const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items) => {
-      if (items.length > 0) setCitizens(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setCitizens(prev => {
+          const merged = mergeCitizens(prev, items, getStoredDeletedIds());
+          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
     const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items) => {
-      if (items.length > 0) setRequests(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setRequests(prev => {
+          const merged = mergeRequests(prev, items, getStoredDeletedIds());
+          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
     const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items) => {
-      if (items.length > 0) setInterviews(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setInterviews(prev => {
+          const merged = mergeInterviews(prev, items, getStoredDeletedIds());
+          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
     const unsubLetters = fsWatchCollection<OfficialLetter>(FS_COLLECTIONS.LETTERS, (items) => {
-      if (items.length > 0) setOfficialLetters(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setOfficialLetters(prev => {
+          const merged = mergeOfficialLetters(prev, items, getStoredDeletedIds());
+          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
     const unsubCheques = fsWatchCollection<ChequeRecord>(FS_COLLECTIONS.CHEQUES, (items) => {
-      if (items.length > 0) setCheques(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setCheques(prev => {
+          const merged = mergeCheques(prev, items, getStoredDeletedIds());
+          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
     const unsubOrgs = fsWatchCollection<OrganizationRecord>(FS_COLLECTIONS.ORGANIZATIONS, (items) => {
-      if (items.length > 0) setOrganizationRecords(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setOrganizationRecords(prev => {
+          const merged = mergeOrganizationRecords(prev, items, getStoredDeletedIds());
+          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
     const unsubSections = fsWatchCollection<CustomSection>(FS_COLLECTIONS.CUSTOM_SECTIONS, (items) => {
-      if (items.length > 0) setCustomSections(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setCustomSections(prev => {
+          const merged = mergeCustomSections(prev, items, getStoredDeletedIds());
+          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
     const unsubRecords = fsWatchCollection<CustomSectionRecord>(FS_COLLECTIONS.CUSTOM_RECORDS, (items) => {
-      if (items.length > 0) setCustomRecords(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setCustomRecords(prev => {
+          const merged = mergeCustomRecords(prev, items, getStoredDeletedIds());
+          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(merged));
+          return merged;
+        });
+      }
     });
     const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items) => {
-      if (items.length > 0) setUsers(items);
+      if (Array.isArray(items) && items.length > 0) {
+        setUsers(prev => mergeUsers(prev, items));
+      }
     });
 
     // Check remote developer passcode
@@ -887,46 +862,87 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const refreshAllDataFromAllSources = async () => {
     const deletedIds = getStoredDeletedIds();
-    const hasRealData = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_has_real_data') === 'true' : false;
 
-    // 1. Safe hydration from localStorage or initial defaults if empty
+    // 1. Safe hydration from localStorage - merge with current state rather than replacing
     try {
       const savedCitizens = localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens');
       if (savedCitizens) {
         const parsed = JSON.parse(savedCitizens);
-        if (Array.isArray(parsed)) {
-          const valid = parsed.filter(c => c && !deletedIds.has(c.Citizen_ID));
-          if (valid.length > 0 || hasRealData) {
-            setCitizens(valid);
-          } else if (citizens.length === 0 && !hasRealData) {
-            setCitizens(INITIAL_CITIZENS.filter(c => !deletedIds.has(c.Citizen_ID)));
-          }
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setCitizens(prev => mergeCitizens(prev, parsed, deletedIds));
         }
-      } else if (citizens.length === 0 && !hasRealData) {
-        setCitizens(INITIAL_CITIZENS.filter(c => !deletedIds.has(c.Citizen_ID)));
       }
-    } catch {
-      if (citizens.length === 0 && !hasRealData) setCitizens(INITIAL_CITIZENS.filter(c => !deletedIds.has(c.Citizen_ID)));
-    }
+    } catch {}
 
     try {
       const savedRequests = localStorage.getItem(STORAGE_KEY_PREFIX + 'requests');
       if (savedRequests) {
         const parsed = JSON.parse(savedRequests);
-        if (Array.isArray(parsed)) {
-          const valid = parsed.filter(r => r && !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID));
-          if (valid.length > 0 || hasRealData) {
-            setRequests(valid);
-          } else if (requests.length === 0 && !hasRealData) {
-            setRequests(INITIAL_REQUESTS.filter(r => !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID)));
-          }
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setRequests(prev => mergeRequests(prev, parsed, deletedIds));
         }
-      } else if (requests.length === 0 && !hasRealData) {
-        setRequests(INITIAL_REQUESTS.filter(r => !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID)));
       }
-    } catch {
-      if (requests.length === 0 && !hasRealData) setRequests(INITIAL_REQUESTS.filter(r => !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID)));
-    }
+    } catch {}
+
+    try {
+      const savedInterviews = localStorage.getItem(STORAGE_KEY_PREFIX + 'interviews');
+      if (savedInterviews) {
+        const parsed = JSON.parse(savedInterviews);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setInterviews(prev => mergeInterviews(prev, parsed, deletedIds));
+        }
+      }
+    } catch {}
+
+    try {
+      const savedLetters = localStorage.getItem(STORAGE_KEY_PREFIX + 'letters');
+      if (savedLetters) {
+        const parsed = JSON.parse(savedLetters);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setOfficialLetters(prev => mergeOfficialLetters(prev, parsed, deletedIds));
+        }
+      }
+    } catch {}
+
+    try {
+      const savedCheques = localStorage.getItem(STORAGE_KEY_PREFIX + 'cheques');
+      if (savedCheques) {
+        const parsed = JSON.parse(savedCheques);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setCheques(prev => mergeCheques(prev, parsed, deletedIds));
+        }
+      }
+    } catch {}
+
+    try {
+      const savedOrgs = localStorage.getItem(STORAGE_KEY_PREFIX + 'org');
+      if (savedOrgs) {
+        const parsed = JSON.parse(savedOrgs);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setOrganizationRecords(prev => mergeOrganizationRecords(prev, parsed, deletedIds));
+        }
+      }
+    } catch {}
+
+    try {
+      const savedCustomSections = localStorage.getItem(STORAGE_KEY_PREFIX + 'custom_sections');
+      if (savedCustomSections) {
+        const parsed = JSON.parse(savedCustomSections);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setCustomSections(prev => mergeCustomSections(prev, parsed, deletedIds));
+        }
+      }
+    } catch {}
+
+    try {
+      const savedCustomRecords = localStorage.getItem(STORAGE_KEY_PREFIX + 'custom_records');
+      if (savedCustomRecords) {
+        const parsed = JSON.parse(savedCustomRecords);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setCustomRecords(prev => mergeCustomRecords(prev, parsed, deletedIds));
+        }
+      }
+    } catch {}
 
     // 2. Fetch from Google Sheets if configured
     try {
@@ -962,36 +978,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Run initial hydration on mount
   useEffect(() => {
     refreshAllDataFromAllSources().catch(() => {});
-  }, []);
-
-  // Live Realtime Firestore Watchers for dynamic departments & database updates
-  useEffect(() => {
-    const unsubSections = fsWatchCollection<CustomSection>(
-      FS_COLLECTIONS.CUSTOM_SECTIONS,
-      (items) => {
-        if (Array.isArray(items) && items.length > 0) {
-          setCustomSections(items);
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(items));
-        }
-      }
-    );
-
-    const unsubRecords = fsWatchCollection<CustomSectionRecord>(
-      FS_COLLECTIONS.CUSTOM_RECORDS,
-      (items) => {
-        if (Array.isArray(items)) {
-          setCustomRecords(items);
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(items));
-        }
-      }
-    );
-
-    return () => {
-      try {
-        unsubSections();
-        unsubRecords();
-      } catch {}
-    };
   }, []);
 
   const addAuditLog = (action: string, section: string, details: string) => {
@@ -1100,54 +1086,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const logout = async () => {
+  const logout = () => {
     if (currentUser) {
-      addAuditLog('تسجيل خروج وتصفير البيانات', 'نظام المصادقة', `تسجيل خروج المستخدم ${currentUser.FullName} وتصفير بيانات النظام بالكامل`);
+      addAuditLog('تسجيل خروج', 'نظام المصادقة', `تسجيل خروج المستخدم ${currentUser.FullName}`);
     }
 
-    // Google Sign Out & revoke tokens
-    try {
-      await googleSignOut();
-    } catch (_) {}
-
-    // Complete system zeroing as requested
-    setCitizens([]);
-    setRequests([]);
-    setCheques([]);
-    setInterviews([]);
-    setOrganizationRecords([]);
-    setDocuments([]);
-    setOfficialLetters([]);
-    setDynamicFields([]);
-    setIsSystemZeroed(true);
-
-    setIsGoogleConnected(false);
-    setIsGoogleSyncing(false);
-    setGoogleUserEmail('');
-    setSpreadsheetId(null);
-    setDriveFolderId(null);
-
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'is_zeroed', 'true');
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify([]));
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'requests', JSON.stringify([]));
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify([]));
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify([]));
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'org', JSON.stringify([]));
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'documents', JSON.stringify([]));
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'letters', JSON.stringify([]));
-
-      localStorage.removeItem('al_nashi_google_token');
-      localStorage.removeItem('al_nashi_sheet_id');
-      localStorage.removeItem('al_nashi_drive_folder_id');
-      localStorage.removeItem('al_nashi_google_user_email');
-      localStorage.removeItem('al_nashi_google_user_name');
-      localStorage.removeItem('al_nashi_google_user_photo');
-      sessionStorage.removeItem('al_nashi_google_token');
-    }
-
-    sheetsIntegration.zeroLocalData();
-
+    // Safely clear current session only - DO NOT erase or wipe database records
     setCurrentUser(null);
     setIsSplashOpen(true);
   };
@@ -1261,9 +1205,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addCitizen = (citizenData: Omit<Citizen, 'Citizen_ID' | 'CreatedAt'>): Citizen => {
-    // Generate sequential ID
-    const randomSuffix = Math.floor(10000 + Math.random() * 90000);
-    const newCitizenId = `ONA-${randomSuffix}`;
+    // Generate guaranteed unique sequential ID
+    const existingIds = new Set(citizens.map(c => c.Citizen_ID));
+    let randomSuffix = Math.floor(10000 + Math.random() * 90000);
+    let newCitizenId = `ONA-${randomSuffix}`;
+    while (existingIds.has(newCitizenId)) {
+      randomSuffix = Math.floor(10000 + Math.random() * 90000);
+      newCitizenId = `ONA-${randomSuffix}`;
+    }
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
@@ -1297,10 +1246,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       CreatedBy: currentUser ? currentUser.FullName : 'الاستعلامات'
     };
 
-    setCitizens(prev => [newCitizen, ...prev]);
+    setCitizens(prev => {
+      const next = [newCitizen, ...prev.filter(c => c.Citizen_ID !== newCitizenId)];
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
+      return next;
+    });
     try {
       localStorage.setItem('al_nashi_has_real_data', 'true');
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify([newCitizen, ...citizens]));
     } catch {}
 
     // Auto add dropdowns if new
@@ -1362,9 +1314,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       GrandFatherName: grandFatherName,
       GreatGrandFatherName: greatGrandFatherName,
       Surname: surname || citizen.Surname,
-      FullName: fullName 
+      FullName: fullName,
+      UpdatedAt: new Date().toISOString()
     };
-    setCitizens(prev => prev.map(c => c.Citizen_ID === citizen.Citizen_ID ? updatedCitizen : c));
+    setCitizens(prev => {
+      const next = prev.map(c => c.Citizen_ID === citizen.Citizen_ID ? updatedCitizen : c);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
+      return next;
+    });
     addAuditLog('تحديث بيانات مواطن', 'الاستعلامات', `تعديل السجل التعريفي للمواطن ${fullName} (${citizen.Citizen_ID})`);
     
     // Direct update to Google Sheets & Firestore
@@ -1442,6 +1399,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
+  const blockCitizen = (citizenId: string, reason: string, blockedBy?: string) => {
+    const cit = citizens.find(c => c.Citizen_ID === citizenId);
+    if (!cit) return;
+    const nowStamp = new Date().toLocaleDateString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
+    const operator = blockedBy || currentUser?.FullName || 'موظف الإدارة';
+    const updated: Citizen = {
+      ...cit,
+      IsBlocked: true,
+      BlockReason: reason,
+      BlockedAt: nowStamp,
+      BlockedBy: operator
+    };
+    updateCitizen(updated);
+    addAuditLog('إدراج بالقائمة السوداء', 'الإدارة / الرقابة', `تم حظر المراجع ${cit.FullName} (${citizenId}) بسبب: ${reason}`);
+  };
+
+  const unblockCitizen = (citizenId: string) => {
+    const cit = citizens.find(c => c.Citizen_ID === citizenId);
+    if (!cit) return;
+    const updated: Citizen = {
+      ...cit,
+      IsBlocked: false,
+      BlockReason: undefined,
+      BlockedAt: undefined,
+      BlockedBy: undefined
+    };
+    updateCitizen(updated);
+    addAuditLog('إلغاء حظر مراجع', 'الإدارة / الرقابة', `تم إلغاء حظر المراجع ${cit.FullName} (${citizenId}) وإعادته للقائمة المسموح بها`);
+  };
+
+  const checkIfCitizenBlocked = (nameOrId: string): { isBlocked: boolean; citizen?: Citizen; reason?: string } => {
+    if (!nameOrId || !nameOrId.trim()) return { isBlocked: false };
+    const clean = nameOrId.trim().toLowerCase();
+    const blockedList = citizens.filter(c => c && c.IsBlocked);
+    if (blockedList.length === 0) return { isBlocked: false };
+
+    // 1. Direct match by ID
+    const matchById = blockedList.find(c => c.Citizen_ID.toLowerCase() === clean);
+    if (matchById) {
+      return { isBlocked: true, citizen: matchById, reason: matchById.BlockReason || 'مدرج في القائمة السوداء' };
+    }
+
+    // 2. Direct match by Phone
+    const digitsOnly = clean.replace(/[\s\-_]/g, '');
+    if (digitsOnly.length >= 8) {
+      const matchByPhone = blockedList.find(c => {
+        const p1 = (c.Phone1 || '').replace(/[\s\-_]/g, '');
+        const p2 = (c.Phone2 || '').replace(/[\s\-_]/g, '');
+        return (p1 && p1 === digitsOnly) || (p2 && p2 === digitsOnly);
+      });
+      if (matchByPhone) {
+        return { isBlocked: true, citizen: matchByPhone, reason: matchByPhone.BlockReason || 'مدرج في القائمة السوداء' };
+      }
+    }
+
+    // 3. Match by Name (Arabic normalized)
+    const normInput = clean
+      .replace(/[إأآا]/g, 'ا')
+      .replace(/ى/g, 'ي')
+      .replace(/ة/g, 'ه')
+      .replace(/[\u064B-\u065F]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const matchByName = blockedList.find(c => {
+      const normCit = (c.FullName || '')
+        .toLowerCase()
+        .replace(/[إأآا]/g, 'ا')
+        .replace(/ى/g, 'ي')
+        .replace(/ة/g, 'ه')
+        .replace(/[\u064B-\u065F]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (normCit === normInput) return true;
+      if (normInput.length >= 6 && normCit.includes(normInput)) return true;
+      if (normCit.length >= 6 && normInput.includes(normCit)) return true;
+
+      // Check first 3 tokens
+      const inputWords = normInput.split(' ').filter(Boolean);
+      const citWords = normCit.split(' ').filter(Boolean);
+      if (inputWords.length >= 3 && citWords.length >= 3) {
+        if (inputWords[0] === citWords[0] && inputWords[1] === citWords[1] && inputWords[2] === citWords[2]) {
+          return true;
+        }
+      }
+
+      return false;
+    });
+
+    if (matchByName) {
+      return { isBlocked: true, citizen: matchByName, reason: matchByName.BlockReason || 'مدرج في القائمة السوداء' };
+    }
+
+    return { isBlocked: false };
+  };
+
   const requestSeqCounterRef = useRef<number>(120);
 
   const addRequest = (reqData: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string }): OfficeRequest => {
@@ -1484,10 +1538,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       CreatedBy: currentUser ? currentUser.FullName : 'قسم الإدارة'
     };
 
-    setRequests(prev => [newRequest, ...prev.filter(r => r.Request_ID !== candidate)]);
+    setRequests(prev => {
+      const next = [newRequest, ...prev.filter(r => r.Request_ID !== candidate)];
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(sanitizeRequestsForStorage(next)));
+      return next;
+    });
     try {
       localStorage.setItem('al_nashi_has_real_data', 'true');
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify([newRequest, ...requests]));
     } catch {}
 
     if (reqData.Entity) {
@@ -1523,24 +1580,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateRequest = (req: OfficeRequest) => {
-    setRequests(prev => prev.map(r => r.Request_ID === req.Request_ID ? req : r));
+    const updatedReq: OfficeRequest = {
+      ...req,
+      UpdatedAt: new Date().toISOString()
+    };
+    setRequests(prev => {
+      const next = prev.map(r => r.Request_ID === req.Request_ID ? updatedReq : r);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(sanitizeRequestsForStorage(next)));
+      return next;
+    });
     addAuditLog('تحديث طلب إداري', 'قسم الإدارة', `تم تعديل حالة أو مسار الطلب ${req.Request_ID} إلى (${req.ProcessingStatus})`);
     
     // Direct update to Google Sheets & Firestore
-    fsSaveRequest(req).catch((err) => {
+    fsSaveRequest(updatedReq).catch((err) => {
       console.warn('Firestore request update:', err);
     });
-    sheetsIntegration.requests.update(req).catch((err) => {
+    sheetsIntegration.requests.update(updatedReq).catch((err) => {
       console.warn('Sheets Integration Layer request update:', err);
     });
-    pushToGoogleSheetsRealtime('requests', req, 'update', systemSettings.appsScriptUrl);
+    pushToGoogleSheetsRealtime('requests', updatedReq, 'update', systemSettings.appsScriptUrl);
   };
 
   const deleteRequest = (requestId: string) => {
     recordDeletedId(requestId);
-    const nextRequests = requests.filter(r => r.Request_ID !== requestId);
-    setRequests(nextRequests);
-    safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(nextRequests));
+    setRequests(prev => {
+      const next = prev.filter(r => r.Request_ID !== requestId);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(sanitizeRequestsForStorage(next)));
+      return next;
+    });
     addAuditLog('حذف نهائي لطلب إداري', 'قسم الإدارة', `تم حذف الطلب ${requestId} نهائياً من قاعدة البيانات`);
     fsDeleteRequest(requestId).catch((err) => {
       console.warn('Firestore request delete:', err);
@@ -1566,7 +1633,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: newId,
       CreatedAt: new Date().toISOString().slice(0, 16).replace('T', ' ')
     };
-    setCheques(prev => [newCheque, ...prev]);
+    setCheques(prev => {
+      const next = [newCheque, ...prev];
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(next));
+      return next;
+    });
     addAuditLog('إصدار شيك مالي', 'قسم الشيكات', `تم إصدار الشيك رقم ${newCheque.ChequeNumber} للمستفيد ${newCheque.CitizenName} بمبلغ ${newCheque.Amount} د.ع`);
     fsSaveCheque(newCheque).catch(err => console.warn('Firestore cheque save:', err));
     pushToGoogleSheetsRealtime('cheques', newCheque, 'insert', systemSettings.appsScriptUrl);
@@ -1574,10 +1645,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateCheque = (updated: ChequeRecord) => {
-    setCheques(prev => prev.map(c => c.id === updated.id ? updated : c));
+    const updatedCheque = { ...updated, UpdatedAt: new Date().toISOString() };
+    setCheques(prev => {
+      const next = prev.map(c => c.id === updated.id ? updatedCheque : c);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(next));
+      return next;
+    });
     addAuditLog('تعديل بيانات شيك', 'قسم الشيكات', `تم تحديث الشيك رقم ${updated.ChequeNumber} للمستفيد ${updated.CitizenName}`);
-    fsSaveCheque(updated).catch(err => console.warn('Firestore cheque update:', err));
-    pushToGoogleSheetsRealtime('cheques', updated, 'update', systemSettings.appsScriptUrl);
+    fsSaveCheque(updatedCheque).catch(err => console.warn('Firestore cheque update:', err));
+    pushToGoogleSheetsRealtime('cheques', updatedCheque, 'update', systemSettings.appsScriptUrl);
   };
 
   const deleteCheque = (id: string) => {
@@ -1664,7 +1740,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       CreatedAt: now
     };
 
-    setInterviews(prev => [newInterview, ...prev]);
+    setInterviews(prev => {
+      const next = [newInterview, ...prev.filter(i => i.Interview_ID !== newIntId)];
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(next));
+      return next;
+    });
     addAuditLog('جدولة مقابلة مع النائب', 'مقابلات النائب', `تمت جدولة مقابلة للمواطن ${interviewData.FullName} بتاريخ ${interviewData.InterviewDate}`);
 
     if (interviewData.Priority === 'عاجل' || interviewData.Priority === 'خاص جداً') {
@@ -1687,17 +1767,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateInterview = (interview: Interview) => {
-    setInterviews(prev => prev.map(i => i.Interview_ID === interview.Interview_ID ? interview : i));
+    const updatedInt = { ...interview, UpdatedAt: new Date().toISOString() };
+    setInterviews(prev => {
+      const next = prev.map(i => i.Interview_ID === interview.Interview_ID ? updatedInt : i);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(next));
+      return next;
+    });
     addAuditLog('تحديث بيانات المقابلة', 'مقابلات النائب', `تم تعديل موقف المقابلة ${interview.Interview_ID} وتوجيه النائب: ${interview.DeputyNotes || 'لا توجد ملاحظات'}`);
-    fsSaveInterview(interview).catch(err => console.warn('Firestore interview update:', err));
-    pushToGoogleSheetsRealtime('interviews', interview, 'update', systemSettings.appsScriptUrl);
+    fsSaveInterview(updatedInt).catch(err => console.warn('Firestore interview update:', err));
+    pushToGoogleSheetsRealtime('interviews', updatedInt, 'update', systemSettings.appsScriptUrl);
   };
 
   const deleteInterview = (interviewId: string) => {
     recordDeletedId(interviewId);
-    const nextInterviews = interviews.filter(i => i.Interview_ID !== interviewId);
-    setInterviews(nextInterviews);
-    safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(nextInterviews));
+    setInterviews(prev => {
+      const next = prev.filter(i => i.Interview_ID !== interviewId);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(next));
+      return next;
+    });
     fsDeleteInterview(interviewId).catch(err => console.warn('Firestore interview delete:', err));
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
@@ -1751,7 +1838,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...recordData,
         UpdatedAt: now
       };
-      setOrganizationRecords(prev => prev.map((o, idx) => idx === existingIndex ? updated : o));
+      setOrganizationRecords(prev => {
+        const next = prev.map((o, idx) => idx === existingIndex ? updated : o);
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(next));
+        return next;
+      });
       addAuditLog('تحديث التقييم التنظيمي', 'قسم التنظيم', `تحديث تقييم المواطن ${recordData.FullName} إلى (${recordData.OrgRating})`);
       fsSaveOrgRecord(updated).catch(err => console.warn('Firestore org update:', err));
       pushToGoogleSheetsRealtime('organization', updated, 'update', systemSettings.appsScriptUrl);
@@ -1761,7 +1852,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         Org_ID: `ORG-${String(organizationRecords.length + 1).padStart(3, '0')}`,
         UpdatedAt: now
       };
-      setOrganizationRecords(prev => [newOrg, ...prev]);
+      setOrganizationRecords(prev => {
+        const next = [newOrg, ...prev];
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(next));
+        return next;
+      });
       addAuditLog('إضافة سجل تنظيمي جديد', 'قسم التنظيم', `تسجيل تقييم تنظيمي للمواطن ${recordData.FullName} (${recordData.OrgRating})`);
       fsSaveOrgRecord(newOrg).catch(err => console.warn('Firestore org insert:', err));
       pushToGoogleSheetsRealtime('organization', newOrg, 'insert', systemSettings.appsScriptUrl);
@@ -1814,17 +1909,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...letterData,
       Letter_ID: `LET-${String(officialLetters.length + 1).padStart(3, '0')}`
     };
-    setOfficialLetters(prev => [newLetter, ...prev]);
+    setOfficialLetters(prev => {
+      const next = [newLetter, ...prev];
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(next));
+      return next;
+    });
     addAuditLog('إنشاء كتاب رسمي', 'قسم المكنة والطباعة', `تم تحرير الكتاب ذي العدد (${newLetter.LetterNumber}) الموجه إلى ${newLetter.Recipient}`);
     fsSaveOfficialLetter(newLetter).catch(err => console.warn('Firestore letter save:', err));
     pushToGoogleSheetsRealtime('letters', newLetter, 'insert', systemSettings.appsScriptUrl);
   };
 
   const updateOfficialLetter = (letter: OfficialLetter) => {
-    setOfficialLetters(prev => prev.map(l => l.Letter_ID === letter.Letter_ID ? letter : l));
+    const updatedLetter = { ...letter, UpdatedAt: new Date().toISOString() };
+    setOfficialLetters(prev => {
+      const next = prev.map(l => l.Letter_ID === letter.Letter_ID ? updatedLetter : l);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(next));
+      return next;
+    });
     addAuditLog('تحديث كتاب رسمي', 'قسم المكنة والطباعة', `تعديل بيانات الكتاب ذي العدد (${letter.LetterNumber})`);
-    fsSaveOfficialLetter(letter).catch(err => console.warn('Firestore letter update:', err));
-    pushToGoogleSheetsRealtime('letters', letter, 'update', systemSettings.appsScriptUrl);
+    fsSaveOfficialLetter(updatedLetter).catch(err => console.warn('Firestore letter update:', err));
+    pushToGoogleSheetsRealtime('letters', updatedLetter, 'update', systemSettings.appsScriptUrl);
   };
 
   const deleteOfficialLetter = (letterId: string) => {
@@ -1849,6 +1953,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSystemSettings(merged);
     fsSaveSettings(merged).catch(err => console.warn('Firestore settings update:', err));
     addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام');
+  };
+
+  const setGoogleDriveFolderId = (rawFolderId: string) => {
+    if (!rawFolderId) return;
+    let cleanId = rawFolderId.trim();
+    const match = cleanId.match(/folders\/([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+      cleanId = match[1];
+    } else {
+      cleanId = cleanId.split('?')[0].split('&')[0];
+    }
+    setDriveFolderId(cleanId);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('al_nashi_drive_folder_id', cleanId);
+    }
+    updateSettings({ googleDriveFolderId: cleanId });
+    try {
+      sheetsIntegration.refreshLocalConfig();
+    } catch {}
+    addAuditLog('تحديث مجلد Google Drive', 'لوحة المطور', `تم ربط وتثبيت معرف المجلد (${cleanId}) في المنظومة`);
   };
 
   const dismissNotification = (id: string) => {
@@ -2308,69 +2432,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const res = await fsBulkPullAll();
       if (res.success) {
         const deletedIds = getStoredDeletedIds();
-        if (res.citizens) {
-          const valid = res.citizens.filter(c => c && !deletedIds.has(c.Citizen_ID));
-          if (valid.length > 0) {
-            setCitizens(valid);
-            try {
-              localStorage.setItem('al_nashi_has_real_data', 'true');
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(valid));
-            } catch {}
-          }
+        if (res.citizens && res.citizens.length > 0) {
+          setCitizens(prev => {
+            const merged = mergeCitizens(prev, res.citizens, deletedIds);
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
+            return merged;
+          });
+          try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
         }
-        if (res.requests) {
-          const valid = res.requests.filter(r => r && !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID));
-          if (valid.length > 0) {
-            setRequests(valid);
-            try {
-              localStorage.setItem('al_nashi_has_real_data', 'true');
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(valid));
-            } catch {}
-          }
+        if (res.requests && res.requests.length > 0) {
+          setRequests(prev => {
+            const merged = mergeRequests(prev, res.requests, deletedIds);
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
+            return merged;
+          });
+          try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
         }
-        if (res.interviews) {
-          const valid = res.interviews.filter(i => i && !deletedIds.has(i.Interview_ID) && !deletedIds.has(i.Citizen_ID));
-          if (valid.length > 0) {
-            setInterviews(valid);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(valid));
-          }
+        if (res.interviews && res.interviews.length > 0) {
+          setInterviews(prev => {
+            const merged = mergeInterviews(prev, res.interviews, deletedIds);
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
+            return merged;
+          });
         }
-        if (res.officialLetters) {
-          const valid = res.officialLetters.filter(l => l && !deletedIds.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIds.has(l.Citizen_ID)));
-          if (valid.length > 0) {
-            setOfficialLetters(valid);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(valid));
-          }
+        if (res.officialLetters && res.officialLetters.length > 0) {
+          setOfficialLetters(prev => {
+            const merged = mergeOfficialLetters(prev, res.officialLetters, deletedIds);
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
+            return merged;
+          });
         }
-        if (res.cheques) {
-          const valid = res.cheques.filter(ch => ch && !deletedIds.has(ch.id) && !deletedIds.has(ch.Citizen_ID));
-          if (valid.length > 0) {
-            setCheques(valid);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(valid));
-          }
+        if (res.cheques && res.cheques.length > 0) {
+          setCheques(prev => {
+            const merged = mergeCheques(prev, res.cheques, deletedIds);
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
+            return merged;
+          });
         }
-        if (res.organizationRecords) {
-          const valid = res.organizationRecords.filter(o => o && !deletedIds.has(o.Org_ID) && !deletedIds.has(o.Citizen_ID));
-          if (valid.length > 0) {
-            setOrganizationRecords(valid);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(valid));
-          }
+        if (res.organizationRecords && res.organizationRecords.length > 0) {
+          setOrganizationRecords(prev => {
+            const merged = mergeOrganizationRecords(prev, res.organizationRecords, deletedIds);
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
+            return merged;
+          });
         }
-        if (res.customSections) {
-          const valid = res.customSections.filter(s => s && !deletedIds.has(s.id));
-          if (valid.length > 0) {
-            setCustomSections(valid);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(valid));
-          }
+        if (res.customSections && res.customSections.length > 0) {
+          setCustomSections(prev => {
+            const merged = mergeCustomSections(prev, res.customSections, deletedIds);
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(merged));
+            return merged;
+          });
         }
-        if (res.customRecords) {
-          const valid = res.customRecords.filter(r => r && !deletedIds.has(r.id) && !deletedIds.has(r.sectionId));
-          if (valid.length > 0) {
-            setCustomRecords(valid);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(valid));
-          }
+        if (res.customRecords && res.customRecords.length > 0) {
+          setCustomRecords(prev => {
+            const merged = mergeCustomRecords(prev, res.customRecords, deletedIds);
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(merged));
+            return merged;
+          });
         }
-        if (res.users && res.users.length > 0) setUsers(res.users);
+        if (res.users && res.users.length > 0) setUsers(prev => mergeUsers(prev, res.users));
         if (res.developerPasscode) setDeveloperPasscodeState(res.developerPasscode);
         if (res.systemSettings) setSystemSettings(prev => ({ ...prev, ...res.systemSettings }));
         return { success: true };
@@ -2581,20 +2701,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const fetchAllFromGoogleSheetsNow = async (): Promise<{ success: boolean; message: string }> => {
     setIsGoogleSyncing(true);
+    const deletedIds = getStoredDeletedIds();
     try {
       // Attempt 1: Direct Integration Layer
       try {
         const fullData = await sheetsIntegration.fetchAllData();
         if (fullData && ((fullData.citizens && fullData.citizens.length > 0) || (fullData.requests && fullData.requests.length > 0))) {
-          if (fullData.citizens && fullData.citizens.length > 0) setCitizens(fullData.citizens);
-          if (fullData.requests && fullData.requests.length > 0) setRequests(fullData.requests);
-          if (fullData.interviews && fullData.interviews.length > 0) setInterviews(fullData.interviews);
-          if (fullData.officialLetters && fullData.officialLetters.length > 0) setOfficialLetters(fullData.officialLetters);
-          if (fullData.organizationRecords && fullData.organizationRecords.length > 0) setOrganizationRecords(fullData.organizationRecords);
-          if (fullData.cheques && fullData.cheques.length > 0) setCheques(fullData.cheques);
+          if (fullData.citizens && fullData.citizens.length > 0) {
+            setCitizens(prev => {
+              const merged = mergeCitizens(prev, fullData.citizens, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (fullData.requests && fullData.requests.length > 0) {
+            setRequests(prev => {
+              const merged = mergeRequests(prev, fullData.requests, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (fullData.interviews && fullData.interviews.length > 0) {
+            setInterviews(prev => {
+              const merged = mergeInterviews(prev, fullData.interviews, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (fullData.officialLetters && fullData.officialLetters.length > 0) {
+            setOfficialLetters(prev => {
+              const merged = mergeOfficialLetters(prev, fullData.officialLetters, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (fullData.organizationRecords && fullData.organizationRecords.length > 0) {
+            setOrganizationRecords(prev => {
+              const merged = mergeOrganizationRecords(prev, fullData.organizationRecords, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (fullData.cheques && fullData.cheques.length > 0) {
+            setCheques(prev => {
+              const merged = mergeCheques(prev, fullData.cheques, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
+              return merged;
+            });
+          }
           return {
             success: true,
-            message: `✓ تم جلب (${fullData.citizens.length}) مراجع و (${fullData.requests.length}) معاملة مباشرة من Google Sheets بنجاح.`
+            message: `✓ تم دمج ومزامنة (${fullData.citizens.length}) مراجع و (${fullData.requests.length}) معاملة من Google Sheets بنجاح.`
           };
         }
       } catch (directErr) {
@@ -2605,12 +2762,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const res = await pullAllDataFromGoogleSheets();
         if (res.success && res.data && (res.data.citizens.length > 0 || res.data.requests.length > 0)) {
-          if (res.data.citizens.length > 0) setCitizens(res.data.citizens);
-          if (res.data.requests.length > 0) setRequests(res.data.requests);
-          if (res.data.interviews.length > 0) setInterviews(res.data.interviews);
-          if (res.data.officialLetters.length > 0) setOfficialLetters(res.data.officialLetters);
-          if (res.data.organizationRecords.length > 0) setOrganizationRecords(res.data.organizationRecords);
-          if (res.data.cheques.length > 0) setCheques(res.data.cheques);
+          if (res.data.citizens.length > 0) {
+            setCitizens(prev => {
+              const merged = mergeCitizens(prev, res.data.citizens, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (res.data.requests.length > 0) {
+            setRequests(prev => {
+              const merged = mergeRequests(prev, res.data.requests, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (res.data.interviews.length > 0) {
+            setInterviews(prev => {
+              const merged = mergeInterviews(prev, res.data.interviews, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (res.data.officialLetters.length > 0) {
+            setOfficialLetters(prev => {
+              const merged = mergeOfficialLetters(prev, res.data.officialLetters, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (res.data.organizationRecords.length > 0) {
+            setOrganizationRecords(prev => {
+              const merged = mergeOrganizationRecords(prev, res.data.organizationRecords, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (res.data.cheques.length > 0) {
+            setCheques(prev => {
+              const merged = mergeCheques(prev, res.data.cheques, deletedIds);
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
+              return merged;
+            });
+          }
           return { success: true, message: `✓ ${res.message}` };
         }
       } catch (batchErr) {
@@ -2623,12 +2816,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         try {
           const scriptRes = await pullDataFromGoogleAppsScript(targetScriptUrl);
           if (scriptRes && scriptRes.success && scriptRes.data) {
-            if (scriptRes.data.citizens.length > 0) setCitizens(scriptRes.data.citizens);
-            if (scriptRes.data.requests.length > 0) setRequests(scriptRes.data.requests);
-            if (scriptRes.data.interviews.length > 0) setInterviews(scriptRes.data.interviews);
-            if (scriptRes.data.officialLetters.length > 0) setOfficialLetters(scriptRes.data.officialLetters);
-            if (scriptRes.data.organizationRecords.length > 0) setOrganizationRecords(scriptRes.data.organizationRecords);
-            if (scriptRes.data.cheques.length > 0) setCheques(scriptRes.data.cheques);
+            if (scriptRes.data.citizens.length > 0) {
+              setCitizens(prev => {
+                const merged = mergeCitizens(prev, scriptRes.data.citizens, deletedIds);
+                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
+                return merged;
+              });
+            }
+            if (scriptRes.data.requests.length > 0) {
+              setRequests(prev => {
+                const merged = mergeRequests(prev, scriptRes.data.requests, deletedIds);
+                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
+                return merged;
+              });
+            }
+            if (scriptRes.data.interviews.length > 0) {
+              setInterviews(prev => {
+                const merged = mergeInterviews(prev, scriptRes.data.interviews, deletedIds);
+                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
+                return merged;
+              });
+            }
+            if (scriptRes.data.officialLetters.length > 0) {
+              setOfficialLetters(prev => {
+                const merged = mergeOfficialLetters(prev, scriptRes.data.officialLetters, deletedIds);
+                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
+                return merged;
+              });
+            }
+            if (scriptRes.data.organizationRecords.length > 0) {
+              setOrganizationRecords(prev => {
+                const merged = mergeOrganizationRecords(prev, scriptRes.data.organizationRecords, deletedIds);
+                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
+                return merged;
+              });
+            }
+            if (scriptRes.data.cheques.length > 0) {
+              setCheques(prev => {
+                const merged = mergeCheques(prev, scriptRes.data.cheques, deletedIds);
+                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
+                return merged;
+              });
+            }
             return {
               success: true,
               message: scriptRes.message || `✓ تم جلب (${scriptRes.data.citizens.length}) مراجع من Google Sheets عبر Apps Script.`
@@ -2641,7 +2870,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return {
         success: false,
-        message: 'لم يتم العثور على بيانات في جدول Google Sheets أو يلزم تسجيل الدخول بحساب Google أولاً لمنح الصلاحيات.'
+        message: 'لا تتوفر بيانات جديدة من Google Sheets أو لم يتم ربط الحساب.'
       };
     } finally {
       setIsGoogleSyncing(false);
@@ -2677,6 +2906,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateCitizen,
         deleteCitizen,
         findCitizenByIdOrName,
+        blockCitizen,
+        unblockCitizen,
+        checkIfCitizenBlocked,
         requests,
         addRequest,
         updateRequest,
@@ -2744,6 +2976,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         googleUserEmail,
         spreadsheetId,
         driveFolderId,
+        setGoogleDriveFolderId,
         syncAllToGoogleSheetsNow,
         fetchAllFromGoogleSheetsNow,
         loginWithGoogleDeveloper,

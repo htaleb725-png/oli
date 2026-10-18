@@ -40,7 +40,8 @@ import {
   Send,
   Sliders,
   Settings2,
-  Upload
+  Upload,
+  ShieldAlert
 } from 'lucide-react';
 import { UnifiedCitizenCardModal } from './UnifiedCitizenCardModal';
 import { SearchableSelect } from './SearchableSelect';
@@ -191,7 +192,8 @@ export const ReceptionModule: React.FC = () => {
     systemSettings,
     addReceptionCustomField,
     deleteReceptionCustomField,
-    toggleReceptionDefaultField
+    toggleReceptionDefaultField,
+    checkIfCitizenBlocked
   } = useApp();
 
   const isDeveloper = currentUser?.Role === 'developer';
@@ -313,6 +315,12 @@ export const ReceptionModule: React.FC = () => {
   const handleSaveNewRequestForCitizen = (e: React.FormEvent) => {
     e.preventDefault();
     if (!citizenForNewRequest || !newReqSubject.trim()) return;
+
+    if (citizenForNewRequest.IsBlocked) {
+      alert(`⛔ تنبيه فوري: لا يمكن إتمام العملية!\n\nالمواطن "${citizenForNewRequest.FullName}" مدرج في «القائمة السوداء» (الأشخاص المحظورين).\nسبب الحظر: ${citizenForNewRequest.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${citizenForNewRequest.BlockedAt || 'سابقاً'}\nبواسطة: ${citizenForNewRequest.BlockedBy || 'الإدارة'}\n\nيمنع النظام تسجيل أو إضافة أي طلب جديد لهذا الشخص نهائياً.`);
+      return;
+    }
+
     addRequest({
       Citizen_ID: citizenForNewRequest.Citizen_ID,
       CitizenName: citizenForNewRequest.FullName,
@@ -512,6 +520,29 @@ export const ReceptionModule: React.FC = () => {
 
     return matchCitizen || null;
   }, [firstName, fatherName, grandFatherName, greatGrandFatherName, surname, phone1, citizens]);
+
+  // فحص وتدقيق القائمة السوداء الفوري أثناء كتابة الاسم أو رقم الهاتف لمنع المراجع المحظور
+  const blockedCitizenMatch = useMemo(() => {
+    // 1. إذا كان المواطن المطابق مسبقاً محظوراً
+    if (existingMatchedCitizen && existingMatchedCitizen.IsBlocked) {
+      return existingMatchedCitizen;
+    }
+    // 2. فحص الاسم المكتوب حالياً
+    const composed = [firstName, fatherName, grandFatherName, greatGrandFatherName, surname && surname !== 'عام / بدون لقب' ? surname : '']
+      .map(s => s.trim())
+      .filter(Boolean)
+      .join(' ');
+    if (composed.length >= 3) {
+      const res = checkIfCitizenBlocked(composed);
+      if (res.isBlocked && res.citizen) return res.citizen;
+    }
+    // 3. فحص رقم الهاتف
+    if (phone1.trim().length >= 8) {
+      const resPhone = checkIfCitizenBlocked(phone1.trim());
+      if (resPhone.isBlocked && resPhone.citizen) return resPhone.citizen;
+    }
+    return null;
+  }, [existingMatchedCitizen, firstName, fatherName, grandFatherName, greatGrandFatherName, surname, phone1, checkIfCitizenBlocked]);
 
   // Filtered citizens matching interview search query (e.g. حسن طالب)
   const matchedInterviewCitizens = useMemo(() => {
@@ -785,11 +816,25 @@ export const ReceptionModule: React.FC = () => {
       return;
     }
 
+    // التحقق الصارم من القائمة السوداء: إظهار تنبيه فوري يوضح سبب الحظر ومنع إتمام العملية نهائياً
+    const targetBlocked = blockedCitizenMatch || (existingMatchedCitizen && existingMatchedCitizen.IsBlocked ? existingMatchedCitizen : null);
+    if (targetBlocked) {
+      alert(`⛔ تنبيه فوري أمني ورقابي: لا يمكن إتمام عملية التسجيل!\n\nالمواطن "${targetBlocked.FullName}" مدرج في «القائمة السوداء» (الأشخاص المحظورين).\n\nسبب الحظر: ${targetBlocked.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${targetBlocked.BlockedAt || 'سابقاً'}\nجهة الحظر: ${targetBlocked.BlockedBy || 'الإدارة'}\n\nيمنع النظام تسجيل أو حفظ أي طلب جديد لهذا الشخص نهائياً حتى يتم رفع الحظر رسمياً من قسم الإدارة.`);
+      return;
+    }
+
     const nameParts = [firstName.trim(), fatherName.trim()];
     if (grandFatherName.trim()) nameParts.push(grandFatherName.trim());
     if (greatGrandFatherName.trim()) nameParts.push(greatGrandFatherName.trim());
     if (surname.trim() && surname.trim() !== 'عام / بدون لقب') nameParts.push(surname.trim());
     const finalFullName = nameParts.join(' ');
+
+    // فحص إضافي للتأكد بالاسم النهائي الكامل
+    const finalCheck = checkIfCitizenBlocked(finalFullName);
+    if (finalCheck.isBlocked && finalCheck.citizen) {
+      alert(`⛔ تنبيه فوري أمني ورقابي: لا يمكن إتمام العملية!\n\nالاسم المدخل "${finalCheck.citizen.FullName}" مسجل في «القائمة السوداء» (الأشخاص المحظورين).\n\nسبب الحظر: ${finalCheck.citizen.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${finalCheck.citizen.BlockedAt || 'سابقاً'}\nجهة الحظر: ${finalCheck.citizen.BlockedBy || 'الإدارة'}\n\nيمنع النظام تسجيل أو حفظ أي طلب جديد لهذا الشخص نهائياً.`);
+      return;
+    }
 
     const finalDistrict = district === 'أخرى' && customDistrict.trim() ? customDistrict.trim() : district;
 
@@ -1249,29 +1294,72 @@ export const ReceptionModule: React.FC = () => {
 
           <form onSubmit={handleSaveCitizen} className="space-y-3.5 text-xs">
             
-            {/* Live Duplicate Alert - نص المطلوب: الاسم مسجل في النظام يرجى الدخول للبحث وكتابة الاسم واضافة طلب او تعديل */}
-            {existingMatchedCitizen && (
-              <div className="p-3 sm:p-3.5 rounded-2xl bg-amber-50 border-2 border-amber-400 text-amber-950 space-y-3 shadow-sm animate-in fade-in slide-in-from-top-2 duration-200">
+            {/* Live Duplicate Alert & Blacklist Alert */}
+            {blockedCitizenMatch ? (
+              <div className="p-4 rounded-2xl border-2 border-red-500 bg-red-50 text-red-950 space-y-3 shadow-lg animate-in fade-in slide-in-from-top-2 duration-200 ring-2 ring-red-400/50">
+                {/* Special Blacklist Banner Header */}
+                <div className="p-3.5 rounded-xl bg-red-600 text-white flex items-center justify-between gap-2 shadow-sm">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-2xl animate-pulse">⛔</span>
+                    <div>
+                      <h4 className="font-black text-sm">تنبيه فوري مشدد: هذا المواطن مدرج في «القائمة السوداء» (الأشخاص المحظورين)!</h4>
+                      <p className="text-xs text-red-100 font-bold mt-0.5">
+                        سبب الحظر: {blockedCitizenMatch.BlockReason || 'غير محدد'}
+                        {blockedCitizenMatch.BlockedAt ? ` • تاريخ الحظر: ${blockedCitizenMatch.BlockedAt}` : ''}
+                        {blockedCitizenMatch.BlockedBy ? ` • جهة الحظر: ${blockedCitizenMatch.BlockedBy}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <span className="px-2.5 py-1 rounded text-xs font-black bg-white text-red-700 font-mono shadow-xs shrink-0">
+                    {blockedCitizenMatch.Citizen_ID}
+                  </span>
+                </div>
+
+                <div className="p-3 bg-white/90 rounded-xl border border-red-200 text-xs space-y-1.5">
+                  <p className="text-slate-900 font-black">
+                    المواطن: <span className="underline text-red-700 font-bold">{blockedCitizenMatch.FullName}</span>
+                    {blockedCitizenMatch.Phone1 ? ` • الهاتف: ${blockedCitizenMatch.Phone1}` : ''}
+                    {blockedCitizenMatch.District ? ` • القضاء: ${blockedCitizenMatch.District}` : ''}
+                    {blockedCitizenMatch.Job ? ` • المهنة: ${blockedCitizenMatch.Job}` : ''}
+                  </p>
+                  <p className="text-red-800 font-black text-xs flex items-center gap-1.5">
+                    <span>🚫 تنبيه للنظام: تم إيقاف وإغلاق إمكانية إتمام العملية نهائياً ولا يمكن تسجيل أي طلب جديد لهذا الشخص حتى يتم إلغاء الحظر رسمياً من قسم الإدارة.</span>
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-1 border-t border-red-200">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCitizenForCard(blockedCitizenMatch)}
+                    className="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <Eye className="w-3.5 h-3.5 text-blue-600" />
+                    <span>معاينة ملف المحظور</span>
+                  </button>
+                </div>
+              </div>
+            ) : existingMatchedCitizen ? (
+              <div className="p-3.5 rounded-2xl border-2 border-amber-400 bg-amber-50 text-amber-950 space-y-3 shadow-md animate-in fade-in slide-in-from-top-2 duration-200">
                 <div className="flex items-start gap-2.5">
-                  <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center font-black shrink-0 text-base shadow-xs">
+                  <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl text-white flex items-center justify-center font-black shrink-0 text-base shadow-xs bg-amber-500">
                     ⚠️
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <strong className="text-xs font-black text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-md">
+                      <strong className="text-xs font-black px-2 py-0.5 rounded-md border bg-amber-100 border-amber-300 text-amber-900">
                         تحذير: الاسم مسجل في النظام مسبقاً!
                       </strong>
-                      <span className="font-mono font-bold text-blue-800 text-xs bg-white px-2 py-0.5 rounded border border-amber-200">
+                      <span className="font-mono font-bold text-blue-800 text-xs bg-white px-2 py-0.5 rounded border border-slate-200">
                         كود ONA: {existingMatchedCitizen.Citizen_ID}
                       </span>
                     </div>
-                    <p className="text-xs text-amber-950 font-bold mt-1 break-words">
-                      المواطن: <span className="underline text-slate-900 font-black">{existingMatchedCitizen.FullName}</span>
+                    <p className="text-xs text-slate-900 font-black mt-1 break-words">
+                      المواطن: <span className="underline">{existingMatchedCitizen.FullName}</span>
                       {existingMatchedCitizen.Phone1 ? ` • الهاتف: ${existingMatchedCitizen.Phone1}` : ''}
                       {existingMatchedCitizen.District ? ` • القضاء: ${existingMatchedCitizen.District}` : ''}
                       {existingMatchedCitizen.Job ? ` • المهنة: ${existingMatchedCitizen.Job}` : ''}
                     </p>
-                    <p className="text-[11px] text-amber-900 font-semibold mt-0.5">
+                    <p className="text-[11px] font-bold mt-0.5 text-amber-900">
                       الاسم مسجل في النظام، يرجى الدخول للبحث وكتابة الاسم لإضافة طلب جديد أو تعديل بياناته بدلاً من تكرار التسجيل.
                     </p>
                   </div>
@@ -1316,7 +1404,7 @@ export const ReceptionModule: React.FC = () => {
                   </button>
                 </div>
               </div>
-            )}
+            ) : null}
 
             {/* SECTION 1: SEPARATED 4-PART NAME + CLAN DROPDOWN */}
             <div className="space-y-2.5 p-3 sm:p-4 rounded-xl bg-slate-50 border border-slate-200">
@@ -1854,10 +1942,24 @@ export const ReceptionModule: React.FC = () => {
 
               <button
                 type="submit"
-                className="w-full sm:flex-1 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-600/30 transition-all cursor-pointer active:scale-98"
+                disabled={Boolean(blockedCitizenMatch)}
+                className={`w-full sm:flex-1 py-3 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md transition-all ${
+                  blockedCitizenMatch
+                    ? 'bg-red-600 text-white cursor-not-allowed opacity-90 shadow-red-600/30 ring-2 ring-red-400'
+                    : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-blue-600/30 cursor-pointer active:scale-98'
+                }`}
               >
-                <Save className="w-4 h-4 text-amber-300" />
-                <span>حفظ المراجع وباقة الطلبات وتوليد الكود الثابت ONA</span>
+                {blockedCitizenMatch ? (
+                  <>
+                    <ShieldAlert className="w-4 h-4 text-white animate-pulse" />
+                    <span>⛔ محظور بالقائمة السوداء - لا يمكن إتمام العملية أو حفظ الطلب</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 text-amber-300" />
+                    <span>حفظ المراجع وباقة الطلبات وتوليد الكود الثابت ONA</span>
+                  </>
+                )}
               </button>
             </div>
           </form>
@@ -3759,6 +3861,24 @@ export const ReceptionModule: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveNewRequestForCitizen} className="space-y-2.5 text-xs">
+              {/* Blacklist Alert inside Modal */}
+              {citizenForNewRequest.IsBlocked && (
+                <div className="p-3 rounded-xl bg-red-50 border-2 border-red-500 text-red-950 space-y-1 shadow-sm animate-in fade-in">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">⛔</span>
+                    <h4 className="font-black text-xs text-red-900">تنبيه فوري: هذا المواطن مدرج في «القائمة السوداء»!</h4>
+                  </div>
+                  <p className="text-[11px] text-red-800 font-bold">
+                    سبب الحظر: {citizenForNewRequest.BlockReason || 'غير محدد'}
+                    {citizenForNewRequest.BlockedAt ? ` • بتاريخ: ${citizenForNewRequest.BlockedAt}` : ''}
+                    {citizenForNewRequest.BlockedBy ? ` • بواسطة: ${citizenForNewRequest.BlockedBy}` : ''}
+                  </p>
+                  <p className="text-[10px] text-red-700 font-black">
+                    🚫 يمنع النظام تماماً إضافة أي طلبات جديدة لهذا الشخص قبل رفع الحظر رسمياً.
+                  </p>
+                </div>
+              )}
+
               <div>
                 <label className="block text-slate-700 font-bold mb-1 text-[11px]">الوزارة / الجهة المعنية *</label>
                 <select
@@ -3811,10 +3931,15 @@ export const ReceptionModule: React.FC = () => {
               <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="submit"
-                  className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                  disabled={Boolean(citizenForNewRequest.IsBlocked)}
+                  className={`flex-1 py-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors ${
+                    citizenForNewRequest.IsBlocked
+                      ? 'bg-red-500 text-white cursor-not-allowed opacity-70'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                  }`}
                 >
                   <Save className="w-3.5 h-3.5" />
-                  <span>حفظ وإدراج الطلب تحت الكود الثابت</span>
+                  <span>{citizenForNewRequest.IsBlocked ? '⛔ محظور بالقائمة السوداء - لا يمكن الإتمام' : 'حفظ وإدراج الطلب تحت الكود الثابت'}</span>
                 </button>
                 <button
                   type="button"

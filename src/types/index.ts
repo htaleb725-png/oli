@@ -103,6 +103,11 @@ export interface Citizen {
   ProxyAddress?: string;  // عنوان سكن الشخص الذي جلب الطلب
   ProxyRelation?: string; // صلة القرابة أو الصفة
   DependencyStatus?: 'مستقل' | 'غير مستقل'; // المستفيدين المستقلين أو غير المستقلين
+  IsBlocked?: boolean;    // حالة الحظر في القائمة السوداء
+  BlockReason?: string;   // سبب الحظر
+  BlockedAt?: string;     // تاريخ الحظر
+  BlockedBy?: string;     // الموظف القائم بالحظر
+  UpdatedAt?: string;
 }
 
 export type RequestStatus = 'مستلم' | 'غير مستلم' | 'معاد' | 'غير مستوفي للشروط' | 'خاص';
@@ -141,7 +146,7 @@ export interface OfficeRequest {
   WorkflowHistory?: WorkflowAction[];
   DeputyNotes?: string;
   ExecutiveAction?: string;
-  OutgoingNumber?: string; // العدد الصادر التراكمي
+  OutgoingNumber?: string; // العدد الصادر أو رقم الكتاب الرسمي
   OutgoingDate?: string;   // تاريخ الصادر
   IsKhadamatAlliance?: boolean; // خاص بتحالف خدمات
   RegisteredVia?: 'استعلامات' | 'إدارة' | 'بوابة_المواطن' | string;
@@ -159,6 +164,14 @@ export interface OfficeRequest {
   DirectorDecisionDate?: string; // تاريخ قرار المدير
   DirectorDecisionBy?: string; // اسم المدير الذي اتخذ القرار
   ReceptionNotes?: string; // الملاحظات الأصلية التي أدلى بها قسم الاستعلامات
+  Education?: string;      // التحصيل الدراسي
+  Job?: string;            // نوع العمل
+  ReferralSource?: string; // المعرف
+  Address?: string;        // عنوان السكن
+  OtherNotes?: string;     // ملاحظات أخرى
+  IsBlocked?: boolean;     // هل المراجع محظور
+  BlockReason?: string;    // سبب الحظر
+  UpdatedAt?: string;
 }
 
 export interface ChequeRecord {

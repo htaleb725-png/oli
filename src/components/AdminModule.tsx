@@ -36,7 +36,8 @@ import {
   Lock,
   ShieldAlert,
   Flame,
-  Layers
+  Layers,
+  Briefcase
 } from 'lucide-react';
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { DirectScannerPrinter } from './DirectScannerPrinter';
@@ -44,6 +45,9 @@ import { AiRequestDrafterModal } from './AiRequestDrafterModal';
 import { SmartImageArchiveModule } from './SmartImageArchiveModule';
 import { ReferrersStats } from './ReferrersStats';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+import { DailyWorkAdminSection } from './DailyWorkAdminSection';
+import { DataCrossMatchingModule } from './DataCrossMatchingModule';
+import { BlacklistModule } from './BlacklistModule';
 import { SYSTEM_PERMISSIONS } from '../types';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
@@ -92,7 +96,7 @@ export const AdminModule: React.FC = () => {
     });
   };
 
-  const [activeTab, setActiveTab] = useState<'requests_list' | 'reception_citizens' | 'direct_scanner' | 'smart_images' | 'referrers' | 'department_staff' | 'manage_departments'>('requests_list');
+  const [activeTab, setActiveTab] = useState<'hub' | 'daily_work' | 'requests_list' | 'reception_citizens' | 'direct_scanner' | 'smart_images' | 'data_cross' | 'blacklist' | 'referrers' | 'department_staff' | 'manage_departments'>('hub');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [receptionSearch, setReceptionSearch] = useState('');
@@ -333,6 +337,10 @@ export const AdminModule: React.FC = () => {
         alert('يرجى اختيار مراجع مسجل بالنظام أولاً.');
         return;
       }
+      if (citizen.IsBlocked) {
+        alert(`⛔ تنبيه فوري: لا يمكن إتمام العملية!\n\nالمواطن "${citizen.FullName}" مدرج في «القائمة السوداء» (الأشخاص المحظورين).\nسبب الحظر: ${citizen.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${citizen.BlockedAt || 'سابقاً'}\nبواسطة: ${citizen.BlockedBy || 'الإدارة'}\n\nيمنع النظام تسجيل أي طلب جديد لهذا الشخص نهائياً.`);
+        return;
+      }
 
       const nowStamp = new Date().toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
       const currentUploader = currentUser?.FullName || 'موظف الإدارة';
@@ -448,314 +456,330 @@ export const AdminModule: React.FC = () => {
 
   return (
     <div className="space-y-4 text-right">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <FolderKanban className="w-5 h-5 text-blue-600" />
-            <h2 className="text-base font-bold text-slate-900">قسم الإدارة ومتابعة المعاملات الحكومية</h2>
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-              {requests.length} معاملة مسجلة
-            </span>
+      {/* HUB VIEW: Desktop Icon Grid for Administration */}
+      {activeTab === 'hub' && (
+        <div className="space-y-4 animate-in fade-in duration-200">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <FolderKanban className="w-5 h-5 text-blue-600" />
+                <h2 className="text-base font-bold text-slate-900 dark:text-white">قسم الإدارة ومتابعة المعاملات الحكومية</h2>
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                  {requests.length} معاملة مسجلة
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                سلسلة الإحالات المتكاملة: الاستعلامات ← مدير المكتب ← مدير الإدارة ← مدير التنظيم مع ماسح ضوئي وطباعة مباشرة.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => {
+                  setScannerCitizenId(citizens[0]?.Citizen_ID || '');
+                  setActiveTab('direct_scanner');
+                }}
+                className="px-3.5 py-2 rounded-lg bg-blue-900 hover:bg-blue-800 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+              >
+                <Scan className="w-4 h-4 text-blue-300" />
+                <span>سكنر مباشر إلى الطابعة</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('smart_images')}
+                className="px-3.5 py-2 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                title="أرشفة واستخراج صور المعاملات (1000 - 2000 صورة) بالاسم التلقائي واليدوي"
+              >
+                <FileImage className="w-4 h-4 text-emerald-200" />
+                <span>إرفاق صور المعاملات (1000 - 2000 صورة)</span>
+              </button>
+
+              <button
+                onClick={() => setActiveSection('dashboard')}
+                className="px-3.5 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
+                title="الانتقال إلى لوحة تحكم وإحصائيات قسم الإدارة والمعاملات"
+              >
+                <BarChart2 className="w-4 h-4 text-amber-600" />
+                <span>لوحة إحصائيات الإدارة</span>
+              </button>
+
+              <button
+                onClick={() => setActiveSection('drive_requests')}
+                className="px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                title="البحث والطباعة المباشرة من أرشيف Google Drive"
+              >
+                <Printer className="w-4 h-4" />
+                <span>البحث والطباعة (Drive)</span>
+              </button>
+
+              <button
+                onClick={() => setShowAiDrafterModal(true)}
+                className="px-3.5 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
+                title="توليد وصياغة طلب رسمي بالذكاء الاصطناعي"
+              >
+                <Sparkles className="w-4 h-4 text-amber-300" />
+                <span>توليد طلب بالذكاء الاصطناعي</span>
+              </button>
+
+              <button
+                onClick={handleExportComprehensiveExcel}
+                className="px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs active:scale-95"
+                title="تصدير قاعدة بيانات المنظومة بالكامل بكافة الجداول والصور في ملف Excel واحد"
+              >
+                <Download className="w-4 h-4" />
+                <span>تصدير Excel الشامل</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setEditingRequest(null);
+                  setDetails('');
+                  setSelectedCitizenId(citizens[0]?.Citizen_ID || '');
+                  setShowAddModal(true);
+                }}
+                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ إنشاء طلب إداري جديد</span>
+              </button>
+            </div>
           </div>
-          <p className="text-xs text-slate-500">
-            سلسلة الإحالات المتكاملة: الاستعلامات ← مدير المكتب ← مدير الإدارة ← مدير التنظيم مع ماسح ضوئي وطباعة مباشرة.
-          </p>
+
+          <OfficeIconTilesGrid
+          title="أيقونات ومهام قسم الإدارة والمعاملات"
+          subtitle="انقر على أي أيقونة للدخول المباشر إلى محتواها وقسم العمل المخصص"
+          columns={4}
+          items={[
+            {
+              id: 'adm_daily_work',
+              title: 'العمل اليومي (الاستعلامات والمدير)',
+              subtitle: 'إكمال الطلب، إخراج الصادر، التعديل والحظر',
+              icon: Briefcase,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              badge: citizens.length,
+              badgeColor: 'bg-blue-600 text-white font-bold',
+              onClick: () => setActiveTab('daily_work')
+            },
+            {
+              id: 'adm_smart_images',
+              title: 'أرشيف صور المعاملات والطلبات',
+              subtitle: 'رفع وحفظ الصور والمستمسكات كما هي (1000-2000)',
+              icon: FileImage,
+              iconColor: 'text-teal-600 dark:text-teal-400',
+              iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+              onClick: () => setActiveTab('smart_images')
+            },
+            {
+              id: 'adm_data_cross',
+              title: 'مقاطعة البيانات (البحث الموحد والاستخراج)',
+              subtitle: 'بحث حتى 1000 اسم، رعاية، مقابلات، إكسل، PDF وحظر',
+              icon: Layers,
+              iconColor: 'text-indigo-600 dark:text-indigo-400',
+              iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
+              badge: '1000 اسم ⚡',
+              badgeColor: 'bg-indigo-600 text-white font-bold',
+              onClick: () => setActiveTab('data_cross')
+            },
+            {
+              id: 'adm_blacklist',
+              title: 'القائمة السوداء (الأشخاص المحظورين)',
+              subtitle: 'سجل المحظورين، أسباب الحظر، وإلغاء الحظر',
+              icon: ShieldAlert,
+              iconColor: 'text-red-600 dark:text-red-400',
+              iconBg: 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800',
+              badge: citizens.filter(c => c.IsBlocked).length || null,
+              badgeColor: 'bg-red-600 text-white animate-pulse font-black',
+              onClick: () => setActiveTab('blacklist')
+            },
+            {
+              id: 'adm_all_reqs',
+              title: 'كافة المعاملات والطلبات الحكومية',
+              subtitle: 'السجل العام للطلبات والكتب مع التصفية والبحث',
+              icon: FolderKanban,
+              iconColor: 'text-slate-700 dark:text-slate-300',
+              iconBg: 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700',
+              badge: requests.length,
+              badgeColor: 'bg-slate-700 text-white font-bold',
+              onClick: () => {
+                setActiveTab('requests_list');
+                setSelectedStatusFilter('all');
+                setSelectedPriorityFilter('all');
+              }
+            },
+            {
+              id: 'adm_reception_feed',
+              title: 'وارد مراجعي الاستعلامات والإحالات',
+              subtitle: 'المواطنون المحالون للإدارة ومسار المعاملة',
+              icon: Users,
+              iconColor: 'text-cyan-600 dark:text-cyan-400',
+              iconBg: 'bg-cyan-50 dark:bg-cyan-950/50 border-cyan-200 dark:border-cyan-800',
+              badge: citizens.length,
+              badgeColor: 'bg-cyan-600 text-white font-bold',
+              onClick: () => setActiveTab('reception_citizens')
+            },
+            {
+              id: 'adm_scanner',
+              title: 'ماسح Scanner إلى الطابعة',
+              subtitle: 'سحب المستمسكات والكتب فورياً من الماسح للطابعة',
+              icon: Scan,
+              iconColor: 'text-purple-600 dark:text-purple-400',
+              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
+              onClick: () => {
+                setScannerCitizenId(citizens[0]?.Citizen_ID || '');
+                setActiveTab('direct_scanner');
+              }
+            },
+            {
+              id: 'adm_referrers',
+              title: 'إحصائيات التزكيات والمعرفين',
+              subtitle: 'المصادر والجهات المحيلة وتزكيات المراجعين',
+              icon: Users2,
+              iconColor: 'text-indigo-600 dark:text-indigo-400',
+              iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
+              onClick: () => setActiveTab('referrers')
+            },
+            {
+              id: 'adm_department_staff',
+              title: 'كادر قسم الإدارة والصلاحيات',
+              subtitle: 'موظفي قسم الإدارة والصلاحيات الممنوحة لهم',
+              icon: Users,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: users.filter(u => u.Role === 'admin' || u.Department?.includes('الإدارة')).length,
+              badgeColor: 'bg-amber-600 text-white font-bold',
+              onClick: () => setActiveTab('department_staff')
+            },
+            {
+              id: 'adm_manage_departments',
+              title: 'إدارة وتطوير أقسام المكتب',
+              subtitle: 'تطوير وتخصيص الأقسام والجهات والبيانات',
+              icon: Layers,
+              iconColor: 'text-purple-600 dark:text-purple-400',
+              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
+              badge: customSections.length,
+              badgeColor: 'bg-purple-600 text-white font-bold',
+              onClick: () => setActiveTab('manage_departments')
+            },
+            ...(canDownloadDatabase(currentUser?.Role) ? [{
+              id: 'adm_export',
+              title: 'تصدير قاعدة البيانات الشاملة Excel',
+              subtitle: 'سحب كشف كامل لكافة الجداول والصور والمرفقات',
+              icon: Download,
+              iconColor: 'text-teal-600 dark:text-teal-400',
+              iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+              badge: 'شامل Excel 📥',
+              badgeColor: 'bg-teal-600 text-white',
+              onClick: handleExportComprehensiveExcel
+            }] : []),
+            {
+              id: 'adm_ai_drafter',
+              title: 'صياغة بالذكاء الاصطناعي',
+              subtitle: 'صياغة الكتب الرسمية والمخاطبات',
+              icon: Sparkles,
+              iconColor: 'text-fuchsia-600 dark:text-fuchsia-400',
+              iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-950/50 border-fuchsia-200 dark:border-fuchsia-800',
+              onClick: () => setShowAiDrafterModal(true)
+            }
+          ]}
+        />
         </div>
+      )}
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => {
-              setScannerCitizenId(citizens[0]?.Citizen_ID || '');
-              setActiveTab('direct_scanner');
-            }}
-            className="px-3.5 py-2 rounded-lg bg-blue-900 hover:bg-blue-800 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-          >
-            <Scan className="w-4 h-4 text-blue-300" />
-            <span>سكنر مباشر إلى الطابعة</span>
-          </button>
+      {/* SUBVIEW HEADER: Displayed when inside a specific icon/tool */}
+      {activeTab !== 'hub' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setActiveTab('hub')}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+            >
+              <ArrowLeft className="w-4 h-4 rotate-180" />
+              <span>رجوع إلى لوحة الأيقونات الرئيسية</span>
+            </button>
 
-          <button
-            onClick={() => setActiveTab('smart_images')}
-            className="px-3.5 py-2 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
-            title="أرشفة واستخراج صور المعاملات (1000 - 2000 صورة) بالاسم التلقائي واليدوي"
-          >
-            <FileImage className="w-4 h-4 text-emerald-200" />
-            <span>إرفاق صور المعاملات (1000 - 2000 صورة)</span>
-          </button>
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
 
-          <button
-            onClick={() => setActiveSection('dashboard')}
-            className="px-3.5 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
-            title="الانتقال إلى لوحة تحكم وإحصائيات قسم الإدارة والمعاملات"
-          >
-            <BarChart2 className="w-4 h-4 text-amber-600" />
-            <span>لوحة إحصائيات الإدارة</span>
-          </button>
+            <div className="flex items-center gap-2">
+              <span className="font-black text-sm text-slate-900 dark:text-white">
+                {activeTab === 'daily_work' && '💼 العمل اليومي (معاملات الاستعلامات والمدير)'}
+                {activeTab === 'smart_images' && '🖼️ أرشيف صور المعاملات والطلبات'}
+                {activeTab === 'data_cross' && '🔍 مقاطعة البيانات (البحث الموحد والاستخراج)'}
+                {activeTab === 'blacklist' && '🚫 القائمة السوداء (الأشخاص المحظورين)'}
+                {activeTab === 'requests_list' && '📁 جدول المعاملات والطلبات الحكومية'}
+                {activeTab === 'reception_citizens' && '👥 وارد مراجعي الاستعلامات والإحالات'}
+                {activeTab === 'direct_scanner' && '🖨️ سكنر مباشر إلى الطابعة'}
+                {activeTab === 'referrers' && '👥 قسم المعرفين وتزكيات المراجعين'}
+                {activeTab === 'department_staff' && '👥 كادر قسم الإدارة والصلاحيات'}
+                {activeTab === 'manage_departments' && '⚡ إدارة وتطوير أقسام المكتب'}
+              </span>
+            </div>
+          </div>
 
-          <button
-            onClick={() => setActiveSection('drive_requests')}
-            className="px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-            title="البحث والطباعة المباشرة من أرشيف Google Drive"
-          >
-            <Printer className="w-4 h-4" />
-            <span>البحث والطباعة (Drive)</span>
-          </button>
-
-          <button
-            onClick={() => setShowAiDrafterModal(true)}
-            className="px-3.5 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
-            title="توليد وصياغة طلب رسمي بالذكاء الاصطناعي"
-          >
-            <Sparkles className="w-4 h-4 text-amber-300" />
-            <span>توليد طلب بالذكاء الاصطناعي</span>
-          </button>
-
-          <button
-            onClick={handleExportComprehensiveExcel}
-            className="px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs active:scale-95"
-            title="تصدير قاعدة بيانات المنظومة بالكامل بكافة الجداول والصور في ملف Excel واحد"
-          >
-            <Download className="w-4 h-4" />
-            <span>تصدير Excel الشامل</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setEditingRequest(null);
-              setDetails('');
-              setSelectedCitizenId(citizens[0]?.Citizen_ID || '');
-              setShowAddModal(true);
-            }}
-            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-          >
-            <Plus className="w-4 h-4" />
-            <span>+ إنشاء طلب إداري جديد</span>
-          </button>
+          {/* Quick Jump Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
+            <button
+              onClick={() => setActiveTab('daily_work')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'daily_work' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              العمل اليومي
+            </button>
+            <button
+              onClick={() => setActiveTab('smart_images')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'smart_images' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              أرشيف الصور
+            </button>
+            <button
+              onClick={() => setActiveTab('data_cross')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'data_cross' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              مقاطعة البيانات
+            </button>
+            <button
+              onClick={() => setActiveTab('blacklist')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'blacklist' ? 'bg-red-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              القائمة السوداء ({citizens.filter(c => c.IsBlocked).length})
+            </button>
+            <button
+              onClick={() => setActiveTab('requests_list')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'requests_list' ? 'bg-slate-800 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              جدول المعاملات
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* 5-Column Desktop Icon Grid for Administration */}
-      <OfficeIconTilesGrid
-        title="أيقونات ومهام قسم الإدارة والمعاملات"
-        subtitle="انقر على أي أيقونة للانتقال السريع إلى فئة المعاملات أو تشغيل الأداة المطلوبة"
-        columns={5}
-        items={[
-          {
-            id: 'adm_all_reqs',
-            title: 'كافة المعاملات والطلبات',
-            subtitle: 'السجل العام للطلبات',
-            icon: FolderKanban,
-            iconColor: 'text-blue-600 dark:text-blue-400',
-            iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-            badge: requests.length,
-            badgeColor: 'bg-blue-600 text-white',
-            isActive: activeTab === 'requests_list' && selectedPriorityFilter === 'all' && selectedStatusFilter === 'all',
-            onClick: () => {
-              setActiveTab('requests_list');
-              setSelectedStatusFilter('all');
-              setSelectedPriorityFilter('all');
-            }
-          },
-          {
-            id: 'adm_urgent',
-            title: 'الطلبات العاجلة والحرجة',
-            subtitle: 'أولويات تتطلب تدخلاً فورياً',
-            icon: Flame,
-            iconColor: 'text-rose-600 dark:text-rose-400',
-            iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
-            badge: requests.filter(r => r.Priority === 'عاجل' || r.Priority === 'خاص جداً').length || null,
-            badgeColor: 'bg-rose-600 text-white animate-pulse',
-            isActive: activeTab === 'requests_list' && selectedPriorityFilter === 'عاجل',
-            onClick: () => {
-              setActiveTab('requests_list');
-              setSelectedPriorityFilter('عاجل');
-            }
-          },
-          {
-            id: 'adm_inprogress',
-            title: 'المعاملات قيد الإجراء',
-            subtitle: 'المتابعة الميدانية والوزارية',
-            icon: Clock,
-            iconColor: 'text-amber-600 dark:text-amber-400',
-            iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-            badge: requests.filter(r => r.ProcessingStatus === 'قيد الإجراء' || r.ProcessingStatus === 'قيد التدقيق').length || null,
-            badgeColor: 'bg-amber-500 text-white',
-            isActive: activeTab === 'requests_list' && selectedStatusFilter === 'قيد الإجراء',
-            onClick: () => {
-              setActiveTab('requests_list');
-              setSelectedStatusFilter('قيد الإجراء');
-            }
-          },
-          {
-            id: 'adm_completed',
-            title: 'المعاملات المنجزة والمغلقة',
-            subtitle: 'المعاملات التي تمت تلبيتها',
-            icon: CheckCircle,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            badge: requests.filter(r => r.ProcessingStatus === 'منجز').length || null,
-            badgeColor: 'bg-emerald-600 text-white',
-            isActive: activeTab === 'requests_list' && selectedStatusFilter === 'منجز',
-            onClick: () => {
-              setActiveTab('requests_list');
-              setSelectedStatusFilter('منجز');
-            }
-          },
-          {
-            id: 'adm_reception_feed',
-            title: 'وارد مراجعي الاستعلامات',
-            subtitle: 'المواطنون المحالون للإدارة',
-            icon: Users,
-            iconColor: 'text-cyan-600 dark:text-cyan-400',
-            iconBg: 'bg-cyan-50 dark:bg-cyan-950/50 border-cyan-200 dark:border-cyan-800',
-            badge: citizens.length,
-            badgeColor: 'bg-cyan-600 text-white',
-            isActive: activeTab === 'reception_citizens',
-            onClick: () => setActiveTab('reception_citizens')
-          },
-          {
-            id: 'adm_scanner',
-            title: 'ماسح Scanner إلى الطابعة',
-            subtitle: 'سحب المستمسكات والكتب فورياً',
-            icon: Scan,
-            iconColor: 'text-purple-600 dark:text-purple-400',
-            iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
-            isActive: activeTab === 'direct_scanner',
-            onClick: () => {
-              setScannerCitizenId(citizens[0]?.Citizen_ID || '');
-              setActiveTab('direct_scanner');
-            }
-          },
-          {
-            id: 'adm_smart_images',
-            title: 'أرشيف صور المعاملات',
-            subtitle: '1000 - 2000 صورة بالاسم',
-            icon: FileImage,
-            iconColor: 'text-teal-600 dark:text-teal-400',
-            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-            isActive: activeTab === 'smart_images',
-            onClick: () => setActiveTab('smart_images')
-          },
-          {
-            id: 'adm_referrers',
-            title: 'إحصائيات التزكيات والمعرفين',
-            subtitle: 'المصادر والجهات المحيلة',
-            icon: Users2,
-            iconColor: 'text-indigo-600 dark:text-indigo-400',
-            iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-            isActive: activeTab === 'referrers',
-            onClick: () => setActiveTab('referrers')
-          },
-          ...(canDownloadDatabase(currentUser?.Role) ? [{
-            id: 'adm_export',
-            title: 'تصدير قاعدة البيانات الشاملة Excel',
-            subtitle: 'سحب كشف كامل لكافة الجداول والصور والمرفقات',
-            icon: Download,
-            iconColor: 'text-teal-600 dark:text-teal-400',
-            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-            badge: 'شامل Excel 📥',
-            badgeColor: 'bg-teal-600 text-white',
-            onClick: handleExportComprehensiveExcel
-          }] : []),
-          {
-            id: 'adm_ai_drafter',
-            title: 'صياغة بالذكاء الاصطناعي',
-            subtitle: 'صياغة الكتب الرسمية والمخاطبات',
-            icon: Sparkles,
-            iconColor: 'text-fuchsia-600 dark:text-fuchsia-400',
-            iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-950/50 border-fuchsia-200 dark:border-fuchsia-800',
-            onClick: () => setShowAiDrafterModal(true)
-          }
-        ]}
-      />
+      {/* Tab: Daily Work (العمل اليومي) */}
+      {activeTab === 'daily_work' && (
+        <DailyWorkAdminSection
+          onOpenScanner={openScannerForCitizen}
+          onOpenSmartArchive={() => setActiveTab('smart_images')}
+        />
+      )}
 
-      {/* Workflow Navigation Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 flex-wrap">
-        <button
-          onClick={() => setActiveTab('requests_list')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            activeTab === 'requests_list'
-              ? 'bg-blue-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <FolderKanban className="w-4 h-4" />
-          <span>جدول المعاملات والطلبات الحكومية ({filteredRequests.length})</span>
-        </button>
+      {/* Tab: Data Cross-Matching (مقاطعة البيانات) */}
+      {activeTab === 'data_cross' && (
+        <DataCrossMatchingModule />
+      )}
 
-        <button
-          onClick={() => setActiveTab('reception_citizens')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            activeTab === 'reception_citizens'
-              ? 'bg-blue-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <UserPlus className="w-4 h-4" />
-          <span>وارد مراجعي الاستعلامات والإحالات ({citizens.length})</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('direct_scanner')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            activeTab === 'direct_scanner'
-              ? 'bg-blue-900 text-white shadow-xs'
-              : 'bg-white text-slate-700 hover:bg-blue-50 border border-slate-200'
-          }`}
-        >
-          <Scan className="w-4 h-4 text-amber-500" />
-          <span>خانة سكنر مباشر إلى الطابعة (Scanner to Printer) 🖨️</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('smart_images')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            activeTab === 'smart_images'
-              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xs'
-              : 'bg-white text-emerald-800 hover:bg-emerald-50 border border-emerald-300'
-          }`}
-        >
-          <FileImage className="w-4 h-4 text-emerald-500" />
-          <span>أرشيف واستخراج الصور الذكية (1000 - 2000 صورة)</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('referrers')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            activeTab === 'referrers'
-              ? 'bg-purple-700 text-white shadow-xs'
-              : 'bg-white text-purple-900 hover:bg-purple-50 border border-purple-200'
-          }`}
-        >
-          <Users2 className="w-4 h-4 text-purple-600" />
-          <span>قسم المعرفين وتزكيات المراجعين</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('department_staff')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            activeTab === 'department_staff'
-              ? 'bg-amber-600 text-white shadow-xs'
-              : 'bg-white text-amber-900 hover:bg-amber-50 border border-amber-200'
-          }`}
-        >
-          <Users className="w-4 h-4 text-amber-600" />
-          <span>كادر قسم الإدارة والصلاحيات ({users.filter(u => u.Role === 'admin' || u.Department?.includes('الإدارة')).length} موظفين)</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('manage_departments')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            activeTab === 'manage_departments'
-              ? 'bg-purple-600 text-white shadow-xs'
-              : 'bg-white text-purple-900 hover:bg-purple-50 border border-purple-200'
-          }`}
-        >
-          <Layers className="w-4 h-4 text-purple-600" />
-          <span>إدارة وتطوير أقسام المكتب ({customSections.length}) ⚡</span>
-        </button>
-      </div>
+      {/* Tab: Blacklist (القائمة السوداء) */}
+      {activeTab === 'blacklist' && (
+        <BlacklistModule />
+      )}
 
       {/* Tab 1: Requests List */}
       {activeTab === 'requests_list' && (
@@ -1838,10 +1862,32 @@ export const AdminModule: React.FC = () => {
                     <option value="">-- اختر مراجع من المسجلين بالاستعلامات --</option>
                     {citizens.map((c) => (
                       <option key={c.Citizen_ID} value={c.Citizen_ID}>
-                        {c.FullName} ({c.Citizen_ID}) - {c.District}
+                        {c.FullName} ({c.Citizen_ID}) {c.IsBlocked ? '⛔ [محظور بالقائمة السوداء]' : ''} - {c.District}
                       </option>
                     ))}
                   </select>
+
+                  {/* Immediate Blacklist Alert if selected citizen is blocked */}
+                  {(() => {
+                    const selCit = citizens.find(c => c.Citizen_ID === selectedCitizenId);
+                    if (!selCit || !selCit.IsBlocked) return null;
+                    return (
+                      <div className="mt-2.5 p-3 rounded-xl bg-red-50 border-2 border-red-500 text-red-950 space-y-1 shadow-sm animate-in fade-in">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">⛔</span>
+                          <h4 className="font-black text-xs text-red-900">تنبيه فوري: هذا المواطن مدرج في «القائمة السوداء» (الأشخاص المحظورين)!</h4>
+                        </div>
+                        <p className="text-[11px] text-red-800 font-bold">
+                          سبب الحظر: {selCit.BlockReason || 'غير محدد'}
+                          {selCit.BlockedAt ? ` • بتاريخ: ${selCit.BlockedAt}` : ''}
+                          {selCit.BlockedBy ? ` • جهة الحظر: ${selCit.BlockedBy}` : ''}
+                        </p>
+                        <p className="text-[10px] text-red-700 font-black">
+                          🚫 تم قفل إمكانية إتمام العملية لهذا المراجع حتى يتم إلغاء الحظر رسمياً.
+                        </p>
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : (
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2.5 text-xs">
@@ -2136,12 +2182,23 @@ export const AdminModule: React.FC = () => {
                   >
                     إلغاء
                   </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs transition-colors cursor-pointer"
-                  >
-                    {editingRequest ? 'حفظ التعديلات' : 'حفظ وإرسال التنبيه'}
-                  </button>
+                  {(() => {
+                    const selCit = !editingRequest ? citizens.find(c => c.Citizen_ID === selectedCitizenId) : null;
+                    const isBlocked = Boolean(selCit?.IsBlocked);
+                    return (
+                      <button
+                        type="submit"
+                        disabled={isBlocked}
+                        className={`px-4 py-1.5 rounded-lg font-bold text-xs transition-colors ${
+                          isBlocked
+                            ? 'bg-red-500 text-white opacity-70 cursor-not-allowed shadow-xs'
+                            : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer shadow-xs'
+                        }`}
+                      >
+                        {isBlocked ? '⛔ محظور بالقائمة السوداء - لا يمكن الإتمام' : (editingRequest ? 'حفظ التعديلات' : 'حفظ وإرسال التنبيه')}
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
             </form>
