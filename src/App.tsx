@@ -20,6 +20,7 @@ import { DynamicSectionView } from './components/DynamicSectionView';
 import { DriveRequestsArchiveModule } from './components/DriveRequestsArchiveModule';
 import { PrintableIdCard } from './components/PrintableIdCard';
 import { PrintableReviewBadge } from './components/PrintableReviewBadge';
+import { PrintableSmartArchiveDossier } from './components/PrintableSmartArchiveDossier';
 import { CitizenHistoryModal } from './components/CitizenHistoryModal';
 import { DesktopInstallModal } from './components/DesktopInstallModal';
 import { SystemWipeModal } from './components/SystemWipeModal';
@@ -317,6 +318,7 @@ const MainAppLayout: React.FC = () => {
       {/* Print Overlays & Modal Dossiers */}
       <PrintableIdCard />
       <PrintableReviewBadge />
+      <PrintableSmartArchiveDossier />
       <CitizenHistoryModal />
       <DesktopInstallModal 
         isOpen={isDesktopInstallModalOpen} 

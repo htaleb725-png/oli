@@ -11,7 +11,8 @@ import {
   Sparkles,
   Download,
   BarChart2,
-  HardDrive
+  HardDrive,
+  ArrowLeft
 } from 'lucide-react';
 import { OfficeRequest } from '../types';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
@@ -32,7 +33,7 @@ interface OfficialLetter {
 export const MachineModule: React.FC = () => {
   const { systemSettings, citizens, requests, updateRequest, addAuditLog, currentUser, setActiveSection } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'letters' | 'requests_print'>('requests_print');
+  const [activeTab, setActiveTab] = useState<'hub' | 'letters' | 'requests_print'>('hub');
   const [requestSearchQuery, setRequestSearchQuery] = useState('حسن طالب');
   const [selectedRequestForPrint, setSelectedRequestForPrint] = useState<OfficeRequest | null>(null);
   const [autoStatusAlert, setAutoStatusAlert] = useState<string | null>(null);
@@ -182,119 +183,142 @@ export const MachineModule: React.FC = () => {
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <Printer className="w-5 h-5 text-teal-600" />
-            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">قسم مدير المكنة والطباعة البرلمانية</h2>
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800">
-              تحديث واستلام فوري
-            </span>
+      {/* HUB VIEW: Desktop Icon Grid for Machine */}
+      {activeTab === 'hub' && (
+        <div className="space-y-4 animate-in fade-in duration-200">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Printer className="w-5 h-5 text-teal-600" />
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">قسم مدير المكنة والطباعة البرلمانية</h2>
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800">
+                  تحديث واستلام فوري
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                طباعة طلبات المراجعين مع التحديث التلقائي لحالة الاستلام، وتوليد وتنسيق الكتب الرسمية بالترويسة البرلمانية.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => setActiveSection('dashboard')}
+                className="px-3.5 py-1.5 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
+                title="الانتقال إلى لوحة تحكم وإحصائيات المكنة والطباعة"
+              >
+                <BarChart2 className="w-4 h-4 text-teal-600" />
+                <span>لوحة إحصائيات المكنة</span>
+              </button>
+            </div>
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            طباعة طلبات المراجعين مع التحديث التلقائي لحالة الاستلام، وتوليد وتنسيق الكتب الرسمية بالترويسة البرلمانية.
-          </p>
+
+          {/* 5-Column Desktop Icon Grid for Machine & Official Letters */}
+          <OfficeIconTilesGrid
+            title="أيقونات ومهام وحدة المكنة والطباعة"
+            subtitle="انقر على أي أيقونة للدخول المباشر إلى محتواها وقسم العمل المخصص"
+            columns={5}
+            items={[
+              {
+                id: 'mac_requests_print',
+                title: 'طباعة طلبات المراجعين',
+                subtitle: 'تحديث تلقائي لحالة الاستلام',
+                icon: Printer,
+                iconColor: 'text-teal-600 dark:text-teal-400',
+                iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+                badge: requests.length,
+                badgeColor: 'bg-teal-600 text-white',
+                onClick: () => setActiveTab('requests_print')
+              },
+              {
+                id: 'mac_letters',
+                title: 'الكتب الرسمية البرلمانية',
+                subtitle: 'المخاطبات والكتب الصادرة',
+                icon: FileText,
+                iconColor: 'text-blue-600 dark:text-blue-400',
+                iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+                badge: letters.length,
+                badgeColor: 'bg-blue-600 text-white',
+                onClick: () => setActiveTab('letters')
+              },
+              {
+                id: 'mac_new_letter',
+                title: 'إنشاء كتاب رسمي جديد',
+                subtitle: 'صياغة خطاب برلماني موجه للوزارات',
+                icon: Plus,
+                iconColor: 'text-amber-600 dark:text-amber-400',
+                iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+                onClick: () => {
+                  setActiveTab('letters');
+                  setShowAddModal(true);
+                }
+              },
+              {
+                id: 'mac_drive_archive',
+                title: 'أرشيف طلبات Google Drive',
+                subtitle: 'سحب وطباعة الطلبات السحابية',
+                icon: HardDrive,
+                iconColor: 'text-emerald-600 dark:text-emerald-400',
+                iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+                onClick: () => setActiveSection('drive_requests')
+              },
+              {
+                id: 'mac_stats',
+                title: 'لوحة إحصائيات المكنة',
+                subtitle: 'مؤشرات إنتاجية الطباعة والكتب',
+                icon: BarChart2,
+                iconColor: 'text-indigo-600 dark:text-indigo-400',
+                iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
+                onClick: () => setActiveSection('dashboard')
+              }
+            ]}
+          />
         </div>
+      )}
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setActiveSection('dashboard')}
-            className="px-3.5 py-1.5 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
-            title="الانتقال إلى لوحة تحكم وإحصائيات المكنة والطباعة"
-          >
-            <BarChart2 className="w-4 h-4 text-teal-600" />
-            <span>لوحة إحصائيات المكنة</span>
-          </button>
+      {/* SUBVIEW HEADER: Displayed when inside a specific icon/tool */}
+      {activeTab !== 'hub' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setActiveTab('hub')}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+            >
+              <ArrowLeft className="w-4 h-4 rotate-180" />
+              <span>رجوع إلى لوحة الأيقونات الرئيسية</span>
+            </button>
 
-          {/* Tab switcher */}
-          <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+            <div className="flex items-center gap-2">
+              <span className="font-black text-sm text-slate-900 dark:text-white">
+                {activeTab === 'requests_print' && '🖨️ طباعة طلبات المراجعين (تحديث مستلم)'}
+                {activeTab === 'letters' && '📜 الكتب الرسمية البرلمانية والمخاطبات'}
+              </span>
+            </div>
+          </div>
+
+          {/* Quick Jump Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
             <button
               onClick={() => setActiveTab('requests_print')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'requests_print'
-                  ? 'bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'requests_print' ? 'bg-teal-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
-              طباعة طلبات المراجعين (تحديث مستلم)
+              طباعة الطلبات
             </button>
             <button
               onClick={() => setActiveTab('letters')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'letters'
-                  ? 'bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'letters' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
-              الكتب الرسمية البرلمانية
+              الكتب الرسمية ({letters.length})
             </button>
           </div>
         </div>
-      </div>
-
-      {/* 5-Column Desktop Icon Grid for Machine & Official Letters */}
-      <OfficeIconTilesGrid
-        title="أيقونات ومهام وحدة المكنة والطباعة"
-        subtitle="انقر على أي أيقونة للاستعراض المباشر أو طباعة الطلبات والكتب الرسمية"
-        columns={5}
-        items={[
-          {
-            id: 'mac_requests_print',
-            title: 'طباعة طلبات المراجعين',
-            subtitle: 'تحديث تلقائي لحالة الاستلام',
-            icon: Printer,
-            iconColor: 'text-teal-600 dark:text-teal-400',
-            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-            badge: requests.length,
-            badgeColor: 'bg-teal-600 text-white',
-            isActive: activeTab === 'requests_print',
-            onClick: () => setActiveTab('requests_print')
-          },
-          {
-            id: 'mac_letters',
-            title: 'الكتب الرسمية البرلمانية',
-            subtitle: 'المخاطبات والكتب الصادرة',
-            icon: FileText,
-            iconColor: 'text-blue-600 dark:text-blue-400',
-            iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-            badge: letters.length,
-            badgeColor: 'bg-blue-600 text-white',
-            isActive: activeTab === 'letters',
-            onClick: () => setActiveTab('letters')
-          },
-          {
-            id: 'mac_new_letter',
-            title: 'إنشاء كتاب رسمي جديد',
-            subtitle: 'صياغة خطاب برلماني موجه للوزارات',
-            icon: Plus,
-            iconColor: 'text-amber-600 dark:text-amber-400',
-            iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-            onClick: () => {
-              setActiveTab('letters');
-              setShowAddModal(true);
-            }
-          },
-          {
-            id: 'mac_drive_archive',
-            title: 'أرشيف طلبات Google Drive',
-            subtitle: 'سحب وطباعة الطلبات السحابية',
-            icon: HardDrive,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            onClick: () => setActiveSection('drive_requests')
-          },
-          {
-            id: 'mac_stats',
-            title: 'لوحة إحصائيات المكنة',
-            subtitle: 'مؤشرات إنتاجية الطباعة والكتب',
-            icon: BarChart2,
-            iconColor: 'text-indigo-600 dark:text-indigo-400',
-            iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-            onClick: () => setActiveSection('dashboard')
-          }
-        ]}
-      />
+      )}
 
       {/* TAB 1: CITIZEN REQUESTS AUTO-RECEIVE & PRINT */}
       {activeTab === 'requests_print' && (

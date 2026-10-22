@@ -107,6 +107,11 @@ export interface Citizen {
   BlockReason?: string;   // سبب الحظر
   BlockedAt?: string;     // تاريخ الحظر
   BlockedBy?: string;     // الموظف القائم بالحظر
+  IsArchived?: boolean;   // هل تم نقله إلى الأرشيف طويل الأمد
+  ArchivedAt?: string;   // تاريخ الأرشفة الذكية
+  ArchivedBy?: string;   // الموظف الذي قام بالأرشفة
+  ArchiveNotes?: string; // ملاحظات الأرشفة
+  ArchiveCode?: string;  // كود الحفظ الأرشيفي
   UpdatedAt?: string;
 }
 
@@ -171,7 +176,19 @@ export interface OfficeRequest {
   OtherNotes?: string;     // ملاحظات أخرى
   IsBlocked?: boolean;     // هل المراجع محظور
   BlockReason?: string;    // سبب الحظر
+  IsArchived?: boolean;    // هل تم نقل الطلب إلى الأرشيف طويل الأمد
+  ArchivedAt?: string;    // تاريخ ووقت الأرشفة
+  ArchiveCode?: string;   // كود الحفظ الأرشيفي
   UpdatedAt?: string;
+}
+
+export interface SmartArchiveDossierData {
+  citizen: Citizen;
+  requests: OfficeRequest[];
+  archiveTimestamp: string;
+  archiveCode: string;
+  archivedBy: string;
+  notes?: string;
 }
 
 export interface ChequeRecord {
