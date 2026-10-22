@@ -2176,7 +2176,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Category: 'أرشيف طويل الأمد',
       FileUrl: '',
       FileType: 'pdf',
-      FileSize: '2.5 MB (نسخة رسمية رقمية كاملة)'
+      FileSize: '2.5 MB (نسخة رسمية رقمية كاملة)',
+      UploadedBy: archiverName || 'قسم الأرشيف الذكي'
     });
 
     // 4. تسجيل في سجل التدقيق والرقابة
@@ -2192,7 +2193,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       title: `📦 إنجاز أرشفة ذكية: ${cit.FullName}`,
       message: `تم نقل كافة سجلات المراجع والطلبات المكتملة (${archivedCount} طلب) إلى الأرشيف طويل الأمد بنجاح. رمز الأرشيف: ${archiveCode}`,
       timestamp: 'الآن',
-      type: 'general',
+      type: 'system',
       linkSection: 'smart_images',
       read: false
     }, ...prev]);

@@ -27,6 +27,8 @@ import { SystemWipeModal } from './components/SystemWipeModal';
 import { NetworkStatusModal } from './components/NetworkStatusModal';
 import { AppUpdateNotification } from './components/AppUpdateNotification';
 import { SessionLoadingOverlay } from './components/SessionLoadingOverlay';
+import { MobileAppBottomNav } from './components/MobileAppBottomNav';
+import { AdminLogoutExportModal } from './components/AdminLogoutExportModal';
 import { playUiClickSound } from './utils/audio';
 
 const MainAppLayout: React.FC = () => {
@@ -35,6 +37,7 @@ const MainAppLayout: React.FC = () => {
     activeSection, 
     currentUser, 
     setActiveSection,
+    logout,
     isDesktopInstallModalOpen,
     setIsDesktopInstallModalOpen,
     isSystemWipeModalOpen,
@@ -49,6 +52,59 @@ const MainAppLayout: React.FC = () => {
 
   const [isCloudSyncing, setIsCloudSyncing] = React.useState(false);
   const [cloudSyncMsg, setCloudSyncMsg] = React.useState<string | null>(null);
+  const [showAdminLogoutModal, setShowAdminLogoutModal] = React.useState(false);
+
+  const handleRequestLogout = () => {
+    if (currentUser?.Role === 'admin' || currentUser?.Role === 'director' || currentUser?.Role === 'developer') {
+      setShowAdminLogoutModal(true);
+    } else {
+      logout();
+    }
+  };
+
+  // Dynamic Browser Tab Title, Favicon & Web App Manifest Sync with Developer Customizations
+  React.useEffect(() => {
+    if (systemSettings?.appName) {
+      document.title = systemSettings.appName;
+    }
+    if (systemSettings?.logoUrl) {
+      const favicon = document.querySelector("link[rel='icon']") as HTMLLinkElement;
+      if (favicon) {
+        favicon.href = systemSettings.logoUrl;
+      }
+      const touchIcon = document.querySelector("link[rel='apple-touch-icon']") as HTMLLinkElement;
+      if (touchIcon) {
+        touchIcon.href = systemSettings.logoUrl;
+      }
+
+      // Update Web App Manifest so home screen shortcut icon on mobile & desktop reflects immediately
+      try {
+        const manifestData = {
+          name: systemSettings.appName || 'مكتب النائب علا الناشي',
+          short_name: systemSettings.appName || 'مكتب النائب',
+          start_url: './',
+          display: 'standalone',
+          background_color: '#0f172a',
+          theme_color: '#0f172a',
+          icons: [
+            {
+              src: systemSettings.logoUrl,
+              sizes: '192x192 512x512',
+              type: 'image/png'
+            }
+          ]
+        };
+        const blob = new Blob([JSON.stringify(manifestData)], { type: 'application/json' });
+        const manifestURL = URL.createObjectURL(blob);
+        const manifestLink = document.querySelector("link[rel='manifest']") as HTMLLinkElement;
+        if (manifestLink) {
+          manifestLink.setAttribute('href', manifestURL);
+        }
+      } catch (e) {
+        console.warn('Dynamic manifest sync note:', e);
+      }
+    }
+  }, [systemSettings?.appName, systemSettings?.logoUrl]);
 
   const handleManualCloudSync = async () => {
     setIsCloudSyncing(true);
@@ -281,13 +337,16 @@ const MainAppLayout: React.FC = () => {
       )}
 
       {/* Main Workspace Body: نظام الأيقونات المباشرة بالكامل بدون قائمة جانبية */}
-      <div className="flex-1 w-full min-w-0">
+      <div className="flex-1 w-full min-w-0 pb-16 md:pb-0">
         <main className="w-full p-3 sm:p-4 md:p-6 overflow-y-auto bg-[#F1F5F9] dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
           <div className="max-w-7xl mx-auto w-full">
             {renderActiveModule()}
           </div>
         </main>
       </div>
+
+      {/* Mobile APK-style Native Bottom Navigation (Visible exclusively on mobile md:hidden) */}
+      <MobileAppBottomNav onOpenLogoutModal={handleRequestLogout} />
 
       {/* High-Density Executive Footer */}
       <footer className="no-print h-9 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 text-[11px] text-slate-500 dark:text-slate-400 font-medium z-10 transition-colors duration-200">
@@ -327,6 +386,16 @@ const MainAppLayout: React.FC = () => {
       <SystemWipeModal
         isOpen={isSystemWipeModalOpen}
         onClose={() => setIsSystemWipeModalOpen(false)}
+      />
+
+      {/* Admin Logout Confirmation & Multi-Sheet Excel Export Modal */}
+      <AdminLogoutExportModal
+        isOpen={showAdminLogoutModal}
+        onClose={() => setShowAdminLogoutModal(false)}
+        onConfirmLogout={() => {
+          setShowAdminLogoutModal(false);
+          logout();
+        }}
       />
 
       {/* Network Disconnection Apology Overlay */}

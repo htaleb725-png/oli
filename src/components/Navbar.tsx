@@ -22,6 +22,7 @@ import {
   Download
 } from 'lucide-react';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
+import { AdminLogoutExportModal } from './AdminLogoutExportModal';
 
 export const Navbar: React.FC = () => {
   const { 
@@ -54,6 +55,7 @@ export const Navbar: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [showAdminLogoutModal, setShowAdminLogoutModal] = useState<boolean>(false);
 
   const showNavbarToast = (msg: string) => {
     setToastMessage(msg);
@@ -515,8 +517,12 @@ export const Navbar: React.FC = () => {
 
                   <button
                     onClick={() => {
-                      logout();
                       setShowRoleDropdown(false);
+                      if (currentUser?.Role === 'admin' || currentUser?.Role === 'director' || currentUser?.Role === 'developer') {
+                        setShowAdminLogoutModal(true);
+                      } else {
+                        logout();
+                      }
                     }}
                     className="w-full py-2 px-3 rounded-xl bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 text-red-700 dark:text-red-300 text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer border border-red-200 dark:border-red-800 shadow-2xs"
                   >
@@ -538,6 +544,16 @@ export const Navbar: React.FC = () => {
           <span>وضع الصيانة مفعل حالياً من قبل الإدارة العليا (Maintenance Mode)</span>
         </div>
       )}
+
+      {/* Admin Logout Confirmation & Database Export Modal */}
+      <AdminLogoutExportModal
+        isOpen={showAdminLogoutModal}
+        onClose={() => setShowAdminLogoutModal(false)}
+        onConfirmLogout={() => {
+          setShowAdminLogoutModal(false);
+          logout();
+        }}
+      />
     </header>
   );
 };

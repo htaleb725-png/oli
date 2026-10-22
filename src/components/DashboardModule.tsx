@@ -369,8 +369,79 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       );
     }
 
-    return list;
-  }, [citizens.length, requests.length, urgentRequestsCount, pendingDirectorReviewCount, interviews.length, organizationRecords.length, auditLogs.length, isDeveloper, setActiveSection, customSections, customRecords.length, systemSettings?.customTilesConfig]);
+    const userRole = currentUser?.Role;
+
+    // Strict Role-Based Filtering: employees only see their assigned department and permitted tiles
+    const filteredList = list.filter(tile => {
+      if (userRole === 'developer' || userRole === 'director' || userRole === 'deputy') {
+        return true;
+      }
+
+      // Allow dynamic custom sections created for everyone or assigned
+      if (tile.id.startsWith('tile_custom_')) {
+        return true;
+      }
+
+      switch (userRole) {
+        case 'reception':
+        case 'reception_officer':
+          return tile.id === 'tile_reception' || tile.id === 'tile_search_archive';
+
+        case 'admin':
+        case 'admin_officer':
+          return [
+            'tile_admin',
+            'tile_drive_requests',
+            'tile_search_archive',
+            'tile_reports',
+            'tile_whatsapp'
+          ].includes(tile.id);
+
+        case 'interviews_officer':
+          return [
+            'tile_interviews',
+            'tile_search_archive',
+            'tile_reports',
+            'tile_whatsapp'
+          ].includes(tile.id);
+
+        case 'organization':
+        case 'organization_officer':
+          return [
+            'tile_organization',
+            'tile_search_archive',
+            'tile_reports',
+            'tile_whatsapp'
+          ].includes(tile.id);
+
+        case 'machine':
+        case 'machine_officer':
+          return [
+            'tile_machine',
+            'tile_search_archive',
+            'tile_reports'
+          ].includes(tile.id);
+
+        case 'audit':
+          return [
+            'tile_audit',
+            'tile_search_archive',
+            'tile_reports'
+          ].includes(tile.id);
+
+        case 'archive':
+          return [
+            'tile_search_archive',
+            'tile_reports'
+          ].includes(tile.id);
+
+        default:
+          return tile.id === 'tile_search_archive' || tile.id === 'tile_reports';
+      }
+    });
+
+    return filteredList;
+  }, [citizens.length, requests.length, urgentRequestsCount, pendingDirectorReviewCount, interviews.length, organizationRecords.length, auditLogs.length, isDeveloper, currentUser?.Role, setActiveSection, customSections, customRecords.length, systemSettings?.customTilesConfig]);
 
   const handleExportToExcel = () => {
     const data = employeeStats.map((emp, index) => ({

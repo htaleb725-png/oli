@@ -50,6 +50,8 @@ import { DataCrossMatchingModule } from './DataCrossMatchingModule';
 import { BlacklistModule } from './BlacklistModule';
 import { SYSTEM_PERMISSIONS } from '../types';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
+import { SmartExcelImporterModal } from './SmartExcelImporterModal';
+import { PlusCircle, FileSpreadsheet, UploadCloud } from 'lucide-react';
 
 export const AdminModule: React.FC = () => {
   const { 
@@ -108,6 +110,7 @@ export const AdminModule: React.FC = () => {
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showAiDrafterModal, setShowAiDrafterModal] = useState(false);
+  const [showExcelImporterModal, setShowExcelImporterModal] = useState(false);
   const [editingRequest, setEditingRequest] = useState<OfficeRequest | null>(null);
   const [requestToDelete, setRequestToDelete] = useState<OfficeRequest | null>(null);
   const [citizenToDelete, setCitizenToDelete] = useState<Citizen | null>(null);
@@ -476,28 +479,8 @@ export const AdminModule: React.FC = () => {
 
             <div className="flex items-center gap-2 flex-wrap">
               <button
-                onClick={() => {
-                  setScannerCitizenId(citizens[0]?.Citizen_ID || '');
-                  setActiveTab('direct_scanner');
-                }}
-                className="px-3.5 py-2 rounded-lg bg-blue-900 hover:bg-blue-800 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-              >
-                <Scan className="w-4 h-4 text-blue-300" />
-                <span>سكنر مباشر إلى الطابعة</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('smart_images')}
-                className="px-3.5 py-2 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
-                title="أرشفة واستخراج صور المعاملات (1000 - 2000 صورة) بالاسم التلقائي واليدوي"
-              >
-                <FileImage className="w-4 h-4 text-emerald-200" />
-                <span>إرفاق صور المعاملات (1000 - 2000 صورة)</span>
-              </button>
-
-              <button
                 onClick={() => setActiveSection('dashboard')}
-                className="px-3.5 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
+                className="px-3.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
                 title="الانتقال إلى لوحة تحكم وإحصائيات قسم الإدارة والمعاملات"
               >
                 <BarChart2 className="w-4 h-4 text-amber-600" />
@@ -505,26 +488,8 @@ export const AdminModule: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setActiveSection('drive_requests')}
-                className="px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-                title="البحث والطباعة المباشرة من أرشيف Google Drive"
-              >
-                <Printer className="w-4 h-4" />
-                <span>البحث والطباعة (Drive)</span>
-              </button>
-
-              <button
-                onClick={() => setShowAiDrafterModal(true)}
-                className="px-3.5 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
-                title="توليد وصياغة طلب رسمي بالذكاء الاصطناعي"
-              >
-                <Sparkles className="w-4 h-4 text-amber-300" />
-                <span>توليد طلب بالذكاء الاصطناعي</span>
-              </button>
-
-              <button
                 onClick={handleExportComprehensiveExcel}
-                className="px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs active:scale-95"
+                className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs active:scale-95"
                 title="تصدير قاعدة بيانات المنظومة بالكامل بكافة الجداول والصور في ملف Excel واحد"
               >
                 <Download className="w-4 h-4" />
@@ -532,16 +497,12 @@ export const AdminModule: React.FC = () => {
               </button>
 
               <button
-                onClick={() => {
-                  setEditingRequest(null);
-                  setDetails('');
-                  setSelectedCitizenId(citizens[0]?.Citizen_ID || '');
-                  setShowAddModal(true);
-                }}
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                onClick={() => setShowAiDrafterModal(true)}
+                className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
+                title="توليد وصياغة طلب رسمي بالذكاء الاصطناعي"
               >
-                <Plus className="w-4 h-4" />
-                <span>+ إنشاء طلب إداري جديد</span>
+                <Sparkles className="w-4 h-4 text-amber-300" />
+                <span>توليد طلب بالذكاء الاصطناعي</span>
               </button>
             </div>
           </div>
@@ -551,6 +512,33 @@ export const AdminModule: React.FC = () => {
           subtitle="انقر على أي أيقونة للدخول المباشر إلى محتواها وقسم العمل المخصص"
           columns={4}
           items={[
+            {
+              id: 'adm_direct_create_request',
+              title: 'إنشاء طلب إداري فوري (مباشر)',
+              subtitle: 'تسجيل طلب وكتاب إداري مباشرة دون الرجوع للاستعلامات أو مدير المكتب',
+              icon: PlusCircle,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              badge: 'فوري ⚡',
+              badgeColor: 'bg-blue-600 text-white font-bold',
+              onClick: () => {
+                setEditingRequest(null);
+                setDetails('');
+                setSelectedCitizenId(citizens[0]?.Citizen_ID || '');
+                setShowAddModal(true);
+              }
+            },
+            {
+              id: 'adm_smart_excel_import',
+              title: 'استيراد وتصفية إكسل الشامل (حتى 2,000,000)',
+              subtitle: 'تصفية الوزارات تلقائياً، تنظيف الهواتف، وتوليد أكواد ONA سحابية فورية',
+              icon: FileSpreadsheet,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              badge: '2,000,000 سجل ⚡',
+              badgeColor: 'bg-emerald-600 text-white font-black animate-pulse',
+              onClick: () => setShowExcelImporterModal(true)
+            },
             {
               id: 'adm_daily_work',
               title: 'العمل اليومي (الاستعلامات والمدير)',
@@ -2394,6 +2382,12 @@ export const AdminModule: React.FC = () => {
       <AiRequestDrafterModal
         isOpen={showAiDrafterModal}
         onClose={() => setShowAiDrafterModal(false)}
+      />
+
+      {/* Smart Excel Massive Dataset Importer Modal */}
+      <SmartExcelImporterModal
+        isOpen={showExcelImporterModal}
+        onClose={() => setShowExcelImporterModal(false)}
       />
     </div>
   );

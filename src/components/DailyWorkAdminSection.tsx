@@ -223,6 +223,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     });
 
     setCompletingTarget(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // Handle Blacklist / Block
@@ -543,6 +544,29 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
               <span className="block text-[10px] font-mono text-amber-800 dark:text-amber-400">
                 التاريخ: {savedOfficialCard.outgoingDate}
               </span>
+            </div>
+          </div>
+
+          {/* Highlighted Employee Paper Document Alert Badge */}
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-500/20 border-2 border-amber-400/80 dark:border-amber-500/70 text-slate-900 dark:text-amber-100 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-md">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl p-2 rounded-xl bg-amber-400/30 text-amber-900 dark:text-amber-200 shrink-0">✍️</span>
+              <div className="text-right">
+                <strong className="block text-xs sm:text-sm font-black text-amber-950 dark:text-amber-200">
+                  تنبيه للموظف: يرجى تثبيت رقم الصادر والتاريخ على أصل المعاملة الورقية الآن
+                </strong>
+                <p className="text-[11px] font-medium text-slate-700 dark:text-slate-300 mt-0.5">
+                  قم بكتابة العدد الصادر وتاريخ اليوم بخط واضح في الترويسة المخصصة على الطلب الورقي قبل تسليمه للمراجع أو إرساله للجهة المعنية.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="px-3 py-1.5 bg-amber-400 text-slate-950 font-black rounded-xl text-xs shadow-xs font-mono border border-amber-500">
+                العدد: {savedOfficialCard.outgoingNumber}
+              </div>
+              <div className="px-3 py-1.5 bg-slate-900 text-white font-black rounded-xl text-xs shadow-xs font-mono border border-slate-700">
+                التاريخ: {savedOfficialCard.outgoingDate}
+              </div>
             </div>
           </div>
 
