@@ -18,6 +18,7 @@ import { MasterAdminModule } from './components/MasterAdminModule';
 import { AppsScriptSyncModule } from './components/AppsScriptSyncModule';
 import { DynamicSectionView } from './components/DynamicSectionView';
 import { DriveRequestsArchiveModule } from './components/DriveRequestsArchiveModule';
+import { BlacklistModule } from './components/BlacklistModule';
 import { PrintableIdCard } from './components/PrintableIdCard';
 import { PrintableReviewBadge } from './components/PrintableReviewBadge';
 import { PrintableSmartArchiveDossier } from './components/PrintableSmartArchiveDossier';
@@ -211,7 +212,7 @@ const MainAppLayout: React.FC = () => {
         return ['dashboard', 'reception', 'search_archive'].includes(section);
       case 'admin':
       case 'admin_officer':
-        return ['dashboard', 'admin', 'drive_requests', 'search_archive', 'reports', 'whatsapp'].includes(section);
+        return ['dashboard', 'admin', 'drive_requests', 'search_archive', 'reports', 'whatsapp', 'blacklist'].includes(section);
       case 'interviews_officer':
         return ['dashboard', 'interviews', 'search_archive', 'reports', 'whatsapp'].includes(section);
       case 'organization':
@@ -221,7 +222,7 @@ const MainAppLayout: React.FC = () => {
       case 'machine_officer':
         return ['dashboard', 'machine', 'search_archive', 'reports'].includes(section);
       case 'audit':
-        return ['dashboard', 'audit', 'search_archive', 'reports'].includes(section);
+        return ['dashboard', 'audit', 'search_archive', 'reports', 'blacklist'].includes(section);
       case 'archive':
         return ['dashboard', 'search_archive', 'reports'].includes(section);
       default:
@@ -289,6 +290,8 @@ const MainAppLayout: React.FC = () => {
         return <MasterAdminModule />;
       case 'apps_script':
         return <AppsScriptSyncModule />;
+      case 'blacklist':
+        return <BlacklistModule />;
       default:
         return <DashboardModule />;
     }

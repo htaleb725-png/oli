@@ -74,6 +74,8 @@ export function exportUnifiedSystemExcel(params: UnifiedExportParams): boolean {
       'حالة الاستلام': r.RequestStatus,
       'الأولوية': r.Priority,
       'تفاصيل وموضوع الطلب': r.Details,
+      'رقم الصادر / العدد الرسمي': r.OutgoingNumber || 'بدون صادر',
+      'تاريخ الصادر': r.OutgoingDate || '',
       'قرار وتوجيه مدير المكتب': r.DirectorDecision || '',
       'هوامش وتوجيهات النائب': r.DeputyNotes || '',
       'مرفق الطلب': r.AttachmentRequest || '',
@@ -86,6 +88,22 @@ export function exportUnifiedSystemExcel(params: UnifiedExportParams): boolean {
     }));
     const wsRequests = XLSX.utils.json_to_sheet(requestsRows.length ? requestsRows : [{ 'الحالة': 'لا توجد طلبات' }]);
     XLSX.utils.book_append_sheet(wb, wsRequests, 'المعاملات_Requests');
+
+    // 2.1 ورقة القائمة السوداء والأشخاص المحظورين
+    const blockedCitizens = params.citizens.filter(c => c.IsBlocked);
+    const blacklistRows = blockedCitizens.map((b, idx) => ({
+      'ت': idx + 1,
+      'رقم المراجع ID': b.Citizen_ID,
+      'اسم الشخص المحظور': b.FullName,
+      'رقم الهاتف': b.Phone1,
+      'القضاء': b.District,
+      'سبب الحظر الإداري / الرقابي': b.BlockReason || 'غير محدد',
+      'تاريخ الإدراج بالقائمة': b.BlockedAt || 'سابقاً',
+      'الموظف القائم بالحظر': b.BlockedBy || 'الإدارة',
+      'المهنة': b.Job || ''
+    }));
+    const wsBlacklist = XLSX.utils.json_to_sheet(blacklistRows.length ? blacklistRows : [{ 'الحالة': 'لا يوجد أشخاص محظورين في القائمة السوداء' }]);
+    XLSX.utils.book_append_sheet(wb, wsBlacklist, 'القائمة_السوداء_Blacklist');
 
     // 3. ورقة مقابلات النائب
     const interviewsRows = params.interviews.map((i, idx) => ({

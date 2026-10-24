@@ -16,7 +16,8 @@ import {
   UserCheck,
   Download,
   Filter,
-  Calendar
+  Calendar,
+  ArrowLeft
 } from 'lucide-react';
 
 export const ReportsModule: React.FC = () => {
@@ -79,6 +80,7 @@ export const ReportsModule: React.FC = () => {
   // RBAC for Bulk operations: strictly Admin / Director / Developer
   const canAccessBulkOperations = ['developer', 'director', 'admin', 'admin_officer'].includes(currentUser?.Role || '');
 
+  const [viewMode, setViewMode] = useState<'hub' | 'report'>('hub');
   const [activeModuleTab, setActiveModuleTab] = useState<'reports' | 'bulk'>('reports');
   const [reportType, setReportType] = useState<'requests' | 'citizens' | 'interviews' | 'organization'>(
     isReception ? 'citizens' : isAdmin ? 'requests' : isInterviews ? 'interviews' : isOrganization ? 'organization' : 'requests'
@@ -348,83 +350,140 @@ export const ReportsModule: React.FC = () => {
             </div>
           </div>
 
-          {/* 5-Column Desktop Icon Grid for Reports */}
-          <OfficeIconTilesGrid
-            title="أيقونات تقارير وإحصائيات أقسام المنظومة"
-            subtitle="انقر على أي تقرير لاستعراض البيانات المفلترة وتصدير الجداول فورياً"
-            columns={5}
-            items={[
-              {
-                id: 'rep_requests',
-                title: 'تقرير المعاملات الإدارية',
-                subtitle: 'كشوفات طلبات المواطنين والوزارات',
-                icon: FolderKanban,
-                iconColor: 'text-amber-600 dark:text-amber-400',
-                iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-                badge: requests.length,
-                badgeColor: 'bg-amber-600 text-white',
-                isActive: reportType === 'requests',
-                onClick: () => {
-                  setReportType('requests');
-                  setStatusFilter('all');
-                }
-              },
-              {
-                id: 'rep_citizens',
-                title: 'سجل المراجعين المركزي',
-                subtitle: 'بيانات مراجعي الاستعلامات والمحافظة',
-                icon: Users,
-                iconColor: 'text-blue-600 dark:text-blue-400',
-                iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-                badge: citizens.length,
-                badgeColor: 'bg-blue-600 text-white',
-                isActive: reportType === 'citizens',
-                onClick: () => {
-                  setReportType('citizens');
-                  setStatusFilter('all');
-                }
-              },
-              {
-                id: 'rep_interviews',
-                title: 'تقرير مقابلات النائب',
-                subtitle: 'جلسات ولقاءات النائب الموثقة',
-                icon: Handshake,
-                iconColor: 'text-teal-600 dark:text-teal-400',
-                iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-                badge: interviews.length,
-                badgeColor: 'bg-teal-600 text-white',
-                isActive: reportType === 'interviews',
-                onClick: () => {
-                  setReportType('interviews');
-                  setStatusFilter('all');
-                }
-              },
-              {
-                id: 'rep_org',
-                title: 'تقرير الموقف التنظيمي',
-                subtitle: 'تقييمات النتائج والكوادر الجماهيرية',
-                icon: UserCheck,
-                iconColor: 'text-purple-600 dark:text-purple-400',
-                iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
-                badge: organizationRecords.length,
-                badgeColor: 'bg-purple-600 text-white',
-                isActive: reportType === 'organization',
-                onClick: () => {
-                  setReportType('organization');
-                  setStatusFilter('all');
-                }
-              },
-              {
-                id: 'rep_export_all',
-                title: 'تصدير إكسل الشامل (XLSX)',
-                subtitle: 'سحب كشوفات الجداول الحالية فوراً',
-                icon: FileSpreadsheet,
-                iconColor: 'text-emerald-600 dark:text-emerald-400',
-                iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-                onClick: exportToExcel
+      {/* ---------------- VIEW 1: CENTRAL ICONS HUB ---------------- */}
+      {viewMode === 'hub' && (
+        <OfficeIconTilesGrid
+          title="أيقونات تقارير وإحصائيات أقسام المنظومة"
+          subtitle="انقر على أي تقرير لاستعراض البيانات المفلترة وتصدير الجداول فورياً"
+          columns={5}
+          items={[
+            {
+              id: 'rep_requests',
+              title: 'تقرير المعاملات الإدارية',
+              subtitle: 'كشوفات طلبات المواطنين والوزارات',
+              icon: FolderKanban,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: requests.length,
+              badgeColor: 'bg-amber-600 text-white',
+              onClick: () => {
+                setReportType('requests');
+                setStatusFilter('all');
+                setViewMode('report');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
               }
-            ]}
-          />
+            },
+            {
+              id: 'rep_citizens',
+              title: 'سجل المراجعين المركزي',
+              subtitle: 'بيانات مراجعي الاستعلامات والمحافظة',
+              icon: Users,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              badge: citizens.length,
+              badgeColor: 'bg-blue-600 text-white',
+              onClick: () => {
+                setReportType('citizens');
+                setStatusFilter('all');
+                setViewMode('report');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'rep_interviews',
+              title: 'تقرير مقابلات النائب',
+              subtitle: 'جلسات ولقاءات النائب الموثقة',
+              icon: Handshake,
+              iconColor: 'text-teal-600 dark:text-teal-400',
+              iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+              badge: interviews.length,
+              badgeColor: 'bg-teal-600 text-white',
+              onClick: () => {
+                setReportType('interviews');
+                setStatusFilter('all');
+                setViewMode('report');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'rep_org',
+              title: 'تقرير الموقف التنظيمي',
+              subtitle: 'تقييمات النتائج والكوادر الجماهيرية',
+              icon: UserCheck,
+              iconColor: 'text-purple-600 dark:text-purple-400',
+              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
+              badge: organizationRecords.length,
+              badgeColor: 'bg-purple-600 text-white',
+              onClick: () => {
+                setReportType('organization');
+                setStatusFilter('all');
+                setViewMode('report');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'rep_export_all',
+              title: 'تصدير إكسل الشامل (XLSX)',
+              subtitle: 'سحب كشوفات الجداول الحالية فوراً',
+              icon: FileSpreadsheet,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              onClick: exportToExcel
+            }
+          ]}
+        />
+      )}
+
+      {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}
+      {viewMode === 'report' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setViewMode('hub');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+            >
+              <ArrowLeft className="w-4 h-4 rotate-180" />
+              <span>رجوع إلى شبكة تقارير الأقسام بالأيقونات</span>
+            </button>
+
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+            <span className="font-black text-sm text-slate-900 dark:text-white">
+              {reportType === 'requests' && '📁 تقرير المعاملات الإدارية'}
+              {reportType === 'citizens' && '👥 سجل المراجعين المركزي'}
+              {reportType === 'interviews' && '🤝 تقرير مقابلات النائب'}
+              {reportType === 'organization' && '👥 تقرير الموقف التنظيمي'}
+            </span>
+          </div>
+
+          {/* Quick Sub-tab Jump Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
+            {availableTabs.map((tab) => {
+              const IconComp = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    setReportType(tab.id as any);
+                    setStatusFilter('all');
+                    setSearchQuery('');
+                  }}
+                  className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 ${
+                    reportType === tab.id ? 'bg-pink-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+                  }`}
+                >
+                  <IconComp className="w-3.5 h-3.5" />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
 
           {/* Department RBAC Access & Protection Banner */}
           {isSuperUser ? (

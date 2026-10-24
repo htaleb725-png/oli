@@ -15,7 +15,9 @@ import {
   CheckCircle2,
   Sparkles,
   Shield,
-  KeyRound
+  KeyRound,
+  Loader2,
+  Database
 } from 'lucide-react';
 import { DesktopInstallModal } from './DesktopInstallModal';
 import { Interactive3DBackground } from './Interactive3DBackground';
@@ -29,15 +31,19 @@ export const SplashLanding: React.FC = () => {
     isDesktopInstallModalOpen, 
     setIsDesktopInstallModalOpen,
     assignedWorkstationUser,
+    directLoginAsAssigned,
     assignWorkstationUser,
     isSessionLoading,
     sessionLoadingMessage
   } = useApp();
 
+  const [loginMode, setLoginMode] = useState<'passcode' | 'credentials'>('passcode');
+  const [passcode, setPasscode] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [matchingStatus, setMatchingStatus] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
   const [currentDate, setCurrentDate] = useState('');
@@ -78,25 +84,71 @@ export const SplashLanding: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Standard Staff Login
-  const handleLogin = (e: React.FormEvent) => {
+  // Multi-tier authentication with Firebase & Google Sheets live verification
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim()) {
-      setErrorMsg('يرجى إدخال اسم المستخدم وكلمة المرور.');
-      return;
+    setErrorMsg('');
+
+    let targetUserOrCode = '';
+    let targetPass = '';
+
+    if (loginMode === 'passcode') {
+      const cleanCode = passcode.trim();
+      if (!cleanCode) {
+        setErrorMsg('يرجى إدخال رمز الدخول السري المعتمد.');
+        return;
+      }
+      targetUserOrCode = cleanCode;
+      targetPass = cleanCode;
+    } else {
+      const cleanUser = username.trim();
+      const cleanPass = password.trim();
+
+      // If user typed only in one field, treat it intelligently as a passcode or credential
+      if (!cleanUser && !cleanPass) {
+        setErrorMsg('يرجى إدخال اسم المستخدم أو كلمة المرور.');
+        return;
+      }
+
+      if (cleanUser && !cleanPass) {
+        targetUserOrCode = cleanUser;
+        targetPass = cleanUser;
+      } else if (!cleanUser && cleanPass) {
+        targetUserOrCode = cleanPass;
+        targetPass = cleanPass;
+      } else {
+        targetUserOrCode = cleanUser;
+        targetPass = cleanPass;
+      }
     }
 
     setIsSubmitting(true);
-    setTimeout(() => {
-      const success = login(username.trim(), password);
-      if (!success) {
-        setErrorMsg('بيانات الدخول غير صحيحة أو غير مصرح لها. يرجى مراجعة إدارة المكتب.');
-        setIsSubmitting(false);
-      } else {
-        setErrorMsg('');
+    setMatchingStatus('جاري التحقق ومطابقة الرمز وفتح المنظومة...');
+
+    try {
+      const success = await login(targetUserOrCode, targetPass);
+
+      if (success) {
+        setMatchingStatus('✓ تمت المطابقة بنجاح! جاري فتح المنظومة...');
         playWelcomeChime();
+        // The system is opened via activateUserSession in login
+      } else {
+        setErrorMsg('بيانات الدخول أو الرمز غير صحيح. يرجى التأكد من الرمز والمحاولة مجدداً.');
+        setIsSubmitting(false);
+        setMatchingStatus('');
       }
-    }, 300);
+    } catch (err: any) {
+      console.error('Login match error:', err);
+      setErrorMsg('تعذر تسجيل الدخول في الوقت الحالي. يرجى إعادة المحاولة.');
+      setIsSubmitting(false);
+      setMatchingStatus('');
+    }
+  };
+
+  const handleDirectAssigned = () => {
+    if (directLoginAsAssigned()) {
+      playWelcomeChime();
+    }
   };
 
   return (
@@ -136,7 +188,8 @@ export const SplashLanding: React.FC = () => {
               </div>
               <h1 className="text-sm sm:text-base font-black text-white mt-0.5 tracking-tight flex items-center gap-2">
                 <span>{systemSettings.appName}</span>
-                <span className="text-[10px] font-mono text-emerald-400 px-2 py-0.5 rounded-md bg-emerald-950/70 border border-emerald-500/30">
+                <span className="text-[10px] font-mono text-emerald-400 px-2 py-0.5 rounded-md bg-emerald-950/70 border border-emerald-500/30 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                   سحابي مؤمن
                 </span>
               </h1>
@@ -189,7 +242,7 @@ export const SplashLanding: React.FC = () => {
             />
 
             {/* Header of the Card */}
-            <div className="text-center space-y-2.5 mb-6">
+            <div className="text-center space-y-2 mb-6">
               <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-amber-500/20 via-blue-600/15 to-transparent border border-amber-400/30 flex items-center justify-center text-amber-400 shadow-xl shadow-amber-500/10">
                 <ShieldCheck className="w-8 h-8 text-amber-400" />
               </div>
@@ -198,9 +251,76 @@ export const SplashLanding: React.FC = () => {
                   بوابة الدخول الرسمية المعتمدة
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  أدخل اسم المستخدم وكلمة المرور المسجلة رسمياً للدخول
+                  منظومة الإدارة والمتابعة الرسمية المتكاملة
                 </p>
               </div>
+            </div>
+
+            {/* Assigned Workstation Banner (If configured) */}
+            {assignedWorkstationUser && (
+              <div className="mb-5 p-3.5 rounded-2xl bg-gradient-to-r from-blue-950/60 via-slate-900/80 to-blue-950/60 border border-blue-500/40 flex items-center justify-between gap-3 shadow-md">
+                <div className="flex items-center gap-2.5 text-right">
+                  <div className="w-9 h-9 rounded-xl bg-blue-500/20 border border-blue-400/30 flex items-center justify-center text-blue-300 font-bold shrink-0">
+                    <UserCheck className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-blue-300 font-bold">محطة عمل مخصصة للموظف:</div>
+                    <div className="text-xs font-black text-white">{assignedWorkstationUser.FullName}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleDirectAssigned}
+                    className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer"
+                  >
+                    دخول مباشر
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => assignWorkstationUser(null)}
+                    title="إلغاء التخصيص والدخول بحساب آخر"
+                    className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 text-xs transition-colors cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Login Mode Tabs */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-950/90 rounded-2xl border border-slate-800 mb-5">
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginMode('passcode');
+                  setErrorMsg('');
+                }}
+                className={`py-2 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  loginMode === 'passcode'
+                    ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>الدخول بالرمز السري</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginMode('credentials');
+                  setErrorMsg('');
+                }}
+                className={`py-2 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  loginMode === 'credentials'
+                    ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+                }`}
+              >
+                <UserCheck className="w-3.5 h-3.5" />
+                <span>اسم المستخدم وكلمة المرور</span>
+              </button>
             </div>
 
             {/* Error Message */}
@@ -211,80 +331,141 @@ export const SplashLanding: React.FC = () => {
               </div>
             )}
 
+            {/* Matching Live Status Feedback */}
+            {matchingStatus && (
+              <div className="mb-4 p-3 rounded-2xl bg-amber-950/50 border border-amber-500/50 text-amber-200 text-xs font-bold text-center flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 text-amber-400 animate-spin shrink-0" />
+                <span>{matchingStatus}</span>
+              </div>
+            )}
+
             {/* Login Form */}
             <form onSubmit={handleLogin} className="space-y-4">
               
-              {/* Username Input */}
-              <div className="space-y-1.5 text-right">
-                <label className="block text-xs font-bold text-slate-300">
-                  اسم المستخدم أو معرف الموظف
-                </label>
-                <div className="relative group">
-                  <input
-                    type="text"
-                    value={username}
-                    onChange={(e) => {
-                      setUsername(e.target.value);
-                      if (errorMsg) setErrorMsg('');
-                    }}
-                    placeholder="أدخل اسم المستخدم..."
-                    className="w-full px-4 py-3.5 pr-11 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/25 text-right text-xs transition-all shadow-inner"
-                    required
-                    autoComplete="username"
-                  />
-                  <UserCheck className="w-4 h-4 text-slate-500 group-focus-within:text-amber-400 absolute right-4 top-4 pointer-events-none transition-colors" />
+              {loginMode === 'passcode' ? (
+                /* Passcode Single Mode (Direct passcode/PIN matching against Firebase & Google Sheets) */
+                <div className="space-y-1.5 text-right">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-slate-300">
+                      الرمز السري المعتمد للدخول
+                    </label>
+                    <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" />
+                      مطابقة فورية معتمدة
+                    </span>
+                  </div>
+                  <div className="relative group">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={passcode}
+                      onChange={(e) => {
+                        setPasscode(e.target.value);
+                        if (errorMsg) setErrorMsg('');
+                      }}
+                      placeholder="أدخل رمز الدخول (مثال: 2026 أو رمز الموظف)..."
+                      className="w-full px-4 py-3.5 pr-11 pl-11 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/25 text-right text-sm font-mono tracking-wider transition-all shadow-inner"
+                      required
+                      autoFocus
+                      autoComplete="current-password"
+                    />
+                    <KeyRound className="w-4 h-4 text-slate-500 group-focus-within:text-amber-400 absolute right-4 top-4 pointer-events-none transition-colors" />
+                    
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute left-4 top-3.5 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                      title={showPassword ? 'إخفاء الرمز' : 'إظهار الرمز'}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    يقبل الرمز السري للمطور، رموز الموظفين المعتمدة، أو رمز الطوارئ العام.
+                  </p>
                 </div>
-              </div>
+              ) : (
+                /* Username & Password Mode */
+                <>
+                  {/* Username Input */}
+                  <div className="space-y-1.5 text-right">
+                    <label className="block text-xs font-bold text-slate-300">
+                      اسم المستخدم أو معرف الموظف
+                    </label>
+                    <div className="relative group">
+                      <input
+                        type="text"
+                        value={username}
+                        onChange={(e) => {
+                          setUsername(e.target.value);
+                          if (errorMsg) setErrorMsg('');
+                        }}
+                        placeholder="أدخل اسم المستخدم أو المعرف..."
+                        className="w-full px-4 py-3.5 pr-11 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/25 text-right text-xs transition-all shadow-inner"
+                        autoComplete="username"
+                      />
+                      <UserCheck className="w-4 h-4 text-slate-500 group-focus-within:text-amber-400 absolute right-4 top-4 pointer-events-none transition-colors" />
+                    </div>
+                  </div>
 
-              {/* Password Input */}
-              <div className="space-y-1.5 text-right">
-                <label className="block text-xs font-bold text-slate-300">
-                  كلمة المرور
-                </label>
-                <div className="relative group">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
-                      if (errorMsg) setErrorMsg('');
-                    }}
-                    placeholder="أدخل كلمة المرور الرسمية..."
-                    className="w-full px-4 py-3.5 pr-11 pl-11 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/25 text-right text-xs transition-all shadow-inner font-mono"
-                    required
-                    autoComplete="current-password"
-                  />
-                  <Lock className="w-4 h-4 text-slate-500 group-focus-within:text-amber-400 absolute right-4 top-4 pointer-events-none transition-colors" />
-                  
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute left-4 top-3.5 text-slate-400 hover:text-white transition-colors cursor-pointer"
-                    title={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
+                  {/* Password Input */}
+                  <div className="space-y-1.5 text-right">
+                    <label className="block text-xs font-bold text-slate-300">
+                      كلمة المرور أو الرمز السري
+                    </label>
+                    <div className="relative group">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={password}
+                        onChange={(e) => {
+                          setPassword(e.target.value);
+                          if (errorMsg) setErrorMsg('');
+                        }}
+                        placeholder="أدخل كلمة المرور..."
+                        className="w-full px-4 py-3.5 pr-11 pl-11 bg-slate-950/90 border border-slate-700/80 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/25 text-right text-xs transition-all shadow-inner font-mono"
+                        autoComplete="current-password"
+                      />
+                      <Lock className="w-4 h-4 text-slate-500 group-focus-within:text-amber-400 absolute right-4 top-4 pointer-events-none transition-colors" />
+                      
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute left-4 top-3.5 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                        title={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
 
               {/* Submit Button */}
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full py-3.5 sm:py-4 px-4 rounded-2xl font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-500 hover:from-amber-300 hover:to-amber-400 active:scale-[0.98] shadow-xl shadow-amber-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer text-xs sm:text-sm mt-2 disabled:opacity-75"
+                className="w-full py-3.5 sm:py-4 px-4 rounded-2xl font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-500 hover:from-amber-300 hover:to-amber-400 active:scale-[0.98] shadow-xl shadow-amber-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer text-xs sm:text-sm mt-3 disabled:opacity-75"
               >
-                <Fingerprint className="w-5 h-5 text-slate-950" />
-                <span>{isSubmitting ? 'جاري التحقق من الصلاحيات وفتح النظام...' : 'تسجيل الدخول إلى المنظومة'}</span>
-                <ChevronLeft className="w-4 h-4" />
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-5 h-5 text-slate-950 animate-spin" />
+                    <span>جاري مطابقة البيانات وفتح المنظومة...</span>
+                  </>
+                ) : (
+                  <>
+                    <Fingerprint className="w-5 h-5 text-slate-950" />
+                    <span>تسجيل الدخول وفتح المنظومة</span>
+                    <ChevronLeft className="w-4 h-4" />
+                  </>
+                )}
               </button>
 
             </form>
 
-            {/* Footer Trust Indicator */}
+            {/* Security Indicator */}
             <div className="mt-6 pt-4 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-              <span className="flex items-center gap-1 text-slate-400">
+              <span className="flex items-center gap-1.5 text-slate-400">
                 <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                <span>اتصال سحابي مشفر وآمن</span>
+                <span>نظام إداري إلكتروني مشفر ومؤمن</span>
               </span>
               <span className="font-mono text-slate-500 text-[10px]">
                 مجلس النواب • ذي قار

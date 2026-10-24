@@ -26,7 +26,6 @@ import {
   Phone
 } from 'lucide-react';
 import { getAllImagesFromDB, ImageRecord } from '../utils/imageDb';
-import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
 
 export const GlobalSearchArchiveModule: React.FC = () => {
   const { 
@@ -39,7 +38,9 @@ export const GlobalSearchArchiveModule: React.FC = () => {
     setPrintableBadgeCitizen,
     setSelectedCitizenForHistory,
     canPrintOfficialCard, 
-    currentUser
+    currentUser,
+    blockCitizen,
+    unblockCitizen
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -80,11 +81,16 @@ export const GlobalSearchArchiveModule: React.FC = () => {
     };
   }, []);
 
+  const isAdminOrDirector = ['admin', 'admin_officer', 'director', 'developer', 'deputy'].includes(currentUser?.Role || '');
+  const isReception = ['reception', 'reception_officer'].includes(currentUser?.Role || '');
+
   const filteredCitizens = (citizens || []).filter(c => {
     if (!c) return false;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase().trim();
-    return (
+
+    // Basic citizen profile matching (available to all authenticated roles)
+    const matchesCitizen = (
       (c.FullName && c.FullName.toLowerCase().includes(q)) ||
       (c.Citizen_ID && c.Citizen_ID.toLowerCase().includes(q)) ||
       (c.Phone1 && c.Phone1.includes(q)) ||
@@ -93,20 +99,36 @@ export const GlobalSearchArchiveModule: React.FC = () => {
       (c.District && c.District.toLowerCase().includes(q)) ||
       (c.Job && c.Job.toLowerCase().includes(q))
     );
+
+    if (matchesCitizen) return true;
+
+    // Strict Role Isolation: ONLY Administration roles can search across administrative requests, subjects, and outgoing letters
+    if (isAdminOrDirector) {
+      const hasMatchingRequest = requests.some(r =>
+        r.Citizen_ID === c.Citizen_ID && (
+          (r.Details && r.Details.toLowerCase().includes(q)) ||
+          (r.Entity && r.Entity.toLowerCase().includes(q)) ||
+          (r.OutgoingNumber && r.OutgoingNumber.toLowerCase().includes(q)) ||
+          (r.DeputyNotes && r.DeputyNotes.toLowerCase().includes(q)) ||
+          (r.OtherNotes && r.OtherNotes.toLowerCase().includes(q))
+        )
+      );
+      if (hasMatchingRequest) return true;
+    }
+
+    return false;
   });
 
-  const isReception = currentUser?.Role === 'reception' || currentUser?.Role === 'reception_officer';
-
-  // Find all requests matching the selected citizen by Citizen_ID or Name
+  // Find all requests matching the selected citizen by Citizen_ID or Name (ONLY visible to Administration)
   const citizenRequests = useMemo(() => {
-    if (!selectedCitizen || isReception) return [];
+    if (!selectedCitizen || !isAdminOrDirector) return [];
     const normName = selectedCitizen.FullName.trim().toLowerCase();
     return requests.filter(r => 
       r.Citizen_ID === selectedCitizen.Citizen_ID || 
       (r.CitizenName && r.CitizenName.trim().toLowerCase() === normName) ||
       (r.CitizenName && (r.CitizenName.includes(normName) || normName.includes(r.CitizenName.trim().toLowerCase())))
     );
-  }, [selectedCitizen, isReception, requests]);
+  }, [selectedCitizen, isAdminOrDirector, requests]);
 
   // Find all OCR images matching the selected citizen
   const citizenOcrImages = useMemo(() => {
@@ -204,75 +226,13 @@ export const GlobalSearchArchiveModule: React.FC = () => {
             البحث في كافة بيانات المنظومة، استعراض السجل التراكمي للمراجع، وإصدار بطاقات المعلومات الرسمية المقيدة أمنياً.
           </p>
         </div>
-      </div>
 
-      {/* 5-Column Desktop Icon Grid for Global Search & Archive */}
-      <OfficeIconTilesGrid
-        title="أيقونات ومهام الأرشيف والبحث الشامل"
-        subtitle="انقر على أي أيقونة للاستعلام الفوري أو طباعة الهوية والباجة وتوثيق المستمسكات"
-        columns={5}
-        items={[
-          {
-            id: 'srch_all_citizens',
-            title: 'قاعدة المراجعين المركزية',
-            subtitle: 'كافة المواطنين المسجلين',
-            icon: Search,
-            iconColor: 'text-purple-600 dark:text-purple-400',
-            iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
-            badge: citizens.length,
-            badgeColor: 'bg-purple-600 text-white',
-            onClick: () => setSearchQuery('')
-          },
-          {
-            id: 'srch_id_card',
-            title: 'طباعة بطاقة المواطن',
-            subtitle: 'إصدار الهوية الرسمية المقيدة',
-            icon: Award,
-            iconColor: 'text-blue-600 dark:text-blue-400',
-            iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-            onClick: () => {
-              if (selectedCitizen) handlePrintCard(selectedCitizen);
-              else alert('يرجى اختيار مراجع أولاً');
-            }
-          },
-          {
-            id: 'srch_badge',
-            title: 'طباعة باجة المراجعة',
-            subtitle: 'باجة المراجعة والباركود اليومي',
-            icon: Printer,
-            iconColor: 'text-teal-600 dark:text-teal-400',
-            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-            onClick: () => {
-              if (selectedCitizen) setPrintableBadgeCitizen(selectedCitizen);
-              else alert('يرجى اختيار مراجع أولاً');
-            }
-          },
-          {
-            id: 'srch_history',
-            title: 'سجل الحركات والتاريخ',
-            subtitle: 'تتبع كافة مراحل المعاملات',
-            icon: Clock,
-            iconColor: 'text-amber-600 dark:text-amber-400',
-            iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-            onClick: () => {
-              if (selectedCitizen) setSelectedCitizenForHistory(selectedCitizen);
-              else alert('يرجى اختيار مراجع أولاً');
-            }
-          },
-          {
-            id: 'srch_upload_doc',
-            title: 'إرفاق وأرشفة مستمسك',
-            subtitle: 'رفع مستمسكات ثبوتية وأوراق',
-            icon: Upload,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            onClick: () => {
-              if (selectedCitizen) setShowUploadModal(true);
-              else alert('يرجى اختيار مراجع أولاً');
-            }
-          }
-        ]}
-      />
+        <div className="flex items-center gap-2">
+          <span className="px-3 py-1 rounded-xl text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200">
+            إجمالي المراجعين المسجلين: {citizens.length} مواطن
+          </span>
+        </div>
+      </div>
 
       {/* Main Search Input */}
       <div className="relative">
@@ -348,6 +308,37 @@ export const GlobalSearchArchiveModule: React.FC = () => {
             <div className="space-y-4">
               {/* Profile Card & Action Bar */}
               <div className="p-4 rounded-xl bg-white border border-slate-200 space-y-4 shadow-xs">
+                {/* Blacklist Status Banner */}
+                {selectedCitizen.IsBlocked && (
+                  <div className="p-3.5 rounded-2xl bg-gradient-to-r from-red-600 to-rose-700 text-white shadow-md flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-2.5">
+                      <span className="p-2 bg-white/20 rounded-xl text-lg">⛔</span>
+                      <div>
+                        <h4 className="font-black text-xs text-white">
+                          تحذير رقابي: هذا المراجع مدرج في «القائمة السوداء» (الأشخاص المحظورين)
+                        </h4>
+                        <p className="text-[11px] text-red-100 font-medium">
+                          سبب الحظر: {selectedCitizen.BlockReason || 'غير محدد'}
+                          {selectedCitizen.BlockedAt ? ` • تاريخ الحظر: ${selectedCitizen.BlockedAt}` : ''}
+                          {selectedCitizen.BlockedBy ? ` • بواسطة: ${selectedCitizen.BlockedBy}` : ''}
+                        </p>
+                      </div>
+                    </div>
+                    {['admin', 'admin_officer', 'director', 'developer', 'deputy', 'audit'].includes(currentUser?.Role || '') && (
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`هل أنت متأكد من إلغاء الحظر عن المواطن (${selectedCitizen.FullName}) وإعادته للوضع الطبيعي؟`)) {
+                            unblockCitizen(selectedCitizen.Citizen_ID);
+                          }
+                        }}
+                        className="px-3.5 py-1.5 rounded-xl bg-white text-red-700 hover:bg-red-50 font-black text-xs cursor-pointer shadow-xs active:scale-95 transition-transform"
+                      >
+                        ✓ إلغاء الحظر فوراً
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2">
@@ -355,10 +346,16 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                       <span className="px-2 py-0.5 rounded text-xs font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200">
                         {selectedCitizen.Citizen_ID}
                       </span>
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        <span>محفوظ في Google Sheets و Drive و Firebase</span>
-                      </span>
+                      {selectedCitizen.IsBlocked ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-red-100 text-red-800 border border-red-300">
+                          <span>⛔ محظور بالقائمة السوداء</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                          <span>سجل معتمد ومؤرشف مركزياً</span>
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-slate-500">
                       السكن: {selectedCitizen.District} - {selectedCitizen.SubDistrict} | تاريخ التسجيل: {selectedCitizen.CreatedAt}
@@ -399,6 +396,30 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                       <Clock className="w-3.5 h-3.5" />
                       <span>السجل الزمني</span>
                     </button>
+
+                    <button
+                      onClick={() => setShowUploadModal(true)}
+                      className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>إرفاق وأرشفة مستمسك</span>
+                    </button>
+
+                    {!selectedCitizen.IsBlocked && ['admin', 'admin_officer', 'director', 'developer', 'deputy', 'audit'].includes(currentUser?.Role || '') && (
+                      <button
+                        onClick={() => {
+                          const reason = window.prompt(`أدخل سبب إدراج (${selectedCitizen.FullName}) في القائمة السوداء:`);
+                          if (reason && reason.trim()) {
+                            blockCitizen(selectedCitizen.Citizen_ID, reason.trim());
+                          }
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer shadow-xs"
+                        title="حظر هذا المراجع وإدراجه بالقائمة السوداء"
+                      >
+                        <ShieldAlert className="w-3.5 h-3.5 text-red-200" />
+                        <span>حظر</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -433,19 +454,24 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                 </div>
 
                 <div className="space-y-2">
-                  {isReception ? (
-                    <div className="p-3 bg-cyan-50 border border-cyan-200 rounded-lg text-xs text-cyan-800 text-center font-medium">
-                      🔒 المعاملات الإدارية والمخاطبات الحكومية مشفرة ومخصصة لقسم الإدارة والمعاملات حصراً.
+                  {!isAdminOrDirector ? (
+                    <div className="p-3.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-700 dark:text-slate-300 text-center font-bold">
+                      🔒 المعاملات الإدارية والمخاطبات الحكومية وكتب الصادر مشفرة ومخصصة لقسم الإدارة وإدارة المكتب حصراً. يظهر لكل موظف نطاق عمله فقط.
                     </div>
                   ) : citizenRequests.length === 0 ? (
                     <p className="text-xs text-slate-500 text-center py-3">لا توجد طلبات إدارية مسجلة لهذا المراجع.</p>
                   ) : (
                     citizenRequests.map((req, idx) => (
-                      <div key={`${req.Request_ID}-${idx}`} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5">
-                        <div className="flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-2">
+                      <div key={`${req.Request_ID}-${idx}`} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                        <div className="flex items-center justify-between text-xs flex-wrap gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-mono font-bold text-blue-700">{req.Request_ID}</span>
                             <span className="font-bold text-slate-900">الجهة: {req.Entity}</span>
+                            {req.OutgoingNumber && (
+                              <span className="px-2 py-0.5 rounded font-mono font-black text-amber-900 bg-amber-100 border border-amber-300 text-[11px]">
+                                صادر: {req.OutgoingNumber} {req.OutgoingDate ? `(${req.OutgoingDate})` : ''}
+                              </span>
+                            )}
                           </div>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
                             req.ProcessingStatus === 'منجز' ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-amber-50 text-amber-700 border-amber-200'
@@ -453,10 +479,21 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                             {req.ProcessingStatus}
                           </span>
                         </div>
-                        <p className="text-xs text-slate-600">{req.Details}</p>
+                        <p className="text-xs text-slate-700 font-medium">{req.Details}</p>
+                        {req.AttachedRequestImage && (
+                          <div className="pt-1 flex items-center gap-2">
+                            <span className="text-[10px] text-blue-700 font-bold">صورة المعاملة الورقية:</span>
+                            <img src={req.AttachedRequestImage} alt="صورة المعاملة" className="w-12 h-12 object-cover rounded-lg border border-blue-300 shadow-2xs" />
+                          </div>
+                        )}
                         {req.DeputyNotes && (
-                          <div className="text-[11px] text-amber-700 font-semibold">
+                          <div className="text-[11px] text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200 font-semibold">
                             توجيه النائب: {req.DeputyNotes}
+                          </div>
+                        )}
+                        {req.DirectorDecision && (
+                          <div className="text-[11px] text-blue-800 bg-blue-50 p-2 rounded-lg border border-blue-200 font-semibold">
+                            قرار المدير: {req.DirectorDecision}
                           </div>
                         )}
                       </div>

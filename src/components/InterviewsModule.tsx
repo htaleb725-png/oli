@@ -24,7 +24,8 @@ import {
   X,
   UserCheck,
   Building2,
-  Sparkles
+  Sparkles,
+  ArrowLeft
 } from 'lucide-react';
 import { SearchableSelect } from './SearchableSelect';
 import { UnifiedCitizenCardModal } from './UnifiedCitizenCardModal';
@@ -93,6 +94,7 @@ export const InterviewsModule: React.FC = () => {
     addDropdownItem
   } = useApp();
 
+  const [viewMode, setViewMode] = useState<'hub' | 'table'>('hub');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
@@ -407,85 +409,167 @@ export const InterviewsModule: React.FC = () => {
         </button>
       </div>
 
-      {/* 5-Column Desktop Icon Grid for Interviews */}
-      <OfficeIconTilesGrid
-        title="أيقونات ومهام قسم مقابلات النائب"
-        subtitle="انقر على أي أيقونة للاستعراض المباشر أو جدولة وإحالة المقابلات"
-        columns={5}
-        items={[
-          {
-            id: 'int_all',
-            title: 'كل المقابلات الموثقة',
-            subtitle: 'السجل العام للمقابلات',
-            icon: Handshake,
-            iconColor: 'text-amber-600 dark:text-amber-400',
-            iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-            badge: totalInterviews,
-            badgeColor: 'bg-amber-600 text-white',
-            isActive: statusFilter === 'all' && priorityFilter === 'all',
-            onClick: () => {
-              setStatusFilter('all');
-              setPriorityFilter('all');
+      {/* ---------------- VIEW 1: CENTRAL ICONS HUB ---------------- */}
+      {viewMode === 'hub' && (
+        <OfficeIconTilesGrid
+          title="أيقونات ومهام قسم مقابلات النائب"
+          subtitle="انقر على أي أيقونة للاستعراض المباشر أو جدولة وإحالة المقابلات"
+          columns={5}
+          items={[
+            {
+              id: 'int_all',
+              title: 'كل المقابلات الموثقة',
+              subtitle: 'السجل العام للمقابلات',
+              icon: Handshake,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: totalInterviews,
+              badgeColor: 'bg-amber-600 text-white',
+              onClick: () => {
+                setStatusFilter('all');
+                setPriorityFilter('all');
+                setViewMode('table');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'int_scheduled',
+              title: 'المقابلات المجدولة',
+              subtitle: 'بانتظار الموعد الرسمي',
+              icon: Clock,
+              iconColor: 'text-teal-600 dark:text-teal-400',
+              iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+              badge: scheduledCount,
+              badgeColor: 'bg-teal-600 text-white',
+              onClick: () => {
+                setStatusFilter('مجدولة');
+                setPriorityFilter('all');
+                setViewMode('table');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'int_completed',
+              title: 'المقابلات المنجزة والمحققة',
+              subtitle: 'تمت المقابلة أو إحالتها',
+              icon: CheckCircle2,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              badge: completedOrReferredCount,
+              badgeColor: 'bg-emerald-600 text-white',
+              onClick: () => {
+                setStatusFilter('تمت المقابلة');
+                setPriorityFilter('all');
+                setViewMode('table');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'int_urgent',
+              title: 'المقابلات العاجلة والحرجة',
+              subtitle: 'أولوية قصوى وخاص جداً',
+              icon: AlertCircle,
+              iconColor: 'text-rose-600 dark:text-rose-400',
+              iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
+              badge: urgentCount,
+              badgeColor: 'bg-rose-600 text-white',
+              onClick: () => {
+                setPriorityFilter('عاجل');
+                setViewMode('table');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'int_add_new',
+              title: 'جدولة موعد مقابلة جديدة',
+              subtitle: 'تسجيل موعد مراجع مع النائب',
+              icon: Plus,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              onClick: () => {
+                resetAddForm();
+                setShowAddModal(true);
+              }
             }
-          },
-          {
-            id: 'int_scheduled',
-            title: 'المقابلات المجدولة',
-            subtitle: 'بانتظار الموعد الرسمي',
-            icon: Clock,
-            iconColor: 'text-teal-600 dark:text-teal-400',
-            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-            badge: scheduledCount,
-            badgeColor: 'bg-teal-600 text-white',
-            isActive: statusFilter === 'مجدولة',
-            onClick: () => {
-              setStatusFilter('مجدولة');
-              setPriorityFilter('all');
-            }
-          },
-          {
-            id: 'int_completed',
-            title: 'المقابلات المنجزة والمحققة',
-            subtitle: 'تمت المقابلة أو إحالتها',
-            icon: CheckCircle2,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            badge: completedOrReferredCount,
-            badgeColor: 'bg-emerald-600 text-white',
-            isActive: statusFilter === 'تمت المقابلة',
-            onClick: () => {
-              setStatusFilter('تمت المقابلة');
-              setPriorityFilter('all');
-            }
-          },
-          {
-            id: 'int_urgent',
-            title: 'المقابلات العاجلة والحرجة',
-            subtitle: 'أولوية قصوى وخاص جداً',
-            icon: AlertCircle,
-            iconColor: 'text-rose-600 dark:text-rose-400',
-            iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
-            badge: urgentCount,
-            badgeColor: 'bg-rose-600 text-white',
-            isActive: priorityFilter === 'عاجل',
-            onClick: () => {
-              setPriorityFilter('عاجل');
-            }
-          },
-          {
-            id: 'int_add_new',
-            title: 'جدولة موعد مقابلة جديدة',
-            subtitle: 'تسجيل موعد مراجع مع النائب',
-            icon: Plus,
-            iconColor: 'text-blue-600 dark:text-blue-400',
-            iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-            onClick: () => {
-              resetAddForm();
-              setShowAddModal(true);
-            }
-          }
-        ]}
-      />
+          ]}
+        />
+      )}
+
+      {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}
+      {viewMode === 'table' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setViewMode('hub');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+            >
+              <ArrowLeft className="w-4 h-4 rotate-180" />
+              <span>رجوع إلى شبكة أيقونات المقابلات</span>
+            </button>
+
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+            <span className="font-black text-sm text-slate-900 dark:text-white">
+              {statusFilter === 'all' && priorityFilter === 'all' && '🤝 كافة المقابلات الموثقة'}
+              {statusFilter === 'مجدولة' && '🕒 جدول المقابلات القادمة والمجدولة'}
+              {statusFilter === 'تمت المقابلة' && '✅ المقابلات المنجزة والمحالة'}
+              {priorityFilter === 'عاجل' && '🚨 المقابلات العاجلة ذات الأولوية القصوى'}
+            </span>
+          </div>
+
+          {/* Quick Sub-tab Jump Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
+            <button
+              onClick={() => {
+                setStatusFilter('all');
+                setPriorityFilter('all');
+              }}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                statusFilter === 'all' && priorityFilter === 'all' ? 'bg-amber-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              كل المقابلات ({totalInterviews})
+            </button>
+            <button
+              onClick={() => {
+                setStatusFilter('مجدولة');
+                setPriorityFilter('all');
+              }}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                statusFilter === 'مجدولة' ? 'bg-teal-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              المجدولة ({scheduledCount})
+            </button>
+            <button
+              onClick={() => {
+                setStatusFilter('تمت المقابلة');
+                setPriorityFilter('all');
+              }}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                statusFilter === 'تمت المقابلة' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              المنجزة ({completedOrReferredCount})
+            </button>
+            <button
+              onClick={() => {
+                setPriorityFilter('عاجل');
+                setStatusFilter('all');
+              }}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                priorityFilter === 'عاجل' ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              العاجلة ({urgentCount})
+            </button>
+          </div>
+        </div>
+      )}
+
 
       {/* Simple Clean KPI Counters (حجم مصغر وأنيق) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

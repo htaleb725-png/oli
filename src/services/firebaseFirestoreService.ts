@@ -367,6 +367,102 @@ export async function fsGetDeveloperPasscode(): Promise<string | null> {
   }
 }
 
+/**
+ * Realtime verification of login credentials against Firebase Firestore
+ * Checks developer passcode (in settings/developer_auth and settings/general)
+ * and employee/staff accounts in the users collection.
+ */
+export async function fsVerifyLogin(
+  usernameOrCode: string,
+  passwordOrPin?: string
+): Promise<{ success: boolean; user?: User; isDeveloper?: boolean; matchedSource?: 'firebase_passcode' | 'firebase_user' }> {
+  try {
+    const normalizeDigits = (val: string) => (val || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
+    const rawCode = normalizeDigits(passwordOrPin || usernameOrCode || '');
+    const cleanUser = normalizeDigits(usernameOrCode || '').toLowerCase();
+    const cleanPass = normalizeDigits(passwordOrPin || '');
+
+    // 1. Check Developer Passcode in Firestore (settings/developer_auth)
+    const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
+    try {
+      const authSnap = await getDoc(doc(db, colSettings, 'developer_auth'));
+      if (authSnap.exists()) {
+        const storedCode = normalizeDigits(String(authSnap.data()?.developerPasscode || ''));
+        if (storedCode && (rawCode === storedCode || cleanPass === storedCode || cleanUser === storedCode.toLowerCase())) {
+          return { success: true, isDeveloper: true, matchedSource: 'firebase_passcode' };
+        }
+      }
+    } catch (e) {
+      console.warn('fsVerifyLogin developer_auth check error:', e);
+    }
+
+    // Also check general settings doc
+    try {
+      const genSnap = await getDoc(doc(db, colSettings, 'general'));
+      if (genSnap.exists()) {
+        const data = genSnap.data();
+        const storedPass = normalizeDigits(String(data?.developerPasscode || data?.passcode || ''));
+        if (storedPass && (rawCode === storedPass || cleanPass === storedPass || cleanUser === storedPass.toLowerCase())) {
+          return { success: true, isDeveloper: true, matchedSource: 'firebase_passcode' };
+        }
+      }
+    } catch (e) {
+      console.warn('fsVerifyLogin general settings check error:', e);
+    }
+
+    // 2. Check Firestore users collection
+    const colUsers = getFSCol(FS_COLLECTIONS.USERS);
+    try {
+      const usersSnap = await getDocs(collection(db, colUsers));
+      const firestoreUsers: User[] = usersSnap.docs.map(d => d.data() as User);
+      
+      for (const u of firestoreUsers) {
+        if (!u) continue;
+        const uName = normalizeDigits(u.Username || '').toLowerCase();
+        const uId = normalizeDigits(u.User_ID || '').toLowerCase();
+        const uFull = (u.FullName || '').trim().toLowerCase();
+        const uPhone = normalizeDigits(u.Phone || '');
+        const uPass = normalizeDigits(u.Password || '');
+
+        // Check if single passcode matches user's password or ID
+        if (rawCode && ((uPass && rawCode === uPass) || (uId && rawCode === uId))) {
+          return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
+        }
+
+        // Check dual username + password
+        const userMatched = (cleanUser && (cleanUser === uName || cleanUser === uId || uFull.includes(cleanUser) || (uPhone && uPhone.includes(cleanUser))));
+        const passMatched = (cleanPass && cleanPass === uPass) || (rawCode && rawCode === uPass);
+
+        if (userMatched && passMatched) {
+          return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
+        }
+      }
+    } catch (e) {
+      console.warn('fsVerifyLogin users collection check error:', e);
+    }
+
+    // 3. Fallback: check base 'users' collection without partition
+    if (colUsers !== 'users') {
+      try {
+        const baseUsersSnap = await getDocs(collection(db, 'users'));
+        for (const docItem of baseUsersSnap.docs) {
+          const u = docItem.data() as User;
+          if (!u) continue;
+          const uPass = (u.Password || '').trim();
+          if (rawCode && uPass && rawCode === uPass) {
+            return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
+          }
+        }
+      } catch {}
+    }
+
+    return { success: false };
+  } catch (err) {
+    console.warn('fsVerifyLogin general error:', err);
+    return { success: false };
+  }
+}
+
 // 9. Custom Dynamic Sections (إدارة الأقسام المخصصة)
 export async function fsSaveCustomSection(section: CustomSection): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.CUSTOM_SECTIONS);

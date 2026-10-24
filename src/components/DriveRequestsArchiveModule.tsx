@@ -25,7 +25,8 @@ import {
   RotateCcw,
   Maximize2,
   FileImage,
-  Upload
+  Upload,
+  ArrowLeft
 } from 'lucide-react';
 import { SmartImageArchiveModule } from './SmartImageArchiveModule';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
@@ -51,8 +52,8 @@ export const DriveRequestsArchiveModule: React.FC = () => {
     currentUser?.Role === 'developer' || 
     (Boolean(systemSettings.allowAdminOpenDriveFolder) && (currentUser?.Role === 'director' || currentUser?.Role === 'admin' || currentUser?.Role === 'admin_officer'));
 
-  // Main Tab: Smart Images (1000-2000) vs Image viewer vs standard request list
-  const [activeMainTab, setActiveMainTab] = useState<'smart_images' | 'image_viewer' | 'requests_list'>('smart_images');
+  // Main Tab: Hub vs Smart Images vs Image viewer vs standard request list
+  const [activeMainTab, setActiveMainTab] = useState<'hub' | 'smart_images' | 'image_viewer' | 'requests_list'>('hub');
 
   // Google Drive Image Viewer State
   const [driveImageSearchName, setDriveImageSearchName] = useState('كرار علي');
@@ -287,101 +288,127 @@ export const DriveRequestsArchiveModule: React.FC = () => {
         </div>
       </div>
 
-      {/* 5-Column Desktop Icon Grid for Drive Requests Archive */}
-      <OfficeIconTilesGrid
-        title="أيقونات ومهام أرشيف Google Drive وسحب الصور"
-        subtitle="انقر على أي أيقونة للاستعراض المباشر أو البحث السحابي واستخراج الصور"
-        columns={5}
-        items={[
-          {
-            id: 'drv_smart_images',
-            title: 'أرشيف صور المعاملات (OCR)',
-            subtitle: '1000 - 2000 صورة بالاسم والذكاء',
-            icon: FileImage,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            isActive: activeMainTab === 'smart_images',
-            onClick: () => setActiveMainTab('smart_images')
-          },
-          {
-            id: 'drv_image_viewer',
-            title: 'سحب وعرض صورة من Drive',
-            subtitle: 'جلب الصور وتكبيرها وتصغيرها',
-            icon: Search,
-            iconColor: 'text-blue-600 dark:text-blue-400',
-            iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-            isActive: activeMainTab === 'image_viewer',
-            onClick: () => setActiveMainTab('image_viewer')
-          },
-          {
-            id: 'drv_requests_list',
-            title: 'سجل المعاملات والربط السحابي',
-            subtitle: 'جدول الطلبات المقترنة بروابط Drive',
-            icon: FolderKanban,
-            iconColor: 'text-amber-600 dark:text-amber-400',
-            iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-            badge: requests.length,
-            badgeColor: 'bg-amber-600 text-white',
-            isActive: activeMainTab === 'requests_list',
-            onClick: () => setActiveMainTab('requests_list')
-          },
-          {
-            id: 'drv_add_new',
-            title: 'تسجيل طلب في أرشيف Drive',
-            subtitle: 'إضافة معاملة جديدة مع رابط سحابي',
-            icon: Plus,
-            iconColor: 'text-indigo-600 dark:text-indigo-400',
-            iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-            onClick: () => setShowAddModal(true)
-          },
-          {
-            id: 'drv_print_all',
-            title: 'طباعة كشف الأرشيف السحابي',
-            subtitle: 'سحب كشف الطلبات السحابية ورقياً',
-            icon: Printer,
-            iconColor: 'text-teal-600 dark:text-teal-400',
-            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-            onClick: () => window.print()
-          }
-        ]}
-      />
+      {/* ---------------- VIEW 1: CENTRAL ICONS HUB ---------------- */}
+      {activeMainTab === 'hub' && (
+        <OfficeIconTilesGrid
+          title="أيقونات ومهام أرشيف الطلبات وسحب الصور السحابية"
+          subtitle="انقر على أي أيقونة للاستعراض المباشر أو البحث السحابي واستخراج الصور"
+          columns={5}
+          items={[
+            {
+              id: 'drv_smart_images',
+              title: 'أرشيف صور المعاملات (OCR)',
+              subtitle: '1000 - 2000 صورة بالاسم والذكاء',
+              icon: FileImage,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              onClick: () => {
+                setActiveMainTab('smart_images');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'drv_image_viewer',
+              title: 'سحب وعرض صورة الطلب',
+              subtitle: 'جلب الصور وتكبيرها وتصغيرها',
+              icon: Search,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              onClick: () => {
+                setActiveMainTab('image_viewer');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'drv_requests_list',
+              title: 'سجل المعاملات والربط السحابي',
+              subtitle: 'جدول الطلبات المقترنة بالمستندات',
+              icon: FolderKanban,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: requests.length,
+              badgeColor: 'bg-amber-600 text-white',
+              onClick: () => {
+                setActiveMainTab('requests_list');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'drv_add_new',
+              title: 'تسجيل طلب في الأرشيف',
+              subtitle: 'إضافة معاملة جديدة مع رابط سحابي',
+              icon: Plus,
+              iconColor: 'text-indigo-600 dark:text-indigo-400',
+              iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
+              onClick: () => setShowAddModal(true)
+            },
+            {
+              id: 'drv_print_all',
+              title: 'طباعة كشف الأرشيف السحابي',
+              subtitle: 'سحب كشف الطلبات السحابية ورقياً',
+              icon: Printer,
+              iconColor: 'text-teal-600 dark:text-teal-400',
+              iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+              onClick: () => window.print()
+            }
+          ]}
+        />
+      )}
 
-      {/* Main Tabs */}
-      <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl w-fit flex-wrap">
-        <button
-          onClick={() => setActiveMainTab('smart_images')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeMainTab === 'smart_images'
-              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <FileImage className="w-4 h-4 text-emerald-200" />
-          <span>أرشفة واستخراج صور المعاملات (1000 - 2000 صورة) والبحث الفوري</span>
-        </button>
-        <button
-          onClick={() => setActiveMainTab('image_viewer')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeMainTab === 'image_viewer'
-              ? 'bg-white text-blue-800 shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <FileImage className="w-4 h-4 text-blue-600" />
-          <span>سحب وعرض صورة الطلب من Google Drive (تكبير، تصغير، طباعة)</span>
-        </button>
-        <button
-          onClick={() => setActiveMainTab('requests_list')}
-          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeMainTab === 'requests_list'
-              ? 'bg-white text-blue-800 shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <FolderKanban className="w-4 h-4 text-slate-500" />
-          <span>سجل المعاملات والربط السحابي</span>
-        </button>
-      </div>
+      {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}
+      {activeMainTab !== 'hub' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setActiveMainTab('hub');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+            >
+              <ArrowLeft className="w-4 h-4 rotate-180" />
+              <span>رجوع إلى شبكة أيقونات أرشيف الطلبات</span>
+            </button>
+
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+            <span className="font-black text-sm text-slate-900 dark:text-white">
+              {activeMainTab === 'smart_images' && '🖼️ أرشيف صور المعاملات (1000 - 2000 صورة)'}
+              {activeMainTab === 'image_viewer' && '🔍 سحب وعرض صورة الطلب (تكبير وتصغير وطباعة)'}
+              {activeMainTab === 'requests_list' && '📁 سجل المعاملات والربط السحابي'}
+            </span>
+          </div>
+
+          {/* Quick Sub-tab Jump Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
+            <button
+              onClick={() => setActiveMainTab('smart_images')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeMainTab === 'smart_images' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              أرشيف الصور
+            </button>
+            <button
+              onClick={() => setActiveMainTab('image_viewer')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeMainTab === 'image_viewer' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              سحب وعرض صورة
+            </button>
+            <button
+              onClick={() => setActiveMainTab('requests_list')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeMainTab === 'requests_list' ? 'bg-amber-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              سجل المعاملات ({requests.length})
+            </button>
+          </div>
+        </div>
+      )}
+
 
       {/* TAB 0: SMART IMAGE ARCHIVE & BULK EXTRACTION (1,000 - 2,000 Images) */}
       {activeMainTab === 'smart_images' && (

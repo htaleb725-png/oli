@@ -1,5 +1,5 @@
 import { getAccessToken, pushSingleRecordToSheetsRealtime, deleteRecordFromSheetsRealtime } from './googleSheetsService';
-import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord } from '../types';
+import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord, User } from '../types';
 
 /**
  * Realtime Google Sheets and Google Drive Auto-Sync Service
@@ -301,5 +301,105 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
   } catch (err: any) {
     console.warn('pullDataFromGoogleAppsScript error:', err);
     return null;
+  }
+}
+
+/**
+ * Verify login credentials against Google Sheets / Google Excel
+ */
+export async function verifyLoginWithGoogleSheets(
+  usernameOrCode: string,
+  passwordOrPin?: string,
+  customAppsScriptUrl?: string,
+  customSheetId?: string
+): Promise<{ success: boolean; user?: User; isDeveloper?: boolean }> {
+  try {
+    const normalizeDigits = (val: string) => (val || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
+    const rawCode = normalizeDigits(passwordOrPin || usernameOrCode || '');
+    const cleanUser = normalizeDigits(usernameOrCode || '').toLowerCase();
+    const cleanPass = normalizeDigits(passwordOrPin || '');
+
+    // 1. If Apps Script URL is provided or saved
+    const scriptUrl = resolveAppsScriptUrl(customAppsScriptUrl);
+    if (scriptUrl && scriptUrl.startsWith('http')) {
+      try {
+        const separator = scriptUrl.includes('?') ? '&' : '?';
+        const res = await fetch(`${scriptUrl}${separator}action=verifyLogin&user=${encodeURIComponent(cleanUser)}&code=${encodeURIComponent(rawCode)}`, {
+          method: 'GET'
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json && (json.success === true || json.matched === true)) {
+            return {
+              success: true,
+              user: json.user,
+              isDeveloper: json.isDeveloper ?? (json.user?.Role === 'developer')
+            };
+          }
+        }
+      } catch (e) {
+        console.warn('Apps Script login verify error:', e);
+      }
+    }
+
+    // 2. If Google Sheets Access Token is cached
+    const token = typeof window !== 'undefined' ? (sessionStorage.getItem('al_nashi_google_token') || localStorage.getItem('al_nashi_google_token')) : null;
+    const sheetId = resolveTargetSheetId(customSheetId);
+
+    if (token && sheetId) {
+      try {
+        // Query users tab in spreadsheet
+        const usersRes = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent('المستخدمين_Users')}!A2:H50`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (usersRes.ok) {
+          const data = await usersRes.json();
+          const rows: string[][] = data.values || [];
+          for (const row of rows) {
+            const uId = (row[0] || '').trim();
+            const uName = (row[1] || '').trim().toLowerCase();
+            const uPass = (row[2] || '').trim();
+            const uRole = (row[3] || 'reception').trim();
+            const uFullName = (row[4] || '').trim();
+
+            if (rawCode && uPass && rawCode === uPass) {
+              const matchedUser: User = {
+                User_ID: uId || `USR-${Date.now()}`,
+                Username: uName || 'staff',
+                Password: uPass,
+                Role: (uRole as any) || 'developer',
+                RoleArabic: uRole === 'developer' ? 'مطور النظام' : 'موظف',
+                Status: 'active',
+                FullName: uFullName || 'موظف معتمد (Google Sheets)',
+                Department: 'إدارة المكتب'
+              };
+              return { success: true, user: matchedUser, isDeveloper: uRole === 'developer' };
+            }
+
+            if (cleanUser && (cleanUser === uName || cleanUser === uId.toLowerCase()) && (cleanPass === uPass || rawCode === uPass)) {
+              const matchedUser: User = {
+                User_ID: uId || `USR-${Date.now()}`,
+                Username: uName || cleanUser,
+                Password: uPass,
+                Role: (uRole as any) || 'admin',
+                RoleArabic: 'موظف معتمد',
+                Status: 'active',
+                FullName: uFullName || cleanUser,
+                Department: 'إدارة المكتب'
+              };
+              return { success: true, user: matchedUser, isDeveloper: uRole === 'developer' };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Google Sheets direct login check error:', e);
+      }
+    }
+
+    return { success: false };
+  } catch (err) {
+    console.warn('verifyLoginWithGoogleSheets error:', err);
+    return { success: false };
   }
 }

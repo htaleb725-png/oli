@@ -39,6 +39,7 @@ export interface User {
   User_ID: string;
   Username: string;
   Password?: string;
+  Phone?: string;
   Role: UserRole;
   RoleArabic: string;
   Status?: 'active' | 'frozen';

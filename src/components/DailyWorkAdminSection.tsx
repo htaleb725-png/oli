@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { Citizen, OfficeRequest, ProcessingStatus } from '../types';
+import { Citizen, OfficeRequest, ProcessingStatus, Priority } from '../types';
 import {
   Briefcase,
   Search,
@@ -8,6 +8,7 @@ import {
   Edit,
   Trash2,
   ShieldAlert,
+  ShieldCheck,
   XCircle,
   FileText,
   Phone,
@@ -26,8 +27,19 @@ import {
   CheckCheck,
   Share2,
   Copy,
-  Plus
+  Plus,
+  Upload,
+  Image as ImageIcon,
+  Eye,
+  FileSpreadsheet,
+  Users,
+  ClipboardPaste,
+  Hash,
+  ListPlus
 } from 'lucide-react';
+import { SearchableSelect } from './SearchableSelect';
+import { DHI_QAR_DISTRICTS, IRAQI_MINISTRIES, DEFAULT_CLANS } from './ReceptionModule';
+import { printSingleOutgoingReceipt, printCollectiveOutgoingReceipt } from '../utils/printReceiptHelper';
 
 interface DailyWorkAdminSectionProps {
   onOpenScanner?: (citizenId: string) => void;
@@ -41,12 +53,14 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const {
     citizens,
     requests,
+    addCitizen,
     updateCitizen,
     deleteCitizen,
     addRequest,
     updateRequest,
     deleteRequest,
     blockCitizen,
+    unblockCitizen,
     currentUser,
     systemSettings,
     setSelectedCitizenForHistory,
@@ -67,7 +81,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [rejectingTarget, setRejectingTarget] = useState<{ citizen: Citizen; request: OfficeRequest } | null>(null);
   const [rejectionReasonInput, setRejectionReasonInput] = useState('');
 
-  // Official Card state after save
+  // Official Card state after save (Full Executive Popup Modal)
   const [savedOfficialCard, setSavedOfficialCard] = useState<{
     outgoingNumber: string;
     outgoingDate: string;
@@ -82,6 +96,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     status: string;
     requestId: string;
     notes?: string;
+    attachedImage?: string;
   } | null>(null);
 
   // Form fields for "إكمال الطلب"
@@ -97,22 +112,242 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [formEducation, setFormEducation] = useState('');
   const [formJob, setFormJob] = useState('');
   const [formOtherNotes, setFormOtherNotes] = useState('');
+  const [formAttachedImage, setFormAttachedImage] = useState<string>('');
 
-  // Generate auto sequential outgoing number
+  // Generate auto sequential outgoing number starting from 1 if no outgoings exist, or max + 1
   const generateOutgoingNumber = () => {
     const year = new Date().getFullYear();
     const existingOutgoings = requests
       .map(r => r.OutgoingNumber)
-      .filter((n): n is string => Boolean(n));
-    let nextNum = existingOutgoings.length + 101;
+      .filter((n): n is string => Boolean(n && n.trim()));
+
+    if (existingOutgoings.length === 0) {
+      return `ص/${year}/1`;
+    }
+
+    let maxNum = 0;
     for (const outg of existingOutgoings) {
-      const match = String(outg).match(/(\d+)/);
-      if (match) {
-        const val = parseInt(match[1], 10);
-        if (val >= nextNum) nextNum = val + 1;
+      const matches = String(outg).match(/\d+/g);
+      if (matches) {
+        for (const m of matches) {
+          const val = parseInt(m, 10);
+          if (val >= 2020 && val <= 2040 && matches.length > 1) {
+            continue;
+          }
+          if (val > maxNum) {
+            maxNum = val;
+          }
+        }
       }
     }
-    return `ص/${year}/${nextNum}`;
+
+    const nextSeq = maxNum === 0 ? 1 : maxNum + 1;
+    return `ص/${year}/${nextSeq}`;
+  };
+
+  // Real-time detection of last registered citizen
+  const lastRegisteredCitizen = useMemo(() => {
+    if (!citizens || citizens.length === 0) return null;
+    for (let i = citizens.length - 1; i >= 0; i--) {
+      const c = citizens[i];
+      if (c && c.FullName && c.FullName.trim()) {
+        return c;
+      }
+    }
+    return citizens[citizens.length - 1];
+  }, [citizens]);
+
+  // Real-time detection of last outgoing number and date recorded in requests
+  const lastOutgoingRecord = useMemo(() => {
+    const outgoings = requests
+      .filter(r => r.OutgoingNumber && r.OutgoingNumber.trim())
+      .map(r => {
+        const matches = (r.OutgoingNumber || '').match(/\d+/g) || [];
+        let seq = 0;
+        if (matches.length > 0) {
+          for (const m of matches) {
+            const val = parseInt(m, 10);
+            if (!(val >= 2020 && val <= 2040 && matches.length > 1)) {
+              if (val > seq) seq = val;
+            }
+          }
+          if (seq === 0) seq = parseInt(matches[matches.length - 1], 10);
+        }
+        return {
+          request: r,
+          seq,
+          outgoingNumber: r.OutgoingNumber || '',
+          outgoingDate: r.OutgoingDate || r.CreatedAt?.split('T')[0] || '',
+          citizenName: r.CitizenName || citizens.find(c => c.Citizen_ID === r.Citizen_ID)?.FullName || 'غير محدد'
+        };
+      });
+
+    if (outgoings.length === 0) return null;
+    outgoings.sort((a, b) => b.seq - a.seq);
+    return outgoings[0];
+  }, [requests, citizens]);
+
+  const nextAutoOutgoingNumber = useMemo(() => {
+    return generateOutgoingNumber();
+  }, [requests]);
+
+  // Collective Outgoing (صادر موحد لمجموعة مراجعين)
+  const [isBulkOutgoingModalOpen, setIsBulkOutgoingModalOpen] = useState(false);
+  const [bulkOutgoingNumber, setBulkOutgoingNumber] = useState('');
+  const [bulkOutgoingDate, setBulkOutgoingDate] = useState('');
+  const [bulkEntity, setBulkEntity] = useState('');
+  const [bulkSubject, setBulkSubject] = useState('');
+  const [bulkRawPasteText, setBulkRawPasteText] = useState('');
+  const [bulkRows, setBulkRows] = useState<Array<{
+    id: string;
+    name: string;
+    phone: string;
+    district: string;
+    notes: string;
+  }>>([
+    { id: '1', name: '', phone: '', district: '', notes: '' },
+    { id: '2', name: '', phone: '', district: '', notes: '' },
+    { id: '3', name: '', phone: '', district: '', notes: '' }
+  ]);
+
+  const handleOpenBulkOutgoingModal = () => {
+    const today = new Date().toISOString().split('T')[0];
+    setBulkOutgoingNumber(generateOutgoingNumber());
+    setBulkOutgoingDate(today);
+    setBulkEntity('مجلس الوزراء / الدوائر ذات العلاقة');
+    setBulkSubject('');
+    setBulkRawPasteText('');
+    setBulkRows([
+      { id: '1', name: '', phone: '', district: '', notes: '' },
+      { id: '2', name: '', phone: '', district: '', notes: '' },
+      { id: '3', name: '', phone: '', district: '', notes: '' }
+    ]);
+    setIsBulkOutgoingModalOpen(true);
+  };
+
+  const handleParseBulkPaste = () => {
+    if (!bulkRawPasteText.trim()) {
+      alert('يرجى لصق قائمة الأسماء أو البيانات أولاً.');
+      return;
+    }
+    const lines = bulkRawPasteText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const parsed = lines.map((line, idx) => {
+      const parts = line.split(/[\t,|—–-]+/).map(p => p.trim());
+      const name = parts[0] || '';
+      let phone = '';
+      let district = '';
+      let notes = '';
+
+      for (let i = 1; i < parts.length; i++) {
+        const p = parts[i];
+        if (!phone && /(\d{10,11})/.test(p.replace(/\s+/g, ''))) {
+          phone = p.replace(/\s+/g, '');
+        } else if (!district && DHI_QAR_DISTRICTS.includes(p)) {
+          district = p;
+        } else if (!district && /الناصرية|الشطرة|الرفاعي|سوق الشيوخ|الجبايش|الغراف|قلعة سكر|الطار|النصر|الفهود|الإصلاح|الدواية|سيد دخيل|البطحاء|أكد|المنار|العكيكة|كرمة بني سعيد|بغداد|البصرة|المثنى|ميسان|واسط|النجف|كربلاء|بابل/.test(p)) {
+          district = p;
+        } else if (!notes) {
+          notes = p;
+        } else {
+          notes += ' ' + p;
+        }
+      }
+
+      return {
+        id: `bulk-${Date.now()}-${idx}`,
+        name,
+        phone,
+        district: district || 'الناصرية',
+        notes: notes || ''
+      };
+    });
+
+    if (parsed.length > 0) {
+      setBulkRows(parsed);
+      alert(`✓ تم بنجاح استخراج (${parsed.length}) مراجعين وتوزيعهم في الجدول تلقائياً!`);
+    }
+  };
+
+  const handleSaveBulkOutgoing = (e: React.FormEvent) => {
+    e.preventDefault();
+    const validRows = bulkRows.filter(r => r.name.trim().length > 0);
+    if (validRows.length === 0) {
+      alert('يرجى إدخال اسم واحد على الأقل في قائمة المراجعين.');
+      return;
+    }
+    const finalOutgoingNumber = bulkOutgoingNumber.trim() || generateOutgoingNumber();
+    const finalOutgoingDate = bulkOutgoingDate.trim() || new Date().toISOString().split('T')[0];
+    const finalEntity = bulkEntity.trim() || 'مجلس الوزراء / الدوائر ذات العلاقة';
+    const finalSubject = bulkSubject.trim() || 'كتاب صادر موحد لمجموعة مراجعين';
+
+    const today = new Date().toISOString().split('T')[0];
+    const createdCitizensList: Array<{ name: string; phone: string; district?: string; notes?: string }> = [];
+
+    for (const row of validRows) {
+      const cleanName = row.name.trim();
+      const cleanPhone = row.phone.trim();
+      const cleanDistrict = row.district.trim() || 'الناصرية';
+      const cleanNotes = row.notes.trim();
+
+      const existing = citizens.find(c => 
+        (cleanPhone && c.Phone1 === cleanPhone) || 
+        (c.FullName && c.FullName.trim().toLowerCase() === cleanName.toLowerCase())
+      );
+
+      let citizenId = existing?.Citizen_ID;
+
+      if (!existing) {
+        const created = addCitizen({
+          FullName: cleanName,
+          Phone1: cleanPhone || 'غير مسجل',
+          District: cleanDistrict,
+          SubDistrict: '',
+          Gender: 'ذكر',
+          Rating: 'لائق',
+          ReferralSource: 'صادر موحد للإدارة',
+          UpdatedAt: today,
+          CreatedBy: currentUser?.FullName || 'موظف الإدارة'
+        });
+        citizenId = created.Citizen_ID;
+      }
+
+      addRequest({
+        Citizen_ID: citizenId!,
+        CitizenName: cleanName,
+        CitizenPhone: cleanPhone,
+        Entity: finalEntity,
+        Details: `${finalSubject}${cleanNotes ? ` - [${cleanNotes}]` : ''}`,
+        OutgoingNumber: finalOutgoingNumber,
+        OutgoingDate: finalOutgoingDate,
+        RequestStatus: 'مستلم',
+        ProcessingStatus: 'منجز',
+        Priority: 'عام',
+        RegisteredVia: 'إدارة',
+        Address: cleanDistrict,
+        OtherNotes: `ضمن كتاب صادر موحد (${finalOutgoingNumber}) لمجموعة مراجعين عدد (${validRows.length})`,
+        CreatedBy: currentUser?.FullName || 'قسم الإدارة'
+      });
+
+      createdCitizensList.push({
+        name: cleanName,
+        phone: cleanPhone,
+        district: cleanDistrict,
+        notes: cleanNotes
+      });
+    }
+
+    printCollectiveOutgoingReceipt({
+      outgoingNumber: finalOutgoingNumber,
+      outgoingDate: finalOutgoingDate,
+      entity: finalEntity,
+      subject: finalSubject,
+      citizens: createdCitizensList,
+      officeName: systemSettings.officeName || systemSettings.appName,
+      deputyName: systemSettings.deputyName
+    });
+
+    setIsBulkOutgoingModalOpen(false);
+    alert(`✓ تم بنجاح إصدار الكتاب الصادر الموحد برقم (${finalOutgoingNumber}) وتوثيق كافة المراجعين وفتح وصل الطباعة الرسمي.`);
   };
 
   // Open "إكمال الطلب"
@@ -133,6 +368,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     setFormEducation(citizen.Education || req?.Education || 'إعدادية');
     setFormJob(citizen.Job || req?.Job || 'كاسب');
     setFormOtherNotes(req?.OtherNotes || req?.DeputyNotes || req?.ReceptionNotes || '');
+    setFormAttachedImage(req?.AttachedRequestImage || '');
   };
 
   // Save "إكمال الطلب"
@@ -180,6 +416,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         ReferralSource: formReferrer.trim(),
         Address: formAddress.trim(),
         OtherNotes: formOtherNotes.trim(),
+        AttachedRequestImage: formAttachedImage || request.AttachedRequestImage,
         ExecutiveAction: `تم إكمال وتدقيق المعاملة وتثبيت العدد الصادر (${finalOutgoingNumber}) بتاريخ (${finalOutgoingDate}) بواسطة ${currentUser?.FullName || 'موظف الإدارة'}`
       });
     } else {
@@ -200,12 +437,13 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         ReferralSource: formReferrer.trim(),
         Address: formAddress.trim(),
         OtherNotes: formOtherNotes.trim(),
+        AttachedRequestImage: formAttachedImage || undefined,
         CreatedBy: currentUser?.FullName || 'قسم الإدارة'
       });
       savedReqId = newReq.Request_ID;
     }
 
-    // 3. Show Official Outgoing Certificate / Confirmation Card
+    // 3. Show Official Outgoing Certificate / Confirmation Card as popup modal
     setSavedOfficialCard({
       outgoingNumber: finalOutgoingNumber,
       outgoingDate: finalOutgoingDate,
@@ -219,11 +457,11 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       referrer: formReferrer.trim(),
       status: formRequestStatus,
       requestId: savedReqId,
-      notes: formOtherNotes.trim()
+      notes: formOtherNotes.trim(),
+      attachedImage: formAttachedImage || undefined
     });
 
     setCompletingTarget(null);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // Handle Blacklist / Block
@@ -234,6 +472,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       return;
     }
     blockCitizen(blockingTarget.Citizen_ID, blockReasonInput.trim(), currentUser?.FullName || 'موظف الإدارة');
+    alert(`⛔ تم بنجاح حظر المواطن (${blockingTarget.FullName}) وإدراجه في القائمة السوداء.`);
     setBlockingTarget(null);
     setBlockReasonInput('');
   };
@@ -266,24 +505,48 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     setDeletingTarget(null);
   };
 
-  // Edit citizen & request inline
+  // Comprehensive Edit citizen & request state
   const [editFullName, setEditFullName] = useState('');
-  const [editPhone, setEditPhone] = useState('');
+  const [editPhone1, setEditPhone1] = useState('');
+  const [editPhone2, setEditPhone2] = useState('');
   const [editDistrict, setEditDistrict] = useState('');
+  const [editSubDistrict, setEditSubDistrict] = useState('');
+  const [editSurname, setEditSurname] = useState('');
   const [editJob, setEditJob] = useState('');
   const [editEducation, setEditEducation] = useState('');
+  const [editAttendanceType, setEditAttendanceType] = useState('شخصياً');
+  const [editProxyName, setEditProxyName] = useState('');
+  const [editProxyPhone, setEditProxyPhone] = useState('');
+  const [editReferralSource, setEditReferralSource] = useState('');
   const [editEntity, setEditEntity] = useState('');
   const [editDetails, setEditDetails] = useState('');
+  const [editOutgoingNumber, setEditOutgoingNumber] = useState('');
+  const [editOutgoingDate, setEditOutgoingDate] = useState('');
+  const [editProcessingStatus, setEditProcessingStatus] = useState<ProcessingStatus>('منجز');
+  const [editPriority, setEditPriority] = useState<Priority>('عام');
+  const [editOtherNotes, setEditOtherNotes] = useState('');
 
   const handleOpenEdit = (citizen: Citizen, req?: OfficeRequest) => {
     setEditingTarget({ citizen, request: req });
     setEditFullName(citizen.FullName || '');
-    setEditPhone(citizen.Phone1 || '');
+    setEditPhone1(citizen.Phone1 || '');
+    setEditPhone2(citizen.Phone2 || '');
     setEditDistrict(citizen.District || '');
+    setEditSubDistrict(citizen.SubDistrict || 'المركز');
+    setEditSurname(citizen.Surname || '');
     setEditJob(citizen.Job || '');
     setEditEducation(citizen.Education || '');
+    setEditAttendanceType((citizen.AttendanceType as any) || 'شخصياً');
+    setEditProxyName(citizen.ProxyName || '');
+    setEditProxyPhone(citizen.ProxyPhone || '');
+    setEditReferralSource(citizen.ReferralSource || '');
     setEditEntity(req?.Entity || '');
     setEditDetails(req?.Details || '');
+    setEditOutgoingNumber(req?.OutgoingNumber || '');
+    setEditOutgoingDate(req?.OutgoingDate || '');
+    setEditProcessingStatus((req?.ProcessingStatus as ProcessingStatus) || 'منجز');
+    setEditPriority((req?.Priority as Priority) || 'عام');
+    setEditOtherNotes(req?.OtherNotes || req?.DeputyNotes || '');
   };
 
   const handleSaveEdit = (e: React.FormEvent) => {
@@ -294,19 +557,31 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     updateCitizen({
       ...citizen,
       FullName: editFullName.trim(),
-      Phone1: editPhone.trim(),
+      Phone1: editPhone1.trim(),
+      Phone2: editPhone2.trim() || undefined,
       District: editDistrict.trim(),
+      SubDistrict: editSubDistrict.trim(),
+      Surname: editSurname.trim() || undefined,
       Job: editJob.trim(),
-      Education: editEducation.trim()
+      Education: editEducation.trim(),
+      AttendanceType: editAttendanceType,
+      ProxyName: editAttendanceType === 'بيد شخص آخر (معتمد)' ? editProxyName.trim() : undefined,
+      ProxyPhone: editAttendanceType === 'بيد شخص آخر (معتمد)' ? editProxyPhone.trim() : undefined,
+      ReferralSource: editReferralSource.trim() || undefined
     });
 
     if (request) {
       updateRequest({
         ...request,
         CitizenName: editFullName.trim(),
-        CitizenPhone: editPhone.trim(),
+        CitizenPhone: editPhone1.trim(),
         Entity: editEntity.trim(),
-        Details: editDetails.trim()
+        Details: editDetails.trim(),
+        OutgoingNumber: editOutgoingNumber.trim() || undefined,
+        OutgoingDate: editOutgoingDate.trim() || undefined,
+        ProcessingStatus: editProcessingStatus,
+        Priority: editPriority,
+        OtherNotes: editOtherNotes.trim() || undefined
       });
     }
 
@@ -490,6 +765,84 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         </div>
       </div>
 
+      {/* REAL-TIME LIVE STATUS BAR: آخر اسم مسجل + آخر عدد صادر مسجل + العدد القادم المقترح */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border-2 border-amber-400/50 dark:border-amber-500/40 shadow-sm">
+        {/* Card 1: آخر اسم مسجل */}
+        <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+          <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 flex items-center justify-center shrink-0">
+            <User className="w-5 h-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">آخر اسم مسجل بالنظام:</span>
+              <span className="inline-flex items-center gap-1 text-[9px] font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                مباشر
+              </span>
+            </div>
+            <div className="font-black text-xs sm:text-sm text-slate-900 dark:text-white truncate mt-0.5" title={lastRegisteredCitizen?.FullName || 'لا يوجد'}>
+              {lastRegisteredCitizen?.FullName || 'لا يوجد مسجلين بعد'}
+            </div>
+            {lastRegisteredCitizen && (
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate flex items-center gap-1 font-mono mt-0.5" dir="ltr">
+                <span>{lastRegisteredCitizen.Phone1 || '-'}</span>
+                <span>•</span>
+                <span>{lastRegisteredCitizen.District || 'المركز'}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Card 2: آخر عدد صادر مسجل */}
+        <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60">
+          <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-900 dark:text-amber-200 flex items-center justify-center shrink-0">
+            <FileSpreadsheet className="w-5 h-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <span className="text-[11px] font-bold text-amber-900 dark:text-amber-300 block">آخر عدد صادر مسجل:</span>
+            <div className="font-black text-sm font-mono text-amber-950 dark:text-amber-100 truncate mt-0.5">
+              {lastOutgoingRecord ? lastOutgoingRecord.outgoingNumber : 'لا يوجد صادر مسجل بعد'}
+            </div>
+            {lastOutgoingRecord && (
+              <div className="text-[10px] text-amber-800 dark:text-amber-400 truncate mt-0.5">
+                بتاريخ: {lastOutgoingRecord.outgoingDate} ({lastOutgoingRecord.citizenName})
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Card 3: العدد القادم المقترح تلقائياً */}
+        <div className="flex items-center gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-800 dark:text-emerald-200 flex items-center justify-center shrink-0">
+            <Hash className="w-5 h-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <span className="text-[11px] font-bold text-emerald-900 dark:text-emerald-300 block">العدد القادم المقترح تلقائياً:</span>
+            <div className="font-black text-sm font-mono text-emerald-950 dark:text-emerald-100 mt-0.5">
+              {nextAutoOutgoingNumber}
+            </div>
+            <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5">
+              يبدأ من 1 تلقائياً وقابل للتعديل
+            </div>
+          </div>
+        </div>
+
+        {/* Card 4: زر صادر موحد لمجموعة مراجعين */}
+        <div className="flex items-center p-1">
+          <button
+            type="button"
+            onClick={handleOpenBulkOutgoingModal}
+            className="w-full h-full min-h-[58px] px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 hover:from-amber-700 hover:to-amber-900 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-amber-600/20 transition-all active:scale-95 border border-amber-400/80"
+          >
+            <Users className="w-5 h-5 text-amber-200 shrink-0" />
+            <div className="text-right">
+              <span className="block text-xs font-black">صادر موحد لمجموعة مراجعين 📑</span>
+              <span className="text-[10px] text-amber-200 font-normal">إصدار عدد وتاريخ واحد لعدة أسماء</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
       {/* Search Input Bar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
         <div className="relative flex-1">
@@ -517,116 +870,162 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         )}
       </div>
 
-      {/* Official Success Notification Card (ظهر رقم الصادر وتاريخ الكتاب بشكل رسمي وجميل) */}
+      {/* Official Success Notification Popup Modal (يظهر على شكل رسالة منبثقة برقم الصادر والتاريخ وزر إكمال طلب آخر) */}
       {savedOfficialCard && (
-        <div className="p-6 rounded-2xl bg-gradient-to-b from-amber-50 via-white to-amber-50/40 border-2 border-amber-400 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900 dark:border-amber-500/60 shadow-xl space-y-4 animate-in fade-in zoom-in-95">
-          {/* Card Header with Iraqi Crest & Parliament Header */}
-          <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-amber-300 dark:border-amber-500/40 pb-4 text-center sm:text-right gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-2xl shadow-inner">
-                🦅
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border-2 border-amber-400 dark:border-amber-500 max-w-2xl w-full p-6 sm:p-7 shadow-2xl space-y-4 text-right relative animate-in zoom-in-95 my-8">
+            {/* Close button */}
+            <button
+              onClick={() => setSavedOfficialCard(null)}
+              className="absolute top-4 left-4 w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+            >
+              ✕
+            </button>
+
+            {/* Header with Crest */}
+            <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-amber-300 dark:border-amber-500/40 pb-4 text-center sm:text-right gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-2xl shadow-inner shrink-0">
+                  🦅
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+                    جمهورية العراق - مجلس النواب
+                  </h3>
+                  <p className="text-xs font-bold text-amber-800 dark:text-amber-400">
+                    {systemSettings.officeName || systemSettings.appName || 'مكتب مجلس النواب العراقي'} - قسم الإدارة والمتابعة
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-amber-100 dark:bg-amber-950/80 px-5 py-2.5 rounded-2xl border-2 border-amber-500 text-center shadow-xs">
+                <span className="block text-[11px] font-black text-amber-900 dark:text-amber-300">العدد الصادر الرسمي</span>
+                <span className="text-lg font-black font-mono text-amber-950 dark:text-amber-100 tracking-wider">
+                  {savedOfficialCard.outgoingNumber}
+                </span>
+                <span className="block text-xs font-mono font-bold text-amber-800 dark:text-amber-400 mt-0.5">
+                  التاريخ: {savedOfficialCard.outgoingDate}
+                </span>
+              </div>
+            </div>
+
+            {/* Highlighted Employee Paper Document Alert Badge */}
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-500/20 border-2 border-amber-400/80 dark:border-amber-500/70 text-slate-900 dark:text-amber-100 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-md">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl p-2 rounded-xl bg-amber-400/30 text-amber-900 dark:text-amber-200 shrink-0">✍️</span>
+                <div className="text-right">
+                  <strong className="block text-xs sm:text-sm font-black text-amber-950 dark:text-amber-200">
+                    تنبيه للموظف: يرجى تثبيت رقم الصادر والتاريخ على أصل المعاملة الورقية الآن
+                  </strong>
+                  <p className="text-[11px] font-medium text-slate-700 dark:text-slate-300 mt-0.5">
+                    قم بكتابة العدد الصادر وتاريخ اليوم بخط واضح في الترويسة المخصصة على الطلب الورقي قبل تسليمه للمراجع أو إرساله للجهة المعنية.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="px-3 py-1.5 bg-amber-400 text-slate-950 font-black rounded-xl text-xs shadow-xs font-mono border border-amber-500">
+                  العدد: {savedOfficialCard.outgoingNumber}
+                </div>
+                <div className="px-3 py-1.5 bg-slate-900 text-white font-black rounded-xl text-xs shadow-xs font-mono border border-slate-700">
+                  التاريخ: {savedOfficialCard.outgoingDate}
+                </div>
+              </div>
+            </div>
+
+            {/* Details Body */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-50 dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 text-xs">
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">اسم صاحب الطلب:</span>
+                <span className="font-black text-slate-900 dark:text-white text-sm">{savedOfficialCard.citizenName}</span>
               </div>
               <div>
-                <h3 className="text-base font-black text-slate-900 dark:text-white">
-                  جمهورية العراق - مجلس النواب
-                </h3>
-                <p className="text-xs font-bold text-amber-800 dark:text-amber-400">
-                  {systemSettings.officeName || 'مكتب النائب علاء الحيدري'} - قسم الإدارة والمتابعة
-                </p>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">الجهة الموجه إليها الكتاب:</span>
+                <span className="font-bold text-blue-700 dark:text-blue-400">{savedOfficialCard.entity}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">رقم الهاتف والتواصل:</span>
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-200" dir="ltr">{savedOfficialCard.phone}</span>
+              </div>
+              <div className="md:col-span-2">
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">موضوع المعاملة:</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200">{savedOfficialCard.subject}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">عنوان السكن:</span>
+                <span className="font-medium text-slate-700 dark:text-slate-300">{savedOfficialCard.address}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">المعرف والتزكية:</span>
+                <span className="font-medium text-slate-700 dark:text-slate-300">{savedOfficialCard.referrer}</span>
               </div>
             </div>
 
-            <div className="bg-amber-100 dark:bg-amber-950/80 px-4 py-2 rounded-xl border border-amber-400 dark:border-amber-600/60 text-center">
-              <span className="block text-[10px] font-bold text-amber-900 dark:text-amber-300">العدد الصادر الرسمي</span>
-              <span className="text-base font-black font-mono text-amber-950 dark:text-amber-100 tracking-wider">
-                {savedOfficialCard.outgoingNumber}
-              </span>
-              <span className="block text-[10px] font-mono text-amber-800 dark:text-amber-400">
-                التاريخ: {savedOfficialCard.outgoingDate}
-              </span>
-            </div>
-          </div>
-
-          {/* Highlighted Employee Paper Document Alert Badge */}
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-500/20 border-2 border-amber-400/80 dark:border-amber-500/70 text-slate-900 dark:text-amber-100 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-md">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl p-2 rounded-xl bg-amber-400/30 text-amber-900 dark:text-amber-200 shrink-0">✍️</span>
-              <div className="text-right">
-                <strong className="block text-xs sm:text-sm font-black text-amber-950 dark:text-amber-200">
-                  تنبيه للموظف: يرجى تثبيت رقم الصادر والتاريخ على أصل المعاملة الورقية الآن
-                </strong>
-                <p className="text-[11px] font-medium text-slate-700 dark:text-slate-300 mt-0.5">
-                  قم بكتابة العدد الصادر وتاريخ اليوم بخط واضح في الترويسة المخصصة على الطلب الورقي قبل تسليمه للمراجع أو إرساله للجهة المعنية.
-                </p>
+            {/* Attached Image if available */}
+            {savedOfficialCard.attachedImage && (
+              <div className="p-3 bg-blue-50/70 dark:bg-blue-950/40 rounded-2xl border border-blue-200 dark:border-blue-800 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <img
+                    src={savedOfficialCard.attachedImage}
+                    alt="صورة الطلب"
+                    className="w-12 h-12 object-cover rounded-xl border border-blue-300 shadow-2xs"
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-blue-950 dark:text-blue-200 block">صورة الطلب الورقي المرفق</span>
+                    <span className="text-[10px] text-emerald-600 font-bold">تمت الأرشفة والحفظ بنجاح</span>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="px-3 py-1.5 bg-amber-400 text-slate-950 font-black rounded-xl text-xs shadow-xs font-mono border border-amber-500">
-                العدد: {savedOfficialCard.outgoingNumber}
+            )}
+
+            {/* Official Stamp & Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(savedOfficialCard.outgoingNumber);
+                    alert(`تم نسخ رقم الصادر (${savedOfficialCard.outgoingNumber})`);
+                  }}
+                  className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Copy className="w-4 h-4 text-slate-500" />
+                  <span>نسخ الرقم</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    printSingleOutgoingReceipt({
+                      outgoingNumber: savedOfficialCard.outgoingNumber,
+                      outgoingDate: savedOfficialCard.outgoingDate,
+                      citizenName: savedOfficialCard.citizenName,
+                      phone: savedOfficialCard.phone,
+                      entity: savedOfficialCard.entity,
+                      subject: savedOfficialCard.subject,
+                      address: savedOfficialCard.address,
+                      education: savedOfficialCard.education,
+                      job: savedOfficialCard.job,
+                      referrer: savedOfficialCard.referrer,
+                      officeName: systemSettings.officeName || systemSettings.appName,
+                      deputyName: systemSettings.deputyName
+                    });
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 transition-transform"
+                >
+                  <Printer className="w-4 h-4 text-amber-400" />
+                  <span>طباعة وصل الصادر الرسمي</span>
+                </button>
               </div>
-              <div className="px-3 py-1.5 bg-slate-900 text-white font-black rounded-xl text-xs shadow-xs font-mono border border-slate-700">
-                التاريخ: {savedOfficialCard.outgoingDate}
-              </div>
-            </div>
-          </div>
 
-          {/* Details Body */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-white/80 dark:bg-slate-800/80 p-4 rounded-xl border border-amber-200 dark:border-amber-500/20 text-xs">
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">اسم صاحب الطلب:</span>
-              <span className="font-black text-slate-900 dark:text-white text-sm">{savedOfficialCard.citizenName}</span>
-            </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">الجهة الموجه إليها الكتاب:</span>
-              <span className="font-bold text-blue-700 dark:text-blue-400">{savedOfficialCard.entity}</span>
-            </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">رقم الهاتف والتواصل:</span>
-              <span className="font-mono font-bold text-slate-800 dark:text-slate-200" dir="ltr">{savedOfficialCard.phone}</span>
-            </div>
-            <div className="md:col-span-2">
-              <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">موضوع المعاملة:</span>
-              <span className="font-bold text-slate-800 dark:text-slate-200">{savedOfficialCard.subject}</span>
-            </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">عنوان السكن:</span>
-              <span className="font-medium text-slate-700 dark:text-slate-300">{savedOfficialCard.address}</span>
-            </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">المعرف والتزكية:</span>
-              <span className="font-medium text-slate-700 dark:text-slate-300">{savedOfficialCard.referrer}</span>
-            </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">حالة الطلب:</span>
-              <span className="inline-block px-2 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
-                {savedOfficialCard.status}
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">كود المتابعة بالنظام:</span>
-              <span className="font-mono font-bold text-slate-600 dark:text-slate-400">{savedOfficialCard.requestId}</span>
-            </div>
-          </div>
-
-          {/* Official Stamp & Action Buttons */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
-            <div className="flex items-center gap-2 text-xs text-amber-900 dark:text-amber-300 font-bold">
-              <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-              <span>تم توثيق وتثبيت كتاب الصادر وحفظ البيانات في السجل الرسمي بنجاح</span>
-            </div>
-
-            <div className="flex items-center gap-2 flex-wrap">
+              {/* THE REQUESTED BUTTON: إكمال طلب آخر */}
               <button
-                onClick={() => window.print()}
-                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-              >
-                <Printer className="w-4 h-4 text-amber-400" />
-                <span>طباعة وصل الصادر الرسمي</span>
-              </button>
-
-              <button
-                onClick={() => setSavedOfficialCard(null)}
-                className="px-5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-black flex items-center gap-2 cursor-pointer shadow-md transition-transform active:scale-95"
+                type="button"
+                onClick={() => {
+                  setSavedOfficialCard(null);
+                  const el = document.getElementById('daily-records-list');
+                  el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+                className="w-full sm:w-auto px-6 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-black flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/30 transition-transform active:scale-95"
               >
                 <Plus className="w-4 h-4" />
                 <span>إكمال طلب آخر ⏎</span>
@@ -819,9 +1218,19 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                 <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2 flex-wrap">
                   {/* Complete Request Button (Button 1) */}
                   <button
-                    onClick={() => handleOpenCompleteRequest(cit, primaryReq)}
-                    className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs transition-transform active:scale-95"
-                    title="استكمال بيانات المعاملة وتوثيق رقم الصادر الرسمي"
+                    onClick={() => {
+                      if (cit.IsBlocked) {
+                        alert(`⛔ تنبيه أمني: هذا المراجع مدرج في القائمة السوداء (محظور)!\nالسبب: ${cit.BlockReason || 'غير محدد'}\nلا يمكن إكمال المعاملة أو إصدار كتاب صادر حتى يتم إلغاء الحظر أولاً.`);
+                        return;
+                      }
+                      handleOpenCompleteRequest(cit, primaryReq);
+                    }}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs transition-transform active:scale-95 ${
+                      cit.IsBlocked
+                        ? 'bg-slate-300 dark:bg-slate-700 text-slate-500 cursor-not-allowed opacity-80'
+                        : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white'
+                    }`}
+                    title={cit.IsBlocked ? 'محظور بالقائمة السوداء - لا يمكن إكمال الطلب' : 'استكمال بيانات المعاملة وتوثيق رقم الصادر الرسمي'}
                   >
                     <CheckCircle2 className="w-4 h-4 text-emerald-300" />
                     <span>إكمال الطلب</span>
@@ -831,7 +1240,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                   <button
                     onClick={() => handleOpenEdit(cit, primaryReq)}
                     className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                    title="تعديل بيانات المراجع والمعاملة"
+                    title="تعديل كافة بيانات المراجع والمعاملة"
                   >
                     <Edit className="w-3.5 h-3.5 text-blue-600" />
                     <span>تعديل</span>
@@ -841,24 +1250,40 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                   <button
                     onClick={() => setDeletingTarget({ citizen: cit, request: primaryReq })}
                     className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer border border-rose-200 dark:border-rose-800"
-                    title="حذف هذا السجل"
+                    title="حذف هذا السجل نهائياً من كافة قواعد البيانات"
                   >
                     <Trash2 className="w-3.5 h-3.5 text-rose-600" />
                     <span>حذف</span>
                   </button>
 
-                  {/* Block / Reject Button (Button 4) */}
-                  <button
-                    onClick={() => {
-                      setBlockingTarget(cit);
-                      setBlockReasonInput('');
-                    }}
-                    className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-                    title="حظر هذا الشخص وإدراجه بالقائمة السوداء مع كتابة السبب"
-                  >
-                    <ShieldAlert className="w-3.5 h-3.5 text-red-200" />
-                    <span>حظر (القائمة السوداء)</span>
-                  </button>
+                  {/* Block / Unblock Button (Button 4) */}
+                  {cit.IsBlocked ? (
+                    <button
+                      onClick={() => {
+                        if (window.confirm(`هل أنت متأكد من إلغاء الحظر عن المواطن (${cit.FullName})؟`)) {
+                          unblockCitizen(cit.Citizen_ID);
+                          alert(`✓ تم بنجاح إلغاء الحظر عن (${cit.FullName}) وإعادته للوضع الطبيعي.`);
+                        }
+                      }}
+                      className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 transition-transform"
+                      title="إلغاء الحظر وإعادة المراجع إلى الوضع الطبيعي"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-200" />
+                      <span>إلغاء الحظر</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setBlockingTarget(cit);
+                        setBlockReasonInput('');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                      title="حظر هذا الشخص وإدراجه بالقائمة السوداء مع كتابة السبب"
+                    >
+                      <ShieldAlert className="w-3.5 h-3.5 text-red-200" />
+                      <span>حظر (القائمة السوداء)</span>
+                    </button>
+                  )}
 
                   {primaryReq && (
                     <button
@@ -871,6 +1296,36 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     >
                       <XCircle className="w-3.5 h-3.5 text-amber-600" />
                       <span>رفض الطلب</span>
+                    </button>
+                  )}
+
+                  {/* Print Outgoing Receipt button if outgoing exists */}
+                  {primaryReq?.OutgoingNumber && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        printSingleOutgoingReceipt({
+                          outgoingNumber: primaryReq.OutgoingNumber || '',
+                          outgoingDate: primaryReq.OutgoingDate || '',
+                          citizenName: cit.FullName,
+                          phone: cit.Phone1 || '',
+                          entity: primaryReq.Entity || '',
+                          subject: primaryReq.Details || '',
+                          address: cit.District || '',
+                          education: cit.Education || '',
+                          job: cit.Job || '',
+                          referrer: cit.ReferralSource || '',
+                          officeName: systemSettings.officeName || systemSettings.appName,
+                          deputyName: systemSettings.deputyName,
+                          notes: primaryReq.OtherNotes,
+                          attachedImage: primaryReq.AttachedRequestImage
+                        });
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 transition-transform"
+                      title="طباعة وصل الصادر الرسمي لهذا المراجع"
+                    >
+                      <Printer className="w-3.5 h-3.5 text-slate-950" />
+                      <span>وصل الصادر</span>
                     </button>
                   )}
 
@@ -956,13 +1411,12 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     اسم الدائرة أو الوزارة: <span className="text-rose-500">*</span>
                   </label>
-                  <input
-                    type="text"
-                    required
+                  <SearchableSelect
+                    options={IRAQI_MINISTRIES}
                     value={formEntity}
-                    onChange={(e) => setFormEntity(e.target.value)}
-                    placeholder="مثال: وزارة العمل والشؤون الاجتماعية..."
-                    className="w-full h-9 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    onChange={setFormEntity}
+                    placeholder="اختر أو اكتب للبحث عن الوزارة أو الدائرة..."
+                    required
                   />
                 </div>
 
@@ -1109,6 +1563,66 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                   />
                 </div>
+
+                {/* 13. زر رفع صورة الطلب / المعاملة الورقية */}
+                <div className="sm:col-span-2 p-3 bg-blue-50/70 dark:bg-blue-950/30 border-2 border-dashed border-blue-300 dark:border-blue-700 rounded-2xl">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block font-black text-blue-950 dark:text-blue-200 text-xs">
+                      📸 صورة الطلب / المعاملة الورقية الأصلية:
+                    </label>
+                    <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">
+                      (لحفظها وأرشفتها مع الصادر والطباعة)
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <label className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-black cursor-pointer inline-flex items-center gap-2 shadow-xs transition-all">
+                      <ImageIcon className="w-4 h-4 text-blue-200" />
+                      <span>رفع صورة الطلب 📁</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                              setFormAttachedImage(reader.result as string);
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }}
+                      />
+                    </label>
+
+                    {formAttachedImage ? (
+                      <div className="flex items-center gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-xl border border-blue-200 dark:border-blue-800 shadow-xs">
+                        <img
+                          src={formAttachedImage}
+                          alt="صورة الطلب المرفقة"
+                          className="w-14 h-14 object-cover rounded-lg border border-blue-300"
+                        />
+                        <div className="text-right">
+                          <p className="text-[11px] font-black text-emerald-600 dark:text-emerald-400">
+                            ✓ تم إرفاق الصورة بنجاح
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setFormAttachedImage('')}
+                            className="mt-1 px-2 py-0.5 text-[10px] bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 hover:bg-rose-100 rounded-md font-bold cursor-pointer"
+                          >
+                            حذف الصورة
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-400 font-medium">
+                        لم يتم اختيار صورة بعد (اختياري)
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* Action Buttons */}
@@ -1252,89 +1766,599 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       )}
 
       {/* ======================================================== */}
-      {/* MODAL 4: نافذة التعديل السريع (Inline Edit)              */}
+      {/* MODAL 4: نافذة التعديل الشاملة (Comprehensive Edit)      */}
       {/* ======================================================== */}
       {editingTarget && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-lg w-full p-6 shadow-2xl space-y-4 text-right animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-              <h3 className="font-black text-base text-slate-900 dark:text-white flex items-center gap-2">
-                <Edit className="w-5 h-5 text-blue-600" />
-                <span>تعديل بيانات المراجع والمعاملة</span>
-              </h3>
-              <button onClick={() => setEditingTarget(null)} className="text-slate-400 hover:text-slate-600">✕</button>
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full p-6 shadow-2xl space-y-4 text-right animate-in fade-in zoom-in-95 my-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 sticky top-0 bg-white dark:bg-slate-900 z-10">
+              <div className="flex items-center gap-2">
+                <span className="p-2 rounded-xl bg-blue-100 dark:bg-blue-900/60 text-blue-600 dark:text-blue-300">
+                  <Edit className="w-5 h-5" />
+                </span>
+                <div>
+                  <h3 className="font-black text-base text-slate-900 dark:text-white">
+                    تعديل كافة بيانات المراجع والمعاملة
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    يمكنك تعديل أي معلومة شخصية أو إدارية أو صادر رسمي وحفظها مباشرة
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingTarget(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 cursor-pointer"
+              >
+                ✕
+              </button>
             </div>
 
-            <form onSubmit={handleSaveEdit} className="space-y-3 text-xs">
-              <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">الاسم الكامل:</label>
-                <input
-                  type="text"
-                  required
-                  value={editFullName}
-                  onChange={(e) => setEditFullName(e.target.value)}
-                  className="w-full h-9 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold"
-                />
-              </div>
+            <form onSubmit={handleSaveEdit} className="space-y-4 text-xs">
+              {/* قسم بيانات المراجع الشخصية */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/60 space-y-3">
+                <h4 className="font-black text-xs text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
+                  <User className="w-4 h-4" />
+                  <span>البيانات الشخصية للمراجع:</span>
+                </h4>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">الهاتف:</label>
-                  <input
-                    type="text"
-                    value={editPhone}
-                    onChange={(e) => setEditPhone(e.target.value)}
-                    className="w-full h-9 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
-                    dir="ltr"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">السكن / القضاء:</label>
-                  <input
-                    type="text"
-                    value={editDistrict}
-                    onChange={(e) => setEditDistrict(e.target.value)}
-                    className="w-full h-9 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                  />
-                </div>
-              </div>
-
-              {editingTarget.request && (
-                <>
-                  <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">الجهة المعنية:</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* الاسم الكامل */}
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      الاسم الكامل: <span className="text-rose-500">*</span>
+                    </label>
                     <input
                       type="text"
-                      value={editEntity}
-                      onChange={(e) => setEditEntity(e.target.value)}
-                      className="w-full h-9 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-blue-700 dark:text-blue-300"
+                      required
+                      value={editFullName}
+                      onChange={(e) => setEditFullName(e.target.value)}
+                      className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
+
+                  {/* هاتف 1 */}
                   <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">تفاصيل المعاملة:</label>
-                    <textarea
-                      rows={2}
-                      value={editDetails}
-                      onChange={(e) => setEditDetails(e.target.value)}
-                      className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl resize-none"
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      رقم الهاتف الأساسي: <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={editPhone1}
+                      onChange={(e) => setEditPhone1(e.target.value)}
+                      className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-left"
+                      dir="ltr"
                     />
                   </div>
-                </>
+
+                  {/* هاتف 2 */}
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      رقم هاتف إضافي (اختياري):
+                    </label>
+                    <input
+                      type="text"
+                      value={editPhone2}
+                      onChange={(e) => setEditPhone2(e.target.value)}
+                      className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-left"
+                      dir="ltr"
+                    />
+                  </div>
+
+                  {/* القضاء */}
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      القضاء / السكن:
+                    </label>
+                    <SearchableSelect
+                      options={DHI_QAR_DISTRICTS}
+                      value={editDistrict}
+                      onChange={setEditDistrict}
+                      placeholder="اختر أو اكتب القضاء..."
+                    />
+                  </div>
+
+                  {/* الناحية / الحي */}
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      الناحية / الحي / المنطقة:
+                    </label>
+                    <input
+                      type="text"
+                      value={editSubDistrict}
+                      onChange={(e) => setEditSubDistrict(e.target.value)}
+                      placeholder="مثال: المركز، حي المعلمين..."
+                      className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* العشيرة / اللقب */}
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      العشيرة / اللقب:
+                    </label>
+                    <SearchableSelect
+                      options={DEFAULT_CLANS}
+                      value={editSurname}
+                      onChange={setEditSurname}
+                      placeholder="اختر أو اكتب العشيرة..."
+                    />
+                  </div>
+
+                  {/* التحصيل الدراسي */}
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      التحصيل الدراسي:
+                    </label>
+                    <input
+                      type="text"
+                      value={editEducation}
+                      onChange={(e) => setEditEducation(e.target.value)}
+                      placeholder="أمي، ابتدائية، إعدادية، بكالوريوس..."
+                      className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* نوع العمل */}
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      نوع العمل / الوظيفة:
+                    </label>
+                    <input
+                      type="text"
+                      value={editJob}
+                      onChange={(e) => setEditJob(e.target.value)}
+                      placeholder="كاسب، موظف، عاطل..."
+                      className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* المعرف أو التزكية */}
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      المعرف / التزكية:
+                    </label>
+                    <input
+                      type="text"
+                      value={editReferralSource}
+                      onChange={(e) => setEditReferralSource(e.target.value)}
+                      placeholder="اسم المعرف أو مصدر التزكية..."
+                      className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* نوع الحضور */}
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      نوع الحضور:
+                    </label>
+                    <select
+                      value={editAttendanceType}
+                      onChange={(e) => setEditAttendanceType(e.target.value)}
+                      className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="شخصياً">شخصياً</option>
+                      <option value="بيد شخص آخر (معتمد)">بيد شخص آخر (معتمد)</option>
+                    </select>
+                  </div>
+
+                  {/* حقول المعتمد إذا اختار بيد شخص آخر */}
+                  {editAttendanceType === 'بيد شخص آخر (معتمد)' && (
+                    <>
+                      <div>
+                        <label className="block font-bold text-amber-700 dark:text-amber-400 mb-1">
+                          اسم المعتمد / الوكيل:
+                        </label>
+                        <input
+                          type="text"
+                          value={editProxyName}
+                          onChange={(e) => setEditProxyName(e.target.value)}
+                          placeholder="اسم حامل الطلب..."
+                          className="w-full h-9 px-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 rounded-xl font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-bold text-amber-700 dark:text-amber-400 mb-1">
+                          هاتف المعتمد:
+                        </label>
+                        <input
+                          type="text"
+                          value={editProxyPhone}
+                          onChange={(e) => setEditProxyPhone(e.target.value)}
+                          placeholder="07XXXXXXXXX"
+                          className="w-full h-9 px-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 rounded-xl font-mono"
+                          dir="ltr"
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* قسم بيانات المعاملة والصادر الرسمي */}
+              {editingTarget.request && (
+                <div className="p-3.5 rounded-2xl bg-blue-50/50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 space-y-3">
+                  <h4 className="font-black text-xs text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
+                    <FileText className="w-4 h-4" />
+                    <span>بيانات المعاملة والصادر الرسمي:</span>
+                  </h4>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* الجهة المعنية */}
+                    <div className="sm:col-span-2">
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        الجهة أو الوزارة المعنية: <span className="text-rose-500">*</span>
+                      </label>
+                      <SearchableSelect
+                        options={IRAQI_MINISTRIES}
+                        value={editEntity}
+                        onChange={setEditEntity}
+                        placeholder="اختر أو اكتب الجهة المعنية..."
+                        required
+                      />
+                    </div>
+
+                    {/* موضوع وتفاصيل المعاملة */}
+                    <div className="sm:col-span-2">
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        تفاصيل وموضوع المعاملة: <span className="text-rose-500">*</span>
+                      </label>
+                      <textarea
+                        rows={2}
+                        required
+                        value={editDetails}
+                        onChange={(e) => setEditDetails(e.target.value)}
+                        placeholder="موضوع المعاملة المطلوب من الوزارة..."
+                        className="w-full p-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl resize-none font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    {/* رقم الصادر */}
+                    <div>
+                      <label className="block font-bold text-amber-700 dark:text-amber-400 mb-1">
+                        رقم الصادر أو العدد: (رسمي)
+                      </label>
+                      <input
+                        type="text"
+                        value={editOutgoingNumber}
+                        onChange={(e) => setEditOutgoingNumber(e.target.value)}
+                        placeholder="ص/2026/..."
+                        className="w-full h-9 px-3 bg-amber-50/80 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-xl font-mono font-black text-amber-950 dark:text-amber-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+
+                    {/* تاريخ الصادر */}
+                    <div>
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        تاريخ كتاب الصادر:
+                      </label>
+                      <input
+                        type="date"
+                        value={editOutgoingDate}
+                        onChange={(e) => setEditOutgoingDate(e.target.value)}
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    {/* حالة المعاملة */}
+                    <div>
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        حالة المعاملة:
+                      </label>
+                      <select
+                        value={editProcessingStatus}
+                        onChange={(e) => setEditProcessingStatus(e.target.value as ProcessingStatus)}
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="منجز">منجز (مكتمل ومغلق)</option>
+                        <option value="قيد الإجراء">قيد الإجراء والمتابعة</option>
+                        <option value="تم الطباعة">تمت الطباعة وتثبيت الكتاب</option>
+                        <option value="مرسل إلى الوزارة/الهيئة">مرسل إلى الوزارة/الهيئة</option>
+                        <option value="بانتظار الموافقة">بانتظار الموافقة الوزارية</option>
+                        <option value="مرفوض">مرفوض</option>
+                      </select>
+                    </div>
+
+                    {/* الأسبقية */}
+                    <div>
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        درجة الأولوية:
+                      </label>
+                      <select
+                        value={editPriority}
+                        onChange={(e) => setEditPriority(e.target.value as any)}
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="عام">عام</option>
+                        <option value="خاص">خاص</option>
+                        <option value="عاجل">عاجل وفوري</option>
+                        <option value="إنساني">إنساني</option>
+                      </select>
+                    </div>
+
+                    {/* الملاحظات والتوجيهات */}
+                    <div className="sm:col-span-2">
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        ملاحظات وتوجيهات أخرى:
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={editOtherNotes}
+                        onChange={(e) => setEditOtherNotes(e.target.value)}
+                        placeholder="أي تفاصيل أو توجيهات إدارية إضافية..."
+                        className="w-full p-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl resize-none text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                </div>
               )}
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              {/* أزرار الحفظ والإلغاء */}
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100 dark:border-slate-800 sticky bottom-0 bg-white dark:bg-slate-900 py-2">
                 <button
                   type="button"
                   onClick={() => setEditingTarget(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold"
+                  className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black"
+                  className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md active:scale-95 transition-transform"
                 >
-                  حفظ التعديلات
+                  <Check className="w-4 h-4" />
+                  <span>حفظ كافة التعديلات في قواعد البيانات</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+
+      {/* ======================================================== */}
+      {/* MODAL: صادر موحد لمجموعة مراجعين (Bulk Collective Outgoing) */}
+      {/* ======================================================== */}
+      {isBulkOutgoingModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-amber-300 dark:border-amber-600/50 max-w-4xl w-full p-6 shadow-2xl space-y-4 text-right animate-in fade-in zoom-in-95 my-8 max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-900 dark:text-amber-200 border border-amber-500/30">
+                  <Users className="w-5 h-5" />
+                </span>
+                <div>
+                  <h3 className="font-black text-base text-slate-900 dark:text-white flex items-center gap-2">
+                    <span>إصدار كتاب صادر موحد لمجموعة مراجعين (معاملة جماعية)</span>
+                    <span className="text-[10px] bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 px-2 py-0.5 rounded-full font-bold">
+                      عدد وتاريخ واحد لعدة أسماء
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    يمكنك لصق الأسماء والأرقام دفعة واحدة من إكسل، أو كتابتها في الجدول، ويتم تسجيلهم جميعاً بنفس رقم الصادر وطباعة وصل جماعي
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBulkOutgoingModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer p-1 text-base font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveBulkOutgoing} className="space-y-4">
+              {/* Top Row: Outgoing Number & Date & Entity */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 bg-amber-50/60 dark:bg-amber-950/20 rounded-2xl border border-amber-200 dark:border-amber-900/50 text-xs">
+                <div>
+                  <label className="block font-black text-amber-950 dark:text-amber-200 mb-1">
+                    العدد الصادر الموحد: <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={bulkOutgoingNumber}
+                    onChange={(e) => setBulkOutgoingNumber(e.target.value)}
+                    placeholder="ص/2026/1"
+                    className="w-full h-9 px-3 bg-white dark:bg-slate-800 border-2 border-amber-400 dark:border-amber-600 rounded-xl font-mono font-black text-amber-950 dark:text-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                  <span className="text-[10px] text-amber-800 dark:text-amber-400 mt-0.5 block">
+                    يمكنك تعديل الرقم بحرية
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block font-black text-slate-800 dark:text-slate-200 mb-1">
+                    تاريخ الصادر: <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={bulkOutgoingDate}
+                    onChange={(e) => setBulkOutgoingDate(e.target.value)}
+                    className="w-full h-9 px-3 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">
+                    تاريخ اليوم معتمد وقابل للتغيير
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block font-black text-slate-800 dark:text-slate-200 mb-1">
+                    الجهة أو الوزارة المعنية: <span className="text-rose-500">*</span>
+                  </label>
+                  <SearchableSelect
+                    options={IRAQI_MINISTRIES}
+                    value={bulkEntity}
+                    onChange={setBulkEntity}
+                    placeholder="اختر أو اكتب الوزارة / الدائرة..."
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Subject */}
+              <div>
+                <label className="block text-xs font-black text-slate-800 dark:text-slate-200 mb-1">
+                  موضوع المعاملة الموحدة: <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={bulkSubject}
+                  onChange={(e) => setBulkSubject(e.target.value)}
+                  placeholder="مثال: طلب شمول بالرعاية الاجتماعية / تثبيت عقود / طلبات تعيين ومفاضلة..."
+                  className="w-full h-9 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              {/* Quick Paste Area */}
+              <div className="p-3 bg-blue-50/60 dark:bg-blue-950/30 rounded-2xl border border-blue-200 dark:border-blue-800/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-blue-950 dark:text-blue-200">
+                    <ClipboardPaste className="w-4 h-4 text-blue-600" />
+                    <span>اللصق السريع المباشر (نسخ من إكسل أو واتساب):</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleParseBulkPaste}
+                    className="px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center gap-1 cursor-pointer shadow-xs active:scale-95"
+                  >
+                    <span>⚡ تحليل وتفريغ الأسماء في الجدول</span>
+                  </button>
+                </div>
+                <textarea
+                  rows={2}
+                  value={bulkRawPasteText}
+                  onChange={(e) => setBulkRawPasteText(e.target.value)}
+                  placeholder="الصق هنا أسطر متعددة من إكسل، مثال:&#10;أحمد علي حسن - 07801234567 - الناصرية&#10;محمد كاظم جاسم - 07709876543 - الشطرة"
+                  className="w-full p-2 bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-xl text-xs text-slate-900 dark:text-white font-mono placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+              </div>
+
+              {/* Editable Citizens Table */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-slate-900 dark:text-white">
+                    جدول قائمة المواطنين المشمولين بهذا الصادر ({bulkRows.filter(r => r.name.trim()).length} مواطن):
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBulkRows(prev => [
+                        ...prev,
+                        { id: `row-${Date.now()}-${prev.length + 1}`, name: '', phone: '', district: 'الناصرية', notes: '' }
+                      ]);
+                    }}
+                    className="px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>إضافة مواطن آخر</span>
+                  </button>
+                </div>
+
+                <div className="border border-slate-200 dark:border-slate-700 rounded-2xl overflow-hidden max-h-60 overflow-y-auto">
+                  <table className="w-full text-right text-xs">
+                    <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 sticky top-0 font-bold border-b border-slate-200 dark:border-slate-700">
+                      <tr>
+                        <th className="p-2 w-10 text-center">ت</th>
+                        <th className="p-2">اسم المواطن الرباعي *</th>
+                        <th className="p-2 w-36">رقم الهاتف</th>
+                        <th className="p-2 w-36">السكن / القضاء</th>
+                        <th className="p-2">ملاحظة / اختصاص</th>
+                        <th className="p-2 w-10 text-center">حذف</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
+                      {bulkRows.map((row, index) => (
+                        <tr key={row.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="p-2 text-center font-bold text-slate-400 font-mono">{index + 1}</td>
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={row.name}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setBulkRows(prev => prev.map((r, i) => i === index ? { ...r, name: val } : r));
+                              }}
+                              placeholder="الاسم الرباعي..."
+                              className="w-full h-8 px-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-900 dark:text-white"
+                            />
+                          </td>
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={row.phone}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setBulkRows(prev => prev.map((r, i) => i === index ? { ...r, phone: val } : r));
+                              }}
+                              placeholder="0780..."
+                              dir="ltr"
+                              className="w-full h-8 px-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-mono font-bold text-slate-900 dark:text-white text-right"
+                            />
+                          </td>
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={row.district}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setBulkRows(prev => prev.map((r, i) => i === index ? { ...r, district: val } : r));
+                              }}
+                              placeholder="الناصرية / الشطرة..."
+                              className="w-full h-8 px-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white"
+                            />
+                          </td>
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={row.notes}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setBulkRows(prev => prev.map((r, i) => i === index ? { ...r, notes: val } : r));
+                              }}
+                              placeholder="تخصص أو صفة..."
+                              className="w-full h-8 px-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white"
+                            />
+                          </td>
+                          <td className="p-1.5 text-center">
+                            {bulkRows.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => setBulkRows(prev => prev.filter((_, i) => i !== index))}
+                                className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/50 rounded-lg cursor-pointer"
+                                title="حذف السطر"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkOutgoingModalOpen(false)}
+                  className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
+                >
+                  إلغاء
+                </button>
+
+                <button
+                  type="submit"
+                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-600/30 active:scale-95 transition-transform"
+                >
+                  <Printer className="w-4 h-4 text-amber-200" />
+                  <span>حفظ وإصدار الصادر الموحد + طباعة الوصل الجماعي 🖨️</span>
                 </button>
               </div>
             </form>

@@ -1618,15 +1618,14 @@ export const ReceptionModule: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div>
                 <label className="block text-slate-700 font-bold mb-1 text-[11px]">القضاء / منطقة السكن *</label>
-                <select
+                <SearchableSelect
+                  options={DHI_QAR_DISTRICTS}
                   value={district}
-                  onChange={(e) => setDistrict(e.target.value)}
-                  className="w-full h-10 sm:h-9 px-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-right shadow-2xs"
-                >
-                  {DHI_QAR_DISTRICTS.map((d, i) => (
-                    <option key={i} value={d}>{d}</option>
-                  ))}
-                </select>
+                  onChange={(val) => setDistrict(val)}
+                  placeholder="ابحث أو اختر القضاء..."
+                  className="w-full shadow-2xs"
+                  allowCustom={true}
+                />
                 {district === 'أخرى' && (
                   <input
                     type="text"
@@ -1863,15 +1862,12 @@ export const ReceptionModule: React.FC = () => {
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                       <div>
                         <label className="block text-slate-700 font-bold mb-1 text-[11px]">الوزارة / الجهة *</label>
-                        <select
+                        <SearchableSelect
+                          options={IRAQI_MINISTRIES}
                           value={reqItem.entity}
-                          onChange={(e) => handleRequestSlotChange(reqItem.id, 'entity', e.target.value)}
-                          className="w-full h-10 sm:h-9 px-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-right text-xs"
-                        >
-                          {IRAQI_MINISTRIES.map((m, idx) => (
-                            <option key={idx} value={m}>{m}</option>
-                          ))}
-                        </select>
+                          onChange={(val) => handleRequestSlotChange(reqItem.id, 'entity', val)}
+                          placeholder="ابحث أو اختر الوزارة أو الدائرة..."
+                        />
                       </div>
 
                       {reqItem.entity === 'أخرى (تحديد يدوي)' && (

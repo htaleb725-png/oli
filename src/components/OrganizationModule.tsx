@@ -19,7 +19,8 @@ import {
   ShieldCheck,
   FileSpreadsheet,
   Award,
-  FileText
+  FileText,
+  ArrowLeft
 } from 'lucide-react';
 import { AiRequestDrafterModal } from './AiRequestDrafterModal';
 import { OrgFinalEvaluationModal } from './OrgFinalEvaluationModal';
@@ -71,7 +72,7 @@ export const OrganizationModule: React.FC = () => {
     setActiveSection
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'records' | 'reports' | 'team_members' | 'referred_citizens'>('records');
+  const [activeTab, setActiveTab] = useState<'hub' | 'records' | 'reports' | 'team_members' | 'referred_citizens'>('hub');
   const [searchQuery, setSearchQuery] = useState('');
   const [ratingFilter, setRatingFilter] = useState('all');
   const [finalResultFilter, setFinalResultFilter] = useState('all');
@@ -441,126 +442,143 @@ export const OrganizationModule: React.FC = () => {
         </div>
       </div>
 
-      {/* 5-Column Desktop Icon Grid for Organization & Public Stance */}
-      <OfficeIconTilesGrid
-        title="أيقونات ومهام قسم التنظيم والموقف الجماهيري"
-        subtitle="انقر على أي أيقونة للاستعراض المباشر أو تسجيل التقييمات النهائية والكوادر"
-        columns={5}
-        items={[
-          {
-            id: 'org_records_tab',
-            title: 'سجلات الموقف والنتائج',
-            subtitle: 'الموقف الجماهيري للمراجعين',
-            icon: Users2,
-            iconColor: 'text-indigo-600 dark:text-indigo-400',
-            iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-            badge: filteredRecords.length,
-            badgeColor: 'bg-indigo-600 text-white',
-            isActive: activeTab === 'records',
-            onClick: () => setActiveTab('records')
-          },
-          {
-            id: 'org_referred_tab',
-            title: 'الوارد والمحال للتنظيم',
-            subtitle: 'المراجعون المحالون لقسم التنظيم',
-            icon: SendHorizontal,
-            iconColor: 'text-amber-600 dark:text-amber-400',
-            iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-            badge: referredCitizens.length,
-            badgeColor: 'bg-amber-600 text-white',
-            isActive: activeTab === 'referred_citizens',
-            onClick: () => setActiveTab('referred_citizens')
-          },
-          {
-            id: 'org_evaluation_tab',
-            title: 'تسجيل النتيجة النهائية للطلب',
-            subtitle: 'مكتمل / جزئي / متابعة / لم يحل',
-            icon: CheckCircle2,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            onClick: () => handleOpenNewEvaluation()
-          },
-          {
-            id: 'org_team_tab',
-            title: 'سجل فريق العمل والكوادر',
-            subtitle: 'المفاتيح الانتخابية والنشطاء',
-            icon: UserCheck,
-            iconColor: 'text-purple-600 dark:text-purple-400',
-            iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
-            badge: teamMembers.length,
-            badgeColor: 'bg-purple-600 text-white',
-            isActive: activeTab === 'team_members',
-            onClick: () => setActiveTab('team_members')
-          },
-          {
-            id: 'org_reports_tab',
-            title: 'إحصائيات وتقارير النتائج',
-            subtitle: 'الرسوم البيانية وتوزيع الأقضية',
-            icon: BarChart3,
-            iconColor: 'text-rose-600 dark:text-rose-400',
-            iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
-            isActive: activeTab === 'reports',
-            onClick: () => setActiveTab('reports')
-          }
-        ]}
-      />
+      {/* ---------------- VIEW 1: CENTRAL ICONS HUB ---------------- */}
+      {activeTab === 'hub' && (
+        <OfficeIconTilesGrid
+          title="أيقونات ومهام قسم التنظيم والموقف الجماهيري"
+          subtitle="انقر على أي أيقونة للاستعراض المباشر أو تسجيل التقييمات النهائية والكوادر"
+          columns={5}
+          items={[
+            {
+              id: 'org_records_tab',
+              title: 'سجلات الموقف والنتائج',
+              subtitle: 'الموقف الجماهيري للمراجعين',
+              icon: Users2,
+              iconColor: 'text-indigo-600 dark:text-indigo-400',
+              iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
+              badge: filteredRecords.length,
+              badgeColor: 'bg-indigo-600 text-white',
+              onClick: () => {
+                setActiveTab('records');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'org_referred_tab',
+              title: 'الوارد والمحال للتنظيم',
+              subtitle: 'المراجعون المحالون لقسم التنظيم',
+              icon: SendHorizontal,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: referredCitizens.length,
+              badgeColor: 'bg-amber-600 text-white',
+              onClick: () => {
+                setActiveTab('referred_citizens');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'org_evaluation_tab',
+              title: 'تسجيل النتيجة النهائية للطلب',
+              subtitle: 'مكتمل / جزئي / متابعة / لم يحل',
+              icon: CheckCircle2,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              onClick: () => handleOpenNewEvaluation()
+            },
+            {
+              id: 'org_team_tab',
+              title: 'سجل فريق العمل والكوادر',
+              subtitle: 'المفاتيح الانتخابية والنشطاء',
+              icon: UserCheck,
+              iconColor: 'text-purple-600 dark:text-purple-400',
+              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
+              badge: teamMembers.length,
+              badgeColor: 'bg-purple-600 text-white',
+              onClick: () => {
+                setActiveTab('team_members');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'org_reports_tab',
+              title: 'إحصائيات وتقارير النتائج',
+              subtitle: 'الرسوم البيانية وتوزيع الأقضية',
+              icon: BarChart3,
+              iconColor: 'text-rose-600 dark:text-rose-400',
+              iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
+              onClick: () => {
+                setActiveTab('reports');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }
+          ]}
+        />
+      )}
 
-      {/* Navigation Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab('records')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 shrink-0 ${
-            activeTab === 'records'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <Layers className="w-4 h-4" />
-          <span>سجلات الموقف والنتائج التنظيمية ({filteredRecords.length})</span>
-        </button>
+      {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}
+      {activeTab !== 'hub' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setActiveTab('hub');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+            >
+              <ArrowLeft className="w-4 h-4 rotate-180" />
+              <span>رجوع إلى شبكة أيقونات قسم التنظيم</span>
+            </button>
 
-        <button
-          onClick={() => setActiveTab('reports')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 shrink-0 ${
-            activeTab === 'reports'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <BarChart3 className="w-4 h-4 text-emerald-500" />
-          <span>إحصائيات وتقارير النتائج</span>
-        </button>
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
 
-        <button
-          onClick={() => setActiveTab('team_members')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 shrink-0 relative ${
-            activeTab === 'team_members'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <ShieldCheck className="w-4 h-4 text-purple-500" />
-          <span>فريق العمل والمفاتيح المستقلة ({teamMembers.length})</span>
-          {teamMembers.length > 0 && (
-            <span className="w-2 h-2 rounded-full bg-purple-400 inline-block"></span>
-          )}
-        </button>
+            <span className="font-black text-sm text-slate-900 dark:text-white">
+              {activeTab === 'records' && '👥 سجلات الموقف والنتائج التنظيمية'}
+              {activeTab === 'reports' && '📊 إحصائيات وتقارير النتائج'}
+              {activeTab === 'team_members' && '🛡️ فريق العمل والمفاتيح المستقلة'}
+              {activeTab === 'referred_citizens' && '📨 الوارد المحال من الإدارة ومدير المكتب'}
+            </span>
+          </div>
 
-        <button
-          onClick={() => setActiveTab('referred_citizens')}
-          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 shrink-0 relative ${
-            activeTab === 'referred_citizens'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <SendHorizontal className="w-4 h-4 text-amber-500" />
-          <span>الوارد المحال من الإدارة ومدير المكتب ({referredCitizens.length})</span>
-          {referredCitizens.length > 0 && (
-            <span className="w-2 h-2 rounded-full bg-amber-400 inline-block animate-ping"></span>
-          )}
-        </button>
-      </div>
+          {/* Quick Sub-tab Jump Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
+            <button
+              onClick={() => setActiveTab('records')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'records' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              سجلات الموقف ({filteredRecords.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('reports')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              التقارير
+            </button>
+            <button
+              onClick={() => setActiveTab('team_members')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'team_members' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              فريق العمل ({teamMembers.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('referred_citizens')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'referred_citizens' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              الوارد المحال ({referredCitizens.length})
+            </button>
+          </div>
+        </div>
+      )}
+
 
       {/* Tab 1: Records Table */}
       {activeTab === 'records' && (

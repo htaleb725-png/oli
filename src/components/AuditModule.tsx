@@ -20,7 +20,8 @@ import {
   AlertTriangle,
   ChevronLeft,
   Database,
-  FileDown
+  FileDown,
+  ArrowLeft
 } from 'lucide-react';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
 
@@ -47,7 +48,7 @@ export const AuditModule: React.FC = () => {
     exportToExcel 
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'followup_stats' | 'audit_trail' | 'inquiries'>('followup_stats');
+  const [activeTab, setActiveTab] = useState<'hub' | 'followup_stats' | 'audit_trail' | 'inquiries'>('hub');
   const [statsCategory, setStatsCategory] = useState<'clans' | 'districts' | 'jobs' | 'entities'>('clans');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -433,174 +434,197 @@ export const AuditModule: React.FC = () => {
         </div>
       </div>
 
-      {/* 5-Column Desktop Icon Grid for Audit & Control */}
-      <OfficeIconTilesGrid
-        title="أيقونات ومهام قسم المتابعة والرقابة البرلمانية"
-        subtitle="انقر على أي أيقونة للاستعراض المباشر للإحصائية أو التدقيق الرقابي المطلوب"
-        columns={5}
-        items={[
-          {
-            id: 'audit_stats_tab',
-            title: 'المتابعة والإحصاءات الشاملة',
-            subtitle: 'كافة المؤشرات المركزية',
-            icon: BarChart2,
-            iconColor: 'text-rose-600 dark:text-rose-400',
-            iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
-            isActive: activeTab === 'followup_stats',
-            onClick: () => setActiveTab('followup_stats')
-          },
-          {
-            id: 'audit_trail_tab',
-            title: 'سجل التدقيق الإداري العام',
-            subtitle: 'Audit Trail وتوثيق العمليات',
-            icon: ShieldCheck,
-            iconColor: 'text-blue-600 dark:text-blue-400',
-            iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
-            badge: auditLogs.length,
-            badgeColor: 'bg-blue-600 text-white',
-            isActive: activeTab === 'audit_trail',
-            onClick: () => setActiveTab('audit_trail')
-          },
-          {
-            id: 'audit_inquiries_tab',
-            title: 'الأسئلة والرقابة البرلمانية',
-            subtitle: 'المخاطبات الوزارية والنزاهة',
-            icon: Building2,
-            iconColor: 'text-amber-600 dark:text-amber-400',
-            iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-            badge: inquiries.length,
-            badgeColor: 'bg-amber-600 text-white',
-            isActive: activeTab === 'inquiries',
-            onClick: () => setActiveTab('inquiries')
-          },
-          {
-            id: 'audit_clans',
-            title: 'إحصائيات العشائر والشهيرات',
-            subtitle: 'توزيع المراجعين عشائرياً',
-            icon: Users,
-            iconColor: 'text-purple-600 dark:text-purple-400',
-            iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
-            badge: clanStats.length,
-            badgeColor: 'bg-purple-600 text-white',
-            isActive: activeTab === 'followup_stats' && statsCategory === 'clans',
-            onClick: () => {
-              setActiveTab('followup_stats');
-              setStatsCategory('clans');
+      {/* ---------------- VIEW 1: CENTRAL ICONS HUB ---------------- */}
+      {activeTab === 'hub' && (
+        <OfficeIconTilesGrid
+          title="أيقونات ومهام قسم المتابعة والرقابة البرلمانية"
+          subtitle="انقر على أي أيقونة للاستعراض المباشر للإحصائية أو التدقيق الرقابي المطلوب"
+          columns={5}
+          items={[
+            {
+              id: 'audit_stats_tab',
+              title: 'المتابعة والإحصاءات الشاملة',
+              subtitle: 'كافة المؤشرات المركزية',
+              icon: BarChart2,
+              iconColor: 'text-rose-600 dark:text-rose-400',
+              iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
+              onClick: () => {
+                setActiveTab('followup_stats');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'audit_trail_tab',
+              title: 'سجل التدقيق الإداري العام',
+              subtitle: 'Audit Trail وتوثيق العمليات',
+              icon: ShieldCheck,
+              iconColor: 'text-blue-600 dark:text-blue-400',
+              iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
+              badge: auditLogs.length,
+              badgeColor: 'bg-blue-600 text-white',
+              onClick: () => {
+                setActiveTab('audit_trail');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'audit_inquiries_tab',
+              title: 'الأسئلة والرقابة البرلمانية',
+              subtitle: 'المخاطبات الوزارية والنزاهة',
+              icon: Building2,
+              iconColor: 'text-amber-600 dark:text-amber-400',
+              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              badge: inquiries.length,
+              badgeColor: 'bg-amber-600 text-white',
+              onClick: () => {
+                setActiveTab('inquiries');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'audit_clans',
+              title: 'إحصائيات العشائر والشهيرات',
+              subtitle: 'توزيع المراجعين عشائرياً',
+              icon: Users,
+              iconColor: 'text-purple-600 dark:text-purple-400',
+              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
+              badge: clanStats.length,
+              badgeColor: 'bg-purple-600 text-white',
+              onClick: () => {
+                setActiveTab('followup_stats');
+                setStatsCategory('clans');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'audit_districts',
+              title: 'التوزيع الجغرافي للأقضية',
+              subtitle: 'مناطق المحافظة والمدن',
+              icon: MapPin,
+              iconColor: 'text-cyan-600 dark:text-cyan-400',
+              iconBg: 'bg-cyan-50 dark:bg-cyan-950/50 border-cyan-200 dark:border-cyan-800',
+              badge: districtStats.length,
+              badgeColor: 'bg-cyan-600 text-white',
+              onClick: () => {
+                setActiveTab('followup_stats');
+                setStatsCategory('districts');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'audit_jobs',
+              title: 'توزيع المهن والتوصيف',
+              subtitle: 'الكوادر والأطباء والموظفين',
+              icon: Briefcase,
+              iconColor: 'text-indigo-600 dark:text-indigo-400',
+              iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
+              badge: jobStats.length,
+              badgeColor: 'bg-indigo-600 text-white',
+              onClick: () => {
+                setActiveTab('followup_stats');
+                setStatsCategory('jobs');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'audit_entities',
+              title: 'توزيع الوزارات والجهات',
+              subtitle: 'الطلبات الحكومية القطاعية',
+              icon: Layers,
+              iconColor: 'text-teal-600 dark:text-teal-400',
+              iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
+              badge: entityStats.length,
+              badgeColor: 'bg-teal-600 text-white',
+              onClick: () => {
+                setActiveTab('followup_stats');
+                setStatsCategory('entities');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            },
+            {
+              id: 'audit_export_all',
+              title: 'تنزيل حزمة ملفات المنظومة',
+              subtitle: 'Excel متعدد التبويبات لكافة الأقسام',
+              icon: Database,
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+              onClick: () => handleExportAllSystemFiles()
+            },
+            {
+              id: 'audit_export_curr',
+              title: 'تنزيل الجدول المعروض حالياً',
+              subtitle: 'سحب جدول الإحصائية إلى Excel',
+              icon: FileSpreadsheet,
+              iconColor: 'text-fuchsia-600 dark:text-fuchsia-400',
+              iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-950/50 border-fuchsia-200 dark:border-fuchsia-800',
+              onClick: () => handleExportCurrentTable()
+            },
+            {
+              id: 'audit_print',
+              title: 'سحب وطباعة التقرير الشامل',
+              subtitle: 'طباعة فورية لكافة الإحصائيات',
+              icon: Printer,
+              iconColor: 'text-orange-600 dark:text-orange-400',
+              iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800',
+              onClick: () => window.print()
             }
-          },
-          {
-            id: 'audit_districts',
-            title: 'التوزيع الجغرافي للأقضية',
-            subtitle: 'مناطق المحافظة والمدن',
-            icon: MapPin,
-            iconColor: 'text-cyan-600 dark:text-cyan-400',
-            iconBg: 'bg-cyan-50 dark:bg-cyan-950/50 border-cyan-200 dark:border-cyan-800',
-            badge: districtStats.length,
-            badgeColor: 'bg-cyan-600 text-white',
-            isActive: activeTab === 'followup_stats' && statsCategory === 'districts',
-            onClick: () => {
-              setActiveTab('followup_stats');
-              setStatsCategory('districts');
-            }
-          },
-          {
-            id: 'audit_jobs',
-            title: 'توزيع المهن والتوصيف',
-            subtitle: 'الكوادر والأطباء والموظفين',
-            icon: Briefcase,
-            iconColor: 'text-indigo-600 dark:text-indigo-400',
-            iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-            badge: jobStats.length,
-            badgeColor: 'bg-indigo-600 text-white',
-            isActive: activeTab === 'followup_stats' && statsCategory === 'jobs',
-            onClick: () => {
-              setActiveTab('followup_stats');
-              setStatsCategory('jobs');
-            }
-          },
-          {
-            id: 'audit_entities',
-            title: 'توزيع الوزارات والجهات',
-            subtitle: 'الطلبات الحكومية القطاعية',
-            icon: Layers,
-            iconColor: 'text-teal-600 dark:text-teal-400',
-            iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-            badge: entityStats.length,
-            badgeColor: 'bg-teal-600 text-white',
-            isActive: activeTab === 'followup_stats' && statsCategory === 'entities',
-            onClick: () => {
-              setActiveTab('followup_stats');
-              setStatsCategory('entities');
-            }
-          },
-          {
-            id: 'audit_export_all',
-            title: 'تنزيل حزمة ملفات المنظومة',
-            subtitle: 'Excel متعدد التبويبات لكافة الأقسام',
-            icon: Database,
-            iconColor: 'text-emerald-600 dark:text-emerald-400',
-            iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-            onClick: () => handleExportAllSystemFiles()
-          },
-          {
-            id: 'audit_export_curr',
-            title: 'تنزيل الجدول المعروض حالياً',
-            subtitle: 'سحب جدول الإحصائية إلى Excel',
-            icon: FileSpreadsheet,
-            iconColor: 'text-fuchsia-600 dark:text-fuchsia-400',
-            iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-950/50 border-fuchsia-200 dark:border-fuchsia-800',
-            onClick: () => handleExportCurrentTable()
-          },
-          {
-            id: 'audit_print',
-            title: 'سحب وطباعة التقرير الشامل',
-            subtitle: 'طباعة فورية لكافة الإحصائيات',
-            icon: Printer,
-            iconColor: 'text-orange-600 dark:text-orange-400',
-            iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800',
-            onClick: () => window.print()
-          }
-        ]}
-      />
+          ]}
+        />
+      )}
 
-      {/* Main Tabs Navigation */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto text-xs font-bold">
-        <button
-          onClick={() => setActiveTab('followup_stats')}
-          className={`px-4 py-2.5 rounded-xl transition-all cursor-pointer flex items-center gap-2 shrink-0 ${
-            activeTab === 'followup_stats'
-              ? 'bg-rose-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <BarChart2 className="w-4 h-4" />
-          <span>المتابعة والإحصائيات الشاملة لكافة الأقسام</span>
-        </button>
+      {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}
+      {activeTab !== 'hub' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setActiveTab('hub');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+            >
+              <ArrowLeft className="w-4 h-4 rotate-180" />
+              <span>رجوع إلى شبكة أيقونات الرقابة والتدقيق</span>
+            </button>
 
-        <button
-          onClick={() => setActiveTab('audit_trail')}
-          className={`px-4 py-2.5 rounded-xl transition-all cursor-pointer flex items-center gap-2 shrink-0 ${
-            activeTab === 'audit_trail'
-              ? 'bg-rose-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <Clock className="w-4 h-4" />
-          <span>سجل الحركات والتدقيق الأمني ({filteredLogs.length})</span>
-        </button>
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
 
-        <button
-          onClick={() => setActiveTab('inquiries')}
-          className={`px-4 py-2.5 rounded-xl transition-all cursor-pointer flex items-center gap-2 shrink-0 ${
-            activeTab === 'inquiries'
-              ? 'bg-rose-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <Building2 className="w-4 h-4" />
-          <span>الأسئلة والمساءلات البرلمانية ({inquiries.length})</span>
-        </button>
-      </div>
+            <span className="font-black text-sm text-slate-900 dark:text-white">
+              {activeTab === 'followup_stats' && '📊 المتابعة والإحصائيات الشاملة لكافة الأقسام'}
+              {activeTab === 'audit_trail' && `🔒 سجل الحركات والتدقيق الأمني (${filteredLogs.length})`}
+              {activeTab === 'inquiries' && `🏛️ الأسئلة والرقابة البرلمانية (${inquiries.length})`}
+            </span>
+          </div>
+
+          {/* Quick Sub-tab Jump Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
+            <button
+              onClick={() => setActiveTab('followup_stats')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'followup_stats' ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              الإحصائيات الشاملة
+            </button>
+            <button
+              onClick={() => setActiveTab('audit_trail')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'audit_trail' ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              سجل التدقيق ({filteredLogs.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('inquiries')}
+              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'inquiries' ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              الأسئلة البرلمانية ({inquiries.length})
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: Follow-up & Comprehensive Analytics ("قسم المتابعة يتولى متابعة هذا شكو احصائيات بالنظام من الاول للاخير") */}
       {activeTab === 'followup_stats' && (

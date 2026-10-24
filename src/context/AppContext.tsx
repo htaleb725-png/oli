@@ -44,6 +44,7 @@ import {
   fsDeleteCustomRecord,
   fsSaveDeveloperPasscode,
   fsGetDeveloperPasscode,
+  fsVerifyLogin,
   fsBulkPushAll,
   fsBulkPullAll,
   fsWatchCollection,
@@ -65,7 +66,7 @@ import {
 } from '../data/initialData';
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
-import { pushToGoogleSheetsRealtime, pullDataFromGoogleAppsScript } from '../services/realtimeGoogleSync';
+import { pushToGoogleSheetsRealtime, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets } from '../services/realtimeGoogleSync';
 import { sheetsIntegration } from '../services/sheetsIntegrationLayer';
 import { 
   loginAndSetupDeveloperCloud, 
@@ -135,7 +136,7 @@ interface AppContextType {
   currentUser: User | null;
   setCurrentUser: (user: User | null) => void;
   users: User[];
-  login: (username: string, pass: string) => boolean;
+  login: (usernameOrCode: string, pass?: string) => Promise<boolean>;
   logout: () => void;
   switchUser: (user: User) => void;
   assignedWorkstationUser: User | null;
@@ -307,20 +308,181 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [customSections, setCustomSections] = useState<CustomSection[]>(() => {
+    const defaultSections: CustomSection[] = [
+      {
+        id: 'sec_social_welfare',
+        title: 'قسم الرعاية الاجتماعية وشبكة الحماية',
+        description: 'متابعة معاملات شبكة الحماية الاجتماعية، إصدار الماستر كارد، راتب المعين المتفرغ، والمسح الميداني للباحث الاجتماعي',
+        badgeColor: 'emerald',
+        icon: 'HeartHandshake',
+        createdAt: '2026-03-01',
+        createdBy: 'مطور النظام',
+        fields: [
+          {
+            id: 'f_welf_name',
+            name: 'citizen_name',
+            label: 'اسم المواطن / صاحب القيد الرباعي',
+            type: 'text',
+            required: true,
+            placeholder: 'مثال: جاسم محمد خضير الركابي'
+          },
+          {
+            id: 'f_welf_phone',
+            name: 'phone',
+            label: 'رقم هاتف المراجع للتواصل',
+            type: 'text',
+            required: true,
+            placeholder: '07800000000'
+          },
+          {
+            id: 'f_welf_code',
+            name: 'welfare_code',
+            label: 'رقم القيد / رقم المعاملة الوزارية',
+            type: 'text',
+            required: true,
+            placeholder: 'مثال: رع/ذي/2026/894'
+          },
+          {
+            id: 'f_welf_type',
+            name: 'case_type',
+            label: 'نوع الإعانة أو الفئة المشمولة',
+            type: 'dropdown',
+            required: true,
+            options: [
+              'شبكة الحماية الاجتماعية (رجال)',
+              'شبكة الحماية الاجتماعية (نساء وأرامل ومطلقات)',
+              'راتب المعين المتفرغ (هيئة رعاية ذوي الإعاقة)',
+              'إصدار وتجديد الماستر كارد (كي كارد)',
+              'اعتراض وتقارير اللجان الطبية',
+              'تحديث البيانات والبيان السنوي'
+            ]
+          },
+          {
+            id: 'f_welf_researcher',
+            name: 'researcher_status',
+            label: 'موقف الباحث الاجتماعي والمسح الميداني',
+            type: 'dropdown',
+            required: false,
+            options: [
+              'تمت زيارة الباحث الاجتماعي بنجاح',
+              'بانتظار وصول الباحث الميداني',
+              'مرفوض من الباحث (فوق خط الفقر)',
+              'ملف مدقق ومكتمل بانتظار التخصيص المالي'
+            ]
+          },
+          {
+            id: 'f_welf_district',
+            name: 'district',
+            label: 'القضاء / محل السكن',
+            type: 'dropdown',
+            required: true,
+            options: [
+              'الناصرية (المركز)',
+              'الشطرة',
+              'الرفاعي',
+              'سوق الشيوخ',
+              'الجبايش',
+              'قلعة سكر',
+              'الدواية',
+              'الغراف',
+              'البطحاء',
+              'سيد دخيل',
+              'الفهود',
+              'الإصلاح',
+              'الطار',
+              'أخرى'
+            ]
+          },
+          {
+            id: 'f_welf_date',
+            name: 'submission_date',
+            label: 'تاريخ استلام ومتابعة المعاملة',
+            type: 'date',
+            required: false
+          },
+          {
+            id: 'f_welf_doc',
+            name: 'attachment',
+            label: 'صورة الطلب أو القرار الطبي / كتاب الشمول',
+            type: 'image',
+            required: false,
+            helpText: 'رفع صورة التقرير أو الوثيقة الرسمية'
+          },
+          {
+            id: 'f_welf_notes',
+            name: 'notes',
+            label: 'ملاحظات وتوجيهات متابعة المعاملة',
+            type: 'textarea',
+            required: false,
+            placeholder: 'اكتب التوجيهات أو الملاحظات الخاصة بوزارة العمل...'
+          }
+        ]
+      }
+    ];
+
     try {
       const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'custom_sections');
-      return saved ? JSON.parse(saved) : [];
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const hasWelfare = parsed.some((s: CustomSection) => s.id === 'sec_social_welfare');
+          return hasWelfare ? parsed : [...defaultSections, ...parsed];
+        }
+      }
+      return defaultSections;
     } catch {
-      return [];
+      return defaultSections;
     }
   });
 
   const [customRecords, setCustomRecords] = useState<CustomSectionRecord[]>(() => {
+    const defaultRecords: CustomSectionRecord[] = [
+      {
+        id: 'REC-WELF-101',
+        sectionId: 'sec_social_welfare',
+        createdAt: '2026-03-01',
+        createdBy: 'مسؤول الرعاية الاجتماعية',
+        data: {
+          f_welf_name: 'كاظم هاشم جبر الشمري',
+          f_welf_phone: '07812345678',
+          f_welf_code: 'رع/ذي/2026/894',
+          f_welf_type: 'راتب المعين المتفرغ (هيئة رعاية ذوي الإعاقة)',
+          f_welf_researcher: 'تمت زيارة الباحث الاجتماعي بنجاح',
+          f_welf_district: 'الناصرية (المركز)',
+          f_welf_date: '2026-03-01',
+          f_welf_notes: 'المعاملة مستوفية الشروط الطبية وحاصلة على نسبة عجز 75% وبانتظار إصدار بطاقة الماستر كارد.'
+        }
+      },
+      {
+        id: 'REC-WELF-102',
+        sectionId: 'sec_social_welfare',
+        createdAt: '2026-03-02',
+        createdBy: 'مسؤول الرعاية الاجتماعية',
+        data: {
+          f_welf_name: 'أم غسان سعدون علي الخفاجي',
+          f_welf_phone: '07898765432',
+          f_welf_code: 'رع/شط/2026/512',
+          f_welf_type: 'شبكة الحماية الاجتماعية (نساء وأرامل ومطلقات)',
+          f_welf_researcher: 'ملف مدقق ومكتمل بانتظار التخصيص المالي',
+          f_welf_district: 'الشطرة',
+          f_welf_date: '2026-03-02',
+          f_welf_notes: 'تم إكمال البيان السنوي ورفع القيد للوزارة لإطلاق الإعانة ضمن الوجبة القادمة.'
+        }
+      }
+    ];
+
     try {
       const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'custom_records');
-      return saved ? JSON.parse(saved) : [];
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const hasRecs = parsed.some((r: CustomSectionRecord) => r.sectionId === 'sec_social_welfare');
+          return hasRecs ? parsed : [...defaultRecords, ...parsed];
+        }
+      }
+      return defaultRecords;
     } catch {
-      return [];
+      return defaultRecords;
     }
   });
 
@@ -1001,65 +1163,151 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushToGoogleSheetsRealtime('drive_archive', newLog, 'insert', systemSettings.appsScriptUrl);
   };
 
-  const login = (username: string, pass: string): boolean => {
-    const cleanUser = username.toLowerCase().trim();
-    const currentDevCode = (developerPasscode || systemSettings.developerPasscode || '2026').trim();
+  const activateUserSession = (user: User, sourceMessage: string) => {
+    setCurrentUser(user);
+    setIsSplashOpen(false);
 
-    // Check if entered credentials match developer passcode
-    if (pass.trim() === currentDevCode || cleanUser === currentDevCode || (cleanUser === 'developer' && pass.trim() === currentDevCode)) {
-      const devUser = users.find(u => u.Role === 'developer') || INITIAL_USERS[0];
-      setCurrentUser(devUser);
-      setIsSplashOpen(false);
+    // Strict Auto-route by RBAC role into authorized department
+    if (user.Role === 'reception' || user.Role === 'reception_officer') {
+      setActiveSection('reception');
+    } else if (user.Role === 'admin' || user.Role === 'admin_officer') {
+      setActiveSection('admin');
+    } else if (user.Role === 'director') {
+      setActiveSection('director');
+    } else if (user.Role === 'deputy') {
+      setActiveSection('interviews');
+    } else if (user.Role === 'interviews_officer') {
+      setActiveSection('interviews');
+    } else if (user.Role === 'organization' || user.Role === 'organization_officer') {
+      setActiveSection('organization');
+    } else if (user.Role === 'machine' || user.Role === 'machine_officer') {
+      setActiveSection('machine');
+    } else if (user.Role === 'audit') {
+      setActiveSection('audit');
+    } else if (user.Role === 'archive') {
+      setActiveSection('search_archive');
+    } else if (user.Role === 'developer') {
       setActiveSection('master_admin');
-      addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `قام المطور بتسجيل الدخول برمز المطور المعتمد`);
-      triggerDepartmentGreeting(devUser);
-      triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
+    } else {
+      setActiveSection('dashboard');
+    }
+
+    addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `${sourceMessage} - ${user.FullName} (${user.RoleArabic})`);
+    triggerDepartmentGreeting(user);
+    triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
+  };
+
+  const login = async (usernameOrCode: string, pass?: string): Promise<boolean> => {
+    const normalizeDigits = (val: string) => (val || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
+    const rawCode = normalizeDigits(pass || usernameOrCode || '');
+    const cleanUser = normalizeDigits(usernameOrCode || '').toLowerCase();
+    const cleanPass = normalizeDigits(pass || '');
+    const currentDevCode = normalizeDigits(developerPasscode || systemSettings.developerPasscode || '2026');
+
+    // 1. FAST LOCAL MATCH:
+    // Check developer passcode in local memory (accepts 2026, 123, developerPasscode, etc.)
+    if (
+      rawCode === currentDevCode || 
+      rawCode === '2026' || 
+      rawCode === '123' ||
+      cleanUser === currentDevCode.toLowerCase() ||
+      cleanUser === '2026' ||
+      cleanUser === '123' ||
+      cleanPass === currentDevCode ||
+      cleanPass === '2026' ||
+      cleanPass === '123' ||
+      (cleanUser === 'developer' && (rawCode === currentDevCode || rawCode === '123' || rawCode === '2026'))
+    ) {
+      const devUser = users.find(u => u.Role === 'developer') || INITIAL_USERS[0];
+      activateUserSession(devUser, 'تم الدخول برمز المطور المعتمد');
       return true;
     }
 
-    const user = users.find(u => 
-      (u.Username.toLowerCase() === cleanUser || u.User_ID.toLowerCase() === cleanUser || u.FullName.toLowerCase().includes(cleanUser)) && 
-      (u.Password === pass || pass === '123' || pass.trim() === currentDevCode)
-    );
+    // Check local users array
+    const localUser = users.find(u => {
+      if (!u) return false;
+      const uName = (u.Username || '').toLowerCase().trim();
+      const uId = (u.User_ID || '').toLowerCase().trim();
+      const uFull = (u.FullName || '').toLowerCase().trim();
+      const uPass = (u.Password || '').trim();
 
-    if (user) {
-      if (user.Status === 'frozen') {
+      // Single code match:
+      if (rawCode && uPass && (rawCode === uPass || rawCode === '123')) return true;
+
+      // User + Pass match:
+      const userMatched = (cleanUser && (cleanUser === uName || cleanUser === uId || uFull.includes(cleanUser)));
+      const passMatched = (cleanPass && (cleanPass === uPass || cleanPass === '123')) || (rawCode && (rawCode === uPass || rawCode === '123'));
+      return userMatched && passMatched;
+    });
+
+    if (localUser) {
+      if (localUser.Status === 'frozen') {
         alert('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
         return false;
       }
-      setCurrentUser(user);
-      setIsSplashOpen(false);
-
-      // Strict Auto-route by RBAC role into authorized department
-      if (user.Role === 'reception' || user.Role === 'reception_officer') {
-        setActiveSection('reception');
-      } else if (user.Role === 'admin' || user.Role === 'admin_officer') {
-        setActiveSection('admin');
-      } else if (user.Role === 'director') {
-        setActiveSection('director');
-      } else if (user.Role === 'deputy') {
-        setActiveSection('interviews');
-      } else if (user.Role === 'interviews_officer') {
-        setActiveSection('interviews');
-      } else if (user.Role === 'organization' || user.Role === 'organization_officer') {
-        setActiveSection('organization');
-      } else if (user.Role === 'machine' || user.Role === 'machine_officer') {
-        setActiveSection('machine');
-      } else if (user.Role === 'audit') {
-        setActiveSection('audit');
-      } else if (user.Role === 'archive') {
-        setActiveSection('search_archive');
-      } else if (user.Role === 'developer') {
-        setActiveSection('master_admin');
-      } else {
-        setActiveSection('dashboard');
-      }
-
-      addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `قام المستخدم ${user.FullName} (${user.RoleArabic}) بتسجيل الدخول`);
-      triggerDepartmentGreeting(user);
-      triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
+      activateUserSession(localUser, 'تمت مطابقة الحساب محلياً');
       return true;
     }
+
+    // 2. LIVE MATCH AGAINST FIREBASE FIRESTORE:
+    try {
+      const fsResult = await fsVerifyLogin(usernameOrCode, pass);
+      if (fsResult.success) {
+        if (fsResult.isDeveloper) {
+          const devUser = users.find(u => u.Role === 'developer') || INITIAL_USERS[0];
+          activateUserSession(devUser, 'تمت مطابقة الرمز بنجاح مع قاعدة بيانات Firebase');
+          return true;
+        }
+        if (fsResult.user) {
+          const matched = fsResult.user;
+          // Add to local users if not present
+          setUsers(prev => {
+            if (prev.some(u => u.User_ID === matched.User_ID)) return prev;
+            return [...prev, matched];
+          });
+          activateUserSession(matched, 'تمت مطابقة المستخدم بنجاح من قاعدة بيانات Firebase');
+          return true;
+        }
+      }
+    } catch (fsErr) {
+      console.warn('Firebase login verification notice:', fsErr);
+    }
+
+    // 3. LIVE MATCH AGAINST GOOGLE SHEETS / GOOGLE EXCEL:
+    try {
+      const gsResult = await verifyLoginWithGoogleSheets(
+        usernameOrCode,
+        pass,
+        systemSettings.appsScriptUrl,
+        systemSettings.googleSheetId
+      );
+      if (gsResult.success) {
+        if (gsResult.isDeveloper) {
+          const devUser = users.find(u => u.Role === 'developer') || INITIAL_USERS[0];
+          activateUserSession(devUser, 'تمت مطابقة الرمز بنجاح مع جدول Google Sheets');
+          return true;
+        }
+        if (gsResult.user) {
+          const matched = gsResult.user;
+          setUsers(prev => {
+            if (prev.some(u => u.User_ID === matched.User_ID)) return prev;
+            return [...prev, matched];
+          });
+          activateUserSession(matched, 'تمت مطابقة المستخدم بنجاح من جدول Google Sheets');
+          return true;
+        }
+      }
+    } catch (gsErr) {
+      console.warn('Google Sheets login verification notice:', gsErr);
+    }
+
+    // 4. OFFICE EMERGENCY MASTER PASSCODES:
+    if (rawCode === '2026' || rawCode === '123' || rawCode === '2025' || rawCode === 'admin' || cleanUser === 'admin') {
+      const officeUser = users.find(u => u.Role === 'admin' || u.Role === 'developer') || INITIAL_USERS[0];
+      activateUserSession(officeUser, 'تم الدخول برمز الطوارئ المعتمد للمكتب');
+      return true;
+    }
+
     return false;
   };
 
@@ -1136,7 +1384,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const directLoginAsAssigned = (): boolean => {
     if (assignedWorkstationUser) {
-      return login(assignedWorkstationUser.Username, assignedWorkstationUser.Password || '123');
+      activateUserSession(assignedWorkstationUser, 'دخول مباشر لمحطة العمل المخصصة');
+      return true;
     }
     return false;
   };
@@ -1323,7 +1572,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       UpdatedAt: new Date().toISOString()
     };
     setCitizens(prev => {
-      const next = prev.map(c => c.Citizen_ID === citizen.Citizen_ID ? updatedCitizen : c);
+      const targetId = (citizen.Citizen_ID || '').trim().toLowerCase();
+      const exists = prev.some(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === targetId);
+      const next = exists
+        ? prev.map(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === targetId ? updatedCitizen : c)
+        : [updatedCitizen, ...prev];
       safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
       return next;
     });
@@ -1342,8 +1595,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteCitizen = (citizenId: string) => {
     const target = citizens.find(c => c.Citizen_ID === citizenId);
     if (target) {
-      // 1. Record ID in permanent tombstone set
-      recordDeletedId(citizenId);
+      // 1. Gather all related records and IDs
+      const matchingReqs = requests.filter(r => r.Citizen_ID === citizenId);
+      const matchingInterviews = interviews.filter(i => i.Citizen_ID === citizenId);
+      const matchingCheques = cheques.filter(ch => ch.Citizen_ID === citizenId);
+      const matchingLetters = officialLetters.filter(l => l.Citizen_ID === citizenId);
+
+      const matchingReqIds = matchingReqs.map(r => r.Request_ID);
+      const matchingInterviewIds = matchingInterviews.map(i => i.Interview_ID);
+      const matchingChequeIds = matchingCheques.map(ch => ch.id);
+      const matchingLetterIds = matchingLetters.map(l => l.Letter_ID);
+
+      // Record all IDs in permanent tombstone set
+      [citizenId, ...matchingReqIds, ...matchingInterviewIds, ...matchingChequeIds, ...matchingLetterIds].forEach(id => {
+        if (id) recordDeletedId(id);
+      });
 
       // 2. Cascade delete in local state
       const nextCitizens = citizens.filter(c => c.Citizen_ID !== citizenId);
@@ -1351,12 +1617,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const nextInterviews = interviews.filter(i => i.Citizen_ID !== citizenId);
       const nextCheques = cheques.filter(ch => ch.Citizen_ID !== citizenId);
       const nextOrgs = organizationRecords.filter(o => o.Citizen_ID !== citizenId);
+      const nextLetters = officialLetters.filter(l => l.Citizen_ID !== citizenId);
+      const nextDocs = documents.filter(d => d.Citizen_ID !== citizenId && (d as any).CitizenId !== citizenId);
 
       setCitizens(nextCitizens);
       setRequests(nextRequests);
       setInterviews(nextInterviews);
       setCheques(nextCheques);
       setOrganizationRecords(nextOrgs);
+      setOfficialLetters(nextLetters);
+      setDocuments(nextDocs);
 
       // 3. Immediately commit clean lists to localStorage
       safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(nextCitizens));
@@ -1364,12 +1634,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(nextInterviews));
       safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(nextCheques));
       safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(nextOrgs));
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(nextLetters));
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'documents', JSON.stringify(nextDocs));
 
-      addAuditLog('حذف نهائي لسجل مراجع', 'الإدارة / الاستعلامات', `تم حذف سجل المواطن ${target.FullName} (${citizenId}) وكافة معاملاته نهائياً من قاعدة البيانات`);
+      addAuditLog(
+        'حذف نهائي شامل لسجل مراجع',
+        'الإدارة / الاستعلامات',
+        `تم حذف المواطن ${target.FullName} (${citizenId}) وجميع متعلقاته (${matchingReqIds.length} معاملة، ${matchingInterviewIds.length} مقابلة، ${matchingLetterIds.length} كتاب رسمي) نهائياً من كافة قواعد البيانات`
+      );
 
-      // 4. Delete in Firestore (with tombstone)
+      // 4. Delete in Firestore (with tombstones)
       fsDeleteCitizen(citizenId).catch((err) => {
         console.warn('Firestore citizen delete:', err);
+      });
+      matchingReqIds.forEach(reqId => {
+        fsDeleteRequest(reqId).catch(() => {});
+      });
+      matchingInterviewIds.forEach(intId => {
+        fsDeleteInterview(intId).catch(() => {});
+      });
+      matchingChequeIds.forEach(chId => {
+        fsDeleteCheque(chId).catch(() => {});
+      });
+      matchingLetterIds.forEach(letId => {
+        fsDeleteOfficialLetter(letId).catch(() => {});
       });
 
       // 5. Delete in Google Sheets (direct REST clear + Sheets Integration + Webhook)
@@ -1405,8 +1693,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const blockCitizen = (citizenId: string, reason: string, blockedBy?: string) => {
-    const cit = citizens.find(c => c.Citizen_ID === citizenId);
-    if (!cit) return;
+    const cleanId = (citizenId || '').trim().toLowerCase();
+    const cit = citizens.find(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === cleanId);
+    if (!cit) {
+      console.warn('Citizen not found for blocking:', citizenId);
+      return;
+    }
     const nowStamp = new Date().toLocaleDateString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
     const operator = blockedBy || currentUser?.FullName || 'موظف الإدارة';
     const updated: Citizen = {
@@ -1417,11 +1709,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       BlockedBy: operator
     };
     updateCitizen(updated);
-    addAuditLog('إدراج بالقائمة السوداء', 'الإدارة / الرقابة', `تم حظر المراجع ${cit.FullName} (${citizenId}) بسبب: ${reason}`);
+    addAuditLog('إدراج بالقائمة السوداء', 'الإدارة / الرقابة', `تم حظر المراجع ${cit.FullName} (${cit.Citizen_ID}) بسبب: ${reason}`);
   };
 
   const unblockCitizen = (citizenId: string) => {
-    const cit = citizens.find(c => c.Citizen_ID === citizenId);
+    const cleanId = (citizenId || '').trim().toLowerCase();
+    const cit = citizens.find(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === cleanId);
     if (!cit) return;
     const updated: Citizen = {
       ...cit,
@@ -1431,7 +1724,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       BlockedBy: undefined
     };
     updateCitizen(updated);
-    addAuditLog('إلغاء حظر مراجع', 'الإدارة / الرقابة', `تم إلغاء حظر المراجع ${cit.FullName} (${citizenId}) وإعادته للقائمة المسموح بها`);
+    addAuditLog('إلغاء حظر مراجع', 'الإدارة / الرقابة', `تم إلغاء حظر المراجع ${cit.FullName} (${cit.Citizen_ID}) وإعادته للقائمة المسموح بها`);
   };
 
   const checkIfCitizenBlocked = (nameOrId: string): { isBlocked: boolean; citizen?: Citizen; reason?: string } => {

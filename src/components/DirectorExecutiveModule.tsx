@@ -42,36 +42,8 @@ import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
-// The Official Department Modules
-import { ReceptionModule } from './ReceptionModule';
-import { AdminModule } from './AdminModule';
-import { AuditModule } from './AuditModule';
-import { InterviewsModule } from './InterviewsModule';
-import { OrganizationModule } from './OrganizationModule';
-import { MachineModule } from './MachineModule';
-import { GlobalSearchArchiveModule } from './GlobalSearchArchiveModule';
-import { ReportsModule } from './ReportsModule';
-import { WhatsAppModule } from './WhatsAppModule';
-import { CitizenPublicPortal } from './CitizenPublicPortal';
-import { MasterAdminModule } from './MasterAdminModule';
+// Executive Office Module
 
-// Employee Performance Dashboard Module
-import { DashboardModule } from './DashboardModule';
-
-type DirectorDepartment = 
-  | 'hub'
-  | 'reception'
-  | 'admin'
-  | 'audit'
-  | 'interviews'
-  | 'organization'
-  | 'machine'
-  | 'search_archive'
-  | 'reports'
-  | 'whatsapp'
-  | 'citizen_portal'
-  | 'users_roles'
-  | 'employee_stats';
 
 export const DirectorExecutiveModule: React.FC = () => {
   const { 
@@ -112,7 +84,6 @@ export const DirectorExecutiveModule: React.FC = () => {
 
   // Navigation mode: 'inbox' (وارد الاستعلامات) | 'icon_hub' (شبكة الأيقونات) | 'manage_sections' (إدارة واستحداث الأقسام)
   const [directorMainTab, setDirectorMainTab] = useState<'inbox' | 'icon_hub' | 'manage_sections'>('inbox');
-  const [activeDepartment, setActiveDepartment] = useState<DirectorDepartment>('hub');
 
   // Deletion modals state for permanent removal
   const [requestToDelete, setRequestToDelete] = useState<OfficeRequest | null>(null);
@@ -260,85 +231,7 @@ export const DirectorExecutiveModule: React.FC = () => {
     setTimeout(() => setSavedFeedbackId(null), 3000);
   };
 
-  // Department metadata for top banner when a department is opened
-  const currentDeptMeta = useMemo(() => {
-    switch (activeDepartment) {
-      case 'reception':
-        return {
-          title: 'قسم الاستعلامات والمراجعين',
-          icon: UserPlus,
-          iconBg: 'bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800'
-        };
-      case 'admin':
-        return {
-          title: 'قسم الإدارة والمعاملات الحكومية',
-          icon: FolderKanban,
-          iconBg: 'bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800'
-        };
-      case 'audit':
-        return {
-          title: 'قسم الرقابة والتدقيق',
-          icon: ShieldCheck,
-          iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800'
-        };
-      case 'interviews':
-        return {
-          title: 'قسم مقابلات النائب',
-          icon: Handshake,
-          iconBg: 'bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400 border-teal-200 dark:border-teal-800'
-        };
-      case 'organization':
-        return {
-          title: 'قسم التنظيم والموقف الجماهيري',
-          icon: Users2,
-          iconBg: 'bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800'
-        };
-      case 'machine':
-        return {
-          title: 'قسم مدير المكنة والطباعة الرسمية',
-          icon: Printer,
-          iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800'
-        };
-      case 'search_archive':
-        return {
-          title: 'قسم البحث الشامل والأرشيف المركزي',
-          icon: Search,
-          iconBg: 'bg-cyan-50 dark:bg-cyan-950/50 text-cyan-600 dark:text-cyan-400 border-cyan-200 dark:border-cyan-800'
-        };
-      case 'reports':
-        return {
-          title: 'قسم التقارير الشاملة والإحصاء',
-          icon: BarChart3,
-          iconBg: 'bg-pink-50 dark:bg-pink-950/50 text-pink-600 dark:text-pink-400 border-pink-200 dark:border-pink-800'
-        };
-      case 'whatsapp':
-        return {
-          title: 'مراسلات الواتساب والإشعارات',
-          icon: MessageSquare,
-          iconBg: 'bg-green-50 dark:bg-green-950/50 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800'
-        };
-      case 'citizen_portal':
-        return {
-          title: 'بوابة المواطن العامة',
-          icon: Globe,
-          iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800'
-        };
-      case 'users_roles':
-        return {
-          title: 'إدارة وصلاحيات المستخدمين',
-          icon: KeyRound,
-          iconBg: 'bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-800'
-        };
-      case 'employee_stats':
-        return {
-          title: 'لوحة إحصائيات أداء وإنتاجية الموظفين (Recharts)',
-          icon: Activity,
-          iconBg: 'bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800'
-        };
-      default:
-        return null;
-    }
-  }, [activeDepartment]);
+
 
   return (
     <div className="space-y-4 text-right animate-in fade-in duration-200 font-['Tajawal',sans-serif]" dir="rtl">
@@ -364,16 +257,13 @@ export const DirectorExecutiveModule: React.FC = () => {
           </div>
         </div>
 
-        {/* View Switcher: وارد الاستعلامات vs تصفح الأقسام بالأيقونات vs الخروج الكامل */}
+        {/* View Switcher: وارد الاستعلامات vs شبكة الأيقونات المركزية vs إدارة الأقسام */}
         <div className="flex items-center gap-2 w-full md:w-auto flex-wrap">
           <button
             type="button"
-            onClick={() => {
-              setDirectorMainTab('inbox');
-              setActiveDepartment('hub');
-            }}
+            onClick={() => setDirectorMainTab('inbox')}
             className={`flex-1 md:flex-initial h-10 px-4 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
-              directorMainTab === 'inbox' && activeDepartment === 'hub'
+              directorMainTab === 'inbox'
                 ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/25 ring-2 ring-amber-400/40'
                 : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
             }`}
@@ -389,26 +279,20 @@ export const DirectorExecutiveModule: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => {
-              setDirectorMainTab('icon_hub');
-              setActiveDepartment('hub');
-            }}
+            onClick={() => setDirectorMainTab('icon_hub')}
             className={`flex-1 md:flex-initial h-10 px-4 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
-              directorMainTab === 'icon_hub' && activeDepartment === 'hub'
+              directorMainTab === 'icon_hub'
                 ? 'bg-blue-600 text-white shadow-md shadow-blue-600/25 ring-2 ring-blue-500/40'
                 : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
             }`}
           >
             <Layers className="w-4 h-4" />
-            <span>تصفح الأقسام (عرض داخلي)</span>
+            <span>شبكة أيقونات الأقسام الرسمية</span>
           </button>
 
           <button
             type="button"
-            onClick={() => {
-              setDirectorMainTab('manage_sections');
-              setActiveDepartment('hub');
-            }}
+            onClick={() => setDirectorMainTab('manage_sections')}
             className={`flex-1 md:flex-initial h-10 px-4 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
               directorMainTab === 'manage_sections'
                 ? 'bg-purple-600 text-white shadow-md shadow-purple-600/25 ring-2 ring-purple-500/40'
@@ -416,7 +300,7 @@ export const DirectorExecutiveModule: React.FC = () => {
             }`}
           >
             <FolderPlus className="w-4 h-4 text-amber-300" />
-            <span>إدارة وتطوير الأقسام ⚡</span>
+            <span>إدارة وتطوير الأقسام</span>
           </button>
 
           {/* Direct Exit to System Icon Hub */}
@@ -444,7 +328,7 @@ export const DirectorExecutiveModule: React.FC = () => {
       </div>
 
       {/* ---------------- VIEW 1: DIRECTOR INBOX (وارد الاستعلامات بشريط واحد) ---------------- */}
-      {directorMainTab === 'inbox' && activeDepartment === 'hub' && (
+      {directorMainTab === 'inbox' && (
         <div className="space-y-4">
           
           {/* Quick Statistics Overview: أقسام وتصنيفات قرارات المدير */}
@@ -955,7 +839,7 @@ export const DirectorExecutiveModule: React.FC = () => {
               <div>
                 <h3 className="font-black text-base sm:text-lg">إدارة واستحداث الأقسام وتطوير المنظومة</h3>
                 <p className="text-xs text-purple-200 mt-0.5 font-medium">
-                  أي قسم أو خدمة جديدة تضيفها هنا يتم حفظها لحظياً ومباشرة في قاعدة البيانات (Firestore و Google Sheets) وتظهر فوراً لكافة مستخدمي المنظومة
+                  أي قسم أو خدمة جديدة تضيفها هنا يتم حفظها لحظياً ومباشرة في قاعدة البيانات السحابية وتظهر فوراً لكافة مستخدمي المنظومة
                 </p>
               </div>
             </div>
@@ -974,7 +858,7 @@ export const DirectorExecutiveModule: React.FC = () => {
       )}
 
       {/* ---------------- VIEW 2: ICON HUB (تصفح جميع أقسام النظام بالأيقونات) ---------------- */}
-      {directorMainTab === 'icon_hub' && activeDepartment === 'hub' && (
+      {directorMainTab === 'icon_hub' && (
         <div className="space-y-4 animate-in fade-in duration-200">
           
           <div className="bg-gradient-to-r from-blue-900 to-indigo-950 p-4 sm:p-5 rounded-2xl sm:rounded-3xl text-white flex items-center justify-between border border-blue-400/30 shadow-lg">
@@ -1013,7 +897,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
                 badge: citizens.length,
                 badgeColor: 'bg-blue-600 text-white',
-                onClick: () => setActiveDepartment('reception')
+                onClick: () => setActiveSection('reception')
               },
               {
                 id: 'dept_admin',
@@ -1024,7 +908,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
                 badge: requests.length,
                 badgeColor: 'bg-amber-600 text-white',
-                onClick: () => setActiveDepartment('admin')
+                onClick: () => setActiveSection('admin')
               },
               {
                 id: 'dept_audit',
@@ -1035,7 +919,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
                 badge: auditLogs.length,
                 badgeColor: 'bg-emerald-600 text-white',
-                onClick: () => setActiveDepartment('audit')
+                onClick: () => setActiveSection('audit')
               },
               {
                 id: 'dept_interviews',
@@ -1046,7 +930,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
                 badge: interviews.length,
                 badgeColor: 'bg-teal-600 text-white',
-                onClick: () => setActiveDepartment('interviews')
+                onClick: () => setActiveSection('interviews')
               },
               {
                 id: 'dept_organization',
@@ -1057,7 +941,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
                 badge: organizationRecords.length,
                 badgeColor: 'bg-purple-600 text-white',
-                onClick: () => setActiveDepartment('organization')
+                onClick: () => setActiveSection('organization')
               },
               {
                 id: 'dept_machine',
@@ -1066,7 +950,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 icon: Printer,
                 iconColor: 'text-indigo-600 dark:text-indigo-400',
                 iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-                onClick: () => setActiveDepartment('machine')
+                onClick: () => setActiveSection('machine')
               },
               {
                 id: 'dept_search_archive',
@@ -1075,7 +959,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 icon: Search,
                 iconColor: 'text-cyan-600 dark:text-cyan-400',
                 iconBg: 'bg-cyan-50 dark:bg-cyan-950/50 border-cyan-200 dark:border-cyan-800',
-                onClick: () => setActiveDepartment('search_archive')
+                onClick: () => setActiveSection('search_archive')
               },
               {
                 id: 'dept_reports',
@@ -1084,7 +968,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 icon: BarChart3,
                 iconColor: 'text-pink-600 dark:text-pink-400',
                 iconBg: 'bg-pink-50 dark:bg-pink-950/50 border-pink-200 dark:border-pink-800',
-                onClick: () => setActiveDepartment('reports')
+                onClick: () => setActiveSection('reports')
               },
               {
                 id: 'dept_whatsapp',
@@ -1095,16 +979,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 iconBg: 'bg-green-50 dark:bg-green-950/50 border-green-200 dark:border-green-800',
                 badge: whatsappTemplates.length,
                 badgeColor: 'bg-green-600 text-white',
-                onClick: () => setActiveDepartment('whatsapp')
-              },
-              {
-                id: 'dept_citizen_portal',
-                title: 'بوابة المواطن',
-                subtitle: 'بوابة استعلام ومتابعة المعاملات للجمهور',
-                icon: Globe,
-                iconColor: 'text-indigo-600 dark:text-indigo-400',
-                iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-                onClick: () => setActiveDepartment('citizen_portal')
+                onClick: () => setActiveSection('whatsapp')
               },
               {
                 id: 'dept_users_roles',
@@ -1115,7 +990,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800',
                 badge: users.length,
                 badgeColor: 'bg-orange-600 text-white',
-                onClick: () => setActiveDepartment('users_roles')
+                onClick: () => setActiveSection('master_admin')
               },
               {
                 id: 'dept_employee_stats',
@@ -1126,7 +1001,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
                 badge: `${users.length} موظف`,
                 badgeColor: 'bg-rose-600 text-white shadow-2xs',
-                onClick: () => setActiveDepartment('employee_stats')
+                onClick: () => setActiveSection('dashboard')
               },
               {
                 id: 'dept_export_excel',
@@ -1144,64 +1019,6 @@ export const DirectorExecutiveModule: React.FC = () => {
         </div>
       )}
 
-      {/* ---------------- VIEW 3: ACTIVE DEPARTMENT VIEW WITH TOP RETURN BAR ---------------- */}
-      {activeDepartment !== 'hub' && currentDeptMeta && (
-        <div className="space-y-4 animate-in fade-in duration-200">
-          
-          {/* Executive Top Banner with Return to Director Button */}
-          <div className="bg-gradient-to-r from-slate-900 via-amber-950 to-slate-900 text-white p-3.5 sm:p-4 rounded-2xl border border-amber-500/40 shadow-xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sticky top-16 z-30 backdrop-blur-md">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center justify-center font-bold text-lg shadow-2xs shrink-0">
-                <currentDeptMeta.icon className="w-5 h-5 text-amber-300" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-bold text-amber-400 bg-amber-950/80 px-2 py-0.5 rounded-full border border-amber-500/30">
-                    بوابة مدير المكتب التنفيذي
-                  </span>
-                  <span className="text-[10px] text-slate-400">
-                    تصفح القسم بكامل الصلاحيات
-                  </span>
-                </div>
-                <h3 className="text-sm sm:text-base font-black text-white mt-0.5">
-                  {currentDeptMeta.title}
-                </h3>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setActiveDepartment('hub')}
-              className="h-9 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer active:scale-95 self-start sm:self-auto"
-            >
-              <ArrowLeft className="w-4 h-4 rotate-180" />
-              <span>الرجوع لشاشة المدير (الوارد والأيقونات)</span>
-            </button>
-          </div>
-
-          {/* Department Viewport */}
-          {activeDepartment === 'employee_stats' ? (
-            <DashboardModule onBackToDirectorHub={() => setActiveDepartment('hub')} />
-          ) : (
-            <div className="bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xs p-3.5 sm:p-5">
-              {activeDepartment === 'reception' && <ReceptionModule />}
-              {activeDepartment === 'admin' && <AdminModule />}
-              {activeDepartment === 'audit' && <AuditModule />}
-              {activeDepartment === 'interviews' && <InterviewsModule />}
-              {activeDepartment === 'organization' && <OrganizationModule />}
-              {activeDepartment === 'machine' && <MachineModule />}
-              {activeDepartment === 'search_archive' && <GlobalSearchArchiveModule />}
-              {activeDepartment === 'reports' && <ReportsModule />}
-              {activeDepartment === 'whatsapp' && <WhatsAppModule />}
-              {activeDepartment === 'citizen_portal' && (
-                <CitizenPublicPortal onBackToStaffLogin={() => setActiveDepartment('hub')} />
-              )}
-              {activeDepartment === 'users_roles' && <MasterAdminModule />}
-            </div>
-          )}
-
-        </div>
-      )}
 
       {/* Rejection Reason Input Modal (ظهور نص ما سبب الرفض عند ضغط المدير على رفض الطلب) */}
       {rejectModalRequest && (

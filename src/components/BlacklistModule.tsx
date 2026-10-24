@@ -67,6 +67,7 @@ export const BlacklistModule: React.FC = () => {
   const handleUnblock = (citizen: Citizen) => {
     if (window.confirm(`هل أنت متأكد من إلغاء حظر المواطن (${citizen.FullName}) وإعادته للقائمة المسموح بها؟`)) {
       unblockCitizen(citizen.Citizen_ID);
+      alert(`✓ تم بنجاح إلغاء حظر المواطن (${citizen.FullName}) وإعادته إلى الوضع الطبيعي.`);
     }
   };
 
@@ -88,6 +89,7 @@ export const BlacklistModule: React.FC = () => {
       BlockReason: editReasonInput.trim()
     });
     setEditingTarget(null);
+    alert('✓ تم تحديث سبب الحظر بنجاح.');
   };
 
   // Handle Manual Add
@@ -126,6 +128,7 @@ export const BlacklistModule: React.FC = () => {
       updateCitizen(newCit as Citizen);
     }
 
+    alert(`✓ تم بنجاح إدراج المواطن (${manualFullName.trim()}) في القائمة السوداء (محظور).`);
     setShowAddModal(false);
     setManualFullName('');
     setManualPhone('');

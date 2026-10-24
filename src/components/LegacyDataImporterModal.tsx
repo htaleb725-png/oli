@@ -32,6 +32,8 @@ interface CleanedRow {
   district: string;
   details: string;
   totalCitizenRequestsCount: number;
+  outgoingNumber?: string;
+  outgoingDate?: string;
 }
 
 export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = ({ isOpen, onClose }) => {
@@ -132,6 +134,9 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
           }
           const citId = citizensMap.get(name)!;
 
+          const rawOutgoing = String(row['العدد'] || row['رقم الصادر'] || row['العدد الصادر'] || row['الصادر'] || row['OutgoingNumber'] || '').trim();
+          const rawOutgoingDate = String(row['تاريخ الصادر'] || row['تاريخ الكتاب'] || row['التاريخ'] || row['تاريخ_الصادر'] || row['OutgoingDate'] || '').trim();
+
           return {
             citizenId: citId,
             fullName: name,
@@ -142,7 +147,9 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
             normalizedReferrer: normalizeReferrer(referrer),
             district: district,
             details: details,
-            totalCitizenRequestsCount: nameFrequency[name] || 1
+            totalCitizenRequestsCount: nameFrequency[name] || 1,
+            outgoingNumber: rawOutgoing || undefined,
+            outgoingDate: rawOutgoingDate || undefined
           };
         });
 
@@ -196,9 +203,11 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
         CitizenPhone: row.phone,
         Entity: row.normalizedEntity,
         RequestStatus: 'مستلم',
-        ProcessingStatus: 'قيد التدقيق',
+        ProcessingStatus: row.outgoingNumber ? 'منجز' : 'قيد التدقيق',
         Priority: 'عام',
         Details: row.details,
+        OutgoingNumber: row.outgoingNumber || undefined,
+        OutgoingDate: row.outgoingDate || (row.outgoingNumber ? new Date().toISOString().split('T')[0] : undefined),
         CreatedBy: currentUser ? currentUser.FullName : 'استيراد القاعدة القديمة'
       });
     });

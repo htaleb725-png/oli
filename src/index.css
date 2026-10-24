@@ -229,17 +229,28 @@
 }
 
 @media print {
-  body {
+  body, html {
     background-color: #ffffff !important;
+    background: #ffffff !important;
     color: #000000 !important;
+    height: auto !important;
+    overflow: visible !important;
   }
-  .no-print {
+  .no-print, header, nav, aside, footer {
     display: none !important;
   }
   .print-only {
     display: block !important;
   }
-  .print-container {
+  /* Remove dark overlays and modal backdrops on print */
+  .fixed, [class*="bg-black/"], [class*="bg-slate-950/"] {
+    position: static !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
+  }
+  .print-container, .printable-receipt-card {
+    display: block !important;
     width: 100% !important;
     max-width: 100% !important;
     margin: 0 !important;
@@ -247,6 +258,7 @@
     box-shadow: none !important;
     background: #ffffff !important;
     color: #000000 !important;
+    border: none !important;
   }
   @page {
     size: auto;

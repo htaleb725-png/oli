@@ -2272,7 +2272,7 @@ export const AdminModule: React.FC = () => {
                 {citizenToDelete.Phone1 && <div>الهاتف: <span className="font-mono text-slate-600">{citizenToDelete.Phone1}</span></div>}
               </div>
               <p className="text-[11px] text-rose-700 leading-relaxed font-bold">
-                ⚠️ تحذير: الحذف نهائي وشامل (من فايربيس وكوكل شيت والمنظومة وكافة المعاملات والطلبات والمقابلات التابعة له) ولا يمكن التراجع عنه.
+                ⚠️ تحذير: الحذف نهائي وشامل من قاعدة البيانات السحابية والمنظومة وكافة المعاملات والطلبات والمقابلات التابعة له ولا يمكن التراجع عنه.
               </p>
             </div>
 

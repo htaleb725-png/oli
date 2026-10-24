@@ -154,6 +154,8 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     const entityKey = findKey([/وزار/i, /جه/i, /دائر/i, /مؤسس/i, /ministry/i, /entity/i]);
     const detailsKey = findKey([/طلب/i, /موضوع/i, /تفاصيل/i, /معامل/i, /subject/i, /details/i]);
     const districtKey = findKey([/قضاء/i, /سكن/i, /منطق/i, /عنوان/i, /district/i, /address/i]);
+    const outgoingKey = findKey([/صادر/i, /العدد/i, /رقم الصادر/i, /outgoing/i]);
+    const outgoingDateKey = findKey([/تاريخ الصادر/i, /تاريخ كتاب الصادر/i, /تاريخ/i, /date/i]);
 
     // Batch process in chunks to prevent freezing
     const chunkSize = 500;
@@ -172,6 +174,8 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         const rawEntity = entityKey ? String(row[entityKey]).trim() : '';
         const rawDetails = detailsKey ? String(row[detailsKey]).trim() : 'معاملة رسمية مسجلة عبر استيراد الإكسل';
         const rawDistrict = districtKey ? String(row[districtKey]).trim() : 'قضاء الناصرية (المركز)';
+        const rawOutgoing = outgoingKey ? String(row[outgoingKey]).trim() : '';
+        const rawOutgoingDate = outgoingDateKey ? String(row[outgoingDateKey]).trim() : '';
 
         const standardizedEntity = normalizeEntityName(rawEntity);
         if (rawEntity && standardizedEntity !== rawEntity) {
@@ -213,9 +217,11 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           CitizenPhone: targetCitizen.Phone1,
           Entity: standardizedEntity,
           RequestStatus: 'مستلم',
-          ProcessingStatus: 'قيد الإجراء',
+          ProcessingStatus: rawOutgoing ? 'منجز' : 'قيد الإجراء',
           Priority: 'عام',
           Details: rawDetails,
+          OutgoingNumber: rawOutgoing || undefined,
+          OutgoingDate: rawOutgoingDate || (rawOutgoing ? nowStamp : undefined),
           RegisteredVia: 'إدارة',
           CreatedBy: `استيراد إكسل (${currentUser?.FullName || 'الإدارة'})`
         });

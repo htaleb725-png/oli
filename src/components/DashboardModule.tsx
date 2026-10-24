@@ -42,10 +42,12 @@ import {
   MessageSquare,
   Settings,
   LayoutGrid,
-  Globe
+  Globe,
+  ShieldAlert
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
 export interface DashboardModuleProps {
   onBackToDirectorHub?: () => void;
@@ -61,6 +63,8 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     interviews, 
     auditLogs, 
     organizationRecords,
+    cheques,
+    officialLetters,
     currentUser,
     setActiveSection,
     customSections,
@@ -323,6 +327,16 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
         badge: 'فوري',
         badgeColor: 'bg-green-600 text-white',
         onClick: () => setActiveSection('whatsapp')
+      },
+      {
+        id: 'tile_blacklist',
+        ...getMeta('tile_blacklist', 'سجل القائمة السوداء والمحظورين', 'إدارة الأشخاص المحظورين والرقابة الأمنية'),
+        icon: ShieldAlert,
+        iconColor: 'text-red-600 dark:text-red-400',
+        iconBg: 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800',
+        badge: citizens.filter(c => c.IsBlocked).length > 0 ? `${citizens.filter(c => c.IsBlocked).length} محظور` : null,
+        badgeColor: 'bg-red-600 text-white animate-pulse',
+        onClick: () => setActiveSection('blacklist')
       }
     ];
 
@@ -394,7 +408,8 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
             'tile_drive_requests',
             'tile_search_archive',
             'tile_reports',
-            'tile_whatsapp'
+            'tile_whatsapp',
+            'tile_blacklist'
           ].includes(tile.id);
 
         case 'interviews_officer':
@@ -426,7 +441,8 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
           return [
             'tile_audit',
             'tile_search_archive',
-            'tile_reports'
+            'tile_reports',
+            'tile_blacklist'
           ].includes(tile.id);
 
         case 'archive':
@@ -463,6 +479,21 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'إحصائيات أداء الموظفين');
     XLSX.writeFile(wb, `Staff_Performance_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
+  const handleExportCompleteDatabase = () => {
+    exportUnifiedSystemExcel({
+      citizens,
+      requests,
+      interviews,
+      cheques,
+      organizationRecords,
+      officialLetters,
+      customSections,
+      customRecords,
+      officeName: systemSettings.appName || 'مكتب النائب علا عودة الناشي',
+      exporterName: currentUser?.FullName || 'موظف المنظومة'
+    });
   };
 
   return (
@@ -517,6 +548,16 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
               <span>إحصائيات الأداء (Recharts)</span>
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={handleExportCompleteDatabase}
+            className="h-9 px-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-xs flex items-center gap-1.5 shadow-xs transition-transform active:scale-95 cursor-pointer"
+            title="تنزيل نسخة Excel شاملة ومرتبة على شكل ورقات مستقلة لكافة الأقسام"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
+            <span>تنزيل قاعدة البيانات Excel</span>
+          </button>
 
           {activeMainTab === 'performance_stats' && (
             <>
