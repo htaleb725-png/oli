@@ -19,10 +19,12 @@ import {
   Trash2,
   ArrowLeft,
   LayoutGrid,
-  Download
+  Download,
+  BarChart3
 } from 'lucide-react';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 import { AdminLogoutExportModal } from './AdminLogoutExportModal';
+import { UniversalStatisticsModal } from './UniversalStatisticsModal';
 
 export const Navbar: React.FC = () => {
   const { 
@@ -56,6 +58,7 @@ export const Navbar: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showAdminLogoutModal, setShowAdminLogoutModal] = useState<boolean>(false);
+  const [showStatsModal, setShowStatsModal] = useState<boolean>(false);
 
   const showNavbarToast = (msg: string) => {
     setToastMessage(msg);
@@ -253,6 +256,16 @@ export const Navbar: React.FC = () => {
 
         {/* Left Section (in RTL): User Profile, Notifications, Dark Mode & Language */}
         <div className="flex items-center gap-2 sm:gap-2.5">
+          {/* Universal Role-Based Statistics Dashboard Button */}
+          <button
+            onClick={() => setShowStatsModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-200 dark:border-blue-800/60 bg-blue-50/90 dark:bg-blue-950/50 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-900 dark:text-blue-300 text-xs font-black transition-all cursor-pointer shadow-2xs group active:scale-95"
+            title="فتح لوحة الإحصائيات الشاملة ومؤشرات الإنجاز للمنظومة والقسم"
+          >
+            <BarChart3 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 group-hover:scale-110 transition-transform" />
+            <span className="hidden sm:inline">لوحة الإحصائيات 📊</span>
+          </button>
+
           {/* Universal Full Database Excel Export Button for Manager, Developer, Admin */}
           {canDownloadDatabase(currentUser?.Role) && (
             <button
@@ -553,6 +566,12 @@ export const Navbar: React.FC = () => {
           setShowAdminLogoutModal(false);
           logout();
         }}
+      />
+
+      {/* Universal Role-Based Statistics Dashboard Modal */}
+      <UniversalStatisticsModal
+        isOpen={showStatsModal}
+        onClose={() => setShowStatsModal(false)}
       />
     </header>
   );

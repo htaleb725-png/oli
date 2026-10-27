@@ -753,15 +753,23 @@ export function fsWatchCollection<T>(
   onError?: (err: Error) => void
 ): Unsubscribe {
   const dynamicCol = getFSCol(colName);
-  return onSnapshot(
-    collection(db, dynamicCol),
-    (snapshot) => {
-      const list = snapshot.docs.map(d => d.data() as T);
-      onData(list);
-    },
-    (err) => {
-      console.warn(`Firestore onSnapshot warn [${dynamicCol}]:`, err.message);
-      if (onError) onError(err);
-    }
-  );
+  try {
+    return onSnapshot(
+      collection(db, dynamicCol),
+      (snapshot) => {
+        const list = snapshot.docs.map(d => d.data() as T);
+        onData(list);
+      },
+      (err) => {
+        if (err.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.GET, dynamicCol);
+        } else {
+          if (onError) onError(err);
+        }
+      }
+    );
+  } catch (setupErr: any) {
+    if (onError) onError(setupErr);
+    return () => {};
+  }
 }

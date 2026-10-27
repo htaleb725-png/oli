@@ -50,6 +50,8 @@ import {
   fsWatchCollection,
   FS_COLLECTIONS
 } from '../services/firebaseFirestoreService';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '../lib/firebase';
 import {
   INITIAL_SETTINGS,
   INITIAL_USERS,
@@ -285,6 +287,9 @@ interface AppContextType {
   syncAllToFirestoreNow: () => Promise<{ successCount: number; total: number; error?: string }>;
   fetchAllFromFirestoreNow: () => Promise<{ success: boolean; error?: string }>;
 
+  // High-performance atomic bulk import
+  batchImportRecords: (newCitizens: Citizen[], newRequests: OfficeRequest[]) => Promise<{ importedCitizens: number; importedRequests: number }>;
+
   // Compatibility aliases
   triggerDeveloper3WaySync?: () => Promise<{ success: boolean; sheetsSynced?: boolean; message: string }>;
   isSupabaseConnected?: boolean;
@@ -292,6 +297,31 @@ interface AppContextType {
   syncAllDataToSupabase?: () => Promise<{ success: boolean; message: string; counts?: Record<string, number> }>;
   fetchAllDataFromSupabase?: () => Promise<{ success: boolean; message: string }>;
 }
+
+export const isStrictValidCitizen = (c: any): boolean => {
+  if (!c || typeof c !== 'object') return false;
+  const cid = String(c.Citizen_ID || '').trim();
+  if (!cid) return false;
+  const name = String(c.FullName || '').trim();
+  if (name.length < 2) return false;
+  const lower = name.toLowerCase();
+  if (
+    lower === 'undefined' ||
+    lower === 'null' ||
+    lower === 'مواطن بدون اسم' ||
+    lower === '[object object]' ||
+    lower === 'الاسم' ||
+    lower === 'اسم المواطن' ||
+    lower === 'ت' ||
+    lower === 'name' ||
+    lower === 'full name' ||
+    lower === 'مراجع' ||
+    lower === 'مراجع عام'
+  ) {
+    return false;
+  }
+  return true;
+};
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
@@ -613,11 +643,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const uniqueParsedCitizens: Citizen[] = [];
           for (const c of parsed) {
             if (!c || typeof c !== 'object') continue;
+            if (!isStrictValidCitizen(c)) continue;
             const cid = String(c.Citizen_ID || '').trim();
             if (cid && !existingIds.has(cid) && !deletedIds.has(cid)) {
               existingIds.add(cid);
-              const parts = (c.FullName || '').trim().split(/\s+/);
-              const firstName = c.FirstName || parts[0] || 'مراجع';
+              const cleanFullName = String(c.FullName).trim();
+              const parts = cleanFullName.split(/\s+/);
+              const firstName = c.FirstName || parts[0] || '';
               const fatherName = c.FatherName || parts[1] || '';
               const grandFatherName = c.GrandFatherName || parts[2] || '';
               const greatGrandFatherName = c.GreatGrandFatherName || parts[3] || '';
@@ -907,103 +939,127 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(customRecords));
   }, [customRecords]);
 
-  // Real-Time Firestore Synchronization Listener (مزامنة فورية حية مع Firestore بدون فقدان أو تعارض)
+  // Real-Time Firestore Synchronization Listener (مزامنة فورية حية مع Firestore فقط بعد جاهزية المصادقة)
   useEffect(() => {
-    const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setCitizens(prev => {
-          const merged = mergeCitizens(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
-          return merged;
-        });
-      }
-    });
-    const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setRequests(prev => {
-          const merged = mergeRequests(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
-          return merged;
-        });
-      }
-    });
-    const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setInterviews(prev => {
-          const merged = mergeInterviews(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
-          return merged;
-        });
-      }
-    });
-    const unsubLetters = fsWatchCollection<OfficialLetter>(FS_COLLECTIONS.LETTERS, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setOfficialLetters(prev => {
-          const merged = mergeOfficialLetters(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
-          return merged;
-        });
-      }
-    });
-    const unsubCheques = fsWatchCollection<ChequeRecord>(FS_COLLECTIONS.CHEQUES, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setCheques(prev => {
-          const merged = mergeCheques(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
-          return merged;
-        });
-      }
-    });
-    const unsubOrgs = fsWatchCollection<OrganizationRecord>(FS_COLLECTIONS.ORGANIZATIONS, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setOrganizationRecords(prev => {
-          const merged = mergeOrganizationRecords(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
-          return merged;
-        });
-      }
-    });
-    const unsubSections = fsWatchCollection<CustomSection>(FS_COLLECTIONS.CUSTOM_SECTIONS, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setCustomSections(prev => {
-          const merged = mergeCustomSections(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(merged));
-          return merged;
-        });
-      }
-    });
-    const unsubRecords = fsWatchCollection<CustomSectionRecord>(FS_COLLECTIONS.CUSTOM_RECORDS, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setCustomRecords(prev => {
-          const merged = mergeCustomRecords(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(merged));
-          return merged;
-        });
-      }
-    });
-    const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items) => {
-      if (Array.isArray(items) && items.length > 0) {
-        setUsers(prev => mergeUsers(prev, items));
-      }
-    });
+    let unsubs: (() => void)[] = [];
 
-    // Check remote developer passcode
-    fsGetDeveloperPasscode().then(code => {
-      if (code) {
-        setDeveloperPasscodeState(code);
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      // Clean up previous listeners if auth changed
+      unsubs.forEach(u => {
+        try { u(); } catch {}
+      });
+      unsubs = [];
+
+      if (firebaseUser) {
+        const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setCitizens(prev => {
+              const merged = mergeCitizens(prev, items, getStoredDeletedIds());
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubCitizens);
+
+        const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setRequests(prev => {
+              const merged = mergeRequests(prev, items, getStoredDeletedIds());
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubRequests);
+
+        const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setInterviews(prev => {
+              const merged = mergeInterviews(prev, items, getStoredDeletedIds());
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubInterviews);
+
+        const unsubLetters = fsWatchCollection<OfficialLetter>(FS_COLLECTIONS.LETTERS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setOfficialLetters(prev => {
+              const merged = mergeOfficialLetters(prev, items, getStoredDeletedIds());
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubLetters);
+
+        const unsubCheques = fsWatchCollection<ChequeRecord>(FS_COLLECTIONS.CHEQUES, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setCheques(prev => {
+              const merged = mergeCheques(prev, items, getStoredDeletedIds());
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubCheques);
+
+        const unsubOrgs = fsWatchCollection<OrganizationRecord>(FS_COLLECTIONS.ORGANIZATIONS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setOrganizationRecords(prev => {
+              const merged = mergeOrganizationRecords(prev, items, getStoredDeletedIds());
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubOrgs);
+
+        const unsubSections = fsWatchCollection<CustomSection>(FS_COLLECTIONS.CUSTOM_SECTIONS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setCustomSections(prev => {
+              const merged = mergeCustomSections(prev, items, getStoredDeletedIds());
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubSections);
+
+        const unsubRecords = fsWatchCollection<CustomSectionRecord>(FS_COLLECTIONS.CUSTOM_RECORDS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setCustomRecords(prev => {
+              const merged = mergeCustomRecords(prev, items, getStoredDeletedIds());
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubRecords);
+
+        const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setUsers(prev => mergeUsers(prev, items));
+          }
+        });
+        unsubs.push(unsubUsers);
+
+        // Check remote developer passcode
+        fsGetDeveloperPasscode().then(code => {
+          if (code) {
+            setDeveloperPasscodeState(code);
+          }
+        });
       }
     });
 
     return () => {
-      unsubCitizens();
-      unsubRequests();
-      unsubInterviews();
-      unsubLetters();
-      unsubCheques();
-      unsubOrgs();
-      unsubSections();
-      unsubRecords();
-      unsubUsers();
+      unsubscribeAuth();
+      unsubs.forEach(u => {
+        try { u(); } catch {}
+      });
     };
   }, []);
 
@@ -1485,7 +1541,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const composed = [firstName, fatherName, grandFatherName, greatGrandFatherName, surname].filter(Boolean).join(' ').trim();
-    const fullName = citizenData.FullName?.trim() || composed || 'مواطن بدون اسم';
+    const candidateName = (citizenData.FullName?.trim() || composed).trim();
+
+    if (
+      !candidateName || 
+      candidateName.length < 2 || 
+      candidateName.toLowerCase() === 'undefined' || 
+      candidateName.toLowerCase() === 'null' || 
+      candidateName === 'مواطن بدون اسم' ||
+      candidateName === 'الاسم' ||
+      candidateName === 'اسم المواطن' ||
+      candidateName === 'مراجع' ||
+      candidateName === 'مراجع عام'
+    ) {
+      console.warn('Rejected adding ghost citizen with missing or invalid name:', citizenData);
+      throw new Error('يرجى إدخال اسم المواطن الرباعي بشكل صحيح، لا يمكن حفظ سجل فارغ أو مجهول.');
+    }
+
+    const fullName = candidateName;
 
     const newCitizen: Citizen = {
       ...citizenData,
@@ -1708,8 +1781,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       BlockedAt: nowStamp,
       BlockedBy: operator
     };
+
+    // 1. Update citizen state and Firestore
     updateCitizen(updated);
+
+    // 2. Synchronize all matching requests to blocked state
+    setRequests(prev => {
+      const next = prev.map(r => (r.Citizen_ID && r.Citizen_ID.trim().toLowerCase() === cleanId) ? { ...r, IsBlocked: true } : r);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(next));
+      return next;
+    });
+
     addAuditLog('إدراج بالقائمة السوداء', 'الإدارة / الرقابة', `تم حظر المراجع ${cit.FullName} (${cit.Citizen_ID}) بسبب: ${reason}`);
+    pushToGoogleSheetsRealtime('citizens', updated, 'update', systemSettings.appsScriptUrl);
   };
 
   const unblockCitizen = (citizenId: string) => {
@@ -1723,8 +1807,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       BlockedAt: undefined,
       BlockedBy: undefined
     };
+
+    // 1. Update citizen state and Firestore
     updateCitizen(updated);
+
+    // 2. Clear blocked state on all matching requests
+    setRequests(prev => {
+      const next = prev.map(r => (r.Citizen_ID && r.Citizen_ID.trim().toLowerCase() === cleanId) ? { ...r, IsBlocked: false } : r);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(next));
+      return next;
+    });
+
     addAuditLog('إلغاء حظر مراجع', 'الإدارة / الرقابة', `تم إلغاء حظر المراجع ${cit.FullName} (${cit.Citizen_ID}) وإعادته للقائمة المسموح بها`);
+    pushToGoogleSheetsRealtime('citizens', updated, 'update', systemSettings.appsScriptUrl);
   };
 
   const checkIfCitizenBlocked = (nameOrId: string): { isBlocked: boolean; citizen?: Citizen; reason?: string } => {
@@ -2774,6 +2869,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return false;
   };
 
+  const batchImportRecords = async (
+    newCitizens: Citizen[],
+    newRequests: OfficeRequest[]
+  ): Promise<{ importedCitizens: number; importedRequests: number }> => {
+    // 1. Strict validation - filter out ghost/undefined
+    const validCitizens = newCitizens.filter(isStrictValidCitizen);
+    const validRequests = newRequests.filter(r => r && r.Request_ID && r.Citizen_ID);
+
+    // 2. Batch state update (atomic)
+    const citizensCount = validCitizens.length;
+    const requestsCount = validRequests.length;
+
+    if (citizensCount > 0) {
+      setCitizens(prev => {
+        const existingMap = new Map<string, Citizen>();
+        prev.forEach(c => existingMap.set(c.Citizen_ID, c));
+        validCitizens.forEach(c => existingMap.set(c.Citizen_ID, c));
+        const merged = Array.from(existingMap.values());
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
+        return merged;
+      });
+      try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
+    }
+
+    if (requestsCount > 0) {
+      setRequests(prev => {
+        const existingReqMap = new Map<string, OfficeRequest>();
+        prev.forEach(r => existingReqMap.set(r.Request_ID, r));
+        validRequests.forEach(r => existingReqMap.set(r.Request_ID, r));
+        const mergedReqs = Array.from(existingReqMap.values());
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(mergedReqs));
+        return mergedReqs;
+      });
+      try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
+    }
+
+    // 3. Background asynchronous persistence (non-blocking micro-chunks)
+    setTimeout(async () => {
+      for (let i = 0; i < validCitizens.length; i += 50) {
+        const chunk = validCitizens.slice(i, i + 50);
+        await Promise.all(chunk.map(c => fsSaveCitizen(c).catch(() => {})));
+      }
+      for (let i = 0; i < validRequests.length; i += 50) {
+        const chunk = validRequests.slice(i, i + 50);
+        await Promise.all(chunk.map(r => fsSaveRequest(r).catch(() => {})));
+      }
+    }, 100);
+
+    // 4. Audit Log
+    addAuditLog(
+      'استيراد إكسل دفعي شامل',
+      'قسم الإدارة',
+      `تم استيراد ومعالجة (${validCitizens.length}) مراجع و (${validRequests.length}) معاملة دفعة واحدة بنجاح`
+    );
+
+    return { importedCitizens: validCitizens.length, importedRequests: validRequests.length };
+  };
+
   const updateUiCustomizations = (customizations: Partial<UiCustomizationSettings>) => {
     const current = systemSettings.uiCustomizations || {
       buttonSize: 'standard',
@@ -3402,6 +3555,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isFirestoreSyncing,
         syncAllToFirestoreNow,
         fetchAllFromFirestoreNow,
+        batchImportRecords,
         // Compatibility aliases
         triggerDeveloper3WaySync,
         isSupabaseConnected: false,

@@ -39,14 +39,57 @@ interface CollectiveReceiptData {
   emblemUrl?: string;
 }
 
-export const printSingleOutgoingReceipt = (data: SingleReceiptData) => {
-  const printWindow = window.open('', '_blank', 'width=800,height=900');
-  if (!printWindow) {
-    // Fallback to window.print if popup blocked
-    window.print();
-    return;
+/**
+ * Bulletproof hidden iframe print helper that works everywhere,
+ * avoiding popup blockers and iframe sandbox restrictions.
+ */
+export const printHtmlSafely = (html: string) => {
+  try {
+    let iframe = document.getElementById('receipt-print-iframe') as HTMLIFrameElement;
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.id = 'receipt-print-iframe';
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.style.visibility = 'hidden';
+      document.body.appendChild(iframe);
+    }
+
+    const frameDoc = iframe.contentWindow?.document || iframe.contentDocument;
+    if (frameDoc) {
+      frameDoc.open();
+      frameDoc.write(html);
+      frameDoc.close();
+      setTimeout(() => {
+        try {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+        } catch (e) {
+          console.warn('Iframe print failed, falling back:', e);
+          window.print();
+        }
+      }, 350);
+      return;
+    }
+  } catch (err) {
+    console.warn('Iframe print error, falling back:', err);
   }
 
+  const printWindow = window.open('', '_blank', 'width=800,height=900');
+  if (printWindow) {
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+  } else {
+    window.print();
+  }
+};
+
+export const printSingleOutgoingReceipt = (data: SingleReceiptData) => {
   const officeTitle = data.officeName || 'مكتب مجلس النواب العراقي';
   const deputyTitle = data.deputyName || 'عضو مجلس النواب';
   const emblem = data.emblemUrl || 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f6/Coat_of_arms_of_Iraq_%282008%E2%80%93present%29.svg/200px-Coat_of_arms_of_Iraq_%282008%E2%80%93present%29.svg.png';
@@ -249,18 +292,10 @@ export const printSingleOutgoingReceipt = (data: SingleReceiptData) => {
 </html>
 `;
 
-  printWindow.document.open();
-  printWindow.document.write(html);
-  printWindow.document.close();
+  printHtmlSafely(html);
 };
 
 export const printCollectiveOutgoingReceipt = (data: CollectiveReceiptData) => {
-  const printWindow = window.open('', '_blank', 'width=900,height=1000');
-  if (!printWindow) {
-    window.print();
-    return;
-  }
-
   const officeTitle = data.officeName || 'مكتب مجلس النواب العراقي';
   const emblem = data.emblemUrl || 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f6/Coat_of_arms_of_Iraq_%282008%E2%80%93present%29.svg/200px-Coat_of_arms_of_Iraq_%282008%E2%80%93present%29.svg.png';
 
@@ -454,7 +489,5 @@ export const printCollectiveOutgoingReceipt = (data: CollectiveReceiptData) => {
 </html>
 `;
 
-  printWindow.document.open();
-  printWindow.document.write(html);
-  printWindow.document.close();
+  printHtmlSafely(html);
 };

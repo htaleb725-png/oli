@@ -49,6 +49,8 @@ import {
   updateImageMetadataInDB,
   ImageRecord 
 } from '../utils/imageDb';
+import { autoUploadImageToDriveIfConnected } from '../services/googleSheetsService';
+import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
 
 interface SmartImageArchiveModuleProps {
   onOpenCitizenHistory?: (citizenId: string) => void;
@@ -347,6 +349,9 @@ export const SmartImageArchiveModule: React.FC<SmartImageArchiveModuleProps> = (
           FileSize: `${(file.size / 1024).toFixed(1)} KB`,
           UploadedBy: currentUser?.FullName || 'قسم الإدارة والـ OCR'
         });
+
+        // Auto sync to Google Drive
+        autoUploadImageToDriveIfConnected(dataUrl, file.name).catch(() => {});
 
         // 6. Push to DB records with full OCR metadata
         dbRecordsToSave.push({
@@ -741,6 +746,8 @@ export const SmartImageArchiveModule: React.FC<SmartImageArchiveModuleProps> = (
       FileSize: '1.2 MB',
       UploadedBy: currentUser?.FullName || 'قسم الإدارة'
     });
+
+    autoUploadImageToDriveIfConnected(imageToSave, filename).catch(() => {});
 
     const newRecord: ImageRecord = {
       id: createdReq.Request_ID,

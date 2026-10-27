@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Citizen, OfficeRequest, ProcessingStatus, Priority } from '../types';
 import {
@@ -35,11 +35,13 @@ import {
   Users,
   ClipboardPaste,
   Hash,
-  ListPlus
+  ListPlus,
+  FolderKanban
 } from 'lucide-react';
 import { SearchableSelect } from './SearchableSelect';
 import { DHI_QAR_DISTRICTS, IRAQI_MINISTRIES, DEFAULT_CLANS } from './ReceptionModule';
 import { printSingleOutgoingReceipt, printCollectiveOutgoingReceipt } from '../utils/printReceiptHelper';
+import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
 
 interface DailyWorkAdminSectionProps {
   onOpenScanner?: (citizenId: string) => void;
@@ -71,6 +73,20 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'special' | 'general' | 'rejected' | 'completed'>('all');
   const [districtFilter, setDistrictFilter] = useState('all');
+
+  // High-performance pagination state
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  // Google Drive Transaction Archive Modal State
+  const [isDriveArchiveOpen, setIsDriveArchiveOpen] = useState(false);
+  const [driveModalCitizen, setDriveModalCitizen] = useState<Citizen | null>(null);
+  const [driveModalRequest, setDriveModalRequest] = useState<OfficeRequest | null>(null);
+
+  // Auto-reset page when filter or search changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, districtFilter]);
 
   // Modals state
   const [completingTarget, setCompletingTarget] = useState<{ citizen: Citizen; request?: OfficeRequest } | null>(null);
@@ -658,6 +674,13 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return Array.from(set);
   }, [citizens]);
 
+  // High-performance slice to render max 25/50/100 cards at once without DOM lag
+  const totalPages = Math.ceil(filteredDailyRecords.length / pageSize) || 1;
+  const paginatedRecords = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredDailyRecords.slice(start, start + pageSize);
+  }, [filteredDailyRecords, currentPage, pageSize]);
+
   return (
     <div className="space-y-4 text-right" dir="rtl">
       {/* Top Banner / Stats Header */}
@@ -765,8 +788,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         </div>
       </div>
 
-      {/* REAL-TIME LIVE STATUS BAR: آخر اسم مسجل + آخر عدد صادر مسجل + العدد القادم المقترح */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border-2 border-amber-400/50 dark:border-amber-500/40 shadow-sm">
+      {/* REAL-TIME LIVE STATUS BAR: آخر اسم مسجل + آخر عدد صادر مسجل + العدد القادم المقترح + صادر موحد + أرشيف صور Drive */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border-2 border-amber-400/50 dark:border-amber-500/40 shadow-sm">
         {/* Card 1: آخر اسم مسجل */}
         <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
           <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 flex items-center justify-center shrink-0">
@@ -838,6 +861,25 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
             <div className="text-right">
               <span className="block text-xs font-black">صادر موحد لمجموعة مراجعين 📑</span>
               <span className="text-[10px] text-amber-200 font-normal">إصدار عدد وتاريخ واحد لعدة أسماء</span>
+            </div>
+          </button>
+        </div>
+
+        {/* Card 5: أرشيف صور المعاملات (Google Drive) */}
+        <div className="flex items-center p-1">
+          <button
+            type="button"
+            onClick={() => {
+              setDriveModalCitizen(null);
+              setDriveModalRequest(null);
+              setIsDriveArchiveOpen(true);
+            }}
+            className="w-full h-full min-h-[58px] px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-700 via-teal-800 to-emerald-900 hover:from-emerald-800 hover:to-teal-900 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-emerald-700/20 transition-all active:scale-95 border border-emerald-400/80"
+          >
+            <FolderKanban className="w-5 h-5 text-emerald-200 shrink-0" />
+            <div className="text-right">
+              <span className="block text-xs font-black">أرشيف صور المعاملات 📁</span>
+              <span className="text-[10px] text-emerald-200 font-normal">Google Drive • بحث ورفع وتحديث</span>
             </div>
           </button>
         </div>
@@ -1035,8 +1077,87 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         </div>
       )}
 
-      {/* Main Citizens Cards Grid */}
-      <div className="space-y-3">
+      {/* Main Citizens Cards Grid with High-Performance Pagination */}
+      <div id="daily-records-list" className="space-y-3">
+        {/* Top Pagination Toolbar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs shadow-2xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-bold text-slate-700 dark:text-slate-200">
+              عرض {filteredDailyRecords.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} - {Math.min(currentPage * pageSize, filteredDailyRecords.length)} من أصل ({filteredDailyRecords.length.toLocaleString()}) مراجع
+            </span>
+            {totalPages > 1 && (
+              <span className="text-[11px] bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-mono font-bold px-2 py-0.5 rounded-md border border-blue-200 dark:border-blue-800">
+                صفحة {currentPage} من {totalPages}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-slate-500 font-medium">لكل صفحة:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="h-8 px-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <option value={25}>25 مراجع</option>
+                <option value={50}>50 مراجع</option>
+                <option value={100}>100 مراجع</option>
+                <option value={250}>250 مراجع</option>
+              </select>
+            </div>
+
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1 font-mono">
+                <button
+                  type="button"
+                  disabled={currentPage === 1}
+                  onClick={() => setCurrentPage(1)}
+                  className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer"
+                  title="الصفحة الأولى"
+                >
+                  ««
+                </button>
+                <button
+                  type="button"
+                  disabled={currentPage === 1}
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer"
+                  title="السابق"
+                >
+                  السابق
+                </button>
+
+                <span className="px-2.5 py-1 rounded-lg bg-blue-600 text-white font-bold text-xs shadow-xs">
+                  {currentPage}
+                </span>
+
+                <button
+                  type="button"
+                  disabled={currentPage >= totalPages}
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer"
+                  title="التالي"
+                >
+                  التالي
+                </button>
+                <button
+                  type="button"
+                  disabled={currentPage >= totalPages}
+                  onClick={() => setCurrentPage(totalPages)}
+                  className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer"
+                  title="الصفحة الأخيرة"
+                >
+                  »»
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
         {filteredDailyRecords.length === 0 ? (
           <div className="p-12 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-2 shadow-xs">
             <FileText className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
@@ -1044,7 +1165,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
             <p className="text-xs text-slate-400">يرجى تغيير معايير البحث أو استعراض كافة السجلات.</p>
           </div>
         ) : (
-          filteredDailyRecords.map((item) => {
+          paginatedRecords.map((item) => {
             const cit = item.citizen;
             const citReqs = item.requests;
             const primaryReq = citReqs[0];
@@ -1246,6 +1367,21 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     <span>تعديل</span>
                   </button>
 
+                  {/* Google Drive & Photos Button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDriveModalCitizen(cit);
+                      setDriveModalRequest(primaryReq);
+                      setIsDriveArchiveOpen(true);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer border border-emerald-200 dark:border-emerald-800 shadow-2xs"
+                    title="فتح صور ومستندات المعاملة على Google Drive والرفع المباشر"
+                  >
+                    <FolderKanban className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>صور و Drive 🖼️</span>
+                  </button>
+
                   {/* Delete Button (Button 3) */}
                   <button
                     onClick={() => setDeletingTarget({ citizen: cit, request: primaryReq })}
@@ -1341,6 +1477,71 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
               </div>
             );
           })
+        )}
+
+        {/* Bottom Pagination Toolbar */}
+        {totalPages > 1 && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs shadow-2xs mt-3">
+            <span className="font-bold text-slate-600 dark:text-slate-300">
+              الصفحة {currentPage} من {totalPages} (إجمالي {filteredDailyRecords.length.toLocaleString()} مراجع)
+            </span>
+
+            <div className="flex items-center gap-1 font-mono">
+              <button
+                type="button"
+                disabled={currentPage === 1}
+                onClick={() => {
+                  setCurrentPage(1);
+                  document.getElementById('daily-records-list')?.scrollIntoView({ behavior: 'smooth' });
+                }}
+                className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer"
+                title="الصفحة الأولى"
+              >
+                ««
+              </button>
+              <button
+                type="button"
+                disabled={currentPage === 1}
+                onClick={() => {
+                  setCurrentPage(p => Math.max(1, p - 1));
+                  document.getElementById('daily-records-list')?.scrollIntoView({ behavior: 'smooth' });
+                }}
+                className="px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer"
+                title="السابق"
+              >
+                السابق
+              </button>
+
+              <span className="px-3 py-1 rounded-lg bg-blue-600 text-white font-bold text-xs shadow-xs">
+                {currentPage}
+              </span>
+
+              <button
+                type="button"
+                disabled={currentPage >= totalPages}
+                onClick={() => {
+                  setCurrentPage(p => Math.min(totalPages, p + 1));
+                  document.getElementById('daily-records-list')?.scrollIntoView({ behavior: 'smooth' });
+                }}
+                className="px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer"
+                title="التالي"
+              >
+                التالي
+              </button>
+              <button
+                type="button"
+                disabled={currentPage >= totalPages}
+                onClick={() => {
+                  setCurrentPage(totalPages);
+                  document.getElementById('daily-records-list')?.scrollIntoView({ behavior: 'smooth' });
+                }}
+                className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-30 text-xs font-bold cursor-pointer"
+                title="الصفحة الأخيرة"
+              >
+                »»
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -2401,6 +2602,191 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           </div>
         </div>
       )}
+      {/* ======================================================== */}
+      {/* MODAL 6: تأكيد الحظر الإداري والقائمة السوداء               */}
+      {/* ======================================================== */}
+      {blockingTarget && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border-2 border-red-500 max-w-md w-full p-6 shadow-2xl space-y-4 text-right animate-in fade-in zoom-in-95 my-8">
+            <div className="flex items-center gap-3 border-b border-red-100 dark:border-red-950/60 pb-3">
+              <span className="p-3 rounded-2xl bg-red-100 dark:bg-red-950 text-red-600 border border-red-200 dark:border-red-800 shrink-0">
+                <ShieldAlert className="w-6 h-6" />
+              </span>
+              <div>
+                <h3 className="font-black text-base text-slate-900 dark:text-white">
+                  حظر المراجع وإدراجه في القائمة السوداء
+                </h3>
+                <p className="text-xs text-red-600 dark:text-red-400 font-bold">
+                  سيتم إدراج الشخص بالقائمة السوداء ومنع ترويج معاملاته فوراً
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-red-50/70 dark:bg-red-950/30 rounded-2xl border border-red-200 dark:border-red-900/40 text-xs space-y-1">
+              <div>
+                <span className="text-slate-500 block text-[10px]">اسم المواطن:</span>
+                <span className="font-black text-slate-900 dark:text-white text-sm">{blockingTarget.FullName}</span>
+              </div>
+              <div className="flex justify-between text-[11px] text-slate-600 dark:text-slate-300">
+                <span>رقم الهاتف: {blockingTarget.Phone1 || 'غير مسجل'}</span>
+                <span>القضاء: {blockingTarget.District || 'ذي قار'}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                سبب الحظر الإداري أو الأمني: <span className="text-rose-500">*</span>
+              </label>
+              
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {['مخالفة سلوكية وتجاوز', 'بيانات غير صحيحة أو تزوير', 'توجيه إداري من مدير المكتب', 'عدم استحقاق / مراجع مكرر'].map(preset => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setBlockReasonInput(preset)}
+                    className="px-2.5 py-1 text-[11px] rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-semibold cursor-pointer border border-slate-200 dark:border-slate-700"
+                  >
+                    + {preset}
+                  </button>
+                ))}
+              </div>
+
+              <textarea
+                rows={3}
+                required
+                value={blockReasonInput}
+                onChange={(e) => setBlockReasonInput(e.target.value)}
+                placeholder="اكتب سبب الحظر الإداري أو الأمني بالتفصيل ليظهر لجميع موظفي المكتب..."
+                className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setBlockingTarget(null);
+                  setBlockReasonInput('');
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBlock}
+                className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-md shadow-red-600/30 active:scale-95 transition-transform"
+              >
+                <ShieldAlert className="w-4 h-4 text-red-200" />
+                <span>تأكيد الحظر والإدراج ⛔</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL 7: تأكيد رفض الطلب (Direct Rejection Confirmation)    */}
+      {/* ======================================================== */}
+      {rejectingTarget && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border-2 border-rose-400 max-w-md w-full p-6 shadow-2xl space-y-4 text-right animate-in fade-in zoom-in-95 my-8">
+            <div className="flex items-center gap-3 border-b border-rose-100 dark:border-rose-950/60 pb-3">
+              <span className="p-3 rounded-2xl bg-rose-100 dark:bg-rose-950 text-rose-600 border border-rose-200 dark:border-rose-800 shrink-0">
+                <XCircle className="w-6 h-6" />
+              </span>
+              <div>
+                <h3 className="font-black text-base text-slate-900 dark:text-white">
+                  رفض طلب المعاملة
+                </h3>
+                <p className="text-xs text-rose-600 dark:text-rose-400 font-bold">
+                  تثبيت قرار الرفض الإداري مع توثيق السبب
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 text-xs space-y-1">
+              <div>
+                <span className="text-slate-500 block text-[10px]">صاحب المعاملة:</span>
+                <span className="font-black text-slate-900 dark:text-white">{rejectingTarget.citizen.FullName}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block text-[10px]">موضوع المعاملة:</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200">{rejectingTarget.request.Details}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                سبب الرفض الإداري: <span className="text-rose-500">*</span>
+              </label>
+
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {['عدم استيفاء الشروط القانونية', 'خارج صلاحيات واختصاص المكتب', 'سبق وأن تم شموله بمشروع مماثل', 'نقص في الأوليات والمستمسكات'].map(preset => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setRejectionReasonInput(preset)}
+                    className="px-2.5 py-1 text-[11px] rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-semibold cursor-pointer border border-slate-200 dark:border-slate-700"
+                  >
+                    + {preset}
+                  </button>
+                ))}
+              </div>
+
+              <textarea
+                rows={3}
+                required
+                value={rejectionReasonInput}
+                onChange={(e) => setRejectionReasonInput(e.target.value)}
+                placeholder="اكتب سبب الرفض الإداري بوضوح..."
+                className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setRejectingTarget(null);
+                  setRejectionReasonInput('');
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmRejection}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/30 active:scale-95 transition-transform"
+              >
+                <XCircle className="w-4 h-4 text-rose-200" />
+                <span>تثبيت قرار الرفض</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Google Drive Transaction Archive Modal */}
+      <GoogleDriveArchiveModal
+        isOpen={isDriveArchiveOpen}
+        onClose={() => {
+          setIsDriveArchiveOpen(false);
+          setDriveModalCitizen(null);
+          setDriveModalRequest(null);
+        }}
+        targetCitizen={driveModalCitizen}
+        targetRequest={driveModalRequest}
+        onAttachFileToRequest={(fileUrl) => {
+          if (driveModalRequest) {
+            updateRequest({
+              ...driveModalRequest,
+              AttachmentRequest: fileUrl
+            });
+          }
+        }}
+      />
     </div>
   );
 };

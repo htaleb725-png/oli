@@ -37,7 +37,7 @@ interface CleanedRow {
 }
 
 export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = ({ isOpen, onClose }) => {
-  const { citizens, addCitizen, addRequest, addAuditLog, currentUser } = useApp();
+  const { citizens, batchImportRecords, addAuditLog, currentUser } = useApp();
 
   const [file, setFile] = useState<File | null>(null);
   const [cleanedRows, setCleanedRows] = useState<CleanedRow[]>([]);
@@ -119,8 +119,14 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
         const citizensMap = new Map<string, string>();
         let currentSeq = citizens.length + 500;
 
-        const cleaned: CleanedRow[] = rawJson.map((row, idx) => {
-          const name = String(row['الاسم'] || row['اسم المواطن'] || row['الاسم الرباعي'] || row['FullName'] || row['Name'] || Object.values(row)[0] || `مواطن ${idx + 1}`).trim();
+        const cleaned: CleanedRow[] = [];
+        for (const row of rawJson) {
+          const name = String(row['الاسم'] || row['اسم المواطن'] || row['الاسم الرباعي'] || row['FullName'] || row['Name'] || '').trim();
+          // Strictly reject blank or header rows
+          if (!name || name.length < 2 || name === 'الاسم' || name === 'اسم المواطن' || name === 'ت' || name.toLowerCase() === 'undefined' || name.toLowerCase() === 'null') {
+            continue;
+          }
+
           const phone = normalizePhone(row['الهاتف'] || row['رقم الهاتف'] || row['الموبايل'] || row['Phone'] || '');
           const entity = String(row['الجهة'] || row['الوزارة'] || row['الدائرة'] || row['Entity'] || '');
           const referrer = String(row['المعرف'] || row['التزكية'] || row['المنسق'] || row['Referrer'] || '');
@@ -137,7 +143,7 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
           const rawOutgoing = String(row['العدد'] || row['رقم الصادر'] || row['العدد الصادر'] || row['الصادر'] || row['OutgoingNumber'] || '').trim();
           const rawOutgoingDate = String(row['تاريخ الصادر'] || row['تاريخ الكتاب'] || row['التاريخ'] || row['تاريخ_الصادر'] || row['OutgoingDate'] || '').trim();
 
-          return {
+          cleaned.push({
             citizenId: citId,
             fullName: name,
             phone: phone,
@@ -150,8 +156,8 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
             totalCitizenRequestsCount: nameFrequency[name] || 1,
             outgoingNumber: rawOutgoing || undefined,
             outgoingDate: rawOutgoingDate || undefined
-          };
-        });
+          });
+        }
 
         setCleanedRows(cleaned);
         setUniqueCitizensCount(citizensMap.size);
@@ -165,23 +171,26 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
     reader.readAsBinaryString(uploadedFile);
   };
 
-  const handleImportToDatabase = () => {
+  const handleImportToDatabase = async () => {
     if (cleanedRows.length === 0) return;
 
     setIsProcessing(true);
-    setProgressMsg('جاري إضافة المواطنين والطلبات إلى المنظومة المركزية...');
+    setProgressMsg('جاري إضافة المواطنين والطلبات إلى المنظومة المركزية بالذكاء الاصطناعي...');
 
-    // Group citizens to add only unique ones
-    const addedCitizenIds = new Set<string>();
+    const uniqueCitizensMap = new Map<string, Citizen>();
+    const requestsToCreate: OfficeRequest[] = [];
+    const nowStamp = new Date().toISOString().split('T')[0];
 
-    cleanedRows.forEach(row => {
-      if (!addedCitizenIds.has(row.citizenId)) {
-        addCitizen({
-          FirstName: row.fullName.split(' ')[0] || row.fullName,
-          FatherName: row.fullName.split(' ')[1] || '',
-          GrandFatherName: row.fullName.split(' ')[2] || '',
-          GreatGrandFatherName: row.fullName.split(' ')[3] || '',
-          Surname: '',
+    for (const row of cleanedRows) {
+      if (!uniqueCitizensMap.has(row.citizenId)) {
+        const parts = row.fullName.split(/\s+/);
+        uniqueCitizensMap.set(row.citizenId, {
+          Citizen_ID: row.citizenId,
+          FirstName: parts[0] || row.fullName,
+          FatherName: parts[1] || '',
+          GrandFatherName: parts[2] || '',
+          GreatGrandFatherName: parts[3] || '',
+          Surname: parts.length > 4 ? parts.slice(4).join(' ') : 'عام',
           FullName: row.fullName,
           Phone1: row.phone,
           Job: 'كاسب',
@@ -191,13 +200,14 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
           District: row.district || 'الناصرية',
           SubDistrict: 'مركز القضاء',
           ReferralSource: row.normalizedReferrer,
-          RegisteredVia: 'إدارة'
+          RegisteredVia: 'إدارة',
+          CreatedAt: nowStamp,
+          CreatedBy: currentUser?.FullName || 'استيراد القاعدة القديمة'
         });
-        addedCitizenIds.add(row.citizenId);
       }
 
-      // Add request
-      addRequest({
+      requestsToCreate.push({
+        Request_ID: `REQ-${Date.now().toString().slice(-4)}-${Math.floor(1000 + Math.random() * 9000)}`,
         Citizen_ID: row.citizenId,
         CitizenName: row.fullName,
         CitizenPhone: row.phone,
@@ -207,19 +217,22 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
         Priority: 'عام',
         Details: row.details,
         OutgoingNumber: row.outgoingNumber || undefined,
-        OutgoingDate: row.outgoingDate || (row.outgoingNumber ? new Date().toISOString().split('T')[0] : undefined),
+        OutgoingDate: row.outgoingDate || (row.outgoingNumber ? nowStamp : undefined),
+        Address: row.district,
+        CreatedAt: nowStamp,
         CreatedBy: currentUser ? currentUser.FullName : 'استيراد القاعدة القديمة'
       });
-    });
+    }
 
-    addAuditLog(
-      'استيراد وتصفية قاعدة بيانات قديمة',
-      'قسم الإدارة',
-      `استيراد وتصفية ${cleanedRows.length} طلب و${addedCitizenIds.size} مواطن مع توحيد الوزارات والمعرفين`
-    );
-
-    setIsProcessing(false);
-    setIsImported(true);
+    try {
+      await batchImportRecords(Array.from(uniqueCitizensMap.values()), requestsToCreate);
+      setIsProcessing(false);
+      setIsImported(true);
+    } catch (err) {
+      console.error(err);
+      setIsProcessing(false);
+      alert('حدث خطأ أثناء حفظ السجلات.');
+    }
   };
 
   if (!isOpen) return null;

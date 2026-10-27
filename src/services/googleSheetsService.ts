@@ -1427,3 +1427,57 @@ export const autoUploadImageToDriveIfConnected = async (
     return null;
   }
 };
+
+export interface DriveFileItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  thumbnailLink?: string;
+  webViewLink?: string;
+  webContentLink?: string;
+  createdTime?: string;
+  modifiedTime?: string;
+  size?: string;
+}
+
+/**
+ * Searches and lists files from connected Google Drive folder
+ */
+export const searchDriveFiles = async (
+  token: string,
+  folderId?: string,
+  queryText?: string
+): Promise<DriveFileItem[]> => {
+  try {
+    let q = 'trashed=false';
+    if (folderId && folderId.trim()) {
+      q += ` and '${folderId.trim()}' in parents`;
+    }
+    if (queryText && queryText.trim()) {
+      const cleanQ = queryText.trim().replace(/['\\]/g, '');
+      q += ` and (name contains '${cleanQ}' or fullText contains '${cleanQ}')`;
+    }
+
+    const encodedQ = encodeURIComponent(q);
+    const fields = encodeURIComponent('files(id,name,mimeType,thumbnailLink,webViewLink,webContentLink,createdTime,modifiedTime,size)');
+    const url = `https://www.googleapis.com/drive/v3/files?q=${encodedQ}&fields=${fields}&pageSize=60&orderBy=modifiedTime desc`;
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    if (!res.ok) {
+      console.warn('Drive search API error:', res.status);
+      return [];
+    }
+
+    const data = await res.json();
+    return data.files || [];
+  } catch (err) {
+    console.warn('searchDriveFiles error:', err);
+    return [];
+  }
+};
+
