@@ -35,6 +35,10 @@ let isProcessingQueue = false;
 // Helper to reliably resolve Google Sheet ID from multiple fallbacks
 export function resolveTargetSheetId(customSheetId?: string): string {
   if (customSheetId && customSheetId.trim()) return customSheetId.trim();
+  // 1. Check environment variable (Vercel)
+  const envSheetId = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID;
+  if (envSheetId && envSheetId.trim()) return envSheetId.trim();
+
   if (typeof window !== 'undefined') {
     const direct = localStorage.getItem('al_nashi_sheet_id');
     if (direct && direct.trim()) return direct.trim();
@@ -53,6 +57,10 @@ export function resolveTargetSheetId(customSheetId?: string): string {
 // Helper to reliably resolve Apps Script Webhook URL from multiple fallbacks
 export function resolveAppsScriptUrl(customUrl?: string): string {
   if (customUrl && customUrl.trim()) return customUrl.trim();
+  // 1. Check environment variable (Vercel)
+  const envUrl = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL;
+  if (envUrl && envUrl.trim()) return envUrl.trim();
+
   if (typeof window !== 'undefined') {
     const direct = localStorage.getItem('al_nashi_apps_script_url');
     if (direct && direct.trim()) return direct.trim();
@@ -66,6 +74,34 @@ export function resolveAppsScriptUrl(customUrl?: string): string {
     } catch {}
   }
   return '';
+}
+
+/**
+ * Proactively notifies Google Apps Script to auto-create tabs and column headers
+ * for newly introduced sections or custom fields without manual spreadsheet editing.
+ */
+export async function syncSchemaToGoogleAppsScript(sections: any[], customUrl?: string): Promise<boolean> {
+  const url = resolveAppsScriptUrl(customUrl);
+  if (!url || !url.startsWith('http')) return false;
+
+  try {
+    await fetch(url, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8'
+      },
+      body: JSON.stringify({
+        action: 'syncSchema',
+        sections: sections,
+        timestamp: new Date().toISOString()
+      })
+    });
+    return true;
+  } catch (err) {
+    console.warn('syncSchemaToGoogleAppsScript warning:', err);
+    return false;
+  }
 }
 
 export async function pushToGoogleSheetsRealtime(

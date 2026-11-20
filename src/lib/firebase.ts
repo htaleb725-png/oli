@@ -1,7 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { initializeFirestore, getFirestore, doc, getDocFromServer, Firestore, setLogLevel } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import localFirebaseConfig from '../../firebase-applet-config.json';
 
 // Suppress false-alarm verbose transport warnings in proxy and sandbox environments
 try {
@@ -10,8 +10,21 @@ try {
   // Ignore
 }
 
+// 1. Universal Environment Variable Resolution for Vercel, GitHub, and Local AI Studio
+// Prioritizes Vercel VITE_* environment variables so credentials remain secure and immutable
+// across GitHub Sync & Vercel builds, with seamless fallback to firebase-applet-config.json.
+export const activeFirebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || (localFirebaseConfig as any).apiKey,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || (localFirebaseConfig as any).authDomain,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || (localFirebaseConfig as any).projectId,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || (localFirebaseConfig as any).storageBucket,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || (localFirebaseConfig as any).messagingSenderId,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || (localFirebaseConfig as any).appId,
+  firestoreDatabaseId: import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || (localFirebaseConfig as any).firestoreDatabaseId || '(default)'
+};
+
 // Initialize Firebase App singleton
-export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+export const app = getApps().length > 0 ? getApp() : initializeApp(activeFirebaseConfig);
 
 // Initialize Firebase Auth
 export const auth = getAuth(app);
@@ -27,8 +40,8 @@ onAuthStateChanged(auth, (user) => {
 });
 
 // Target database ID
-const dbId = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== '(default)'
-  ? (firebaseConfig as any).firestoreDatabaseId
+const dbId = activeFirebaseConfig.firestoreDatabaseId && activeFirebaseConfig.firestoreDatabaseId !== '(default)'
+  ? activeFirebaseConfig.firestoreDatabaseId
   : '(default)';
 
 // Initialize Cloud Firestore with experimentalForceLongPolling for robust connectivity in browser/iframe environments
@@ -55,4 +68,3 @@ async function testFirestoreConnection() {
   }
 }
 testFirestoreConnection();
-

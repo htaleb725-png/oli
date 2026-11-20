@@ -94,6 +94,7 @@ import {
   mergeCustomRecords,
   mergeUsers
 } from '../services/dataMerge';
+import { autoSyncAllSchemas } from '../services/schemaAutoDiscovery';
 
 // Run storage cleanup immediately on module evaluation to fix any existing quota issue
 cleanBloatedLocalStorage();
@@ -1052,6 +1053,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setDeveloperPasscodeState(code);
           }
         });
+
+        // Trigger dynamic schema auto-discovery and sync to Firebase & Google Sheets
+        autoSyncAllSchemas(customSections).catch(e => console.warn('autoSyncAllSchemas error:', e));
       }
     });
 
@@ -2731,6 +2735,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
 
     addAuditLog('إضافة قسم مخصص جديد', 'لوحة التحكم والعمليات', `تم إنشاء القسم في قاعدة البيانات والمنظومة: ${newSection.title}`);
+    autoSyncAllSchemas(nextSections).catch(() => {});
     return newSection;
   };
 
@@ -2741,6 +2746,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(nextSections));
     fsSaveCustomSection(updated).catch(err => console.warn('Firestore section update:', err));
     pushToGoogleSheetsRealtime('custom_sections', updated, 'upsert', systemSettings.appsScriptUrl);
+    autoSyncAllSchemas(nextSections).catch(() => {});
     addAuditLog('تعديل قسم مخصص', 'لوحة التحكم والعمليات', `تم تحديث القسم: ${section.title}`);
   };
 

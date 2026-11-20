@@ -1,7 +1,7 @@
 /**
  * Google Apps Script Production Engine (محرك مزامنة Google Sheets و Google Drive الرسمي)
  * -----------------------------------------------------------------------------------
- * هذا الكود الجاهز يقوم المطور بنسخه ولصقه في Google Sheets:
+ * هذا الكود الجاهز يقوم المستخدم بنسخه ولصقه في Google Sheets:
  * الإضافات (Extensions) -> Apps Script -> لصق الكود -> نشر (Deploy) -> تطبيق ويب (Web App)
  * الصلاحية: Anyone (أي شخص لديه الرابط)
  */
@@ -9,52 +9,146 @@
 export const GOOGLE_APPS_SCRIPT_SOURCE = `/**
  * =========================================================================
  * منظومة مكتب النائب المهندسة علا عودة الناشي - الإصدار السحابي المركزي 2026
- * محرك المزامنة الحية مع Google Sheets و Google Drive (إرسال وجلب البيانات)
+ * محرك المزامنة التلقائي الذكي المزدوج (Dual-Sync Dynamic Engine)
+ * يدعم الاكتشاف التلقائي للأقسام والحقول الجديدة وإنشاء الأوراق والأعمدة فورياً
  * =========================================================================
  */
 
+// تهيئة وإنشاء الجداول الأساسية
 function setupSpreadsheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  var tabs = [
-    { name: 'سجل_المراجعين_Citizens', headers: ['Citizen_ID', 'FullName', 'Phone1', 'Phone2', 'District', 'SubDistrict', 'Gender', 'Rating', 'Job', 'Education', 'ReferralSource', 'CreatedAt', 'PhotoUrl'] },
-    { name: 'طلبات_المواطنين_Requests', headers: ['Request_ID', 'Citizen_ID', 'CitizenName', 'Phone1', 'Entity', 'RequestStatus', 'ProcessingStatus', 'Priority', 'Details', 'CreatedAt', 'CreatedBy'] },
-    { name: 'مقابلات_النائب_Interviews', headers: ['Interview_ID', 'Citizen_ID', 'CitizenName', 'Date', 'Status', 'CreatedAt'] },
-    { name: 'الكتب_الرسمية_Letters', headers: ['Letter_ID', 'Letter_Number', 'Letter_Date', 'To_Entity', 'Subject', 'Recipient', 'Status', 'ClerkName'] },
-    { name: 'صكوك_المساعدات_Cheques', headers: ['id', 'ChequeNumber', 'Citizen_ID', 'CitizenName', 'Amount', 'BankName', 'Purpose', 'Status', 'IssueDate', 'DueDate'] },
-    { name: 'السجل_التنظيمي_Org', headers: ['Org_ID', 'Citizen_ID', 'Rating', 'UpdatedAt'] },
-    { name: 'الأقسام_المخصصة_Sections', headers: ['id', 'title', 'description', 'icon', 'badgeColor', 'fieldsJson', 'createdAt'] },
-    { name: 'سجلات_الأقسام_Records', headers: ['id', 'sectionId', 'dataJson', 'createdAt', 'createdBy'] },
-    { name: 'إعدادات_القوائم_Dropdowns', headers: ['Category', 'Value', 'UpdatedAt'] }
+  var coreTabs = [
+    { 
+      name: 'سجل_المراجعين_Citizens', 
+      headers: ['Citizen_ID', 'FullName', 'Phone1', 'Phone2', 'District', 'SubDistrict', 'Gender', 'Rating', 'Job', 'Education', 'ReferralSource', 'CreatedAt', 'PhotoUrl', 'UpdatedAt'] 
+    },
+    { 
+      name: 'طلبات_المواطنين_Requests', 
+      headers: ['Request_ID', 'Citizen_ID', 'CitizenName', 'Phone1', 'Entity', 'RequestStatus', 'ProcessingStatus', 'Priority', 'Details', 'CreatedAt', 'CreatedBy', 'UpdatedAt'] 
+    },
+    { 
+      name: 'مقابلات_النائب_Interviews', 
+      headers: ['Interview_ID', 'Citizen_ID', 'CitizenName', 'InterviewDate', 'Status', 'CreatedAt', 'UpdatedAt'] 
+    },
+    { 
+      name: 'الكتب_الرسمية_Letters', 
+      headers: ['Letter_ID', 'Letter_Number', 'Letter_Date', 'To_Entity', 'Subject', 'Recipient', 'Status', 'ClerkName', 'UpdatedAt'] 
+    },
+    { 
+      name: 'صكوك_المساعدات_Cheques', 
+      headers: ['id', 'ChequeNumber', 'Citizen_ID', 'CitizenName', 'Amount', 'BankName', 'Purpose', 'Status', 'IssueDate', 'DueDate', 'UpdatedAt'] 
+    },
+    { 
+      name: 'السجل_التنظيمي_Org', 
+      headers: ['Org_ID', 'Citizen_ID', 'FullName', 'OrgRating', 'UpdatedAt'] 
+    },
+    { 
+      name: 'الأقسام_المخصصة_Sections', 
+      headers: ['id', 'title', 'description', 'icon', 'badgeColor', 'fieldsJson', 'createdAt', 'updatedAt'] 
+    },
+    { 
+      name: 'سجلات_الأقسام_Records', 
+      headers: ['id', 'sectionId', 'dataJson', 'createdAt', 'createdBy', 'updatedAt'] 
+    },
+    { 
+      name: 'إعدادات_القوائم_Dropdowns', 
+      headers: ['Category', 'Value', 'UpdatedAt'] 
+    }
   ];
 
-  tabs.forEach(function(t) {
+  coreTabs.forEach(function(t) {
     var sheet = ss.getSheetByName(t.name);
     if (!sheet) {
       sheet = ss.insertSheet(t.name);
     }
-    if (sheet.getLastRow() === 0) {
-      sheet.appendRow(t.headers);
-      var headerRange = sheet.getRange(1, 1, 1, t.headers.length);
-      headerRange.setBackground('#0f172a');
-      headerRange.setFontColor('#fbbf24');
-      headerRange.setFontWeight('bold');
-      sheet.setFrozenRows(1);
-    }
+    ensureSheetHeaders(sheet, t.headers);
   });
 
   return { status: 'success', message: 'تم تجهيز وتنسيق كافة الجداول بنجاح' };
 }
 
 /**
- * دالة GET: قراءة وجلب البيانات من Google Sheets إلى المنظومة
+ * دالة ذكية لفحص وتوسيع رؤوس الأعمدة تلقائياً دون لمس البيانات القديمة
+ */
+function ensureSheetHeaders(sheet, requiredHeaders) {
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+
+  if (lastRow === 0 || lastCol === 0) {
+    // الورقة فارغة بالكامل، ننشئ سطر الرؤوس
+    sheet.appendRow(requiredHeaders);
+    var range = sheet.getRange(1, 1, 1, requiredHeaders.length);
+    range.setBackground('#0f172a');
+    range.setFontColor('#fbbf24');
+    range.setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    return requiredHeaders;
+  }
+
+  // قراءة الأعمدة الحالية
+  var existingHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
+    return String(h).trim();
+  });
+
+  var newHeadersToAdd = [];
+  requiredHeaders.forEach(function(h) {
+    var cleanH = String(h).trim();
+    if (cleanH && existingHeaders.indexOf(cleanH) === -1) {
+      newHeadersToAdd.push(cleanH);
+    }
+  });
+
+  // إضافة أي عمود جديد إلى اليمين وتنسيقه فورياً
+  if (newHeadersToAdd.length > 0) {
+    var startCol = lastCol + 1;
+    var addRange = sheet.getRange(1, startCol, 1, newHeadersToAdd.length);
+    addRange.setValues([newHeadersToAdd]);
+    addRange.setBackground('#0f172a');
+    addRange.setFontColor('#fbbf24');
+    addRange.setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    return existingHeaders.concat(newHeadersToAdd);
+  }
+
+  return existingHeaders;
+}
+
+/**
+ * تحديد اسم الورقة المناسب للقسم (يدعم الأقسام الأساسية وأي قسم جديد يضاف في الكود مستقبلاً)
+ */
+function resolveSheetName(table) {
+  var clean = String(table || '').trim();
+  switch (clean) {
+    case 'citizens': return 'سجل_المراجعين_Citizens';
+    case 'requests': return 'طلبات_المواطنين_Requests';
+    case 'interviews': return 'مقابلات_النائب_Interviews';
+    case 'letters':
+    case 'officialLetters': return 'الكتب_الرسمية_Letters';
+    case 'cheques': return 'صكوك_المساعدات_Cheques';
+    case 'organization':
+    case 'organizations': return 'السجل_التنظيمي_Org';
+    case 'custom_sections': return 'الأقسام_المخصصة_Sections';
+    case 'custom_records': return 'سجلات_الأقسام_Records';
+    case 'dropdowns': return 'إعدادات_القوائم_Dropdowns';
+    default:
+      // إذا كان اسماً عربياً أو قسماً جديداً مضافاً بالكود
+      if (clean.indexOf(' ') > -1) {
+        return clean.replace(/\\s+/g, '_');
+      }
+      return clean || 'سجل_المراجعين_Citizens';
+  }
+}
+
+/**
+ * دالة GET: جلب البيانات وقراءة المنظومة
  */
 function doGet(e) {
   try {
     var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'getAllData';
     var ss = SpreadsheetApp.getActiveSpreadsheet();
 
-    // 1. جلب كافة الجداول بطلب واحد (getAllData)
+    // 1. جلب كافة الجداول بطلب واحد
     if (action === 'getAllData') {
       var citizens = getSheetRecords(ss, 'سجل_المراجعين_Citizens');
       var requests = getSheetRecords(ss, 'طلبات_المواطنين_Requests');
@@ -78,7 +172,6 @@ function doGet(e) {
           customSections: customSections,
           customRecords: customRecords
         },
-        // Direct root fields for maximum compatibility
         citizens: citizens,
         requests: requests,
         interviews: interviews,
@@ -105,7 +198,7 @@ function doGet(e) {
 }
 
 /**
- * دالة POST: استقبال وحفظ وإرسال البيانات من المنظومة إلى Google Sheets و Drive
+ * دالة POST: استقبال وحفظ ومزامنة وتوسيع البيانات والأقسام تلقائياً
  */
 function doPost(e) {
   var lock = LockService.getScriptLock();
@@ -128,7 +221,35 @@ function doPost(e) {
 
     setupSpreadsheet();
 
-    // 1. مزامنة شاملة (Bulk / Full Sync)
+    // 1. مزامنة الهيكل والأقسام الجديدة تلقائياً (Schema Auto-Sync)
+    if (action === 'syncSchema' || action === 'registerSection') {
+      var sections = contents.sections || [];
+      if (data && data.title) sections.push(data);
+      
+      sections.forEach(function(sec) {
+        var sheetName = resolveSheetName(sec.title || sec.name || sec.id);
+        var s = ss.getSheetByName(sheetName);
+        if (!s) s = ss.insertSheet(sheetName);
+        
+        var fieldHeaders = ['id'];
+        if (sec.fields && Array.isArray(sec.fields)) {
+          sec.fields.forEach(function(f) {
+            var fName = f.name || f.key || f.label;
+            if (fName && fieldHeaders.indexOf(fName) === -1) fieldHeaders.push(fName);
+          });
+        }
+        fieldHeaders.push('createdAt', 'updatedAt');
+        ensureSheetHeaders(s, fieldHeaders);
+      });
+
+      return jsonResponse({
+        success: true,
+        message: 'تم فحص ومزامنة وتوسيع هيكل الأقسام والأعمدة بنجاح',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // 2. مزامنة شاملة لكافة الجداول (Bulk / Full Sync)
     if (action === 'bulk_sync' || action === 'syncAll') {
       handleBulkSync(ss, data);
       return jsonResponse({
@@ -138,28 +259,31 @@ function doPost(e) {
       });
     }
 
-    // 2. رفع ملف إلى Google Drive
+    // 3. رفع ملف أو صورة إلى Google Drive
     if (action === 'uploadFile') {
       var fileRes = handleDriveUpload(contents);
       return jsonResponse(fileRes);
     }
 
-    // 3. إدخال أو تحديث صف فردي (insert, update, appendRow, updateRow, upsert)
-    var targetSheetName = getSheetNameForTable(table);
+    // 4. العمليات الفردية (إضافة / تعديل / حذف)
+    var targetSheetName = resolveSheetName(table);
     var sheet = ss.getSheetByName(targetSheetName);
     if (!sheet) {
       sheet = ss.insertSheet(targetSheetName);
     }
 
+    var targetId = contents.id || data.id || data.Citizen_ID || data.Request_ID || data.Interview_ID || data.Letter_ID || data.Cheque_ID || data.Org_ID;
+
     if (action === 'delete') {
-      handleDelete(sheet, table, data.id || data.Citizen_ID || data.Request_ID);
+      handleDelete(sheet, targetId);
     } else {
-      handleUpsert(sheet, table, data);
+      handleDynamicUpsert(sheet, data, targetId);
     }
 
     return jsonResponse({
       success: true,
-      message: 'تم تحديث السجل بنجاح في Google Sheets',
+      message: 'تم تحديث السجل وتوسيع الأعمدة بنجاح في Google Sheets',
+      sheet: targetSheetName,
       timestamp: new Date().toISOString()
     });
 
@@ -173,20 +297,77 @@ function doPost(e) {
   }
 }
 
-function getSheetNameForTable(table) {
-  switch (table) {
-    case 'citizens': return 'سجل_المراجعين_Citizens';
-    case 'requests': return 'طلبات_المواطنين_Requests';
-    case 'interviews': return 'مقابلات_النائب_Interviews';
-    case 'letters': 
-    case 'officialLetters': return 'الكتب_الرسمية_Letters';
-    case 'cheques': return 'صكوك_المساعدات_Cheques';
-    case 'organization': 
-    case 'organizations': return 'السجل_التنظيمي_Org';
-    case 'custom_sections': return 'الأقسام_المخصصة_Sections';
-    case 'custom_records': return 'سجلات_الأقسام_Records';
-    case 'dropdowns': return 'إعدادات_القوائم_Dropdowns';
-    default: return 'سجل_المراجعين_Citizens';
+/**
+ * دالة الإدخال والتحديث الذكية مع الاكتشاف التلقائي للأعمدة الجديدة
+ */
+function handleDynamicUpsert(sheet, item, targetId) {
+  if (!item || typeof item !== 'object') return;
+
+  // 1. استخراج كل المفاتيح القادمة من الكود/الواجهة
+  var itemKeys = Object.keys(item);
+  var preferredFirstCol = item.Citizen_ID ? 'Citizen_ID' : item.Request_ID ? 'Request_ID' : item.Interview_ID ? 'Interview_ID' : item.Letter_ID ? 'Letter_ID' : 'id';
+  
+  var desiredHeaders = [preferredFirstCol];
+  itemKeys.forEach(function(k) {
+    if (k !== preferredFirstCol && desiredHeaders.indexOf(k) === -1) {
+      desiredHeaders.push(k);
+    }
+  });
+
+  // 2. تحديث وتوسيع رؤوس الأعمدة دون المساس برؤوس أخرى
+  var headers = ensureSheetHeaders(sheet, desiredHeaders);
+
+  // 3. البحث عن الصف إن كان موجوداً مسبقاً للتعديل عليه
+  var idToMatch = String(targetId || item[preferredFirstCol] || item.id || '').trim();
+  var foundRow = -1;
+  var lastRow = sheet.getLastRow();
+
+  if (idToMatch && lastRow > 1) {
+    var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]).trim() === idToMatch) {
+        foundRow = i + 2;
+        break;
+      }
+    }
+  }
+
+  // 4. بناء قيم الصف بما يطابق تماماً ترتيب الأعمدة الحالي
+  var existingRowVals = [];
+  if (foundRow > 0) {
+    existingRowVals = sheet.getRange(foundRow, 1, 1, headers.length).getValues()[0];
+  }
+
+  var rowVals = headers.map(function(h, colIdx) {
+    if (item[h] !== undefined && item[h] !== null) {
+      var val = item[h];
+      if (typeof val === 'object') {
+        return JSON.stringify(val);
+      }
+      return val;
+    }
+    // الحفاظ على القيمة القديمة إن لم يتم إرسال قيمة جديدة
+    return (existingRowVals[colIdx] !== undefined) ? existingRowVals[colIdx] : '';
+  });
+
+  if (foundRow > 0) {
+    sheet.getRange(foundRow, 1, 1, rowVals.length).setValues([rowVals]);
+  } else {
+    sheet.appendRow(rowVals);
+  }
+}
+
+function handleDelete(sheet, id) {
+  if (!id) return;
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return;
+
+  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]).trim() === String(id).trim()) {
+      sheet.deleteRow(i + 2);
+      break;
+    }
   }
 }
 
@@ -209,7 +390,6 @@ function getSheetRecords(ss, sheetName) {
       var h = headers[j];
       item[h] = row[j] !== undefined ? row[j] : '';
     }
-    // Normalize aliases
     if (item.FullName && !item.CitizenName) item.CitizenName = item.FullName;
     if (item.Phone1 && !item.CitizenPhone) item.CitizenPhone = item.Phone1;
     records.push(item);
@@ -217,190 +397,30 @@ function getSheetRecords(ss, sheetName) {
   return records;
 }
 
-function handleUpsert(sheet, table, item) {
-  var idCol = 1;
-  var targetId = item.Citizen_ID || item.Request_ID || item.Interview_ID || item.Letter_ID || item.id || item.Org_ID;
-  if (!targetId) {
-    // If no ID, append directly
-    var rowValues = convertItemToRow(table, item);
-    sheet.appendRow(rowValues);
-    return;
-  }
-
-  var lastRow = sheet.getLastRow();
-  var foundRow = -1;
-
-  if (lastRow > 1) {
-    var ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
-    for (var i = 0; i < ids.length; i++) {
-      if (String(ids[i][0]).trim() === String(targetId).trim()) {
-        foundRow = i + 2;
-        break;
-      }
-    }
-  }
-
-  var rowVals = convertItemToRow(table, item);
-
-  if (foundRow > 0) {
-    sheet.getRange(foundRow, 1, 1, rowVals.length).setValues([rowVals]);
-  } else {
-    sheet.appendRow(rowVals);
-  }
-}
-
-function handleDelete(sheet, table, id) {
-  if (!id) return;
-  var lastRow = sheet.getLastRow();
-  if (lastRow <= 1) return;
-
-  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  for (var i = 0; i < ids.length; i++) {
-    if (String(ids[i][0]).trim() === String(id).trim()) {
-      sheet.deleteRow(i + 2);
-      break;
-    }
-  }
-}
-
-function convertItemToRow(table, item) {
-  switch(table) {
-    case 'citizens':
-      return [
-        item.Citizen_ID || '',
-        item.FullName || item.CitizenName || '',
-        item.Phone1 || item.CitizenPhone || '',
-        item.Phone2 || '',
-        item.District || '',
-        item.SubDistrict || '',
-        item.Gender || 'ذكر',
-        item.Rating || 'لائق',
-        item.Job || '',
-        item.Education || '',
-        item.ReferralSource || '',
-        item.CreatedAt || new Date().toISOString().split('T')[0],
-        item.PhotoUrl || ''
-      ];
-    case 'requests':
-      return [
-        item.Request_ID || '',
-        item.Citizen_ID || '',
-        item.CitizenName || item.FullName || '',
-        item.CitizenPhone || item.Phone1 || '',
-        item.Entity || '',
-        item.RequestStatus || 'مستلم',
-        item.ProcessingStatus || 'قيد التدقيق',
-        item.Priority || 'عادي',
-        item.Details || '',
-        item.CreatedAt || new Date().toISOString().split('T')[0],
-        item.CreatedBy || 'الإدارة'
-      ];
-    case 'interviews':
-      return [
-        item.Interview_ID || '',
-        item.Citizen_ID || '',
-        item.FullName || item.CitizenName || '',
-        item.InterviewDate || item.Date || '',
-        item.Status || 'مكتملة',
-        item.CreatedAt || new Date().toISOString().split('T')[0]
-      ];
-    case 'letters':
-    case 'officialLetters':
-      return [
-        item.Letter_ID || '',
-        item.Letter_Number || item.LetterNumber || '',
-        item.Letter_Date || item.LetterDate || '',
-        item.To_Entity || item.Recipient || '',
-        item.Subject || '',
-        item.Recipient || '',
-        item.Status || 'صادر',
-        item.ClerkName || 'الطباعة'
-      ];
-    case 'cheques':
-      return [
-        item.id || item.Cheque_ID || '',
-        item.ChequeNumber || '',
-        item.Citizen_ID || '',
-        item.CitizenName || '',
-        item.Amount || 0,
-        item.BankName || '',
-        item.Purpose || '',
-        item.Status || 'مصروف',
-        item.IssueDate || '',
-        item.DueDate || ''
-      ];
-    case 'organization':
-    case 'organizations':
-      return [
-        item.Citizen_ID || '',
-        item.FullName || '',
-        item.OrgRating || item.Rating || 'A',
-        item.UpdatedAt || new Date().toISOString()
-      ];
-    case 'custom_sections':
-      return [
-        item.id || '',
-        item.title || '',
-        item.description || '',
-        item.icon || '',
-        item.badgeColor || '',
-        JSON.stringify(item.fields || []),
-        item.createdAt || ''
-      ];
-    case 'custom_records':
-      return [
-        item.id || '',
-        item.sectionId || '',
-        JSON.stringify(item.data || {}),
-        item.createdAt || '',
-        item.createdBy || ''
-      ];
-    default:
-      return [
-        item.id || item.Citizen_ID || item.Request_ID || '',
-        JSON.stringify(item),
-        new Date().toISOString()
-      ];
-  }
-}
-
 function handleBulkSync(ss, allData) {
-  if (allData.citizens && allData.citizens.length > 0) {
-    var cSheet = ss.getSheetByName('سجل_المراجعين_Citizens');
-    if (cSheet) {
-      if (cSheet.getLastRow() > 1) {
-        cSheet.getRange(2, 1, cSheet.getLastRow() - 1, cSheet.getLastColumn()).clearContent();
-      }
-      allData.citizens.forEach(function(c) { handleUpsert(cSheet, 'citizens', c); });
+  if (!allData || typeof allData !== 'object') return;
+
+  var mapping = [
+    { key: 'citizens', name: 'سجل_المراجعين_Citizens' },
+    { key: 'requests', name: 'طلبات_المواطنين_Requests' },
+    { key: 'interviews', name: 'مقابلات_النائب_Interviews' },
+    { key: 'officialLetters', name: 'الكتب_الرسمية_Letters' },
+    { key: 'cheques', name: 'صكوك_المساعدات_Cheques' },
+    { key: 'organizationRecords', name: 'السجل_التنظيمي_Org' },
+    { key: 'customSections', name: 'الأقسام_المخصصة_Sections' },
+    { key: 'customRecords', name: 'سجلات_الأقسام_Records' }
+  ];
+
+  mapping.forEach(function(m) {
+    var items = allData[m.key];
+    if (Array.isArray(items) && items.length > 0) {
+      var sheet = ss.getSheetByName(m.name);
+      if (!sheet) sheet = ss.insertSheet(m.name);
+      items.forEach(function(it) {
+        handleDynamicUpsert(sheet, it, it.id || it.Citizen_ID || it.Request_ID || it.Interview_ID || it.Letter_ID);
+      });
     }
-  }
-  if (allData.requests && allData.requests.length > 0) {
-    var rSheet = ss.getSheetByName('طلبات_المواطنين_Requests');
-    if (rSheet) {
-      if (rSheet.getLastRow() > 1) {
-        rSheet.getRange(2, 1, rSheet.getLastRow() - 1, rSheet.getLastColumn()).clearContent();
-      }
-      allData.requests.forEach(function(r) { handleUpsert(rSheet, 'requests', r); });
-    }
-  }
-  if (allData.interviews && allData.interviews.length > 0) {
-    var iSheet = ss.getSheetByName('مقابلات_النائب_Interviews');
-    if (iSheet) {
-      allData.interviews.forEach(function(item) { handleUpsert(iSheet, 'interviews', item); });
-    }
-  }
-  if (allData.officialLetters && allData.officialLetters.length > 0) {
-    var lSheet = ss.getSheetByName('الكتب_الرسمية_Letters');
-    if (lSheet) {
-      allData.officialLetters.forEach(function(item) { handleUpsert(lSheet, 'letters', item); });
-    }
-  }
-  if (allData.cheques && allData.cheques.length > 0) {
-    var chSheet = ss.getSheetByName('صكوك_المساعدات_Cheques');
-    if (chSheet) {
-      allData.cheques.forEach(function(item) { handleUpsert(chSheet, 'cheques', item); });
-    }
-  }
+  });
 }
 
 function handleDriveUpload(contents) {
@@ -453,10 +473,10 @@ function jsonResponse(data) {
 export const APPS_SCRIPT_PRODUCTION_CODE = GOOGLE_APPS_SCRIPT_SOURCE;
 
 export const APPS_SCRIPT_SETUP_GUIDE = [
-  'افتح جدول Google Sheets المخصص لبيانات مكتب النائب',
-  'من القائمة اختر Extensions (ملحقات) ثم Apps Script',
-  'احذف أي كود قديم والصق الكود البرمجي الكامل أعلاه في ملف Code.gs ثم احفظ (Ctrl + S)',
-  'اضغط زر Deploy (نشر) بالأعلى ثم New deployment (نشر جديد) واختر نوع Web app (تطبيق ويب)',
-  'في خانة Execute as اختر Me (حسابي)، وفي Who has access اختر Anyone (أي شخص)',
-  'انسخ رابط تطبيق الويب (Web App URL) والصقه في المنظومة لتعمل المزامنة والجلب والإرسال فورياً بدون أي توقف!'
+  'افتح ملف Google Sheets المخصص لمنظومة مكتب النائب',
+  'من القائمة العلوية اضغط على Extensions (الإضافات) ثم اختر Apps Script',
+  'احذف أي كود موجود في نافذة Code.gs والصق هذا الكود الكامل بالكامل ثم احفظ (Ctrl + S)',
+  'اضغط على زر Deploy (نشر) بالأعلى واختر New deployment (نشر جديد)',
+  'اضغط على ترس الإعدادات واختر Web app (تطبيق ويب)، واجعل Execute as: Me (حسابي)، و Who has access: Anyone (أي شخص)',
+  'اضغط Deploy وامنح الأذونات، ثم انسخ رابط الويب الممنوح وضعه في متغير VITE_GOOGLE_APPS_SCRIPT_URL في Vercel أو في إعدادات المنظومة!'
 ];
