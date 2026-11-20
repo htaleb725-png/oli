@@ -160,9 +160,9 @@ export async function autoSyncAllSchemas(customSections: CustomSection[] = []): 
       }
     });
 
-    // 2. Persist active schema manifest in Firebase Firestore (_system_schemas) with merge: true
+    // 2. Persist active schema manifest in Firebase Firestore (settings/schema_manifest) with merge: true
     try {
-      await setDoc(doc(db, '_system_schemas', 'active_manifest'), {
+      await setDoc(doc(db, 'settings', 'schema_manifest'), {
         sections: allSections,
         totalSections: allSections.length,
         syncedAt: new Date().toISOString(),

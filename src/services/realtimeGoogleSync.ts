@@ -32,22 +32,24 @@ export interface SyncPayload {
 const syncQueue: SyncPayload[] = [];
 let isProcessingQueue = false;
 
+const stripQuotes = (val?: string) => (val || '').replace(/^["']|["']$/g, '').trim();
+
 // Helper to reliably resolve Google Sheet ID from multiple fallbacks
 export function resolveTargetSheetId(customSheetId?: string): string {
-  if (customSheetId && customSheetId.trim()) return customSheetId.trim();
+  if (customSheetId && customSheetId.trim()) return stripQuotes(customSheetId);
   // 1. Check environment variable (Vercel)
   const envSheetId = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID;
-  if (envSheetId && envSheetId.trim()) return envSheetId.trim();
+  if (envSheetId && envSheetId.trim()) return stripQuotes(envSheetId);
 
   if (typeof window !== 'undefined') {
     const direct = localStorage.getItem('al_nashi_sheet_id');
-    if (direct && direct.trim()) return direct.trim();
+    if (direct && direct.trim()) return stripQuotes(direct);
     try {
       const savedSettings = localStorage.getItem('al_nashi_office_settings');
       if (savedSettings) {
         const parsed = JSON.parse(savedSettings);
-        if (parsed.googleSheetId && parsed.googleSheetId.trim()) return parsed.googleSheetId.trim();
-        if (parsed.activeGoogleSheetId && parsed.activeGoogleSheetId.trim()) return parsed.activeGoogleSheetId.trim();
+        if (parsed.googleSheetId && parsed.googleSheetId.trim()) return stripQuotes(parsed.googleSheetId);
+        if (parsed.activeGoogleSheetId && parsed.activeGoogleSheetId.trim()) return stripQuotes(parsed.activeGoogleSheetId);
       }
     } catch {}
   }
@@ -56,20 +58,20 @@ export function resolveTargetSheetId(customSheetId?: string): string {
 
 // Helper to reliably resolve Apps Script Webhook URL from multiple fallbacks
 export function resolveAppsScriptUrl(customUrl?: string): string {
-  if (customUrl && customUrl.trim()) return customUrl.trim();
+  if (customUrl && customUrl.trim()) return stripQuotes(customUrl);
   // 1. Check environment variable (Vercel)
   const envUrl = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL;
-  if (envUrl && envUrl.trim()) return envUrl.trim();
+  if (envUrl && envUrl.trim()) return stripQuotes(envUrl);
 
   if (typeof window !== 'undefined') {
     const direct = localStorage.getItem('al_nashi_apps_script_url');
-    if (direct && direct.trim()) return direct.trim();
+    if (direct && direct.trim()) return stripQuotes(direct);
     try {
       const savedSettings = localStorage.getItem('al_nashi_office_settings');
       if (savedSettings) {
         const parsed = JSON.parse(savedSettings);
-        if (parsed.appsScriptUrl && parsed.appsScriptUrl.trim()) return parsed.appsScriptUrl.trim();
-        if (parsed.googleAppsScriptUrl && parsed.googleAppsScriptUrl.trim()) return parsed.googleAppsScriptUrl.trim();
+        if (parsed.appsScriptUrl && parsed.appsScriptUrl.trim()) return stripQuotes(parsed.appsScriptUrl);
+        if (parsed.googleAppsScriptUrl && parsed.googleAppsScriptUrl.trim()) return stripQuotes(parsed.googleAppsScriptUrl);
       }
     } catch {}
   }

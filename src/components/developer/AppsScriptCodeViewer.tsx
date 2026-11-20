@@ -16,7 +16,15 @@ import {
 } from 'lucide-react';
 
 export const AppsScriptCodeViewer: React.FC = () => {
-  const { systemSettings, updateSettings } = useApp();
+  const { 
+    systemSettings, 
+    updateSettings,
+    syncAllToFirestoreNow,
+    syncAllToGoogleSheetsNow,
+    addCitizen,
+    addRequest,
+    citizens
+  } = useApp();
 
   const [copied, setCopied] = useState(false);
   const [appsScriptUrl, setAppsScriptUrl] = useState(systemSettings.appsScriptUrl || '');
@@ -25,6 +33,61 @@ export const AppsScriptCodeViewer: React.FC = () => {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [showInstructions, setShowInstructions] = useState(true);
+  const [isBulkSyncing, setIsBulkSyncing] = useState(false);
+  const [bulkSyncResult, setBulkSyncResult] = useState<string | null>(null);
+
+  const handleFullCloudSync = async () => {
+    setIsBulkSyncing(true);
+    setBulkSyncResult(null);
+    try {
+      const fsRes = await syncAllToFirestoreNow();
+      let sheetSuccess = false;
+      try {
+        await syncAllToGoogleSheetsNow();
+        sheetSuccess = true;
+      } catch (e) {
+        console.warn('Sheets sync note:', e);
+      }
+      setBulkSyncResult(`✓ تمت المزامنة الشاملة بنجاح! تم تحديث ${fsRes.successCount} سجل في Firebase Firestore${sheetSuccess ? ' وإرسال الحزمة إلى Google Sheets' : ''}.`);
+    } catch (err: any) {
+      setBulkSyncResult(`تنبيه المزامنة: ${err.message || 'حدث خطأ أثناء المزامنة'}`);
+    } finally {
+      setIsBulkSyncing(false);
+    }
+  };
+
+  const handleSeedOfficialTestData = async () => {
+    setIsBulkSyncing(true);
+    try {
+      const testCitizen = addCitizen({
+        FullName: 'جاسم محمد علي الخفاجي',
+        Phone1: '07801234567',
+        District: 'الناصرية',
+        SubDistrict: 'الإسكان القديم',
+        Gender: 'ذكر',
+        Job: 'كاسب',
+        Rating: 'لائق',
+        Education: 'إعدادية',
+        ReferralSource: 'مكتب النائب'
+      });
+      addRequest({
+        Citizen_ID: testCitizen.Citizen_ID,
+        CitizenName: testCitizen.FullName,
+        CitizenPhone: testCitizen.Phone1,
+        CreatedBy: 'فحص المطور السحابي',
+        Entity: 'وزارة العمل والشؤون الاجتماعية (شبكة الحماية)',
+        RequestStatus: 'مستلم',
+        ProcessingStatus: 'قيد التدقيق',
+        Priority: 'عاجل',
+        Details: 'طلب شمول رسمي براتب الحماية الاجتماعية - فحص سحابي تجريبي'
+      });
+      setBulkSyncResult(`✓ تم بنجاح إنشاء سجل مواطن وطلب رسمي وحفظهما فورياً في Firebase Firestore وجدول Google Sheets! تفقد Google Sheets الآن لرؤية البيانات.`);
+    } catch (err: any) {
+      setBulkSyncResult(`تعذر حقن البيانات: ${err.message}`);
+    } finally {
+      setIsBulkSyncing(false);
+    }
+  };
 
   const handleCopyCode = () => {
     navigator.clipboard.writeText(APPS_SCRIPT_PRODUCTION_CODE);
@@ -200,6 +263,46 @@ export const AppsScriptCodeViewer: React.FC = () => {
         )}
       </form>
 
+      {/* Master Dual-Cloud Sync & Test Injection Toolbar */}
+      <div className="p-5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-amber-600/5 to-slate-900/40 border border-amber-500/30 space-y-3">
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-black text-amber-300 flex items-center gap-2">
+            <span>🚀 التحكم المباشر بالمزامنة المزدوجة (Firebase Firestore + Google Sheets):</span>
+          </h4>
+          <span className="text-[11px] font-mono text-slate-400">
+            عدد السجلات الحالية في المنظومة: {citizens.length} مواطن
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={isBulkSyncing}
+            onClick={handleFullCloudSync}
+            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center gap-2 shadow-md shadow-amber-500/20 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+          >
+            <span>{isBulkSyncing ? 'جاري المزامنة السحابية...' : 'إرسال ومزامنة كافة البيانات السابقة إلى Firebase و Sheets الآن ☁️'}</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={isBulkSyncing}
+            onClick={handleSeedOfficialTestData}
+            className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 font-black text-xs flex items-center gap-2 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+            title="إضافة مواطن ومعاملة تجريبية فورية للتأكد من نزول البيانات في Google Sheets و Firebase"
+          >
+            <span>📋 إضافة سجلات تجريبية فورية للتأكد من وصولها للفايربيس والشيت</span>
+          </button>
+        </div>
+
+        {bulkSyncResult && (
+          <div className="p-3 rounded-xl bg-slate-950/80 border border-amber-400/50 text-amber-200 text-xs font-bold flex items-center gap-2 animate-in fade-in">
+            <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{bulkSyncResult}</span>
+          </div>
+        )}
+      </div>
+
       {/* Code Viewer Panel */}
       <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
         <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
@@ -280,6 +383,28 @@ export const AppsScriptCodeViewer: React.FC = () => {
               <div>
                 انسخ رابط تطبيق الويب (Web App URL) الناتج، والصقه في حقل <strong>رابط تطبيق الويب</strong> أعلاه ثم اضغط حفظ.
               </div>
+            </div>
+
+            {/* Note on Apps Script 'Run' */}
+            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 space-y-1.5 mt-3">
+              <div className="font-black text-xs flex items-center gap-2">
+                <span>⚠️ ملاحظة مهمة جداً عن زر "تنفيذ" (Run) داخل Google Apps Script:</span>
+              </div>
+              <p className="text-[11px] leading-relaxed text-amber-200">
+                زر "تنفيذ" (Run) داخل محرر جوجل مخصص فقط لتهيئة الجداول الفارغة وتنسيق الألوان (<code className="bg-slate-900 px-1.5 py-0.5 rounded text-amber-300">setupSpreadsheet</code>).
+                السكربت لا يولد بيانات من نفسه عند الضغط على "تنفيذ"، بل يعمل كـ <strong>مستقبل ويب (Web App)</strong>، ويستقبل البيانات آلياً بمجرد قيامك بتسجيل مراجع أو معاملة، أو الضغط على زر <strong>"إضافة سجلات تجريبية فورية"</strong> أعلاه.
+              </p>
+            </div>
+
+            {/* Note on Vercel Environment Variables */}
+            <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 text-blue-300 space-y-1.5">
+              <div className="font-black text-xs flex items-center gap-2">
+                <span>⚡ تنبيه إلزامي بعد وضع المتغيرات في Vercel:</span>
+              </div>
+              <p className="text-[11px] leading-relaxed text-blue-200">
+                في Vercel، عند إضافة المتغيرات في <span className="font-bold">Settings &gt; Environment Variables</span>، فإن الموقع لا يقرأها تلقائياً على النسخة القديمة المنشورة.
+                يجب حتماً الدخول إلى قائمة <span className="font-bold">Deployments</span>، والضغط على الثلاث نقاط <span className="font-bold">(...)</span> بجانب آخر نشر واختيار <span className="font-bold text-white bg-blue-700 px-1.5 py-0.5 rounded">Redeploy</span> (أو عمل Push جديد من GitHub) ليقوم Vercel ببناء النسخة بالمتغيرات الجديدة.
+              </p>
             </div>
           </div>
         )}

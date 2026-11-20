@@ -267,6 +267,17 @@ service cloud.firestore {
       allow read, write: if isValidId(recordId);
     }
 
+    // SYSTEM SCHEMAS REGISTRY (سجل الأقسام والمخططات التلقائية)
+    match /_system_schemas/{schemaId} {
+      allow read, write: if isValidId(schemaId);
+    }
+    match /{office}__system_schemas/{schemaId} {
+      allow read, write: if isValidId(schemaId);
+    }
+    match /system_schemas/{schemaId} {
+      allow read, write: if isValidId(schemaId);
+    }
+
     // TEST CONNECTION
     match /test/{docId} {
       allow read, write: if isValidId(docId);
