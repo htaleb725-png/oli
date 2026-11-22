@@ -105,9 +105,18 @@ export const GlobalSearchArchiveModule: React.FC = () => {
   const isReception = ['reception', 'reception_officer'].includes(currentUser?.Role || '');
 
   const filteredCitizens = useMemo(() => {
+    const parseTs = (c: Citizen) => {
+      const raw = String(c.UpdatedAt || c.CreatedAt || '').trim();
+      if (!raw) return 0;
+      let t = Date.parse(raw);
+      if (isNaN(t) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(raw)) {
+        t = Date.parse(raw.replace(' ', 'T'));
+      }
+      return isNaN(t) ? 0 : t;
+    };
     const q = searchQuery.toLowerCase().trim();
     const normQ = normArabicStrict(searchQuery);
-    if (!q) return (citizens || []).filter(Boolean);
+    if (!q) return (citizens || []).filter(Boolean).slice().sort((a, b) => parseTs(b) - parseTs(a));
 
     // Pre-index citizenIds that have a matching request for O(n) fast search instead of O(n*m) nested loop!
     const matchingReqCitizenIds = new Set<string>();
@@ -140,7 +149,7 @@ export const GlobalSearchArchiveModule: React.FC = () => {
         return true;
       }
       return isAdminOrDirector && matchingReqCitizenIds.has(c.Citizen_ID);
-    });
+    }).sort((a, b) => parseTs(b) - parseTs(a));
   }, [citizens, requests, searchQuery, isAdminOrDirector]);
 
   // Strictly match ONLY this citizen's requests (by exact Citizen_ID or exact normalized full name — NEVER partial substring!)

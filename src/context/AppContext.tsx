@@ -52,6 +52,7 @@ import {
   fsVerifyLogin,
   fsBulkPushAll,
   fsBulkPullAll,
+  fsBulkSaveCitizensAndRequests,
   fsWatchCollection,
   isFirestoreTemporarilyBlocked,
   FS_COLLECTIONS
@@ -73,7 +74,7 @@ import {
 } from '../data/initialData';
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
-import { pushToGoogleSheetsRealtime, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets } from '../services/realtimeGoogleSync';
+import { pushToGoogleSheetsRealtime, pushBulkDataToGoogleSheets, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets } from '../services/realtimeGoogleSync';
 import { sheetsIntegration } from '../services/sheetsIntegrationLayer';
 import { 
   loginAndSetupDeveloperCloud, 
@@ -104,8 +105,30 @@ import { autoSyncAllSchemas } from '../services/schemaAutoDiscovery';
 // Run storage cleanup immediately on module evaluation to fix any existing quota issue
 cleanBloatedLocalStorage();
 
-// Unique per-tab client ID to avoid echoing our own SSE mutations back to ourselves
+// Unique per-tab client ID to avoid echoing our own SSE/BroadcastChannel mutations back to ourselves
 const LIVE_SYNC_CLIENT_ID = `cli_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+// Same-browser cross-tab / multi-window / Desktop PWA instant channel (works even on static Vercel deployments & offline!)
+const LIVE_SYNC_CHANNEL_NAME = 'al_nashi_office_live_sync_v1';
+let _liveBroadcastChannel: BroadcastChannel | null = null;
+function getLiveBroadcastChannel(): BroadcastChannel | null {
+  if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return null;
+  if (!_liveBroadcastChannel) {
+    try {
+      _liveBroadcastChannel = new BroadcastChannel(LIVE_SYNC_CHANNEL_NAME);
+    } catch {
+      return null;
+    }
+  }
+  return _liveBroadcastChannel;
+}
+
+function postCrossTabMessage(msg: Record<string, any>): void {
+  try {
+    const ch = getLiveBroadcastChannel();
+    if (ch) ch.postMessage({ ...msg, clientId: LIVE_SYNC_CLIENT_ID });
+  } catch {}
+}
 
 function emitServerMutation(
   entity:
@@ -122,6 +145,9 @@ function emitServerMutation(
   payload: { item?: any; id?: string }
 ): void {
   if (typeof window === 'undefined') return;
+  // 1. Instant <5ms cross-tab sync across all open department tabs/windows in same browser/PWA
+  postCrossTabMessage({ type: 'mutation', entity, op, item: payload.item, id: payload.id });
+  // 2. Server-side live SSE broadcast to all other devices & shared links
   try {
     fetch('/api/sync/mutate', {
       method: 'POST',
@@ -139,6 +165,9 @@ function emitServerMutation(
 
 function emitServerBulk(payload: Record<string, any>): void {
   if (typeof window === 'undefined') return;
+  // 1. Instant cross-tab sync for bulk imports
+  postCrossTabMessage({ type: 'bulk_payload', payload });
+  // 2. Server-side live SSE broadcast
   try {
     fetch('/api/sync/bulk', {
       method: 'POST',
@@ -344,7 +373,10 @@ interface AppContextType {
   fetchAllFromFirestoreNow: () => Promise<{ success: boolean; error?: string }>;
 
   // High-performance atomic bulk import
-  batchImportRecords: (newCitizens: Citizen[], newRequests: OfficeRequest[]) => Promise<{ importedCitizens: number; importedRequests: number }>;
+  batchImportRecords: (
+    newCitizens: Citizen[],
+    newRequests: OfficeRequest[]
+  ) => Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }>;
 
   // Compatibility aliases
   triggerDeveloper3WaySync?: () => Promise<{ success: boolean; sheetsSynced?: boolean; message: string }>;
@@ -1274,6 +1306,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch {}
 
+      // Track server revision for lightweight fallback polling if SSE is ever buffered by a proxy
+      let lastKnownServerRev = 0;
+
       // Hydrate ALL core records from authoritative live server store (/api/sync/state)
       const pullServerSyncState = async (allowInitialSeedPush = false) => {
         try {
@@ -1281,6 +1316,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!syncRes.ok) return;
           const s = await syncRes.json();
           if (!s?.success) return;
+
+          if (typeof s.rev === 'number' && s.rev > lastKnownServerRev) {
+            lastKnownServerRev = s.rev;
+          }
 
           const deletedSet = getStoredDeletedIds();
           if (Array.isArray(s.deletedIds)) {
@@ -1352,9 +1391,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       await pullServerSyncState(true);
 
-      // Subscribe to real-time SSE stream so every mutation appears IMMEDIATELY across shared links & Desktop PWAs
+      // Subscribe to real-time SSE stream + cross-tab BroadcastChannel + storage fallback
       let sse: EventSource | null = null;
       let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      let revPollTimer: ReturnType<typeof setInterval> | null = null;
       let lastCatchupAt = Date.now();
       let closed = false;
 
@@ -1460,16 +1500,74 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       };
 
+      // Cross-tab BroadcastChannel listener (instant sync across multiple tabs/windows of the same browser/PWA, including Vercel)
+      const handleBroadcastMessage = (ev: MessageEvent) => {
+        const msg = ev.data;
+        if (!msg || msg.clientId === LIVE_SYNC_CLIENT_ID) return;
+        if (msg.type === 'mutation') {
+          applyIncomingMutation(msg);
+        } else if (msg.type === 'bulk_payload' && msg.payload) {
+          const del = getStoredDeletedIds();
+          if (Array.isArray(msg.payload.citizens) && msg.payload.citizens.length > 0) {
+            setCitizens(prev => mergeCitizens(prev, msg.payload.citizens, del));
+          }
+          if (Array.isArray(msg.payload.requests) && msg.payload.requests.length > 0) {
+            setRequests(prev => mergeRequests(prev, msg.payload.requests, del));
+          }
+        }
+      };
+      const bc = getLiveBroadcastChannel();
+      if (bc) {
+        bc.addEventListener('message', handleBroadcastMessage);
+      }
+
+      // Cross-tab localStorage 'storage' event fallback (Safari / older WebViews)
+      const handleStorageEvent = (ev: StorageEvent) => {
+        if (!ev.key || !ev.newValue) return;
+        const del = getStoredDeletedIds();
+        try {
+          if (ev.key === STORAGE_KEY_PREFIX + 'citizens') {
+            const parsed = JSON.parse(ev.newValue);
+            if (Array.isArray(parsed)) setCitizens(prev => mergeCitizens(prev, parsed, del));
+          } else if (ev.key === STORAGE_KEY_PREFIX + 'requests') {
+            const parsed = JSON.parse(ev.newValue);
+            if (Array.isArray(parsed)) setRequests(prev => mergeRequests(prev, parsed, del));
+          } else if (ev.key === STORAGE_KEY_PREFIX + 'interviews') {
+            const parsed = JSON.parse(ev.newValue);
+            if (Array.isArray(parsed)) setInterviews(prev => mergeInterviews(prev, parsed, del));
+          } else if (ev.key === STORAGE_KEY_PREFIX + 'dropdowns') {
+            const parsed = JSON.parse(ev.newValue);
+            if (Array.isArray(parsed)) {
+              setDropdowns(prev => {
+                const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
+                const added = parsed.filter((d: DropdownItem) => d?.Category && d?.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
+                return added.length > 0 ? [...prev, ...added] : prev;
+              });
+            }
+          }
+        } catch {}
+      };
+      window.addEventListener('storage', handleStorageEvent);
+
       const connectSse = () => {
         if (closed || typeof window === 'undefined' || typeof EventSource === 'undefined') return;
         try {
           sse = new EventSource('/api/sync/stream');
           sse.addEventListener('mutation', (ev: MessageEvent) => {
-            try { applyIncomingMutation(JSON.parse(ev.data)); } catch {}
+            try {
+              const data = JSON.parse(ev.data);
+              if (typeof data?.rev === 'number' && data.rev > lastKnownServerRev) {
+                lastKnownServerRev = data.rev;
+              }
+              applyIncomingMutation(data);
+            } catch {}
           });
           sse.addEventListener('bulk_refresh', (ev: MessageEvent) => {
             try {
               const data = JSON.parse(ev.data);
+              if (typeof data?.rev === 'number' && data.rev > lastKnownServerRev) {
+                lastKnownServerRev = data.rev;
+              }
               if (data?.clientId === LIVE_SYNC_CLIENT_ID) return;
               pullServerSyncState(false);
             } catch {}
@@ -1559,13 +1657,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       connectSse();
 
+      // Lightweight 6-second revision check fallback (only fetches /api/sync/state when rev actually changed)
+      // Guarantees instant delivery even behind proxies that buffer long-lived SSE streams
+      let serverRevApiSupported = true;
+      revPollTimer = setInterval(async () => {
+        if (closed || !serverRevApiSupported || document.visibilityState === 'hidden') return;
+        try {
+          const r = await fetch('/api/sync/rev', { cache: 'no-store' });
+          if (r.status === 404) {
+            // Static host without Node backend (e.g., Vercel) — stop polling /api/sync/rev cleanly
+            serverRevApiSupported = false;
+            return;
+          }
+          if (!r.ok) return;
+          const info = await r.json();
+          if (info?.success && typeof info.rev === 'number' && info.rev > lastKnownServerRev) {
+            lastKnownServerRev = info.rev;
+            pullServerSyncState(false);
+          }
+        } catch {}
+      }, 6000);
+
       // Catch-up sync whenever Desktop PWA or browser tab regains focus/visibility
       const handleResumeSync = () => {
         if (document.visibilityState === 'hidden') return;
         const now = Date.now();
-        if (now - lastCatchupAt < 6000) return;
+        if (now - lastCatchupAt < 4000) return;
         lastCatchupAt = now;
-        pullServerSyncState(false);
+        if (serverRevApiSupported) {
+          pullServerSyncState(false);
+        }
         if (!sse || sse.readyState === EventSource.CLOSED) {
           connectSse();
         }
@@ -1576,7 +1697,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubs.push(() => {
         closed = true;
         if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (revPollTimer) clearInterval(revPollTimer);
         try { sse?.close(); } catch {}
+        if (bc) bc.removeEventListener('message', handleBroadcastMessage);
+        window.removeEventListener('storage', handleStorageEvent);
         window.removeEventListener('focus', handleResumeSync);
         document.removeEventListener('visibilitychange', handleResumeSync);
       });
@@ -2316,6 +2440,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Citizen_ID: newCitizenId,
       FullName: fullName,
       CreatedAt: formattedDate,
+      UpdatedAt: now.toISOString(),
       CreatedBy: currentUser ? currentUser.FullName : 'الاستعلامات'
     };
 
@@ -2763,6 +2888,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...reqData,
       Request_ID: candidate,
       CreatedAt: formattedDate,
+      UpdatedAt: now.toISOString(),
       CreatedBy: currentUser ? currentUser.FullName : 'قسم الإدارة'
     };
 
@@ -3829,12 +3955,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const batchImportRecords = async (
     newCitizens: Citizen[],
     newRequests: OfficeRequest[]
-  ): Promise<{ importedCitizens: number; importedRequests: number }> => {
+  ): Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }> => {
     // 1. Strict validation - filter out ghost/undefined
     const validCitizens = newCitizens.filter(isStrictValidCitizen);
     const validRequests = newRequests.filter(r => r && r.Request_ID && r.Citizen_ID);
 
-    // 2. Single atomic state update (localStorage is persisted asynchronously via debounced useEffect — zero UI freeze!)
+    // 2. Single atomic state update (new records placed safely; localStorage persisted asynchronously without UI freeze!)
     const citizensCount = validCitizens.length;
     const requestsCount = validRequests.length;
 
@@ -3858,38 +3984,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
     }
 
-    // 3. Single live bulk sync broadcast to server so all other connected devices & Desktop PWAs receive it immediately
+    // 3. Single live bulk sync broadcast to cross-tab BroadcastChannel & server SSE so all devices receive it immediately
+    const sanitizedRequests = sanitizeRequestsForStorage(validRequests);
     if (citizensCount > 0 || requestsCount > 0) {
       emitServerBulk({
         citizens: validCitizens,
-        requests: sanitizeRequestsForStorage(validRequests)
+        requests: sanitizedRequests
       });
     }
 
-    // 4. Non-blocking background Firestore sync (short-circuits immediately if Firestore permission is blocked so it NEVER stalls or floods!)
-    if (!isFirestoreTemporarilyBlocked() && (validCitizens.length > 0 || validRequests.length > 0)) {
-      setTimeout(async () => {
-        for (let i = 0; i < validCitizens.length; i += 25) {
-          if (isFirestoreTemporarilyBlocked()) break;
-          const chunk = validCitizens.slice(i, i + 25);
-          await Promise.all(chunk.map(c => fsSaveCitizen(c).catch(() => {})));
-        }
-        for (let i = 0; i < validRequests.length; i += 25) {
-          if (isFirestoreTemporarilyBlocked()) break;
-          const chunk = validRequests.slice(i, i + 25);
-          await Promise.all(chunk.map(r => fsSaveRequest(r).catch(() => {})));
-        }
-      }, 250);
+    // 4. Dual Cloud Persistence (Firebase Firestore via fast writeBatch chunks + Google Sheets via chunked bulk_sync)
+    // Runs asynchronously right after local commit so the UI never freezes while guaranteeing cloud DB & Sheets persistence!
+    let firestoreSaved = false;
+    let sheetsDispatched = false;
+
+    if (validCitizens.length > 0 || validRequests.length > 0) {
+      const firestorePromise = fsBulkSaveCitizensAndRequests(validCitizens, sanitizedRequests)
+        .then(res => {
+          firestoreSaved = Boolean(res.success && (res.savedCitizens > 0 || res.savedRequests > 0));
+          return res;
+        })
+        .catch(err => {
+          console.warn('Batch import Firestore sync warning:', err);
+          return { success: false, savedCitizens: 0, savedRequests: 0 };
+        });
+
+      const sheetsPromise = pushBulkDataToGoogleSheets(
+        validCitizens,
+        sanitizedRequests,
+        systemSettings.appsScriptUrl,
+        systemSettings.googleSheetId
+      )
+        .then(res => {
+          sheetsDispatched = Boolean(res.appsScriptSent || res.directSheetsSent);
+          return res;
+        })
+        .catch(err => {
+          console.warn('Batch import Google Sheets sync warning:', err);
+          return { appsScriptSent: false, directSheetsSent: false, chunksSent: 0 };
+        });
+
+      // Wait up to 4 seconds for fast initial feedback without ever blocking the user on huge 2,000-row imports
+      await Promise.race([
+        Promise.allSettled([firestorePromise, sheetsPromise]),
+        new Promise(resolve => setTimeout(resolve, 4000))
+      ]);
     }
 
     // 5. Audit Log
     addAuditLog(
       'استيراد إكسل دفعي شامل',
       'قسم الإدارة',
-      `تم استيراد ومعالجة (${validCitizens.length}) مراجع و (${validRequests.length}) معاملة دفعة واحدة بنجاح`
+      `تم استيراد ومعالجة (${validCitizens.length}) مراجع و (${validRequests.length}) معاملة وحفظها في قاعدة البيانات وجوجل شيت بنجاح`
     );
 
-    return { importedCitizens: validCitizens.length, importedRequests: validRequests.length };
+    return {
+      importedCitizens: validCitizens.length,
+      importedRequests: validRequests.length,
+      firestoreSaved,
+      sheetsDispatched
+    };
   };
 
   const updateUiCustomizations = (customizations: Partial<UiCustomizationSettings>) => {

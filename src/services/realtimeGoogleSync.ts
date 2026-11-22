@@ -195,6 +195,153 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
 }
 
 /**
+ * Chunked non-blocking bulk push to Google Sheets (supports both Apps Script Web App & Direct Google Sheets REST API).
+ * Used by Excel Filter/Import so all filtered citizens and requests are persisted to Google Sheets automatically
+ * without hitting Apps Script payload limits or freezing the browser.
+ */
+export async function pushBulkDataToGoogleSheets(
+  citizensList: Citizen[],
+  requestsList: OfficeRequest[],
+  customAppsScriptUrl?: string,
+  customSheetId?: string
+): Promise<{ appsScriptSent: boolean; directSheetsSent: boolean; chunksSent: number }> {
+  const resolvedUrl = resolveAppsScriptUrl(customAppsScriptUrl);
+  const resolvedSheetId = resolveTargetSheetId(customSheetId);
+  let appsScriptSent = false;
+  let directSheetsSent = false;
+  let chunksSent = 0;
+
+  // Strip heavy base64 images before sending over webhook/REST
+  const cleanCitizens = (citizensList || []).map(c => {
+    const copy: any = { ...c };
+    if (typeof copy.PhotoUrl === 'string' && copy.PhotoUrl.startsWith('data:')) delete copy.PhotoUrl;
+    return copy;
+  });
+  const cleanRequests = (requestsList || []).map(r => {
+    const copy: any = { ...r };
+    if (typeof copy.AttachedRequestImage === 'string' && copy.AttachedRequestImage.startsWith('data:')) {
+      delete copy.AttachedRequestImage;
+    }
+    if (Array.isArray(copy.ScanAttachments)) {
+      copy.ScanAttachments = [];
+    }
+    return copy;
+  });
+
+  // 1. Push in chunks of 80 rows to Google Apps Script Webhook (bulk_sync merges & upserts safely without wiping!)
+  if (resolvedUrl && resolvedUrl.startsWith('http') && (cleanCitizens.length > 0 || cleanRequests.length > 0)) {
+    const CHUNK = 80;
+    const maxLen = Math.max(cleanCitizens.length, cleanRequests.length);
+    for (let i = 0; i < maxLen; i += CHUNK) {
+      const citSlice = cleanCitizens.slice(i, i + CHUNK);
+      const reqSlice = cleanRequests.slice(i, i + CHUNK);
+      if (citSlice.length === 0 && reqSlice.length === 0) continue;
+      try {
+        await fetch(resolvedUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'bulk_sync',
+            data: {
+              citizens: citSlice,
+              requests: reqSlice
+            },
+            timestamp: new Date().toISOString(),
+            source: 'al_nashi_excel_filter_import'
+          })
+        });
+        appsScriptSent = true;
+        chunksSent++;
+      } catch (err) {
+        console.warn('Apps Script bulk chunk sync warning:', err);
+      }
+      // Small breathing delay between chunks so Apps Script lock releases cleanly
+      if (i + CHUNK < maxLen) {
+        await new Promise(resolve => setTimeout(resolve, 450));
+      }
+    }
+  }
+
+  // 2. Also append directly via Google Sheets REST API if OAuth access token is active
+  if (resolvedSheetId && (cleanCitizens.length > 0 || cleanRequests.length > 0)) {
+    try {
+      const token = await getAccessToken();
+      if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
+        if (cleanCitizens.length > 0) {
+          const citRows = cleanCitizens.map(c => [
+            c.Citizen_ID || '',
+            c.FullName || '',
+            c.Phone1 || '',
+            c.Phone2 || '',
+            c.Gender || 'ذكر',
+            c.Surname || '',
+            c.District || '',
+            c.SubDistrict || '',
+            c.ResidentialArea || '',
+            c.Job || '',
+            c.Education || '',
+            c.Rating || '',
+            c.ReferralSource || '',
+            c.CreatedAt || '',
+            c.CreatedBy || ''
+          ]);
+          const encCitRange = encodeURIComponent('سجل_المراجعين_Citizens!A:O');
+          const resCit = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${resolvedSheetId}/values/${encCitRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ values: citRows })
+            }
+          );
+          if (resCit.ok) directSheetsSent = true;
+        }
+        if (cleanRequests.length > 0) {
+          const reqRows = cleanRequests.map(r => [
+            r.Request_ID || '',
+            r.Citizen_ID || '',
+            r.CitizenName || '',
+            r.CitizenPhone || '',
+            r.Entity || '',
+            r.Details || '',
+            r.OutgoingNumber || '',
+            r.OutgoingDate || '',
+            r.RequestStatus || 'مستلم',
+            r.ProcessingStatus || 'منجز',
+            r.Priority || 'عام',
+            r.DirectorDecision || 'مؤرشف',
+            r.CreatedAt || '',
+            r.CreatedBy || '',
+            r.OtherNotes || ''
+          ]);
+          const encReqRange = encodeURIComponent('طلبات_المواطنين_Requests!A:O');
+          const resReq = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${resolvedSheetId}/values/${encReqRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ values: reqRows })
+            }
+          );
+          if (resReq.ok) directSheetsSent = true;
+        }
+      }
+    } catch (err) {
+      console.warn('Direct Sheets bulk append warning:', err);
+    }
+  }
+
+  return { appsScriptSent, directSheetsSent, chunksSent };
+}
+
+/**
  * Pull all data from Google Apps Script Web App (if configured with doGet)
  */
 export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promise<{

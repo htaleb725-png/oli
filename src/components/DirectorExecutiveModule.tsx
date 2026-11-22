@@ -123,11 +123,21 @@ export const DirectorExecutiveModule: React.FC = () => {
     return map;
   }, [citizens]);
 
-  // Strictly exclude Excel-imported / filtered archive records from Director's daily queue
+  // Strictly exclude Excel-imported / filtered archive records from Director's daily queue, sorted newest-first
   const activeDirectorRequests = useMemo(() => {
-    return (requests || []).filter(r =>
-      r && !r.IsHistoricalImported && !r.IsArchived && r.DirectorDecision !== 'مؤرشف'
-    );
+    const parseTs = (r: OfficeRequest) => {
+      const raw = String(r.UpdatedAt || r.CreatedAt || '').trim();
+      if (!raw) return 0;
+      let t = Date.parse(raw);
+      if (isNaN(t) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(raw)) {
+        t = Date.parse(raw.replace(' ', 'T'));
+      }
+      return isNaN(t) ? 0 : t;
+    };
+    return (requests || [])
+      .filter(r => r && !r.IsHistoricalImported && !r.IsArchived && r.DirectorDecision !== 'مؤرشف')
+      .slice()
+      .sort((a, b) => parseTs(b) - parseTs(a));
   }, [requests]);
 
   // Reception requests list (sorted with newest on top)

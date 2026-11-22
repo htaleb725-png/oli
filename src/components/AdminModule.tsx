@@ -224,6 +224,15 @@ export const AdminModule: React.FC = () => {
 
   const filteredRequests = React.useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
+    const parseTs = (r: OfficeRequest) => {
+      const raw = String(r.UpdatedAt || r.CreatedAt || '').trim();
+      if (!raw) return 0;
+      let t = Date.parse(raw);
+      if (isNaN(t) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(raw)) {
+        t = Date.parse(raw.replace(' ', 'T'));
+      }
+      return isNaN(t) ? 0 : t;
+    };
     return (requests || []).filter(req => {
       if (!req) return false;
       const matchesSearch = !q || (
@@ -258,11 +267,20 @@ export const AdminModule: React.FC = () => {
       else if (directorDecisionFilter === 'rejected') matchesDirector = req.DirectorDecision === 'رفض';
 
       return matchesSearch && matchesEntity && matchesStatus && matchesPriority && matchesCategory && matchesDirector;
-    });
+    }).sort((a, b) => parseTs(b) - parseTs(a));
   }, [requests, searchQuery, selectedEntityFilter, selectedStatusFilter, selectedPriorityFilter, filterCategory, directorDecisionFilter, citizenMap]);
 
   const filteredReceptionCitizens = React.useMemo(() => {
     const q = receptionSearch.toLowerCase().trim();
+    const parseTs = (c: Citizen) => {
+      const raw = String(c.UpdatedAt || c.CreatedAt || '').trim();
+      if (!raw) return 0;
+      let t = Date.parse(raw);
+      if (isNaN(t) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(raw)) {
+        t = Date.parse(raw.replace(' ', 'T'));
+      }
+      return isNaN(t) ? 0 : t;
+    };
     return (citizens || []).filter(c => {
       if (!c || c.IsHistoricalImported || c.IsArchived) return false;
       if (!q) return true;
@@ -273,7 +291,7 @@ export const AdminModule: React.FC = () => {
         (c.District && c.District.toLowerCase().includes(q)) ||
         (c.Surname && c.Surname.toLowerCase().includes(q))
       );
-    });
+    }).sort((a, b) => parseTs(b) - parseTs(a));
   }, [citizens, receptionSearch]);
 
   const openScannerForCitizen = (citId: string) => {

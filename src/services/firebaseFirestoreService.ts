@@ -55,29 +55,93 @@ export interface FirestoreErrorInfo {
   };
 }
 
-// Session circuit-breaker: prevents flooding 1,000+ failing Firestore requests during bulk imports
-// when the Firestore backend rejects writes with PERMISSION_DENIED / CONSUMER_INVALID.
-let _firestoreBlockedUntil = 0;
+// Hard project-level block detector (ONLY for fatal API-disabled / CONSUMER_INVALID errors during bulk loops;
+// NEVER blocks normal single-record user writes like adding a citizen or request!)
+let _firestoreHardBlockedUntil = 0;
 
 export function isFirestoreTemporarilyBlocked(): boolean {
-  return Date.now() < _firestoreBlockedUntil;
+  return Date.now() < _firestoreHardBlockedUntil;
 }
 
 export function resetFirestoreCircuitBreaker(): void {
-  _firestoreBlockedUntil = 0;
+  _firestoreHardBlockedUntil = 0;
 }
 
 function noteFirestoreFailure(error: unknown): void {
   const msg = error instanceof Error ? error.message : String(error || '');
-  if (
-    msg.includes('permission-denied') ||
-    msg.includes('PERMISSION_DENIED') ||
-    msg.includes('CONSUMER_INVALID') ||
-    msg.includes('unauthenticated') ||
-    msg.includes('Failed to get document because the client is offline')
-  ) {
-    _firestoreBlockedUntil = Date.now() + 5 * 60 * 1000; // 5 minutes cooldown
+  // Only trip cooldown on project-disabled / consumer-invalid errors, NOT on transient offline or single-doc validation errors
+  if (msg.includes('CONSUMER_INVALID') || msg.includes('SERVICE_DISABLED')) {
+    _firestoreHardBlockedUntil = Date.now() + 2 * 60 * 1000;
   }
+}
+
+export function sanitizeFirestoreDocId(rawId: string, prefix = 'DOC'): string {
+  const trimmed = String(rawId || '').trim();
+  if (/^[a-zA-Z0-9_.-]{1,128}$/.test(trimmed)) return trimmed;
+  const cleaned = trimmed.replace(/[^a-zA-Z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 96);
+  if (cleaned.length >= 2) return cleaned;
+  let hash = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    hash = ((hash << 5) - hash) + trimmed.charCodeAt(i);
+    hash |= 0;
+  }
+  return `${prefix}_${(hash >>> 0).toString(36)}_${Date.now().toString(36)}`;
+}
+
+function clipStr(val: any, maxLen: number): string | undefined {
+  if (val === undefined || val === null) return undefined;
+  const s = String(val).trim();
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
+}
+
+export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updatedAt: string } {
+  const safeId = sanitizeFirestoreDocId(citizen.Citizen_ID, 'ONA');
+  const fullName = clipStr(citizen.FullName, 250) || 'مراجع';
+  const copy: any = {
+    ...citizen,
+    Citizen_ID: safeId,
+    FullName: fullName,
+    Phone1: clipStr(citizen.Phone1, 50) ?? '',
+    Rating: clipStr(citizen.Rating, 50) || 'مؤيد',
+    District: clipStr(citizen.District, 100) || 'الناصرية',
+    SubDistrict: clipStr(citizen.SubDistrict, 100) || 'المركز',
+    CreatedAt: clipStr(citizen.CreatedAt, 100) || new Date().toISOString().split('T')[0],
+    updatedAt: new Date().toISOString()
+  };
+  // Prevent oversized base64 images from exceeding Firestore's 1MB document limit
+  if (typeof copy.PhotoUrl === 'string' && copy.PhotoUrl.length > 250000) {
+    delete copy.PhotoUrl;
+  }
+  return copy;
+}
+
+export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest & { updatedAt: string } {
+  const safeReqId = sanitizeFirestoreDocId(req.Request_ID, 'REQ');
+  const safeCitId = sanitizeFirestoreDocId(req.Citizen_ID, 'ONA');
+  const copy: any = {
+    ...req,
+    Request_ID: safeReqId,
+    Citizen_ID: safeCitId,
+    Entity: clipStr(req.Entity, 200) || 'غير محدد',
+    RequestStatus: clipStr(req.RequestStatus, 50) || 'مستلم',
+    ProcessingStatus: clipStr(req.ProcessingStatus, 50) || 'قيد التدقيق',
+    Priority: clipStr(req.Priority, 50) || 'عام',
+    Details: clipStr(req.Details, 10000) ?? '',
+    updatedAt: new Date().toISOString()
+  };
+  // Strip large inline base64 attachments that exceed Firestore's 1MB document limit
+  if (typeof copy.AttachedRequestImage === 'string' && copy.AttachedRequestImage.length > 250000) {
+    delete copy.AttachedRequestImage;
+  }
+  if (Array.isArray(copy.ScanAttachments)) {
+    copy.ScanAttachments = copy.ScanAttachments.map((att: any) => {
+      if (att && typeof att.url === 'string' && att.url.length > 250000) {
+        return { ...att, url: '' };
+      }
+      return att;
+    });
+  }
+  return copy;
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
@@ -185,26 +249,23 @@ export async function fsGetDeletedRecordIds(): Promise<string[]> {
 
 // 1. Citizen Operations
 export async function fsSaveCitizen(citizen: Citizen): Promise<void> {
-  if (isFirestoreTemporarilyBlocked()) return;
+  const clean = sanitizeCitizenForFirestore(citizen);
   const col = getFSCol(FS_COLLECTIONS.CITIZENS);
-  const path = `${col}/${citizen.Citizen_ID}`;
+  const path = `${col}/${clean.Citizen_ID}`;
   try {
-    await setDoc(doc(db, col, citizen.Citizen_ID), {
-      ...citizen,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+    await setDoc(doc(db, col, clean.Citizen_ID), clean, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
 export async function fsDeleteCitizen(citizenId: string): Promise<void> {
-  if (isFirestoreTemporarilyBlocked()) return;
+  const safeId = sanitizeFirestoreDocId(citizenId, 'ONA');
   const col = getFSCol(FS_COLLECTIONS.CITIZENS);
-  const path = `${col}/${citizenId}`;
+  const path = `${col}/${safeId}`;
   try {
-    await deleteDoc(doc(db, col, citizenId));
-    await fsRegisterDeletedRecord(citizenId, 'citizens');
+    await deleteDoc(doc(db, col, safeId));
+    await fsRegisterDeletedRecord(safeId, 'citizens');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -212,29 +273,94 @@ export async function fsDeleteCitizen(citizenId: string): Promise<void> {
 
 // 2. Request Operations
 export async function fsSaveRequest(req: OfficeRequest): Promise<void> {
-  if (isFirestoreTemporarilyBlocked()) return;
+  const clean = sanitizeRequestForFirestore(req);
   const col = getFSCol(FS_COLLECTIONS.REQUESTS);
-  const path = `${col}/${req.Request_ID}`;
+  const path = `${col}/${clean.Request_ID}`;
   try {
-    await setDoc(doc(db, col, req.Request_ID), {
-      ...req,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+    await setDoc(doc(db, col, clean.Request_ID), clean, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
 export async function fsDeleteRequest(requestId: string): Promise<void> {
-  if (isFirestoreTemporarilyBlocked()) return;
+  const safeId = sanitizeFirestoreDocId(requestId, 'REQ');
   const col = getFSCol(FS_COLLECTIONS.REQUESTS);
-  const path = `${col}/${requestId}`;
+  const path = `${col}/${safeId}`;
   try {
-    await deleteDoc(doc(db, col, requestId));
-    await fsRegisterDeletedRecord(requestId, 'requests');
+    await deleteDoc(doc(db, col, safeId));
+    await fsRegisterDeletedRecord(safeId, 'requests');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
+}
+
+// 2b. High-Speed Batched Save for Excel Filter/Import (writeBatch chunks of 300 docs — fast & rules-safe)
+export async function fsBulkSaveCitizensAndRequests(
+  citizensList: Citizen[],
+  requestsList: OfficeRequest[]
+): Promise<{ success: boolean; savedCitizens: number; savedRequests: number; error?: string }> {
+  if (isFirestoreTemporarilyBlocked()) {
+    return { success: false, savedCitizens: 0, savedRequests: 0, error: 'Firestore temporarily unavailable' };
+  }
+  const colCitizens = getFSCol(FS_COLLECTIONS.CITIZENS);
+  const colRequests = getFSCol(FS_COLLECTIONS.REQUESTS);
+  const entries: Array<{ col: string; id: string; data: any; kind: 'citizen' | 'request' }> = [];
+
+  for (const c of citizensList || []) {
+    if (!c || !c.Citizen_ID) continue;
+    const clean = sanitizeCitizenForFirestore(c);
+    entries.push({ col: colCitizens, id: clean.Citizen_ID, data: clean, kind: 'citizen' });
+  }
+  for (const r of requestsList || []) {
+    if (!r || !r.Request_ID || !r.Citizen_ID) continue;
+    const clean = sanitizeRequestForFirestore(r);
+    entries.push({ col: colRequests, id: clean.Request_ID, data: clean, kind: 'request' });
+  }
+
+  let savedCitizens = 0;
+  let savedRequests = 0;
+  let lastError: string | undefined;
+  const CHUNK_SIZE = 300;
+
+  for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+    if (isFirestoreTemporarilyBlocked()) break;
+    const slice = entries.slice(i, i + CHUNK_SIZE);
+    try {
+      const batch = writeBatch(db);
+      for (const entry of slice) {
+        batch.set(doc(db, entry.col, entry.id), entry.data, { merge: true });
+      }
+      await withTimeout(batch.commit(), 15000, 'Firestore batch import commit');
+      for (const entry of slice) {
+        if (entry.kind === 'citizen') savedCitizens++;
+        else savedRequests++;
+      }
+    } catch (batchErr: any) {
+      noteFirestoreFailure(batchErr);
+      lastError = batchErr?.message || String(batchErr);
+      if (isFirestoreTemporarilyBlocked()) break;
+      // Fallback: save chunk in smaller sub-batches of 25 so 1 problematic doc never drops 299 valid docs
+      for (const entry of slice) {
+        try {
+          await setDoc(doc(db, entry.col, entry.id), entry.data, { merge: true });
+          if (entry.kind === 'citizen') savedCitizens++;
+          else savedRequests++;
+        } catch (singleErr: any) {
+          noteFirestoreFailure(singleErr);
+          lastError = singleErr?.message || String(singleErr);
+          if (isFirestoreTemporarilyBlocked()) break;
+        }
+      }
+    }
+  }
+
+  return {
+    success: savedCitizens + savedRequests > 0 || entries.length === 0,
+    savedCitizens,
+    savedRequests,
+    error: lastError
+  };
 }
 
 // 3. Interview Operations
@@ -933,11 +1059,9 @@ export function fsWatchCollection<T>(
         onData(list);
       },
       (err) => {
-        if (err.code === 'permission-denied') {
-          handleFirestoreError(err, OperationType.GET, dynamicCol);
-        } else {
-          if (onError) onError(err);
-        }
+        // Never throw uncaught errors or trip global write circuit-breaker from a listener warning
+        console.warn(`Firestore watcher notice (${dynamicCol}):`, err?.message || err);
+        if (onError) onError(err);
       }
     );
   } catch (setupErr: any) {

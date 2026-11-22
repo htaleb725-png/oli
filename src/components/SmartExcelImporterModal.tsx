@@ -142,6 +142,8 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     normalizedEntitiesCount: number;
     sheetsProcessed: number;
     detectedMaxOutgoing?: number;
+    firestoreSaved?: boolean;
+    sheetsDispatched?: boolean;
   } | null>(null);
 
   if (!isOpen) return null;
@@ -562,7 +564,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         }
 
         batchImportRecords(finalNewCitizensList, createdRequests)
-          .then(() => {
+          .then((syncRes) => {
             setIsProcessing(false);
             setCurrentStepText('');
             setPreviewRows(samplePreviews);
@@ -574,7 +576,9 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
               skippedDuplicateRequests: skippedDuplicateRequestsCount,
               normalizedEntitiesCount: normalizedEntitiesCount,
               sheetsProcessed: selectedSheets.length,
-              detectedMaxOutgoing: maxOutgoingInFile > 0 ? maxOutgoingInFile : undefined
+              detectedMaxOutgoing: maxOutgoingInFile > 0 ? maxOutgoingInFile : undefined,
+              firestoreSaved: syncRes?.firestoreSaved,
+              sheetsDispatched: syncRes?.sheetsDispatched
             });
 
             addAuditLog(
@@ -825,9 +829,20 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
               </div>
             )}
 
-            <p className="text-[11px] text-emerald-800 dark:text-emerald-300 font-bold">
-              ✓ كافة المراجعين والمعاملات أصبحت متاحة فورياً للاستعلامات، قسم الإدارة، والبحث والأرشيف السحابي.
-            </p>
+            <div className="space-y-1 text-[11px] font-bold">
+              <p className="text-emerald-800 dark:text-emerald-300">
+                ✓ تم حفظ السجلات كأرشيف مكتمل في قاعدة بيانات النظام (معزول عن مهام المدير اليومية وقابل للبحث والتعديل في السجل الشامل).
+              </p>
+              <p className="text-teal-800 dark:text-teal-300">
+                {importSummary.firestoreSaved
+                  ? '✓ تم تثبيت البيانات سحابياً في قاعدة بيانات Firebase بنجاح.'
+                  : '⏳ جاري إكمال التزامن السحابي مع قاعدة البيانات تلقائياً في الخلفية.'}
+                {' • '}
+                {importSummary.sheetsDispatched
+                  ? '✓ تم إرسال البيانات تلقائياً إلى جداول Google Sheets بنجاح.'
+                  : 'ملاحظة: لترحيلها إلى Google Sheets تلقائياً تأكد من ربط رابط Apps Script أو حساب Google في الإعدادات.'}
+              </p>
+            </div>
           </div>
         )}
 

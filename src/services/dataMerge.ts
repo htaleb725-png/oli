@@ -45,7 +45,11 @@ export function getRecordTimestamp(item: any): number {
     item.InterviewDate || 
     item.Date;
   if (!raw) return 0;
-  const parsed = Date.parse(raw);
+  const str = String(raw).trim();
+  let parsed = Date.parse(str);
+  if (isNaN(parsed) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(str)) {
+    parsed = Date.parse(str.replace(' ', 'T'));
+  }
   return isNaN(parsed) ? 0 : parsed;
 }
 
@@ -75,6 +79,7 @@ export function mergeEntityRecords<T extends Record<string, any>>(
   }
 
   // 2. Process incoming records
+  const newlyArrived: T[] = [];
   if (Array.isArray(incomingRecords)) {
     for (const item of incomingRecords) {
       if (!item) continue;
@@ -82,7 +87,9 @@ export function mergeEntityRecords<T extends Record<string, any>>(
       if (!id || (deletedIds && deletedIds.has(id))) continue;
 
       if (!map.has(id)) {
-        map.set(id, { ...item });
+        const clone = { ...item };
+        map.set(id, clone);
+        newlyArrived.push(clone);
       } else {
         const existing = map.get(id)!;
         const existingTime = getRecordTimestamp(existing);
@@ -103,7 +110,25 @@ export function mergeEntityRecords<T extends Record<string, any>>(
     }
   }
 
-  return Array.from(map.values());
+  // Place newly arrived records ahead of older existing ones, then sort newest-first by timestamp
+  const newIdSet = new Set(newlyArrived.map(i => String(i[idKey] || '').trim()));
+  const ordered: T[] = [];
+  newlyArrived.forEach(item => {
+    const id = String(item[idKey] || '').trim();
+    const val = map.get(id);
+    if (val) ordered.push(val);
+  });
+  map.forEach((val, id) => {
+    if (!newIdSet.has(id)) ordered.push(val);
+  });
+
+  // Stable newest-first sort when timestamps exist (so live registrations from Reception always appear at top of Director & Admin)
+  return ordered.sort((a, b) => {
+    const ta = getRecordTimestamp(a);
+    const tb = getRecordTimestamp(b);
+    if (ta === tb) return 0;
+    return tb - ta;
+  });
 }
 
 /**

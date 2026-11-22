@@ -875,6 +875,16 @@ async function startServer() {
     });
   });
 
+  app.get('/api/sync/rev', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.json({
+      success: true,
+      rev: memoryAppDataStore.rev,
+      settingsVersion: memorySettingsStore.settingsVersion || 0,
+      updatedAt: memoryAppDataStore.updatedAt
+    });
+  });
+
   app.get('/api/sync/state', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({
