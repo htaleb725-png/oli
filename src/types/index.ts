@@ -479,6 +479,8 @@ export interface SystemSettings {
   officeAddress: string;
   hotline: string;
   logoUrl: string;
+  pwaIcon192?: string;
+  pwaIcon512?: string;
   parliamentEmblemUrl: string;
   maintenanceMode: boolean;
   tickerNews: string[];

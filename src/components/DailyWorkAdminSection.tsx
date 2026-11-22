@@ -54,6 +54,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const {
     citizens,
     requests,
+    officialLetters,
     addCitizen,
     updateCitizen,
     deleteCitizen,
@@ -136,7 +137,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   // Nasiriyah: ن / 12 / <next>, Suq Al-Shuyoukh: س / 14 / <next>
   // Automatically reflects all archived/imported Excel files and manual outgoings
   const generateOutgoingNumber = () => {
-    return computeNextOutgoingNumber(requests, systemSettings).nextNumber;
+    return computeNextOutgoingNumber(requests, systemSettings, officialLetters).nextNumber;
   };
 
   const advanceOutgoingBaseline = (outgoingNumberStr: string) => {
@@ -201,8 +202,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   }, [requests, citizens]);
 
   const nextAutoOutgoingNumber = useMemo(() => {
-    return computeNextOutgoingNumber(requests, systemSettings).nextNumber;
-  }, [requests, systemSettings?.officeBranch, systemSettings?.lastOutgoingNumberNasiriyah, systemSettings?.lastOutgoingNumberSuq]);
+    return computeNextOutgoingNumber(requests, systemSettings, officialLetters).nextNumber;
+  }, [requests, officialLetters, systemSettings?.officeBranch, systemSettings?.lastOutgoingNumberNasiriyah, systemSettings?.lastOutgoingNumberSuq]);
 
   // Collective Outgoing (صادر موحد لمجموعة مراجعين)
   const [isBulkOutgoingModalOpen, setIsBulkOutgoingModalOpen] = useState(false);

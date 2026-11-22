@@ -46,7 +46,8 @@ export const Navbar: React.FC = () => {
     officialLetters,
     customSections,
     customRecords,
-    canDownloadDatabase
+    canDownloadDatabase,
+    setGlobalSearchQuery
   } = useApp();
 
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
@@ -117,8 +118,10 @@ export const Navbar: React.FC = () => {
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (navSearch.trim()) {
-      showNavbarToast(`جاري البحث عن: ${navSearch.trim()}`);
+    const trimmed = navSearch.trim();
+    setGlobalSearchQuery(trimmed);
+    if (trimmed) {
+      showNavbarToast(`جاري البحث عن: ${trimmed}`);
     }
     setActiveSection('search_archive');
   };

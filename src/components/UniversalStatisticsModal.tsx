@@ -24,6 +24,7 @@ import {
   ArrowUpRight
 } from 'lucide-react';
 import { printHtmlSafely } from '../utils/printReceiptHelper';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 
 interface UniversalStatisticsModalProps {
   isOpen: boolean;
@@ -31,6 +32,11 @@ interface UniversalStatisticsModalProps {
 }
 
 export const UniversalStatisticsModal: React.FC<UniversalStatisticsModalProps> = ({ isOpen, onClose }) => {
+  if (!isOpen) return null;
+  return <UniversalStatisticsModalContent onClose={onClose} />;
+};
+
+const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const { 
     currentUser, 
     citizens, 
@@ -44,8 +50,6 @@ export const UniversalStatisticsModal: React.FC<UniversalStatisticsModalProps> =
   } = useApp();
 
   const [timeRange, setTimeRange] = useState<'today' | 'week' | 'month' | 'all'>('all');
-
-  if (!isOpen) return null;
 
   // Determine if the user is an Executive (Admin / Director / Developer / Office Manager)
   const isExecutiveOrAdmin = useMemo(() => {
@@ -334,6 +338,26 @@ export const UniversalStatisticsModal: React.FC<UniversalStatisticsModalProps> =
 
         {/* Modal Scrollable Body */}
         <div className="p-4 sm:p-6 overflow-y-auto space-y-6">
+          {/* Interactive Role-Aware Visual Charts Dashboard */}
+          <DepartmentAnalyticsDashboard
+            department={
+              ['developer', 'director', 'deputy'].includes(currentUser?.Role || '')
+                ? 'executive_all'
+                : currentUser?.Role === 'reception' || currentUser?.Role === 'reception_officer'
+                ? 'reception'
+                : currentUser?.Role === 'admin' || currentUser?.Role === 'admin_officer'
+                ? 'admin'
+                : currentUser?.Role === 'interviews_officer'
+                ? 'interviews'
+                : currentUser?.Role === 'machine' || currentUser?.Role === 'machine_officer'
+                ? 'machine'
+                : currentUser?.Role === 'organization' || currentUser?.Role === 'organization_officer'
+                ? 'organization'
+                : currentUser?.Role === 'social_care' || currentUser?.Role === 'social_care_officer'
+                ? 'social_care'
+                : 'executive_all'
+            }
+          />
 
           {isExecutiveOrAdmin ? (
             /* ========================================================= */

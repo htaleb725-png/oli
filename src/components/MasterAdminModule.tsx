@@ -803,10 +803,6 @@ export const MasterAdminModule: React.FC = () => {
         />
       )}
 
-      {activeTab === 'grid' && (
-        <DepartmentAnalyticsDashboard department="executive_all" />
-      )}
-
       {/* ---------------- VIEW 2: INDIVIDUAL TOOL WORKSPACE (مع شريط الرجوع للأيقونات) ---------------- */}
       {activeTab !== 'grid' && (
         <div className="space-y-4 animate-in fade-in duration-200">

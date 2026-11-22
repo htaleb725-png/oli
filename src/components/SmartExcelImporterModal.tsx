@@ -19,6 +19,7 @@ import {
   extractOutgoingSequence,
   parseExcelDateValue,
   parseDeliveryStatus,
+  splitCombinedOutgoingAndDate,
   toWesternDigits
 } from '../utils/outgoingNumberHelper';
 import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../utils/permissions';
@@ -78,14 +79,41 @@ const CANONICAL_FIELDS: FieldSpec[] = [
   {
     key: 'outgoingNumber',
     label: 'رقم الكتاب / العدد',
-    exactPatterns: [/^رقم الكتاب\s*\/?\s*العدد$/i, /^رقم الكتاب$/i, /^العدد$/i, /^رقم الصادر$/i, /^الصادر$/i, /^العدد الصادر$/i],
-    strongPatterns: [/رقم الكتاب/i, /رقم الصادر/i, /العدد الصادر/i, /عدد الكتاب/i, /^outgoing\s*number$/i, /^outgoing$/i],
-    fallbackPatterns: [/صادر/i]
+    exactPatterns: [
+      /^رقم الكتاب\s*\/?\s*العدد$/i,
+      /^العدد\s*\/?\s*التاريخ$/i,
+      /^العدد والتاريخ$/i,
+      /^العدد و التاريخ$/i,
+      /^رقم وتاريخ الكتاب$/i,
+      /^رقم وتاريخ الصادر$/i,
+      /^رقم الكتاب وتاريخه$/i,
+      /^رقم الكتاب$/i,
+      /^العدد$/i,
+      /^عدد الكتاب$/i,
+      /^رقم الصادر$/i,
+      /^الصادر$/i,
+      /^العدد الصادر$/i,
+      /^الرقم الصادر$/i,
+      /^العدد\s*\/?\s*الصادر$/i
+    ],
+    strongPatterns: [
+      /رقم الكتاب/i,
+      /رقم الصادر/i,
+      /العدد الصادر/i,
+      /عدد الكتاب/i,
+      /العدد.*تاريخ/i,
+      /عدد.*صادر/i,
+      /صادر.*عدد/i,
+      /^outgoing\s*number$/i,
+      /^outgoing$/i,
+      /^book\s*no/i
+    ],
+    fallbackPatterns: [/صادر/i, /^عدد$/i, /العدد/i]
   },
   {
     key: 'outgoingDate',
     label: 'تاريخ الكتاب',
-    exactPatterns: [/^تاريخ الكتاب$/i, /^تاريخ الصادر$/i, /^التاريخ$/i, /^تاريخ الطلب$/i],
+    exactPatterns: [/^تاريخ الكتاب$/i, /^تاريخ الصادر$/i, /^التاريخ$/i, /^تاريخ الطلب$/i, /^تاريخ الانجاز$/i, /^تاريخ الإنجاز$/i],
     strongPatterns: [/تاريخ الكتاب/i, /تاريخ الصادر/i, /تاريخ التسجيل/i, /^outgoing\s*date$/i, /^date$/i],
     fallbackPatterns: [/تاريخ/i]
   },
@@ -614,9 +642,10 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         const rawName = getField('name');
         const rawEntity = getField('entity');
         const rawSubject = getField('subject');
-        const rawOutgoing = toWesternDigits(getField('outgoingNumber'));
         const rawOutgoingDateRaw = map.outgoingDate ? row[map.outgoingDate] : '';
-        const rawOutgoingDate = parseExcelDateValue(rawOutgoingDateRaw);
+        const splitOut = splitCombinedOutgoingAndDate(getField('outgoingNumber'), rawOutgoingDateRaw);
+        const rawOutgoing = splitOut.outgoingNumber;
+        const rawOutgoingDate = splitOut.outgoingDate || parseExcelDateValue(rawOutgoingDateRaw);
         const rawPhone = cleanPhoneNumber(getField('phone'));
         const rawReferrer = getField('referrer');
         const rawAddress = getField('address');

@@ -14,11 +14,11 @@ export const NewsTicker: React.FC = () => {
         <span>شريط التعميمات:</span>
       </div>
 
-      <div className="overflow-hidden relative w-full whitespace-nowrap">
-        <div className="animate-ticker space-x-12 inline-block text-[12px] font-medium">
+      <div className="overflow-hidden relative w-full whitespace-nowrap flex-1">
+        <div className="animate-ticker text-[12px] font-medium">
           {systemSettings.tickerNews.map((news, idx) => (
-            <span key={idx} className="mx-6 inline-flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+            <span key={idx} className="mx-8 inline-flex items-center gap-2 shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"></span>
               <span>{news}</span>
             </span>
           ))}

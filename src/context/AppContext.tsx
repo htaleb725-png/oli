@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import { scanMaxOutgoingSequences } from '../utils/outgoingNumberHelper';
+import { toCleanSheetCitizenPayload, toCleanSheetRequestPayload } from '../services/googleSheetsSchema';
 import {
   User,
   Citizen,
@@ -315,6 +317,8 @@ interface AppContextType {
   setIsDesktopInstallModalOpen: (open: boolean) => void;
   isSystemWipeModalOpen: boolean;
   setIsSystemWipeModalOpen: (open: boolean) => void;
+  globalSearchQuery: string;
+  setGlobalSearchQuery: (query: string) => void;
 
   forwardCitizenWorkflow: (citizenId: string, toStage: WorkflowStage, directiveNote?: string, targetEntity?: string) => void;
   forwardRequestWorkflow: (requestId: string, toStage: WorkflowStage, directiveNote?: string) => void;
@@ -721,6 +725,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [driveFolderId, setDriveFolderId] = useState<string | null>(() => {
     return (typeof window !== 'undefined' && localStorage.getItem('al_nashi_drive_folder_id')) || null;
   });
+  const [globalSearchQuery, setGlobalSearchQuery] = useState<string>('');
 
   const [citizens, setCitizens] = useState<Citizen[]>(() => {
     const deletedIds = getStoredDeletedIds();
@@ -3999,6 +4004,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return Array.from(existingReqMap.values());
       });
       try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
+
+      // Authoritatively advance office outgoing counters (Nasiriyah & Suq Al-Shuyoukh) whenever ANY import brings archived outgoing numbers
+      const scanned = scanMaxOutgoingSequences(validRequests);
+      const nextNas = Math.max(Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0, scanned.maxNasiriyah);
+      const nextSuq = Math.max(Number(systemSettings?.lastOutgoingNumberSuq) || 0, scanned.maxSuq);
+      if (
+        nextNas > (Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0) ||
+        nextSuq > (Number(systemSettings?.lastOutgoingNumberSuq) || 0)
+      ) {
+        updateSettings({
+          lastOutgoingNumberNasiriyah: nextNas,
+          lastOutgoingNumberSuq: nextSuq
+        });
+      }
     }
 
     // 3. Single live bulk sync broadcast to cross-tab BroadcastChannel & server SSE so all devices receive it immediately
@@ -4328,8 +4347,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             body: JSON.stringify({
               action: 'bulk_sync',
               data: {
-                citizens,
-                requests,
+                citizens: citizens.map(c => toCleanSheetCitizenPayload(c)),
+                requests: requests.map(r => toCleanSheetRequestPayload(r)),
                 interviews,
                 officialLetters,
                 cheques,
@@ -4570,6 +4589,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsDesktopInstallModalOpen,
         isSystemWipeModalOpen,
         setIsSystemWipeModalOpen,
+        globalSearchQuery,
+        setGlobalSearchQuery,
         forwardCitizenWorkflow,
         forwardRequestWorkflow,
         canPrintOfficialCard,

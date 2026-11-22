@@ -105,13 +105,13 @@ export function toUnifiedDriveFile(raw: DriveFileItem & { url?: string; viewUrl?
         ? 'image/jpeg'
         : 'application/octet-stream'),
     category,
-    previewImageUrl: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1400`,
-    fallbackImageUrl: `https://lh3.googleusercontent.com/d/${encodeURIComponent(id)}=w1400`,
-    proxyImageUrl: `/api/drive/image/${encodeURIComponent(id)}?sz=w1400`,
+    previewImageUrl: `https://lh3.googleusercontent.com/d/${encodeURIComponent(id)}=w1200`,
+    fallbackImageUrl: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1200`,
+    proxyImageUrl: `/api/drive/image/${encodeURIComponent(id)}?sz=w600`,
     embedPreviewUrl: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`,
     directDownloadUrl: raw.webContentLink || `https://drive.google.com/uc?export=download&id=${encodeURIComponent(id)}`,
     webViewLink: raw.webViewLink || raw.viewUrl || `https://drive.google.com/file/d/${encodeURIComponent(id)}/view`,
-    thumbnailLink: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1000`
+    thumbnailLink: `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w800`
   };
 }
 
@@ -136,7 +136,7 @@ export async function fetchLiveDriveFolderFiles(options: {
 }> {
   const folderId = extractDriveFolderId(options.folderId);
   const query = (options.query || '').trim();
-  const limit = options.limit || 250;
+  const limit = options.limit || 5000;
   const resolvedScriptUrl = resolveAppsScriptUrl(options.appsScriptUrl);
 
   let rawFiles: DriveFileItem[] = [];
@@ -152,6 +152,7 @@ export async function fetchLiveDriveFolderFiles(options: {
         folderId,
         limit: String(limit)
       });
+      if (query) params.set('q', query);
       if (options.forceRefresh) params.set('refresh', '1');
       const res = await fetch(`/api/drive/folder-files?${params.toString()}`, {
         cache: 'no-store'
@@ -183,7 +184,8 @@ export async function fetchLiveDriveFolderFiles(options: {
     try {
       // Try GET first (CORS-friendly without preflight on Vercel)
       const sep = resolvedScriptUrl.includes('?') ? '&' : '?';
-      const getUrl = `${resolvedScriptUrl}${sep}action=listDriveFiles&folderId=${encodeURIComponent(folderId)}&t=${Date.now()}`;
+      const qPart = query ? `&query=${encodeURIComponent(query)}` : '';
+      const getUrl = `${resolvedScriptUrl}${sep}action=listDriveFiles&folderId=${encodeURIComponent(folderId)}${qPart}&limit=${encodeURIComponent(String(limit))}&t=${Date.now()}`;
       const getRes = await fetch(getUrl, { method: 'GET' });
       if (getRes.ok) {
         const json = await getRes.json();
@@ -194,7 +196,11 @@ export async function fetchLiveDriveFolderFiles(options: {
         }
       }
     } catch {
-      // Fallback to POST for older Apps Script deployments
+      // Continue to POST fallback below
+    }
+
+    // Fallback to POST if GET did not return files (supports older Apps Script deployments)
+    if (rawFiles.length === 0) {
       try {
         const postRes = await fetch(resolvedScriptUrl, {
           method: 'POST',
@@ -202,14 +208,15 @@ export async function fetchLiveDriveFolderFiles(options: {
           body: JSON.stringify({
             action: 'listDriveFiles',
             folderId,
-            query: ''
+            query,
+            limit
           })
         });
         if (postRes.ok) {
           const json = await postRes.json();
-          if (json && Array.isArray(json.files)) {
+          if (json && Array.isArray(json.files) && json.files.length > 0) {
             rawFiles = json.files;
-            totalInFolder = json.files.length;
+            totalInFolder = Number(json.totalInFolder || json.files.length);
             source = 'apps_script';
           }
         }
@@ -224,7 +231,7 @@ export async function fetchLiveDriveFolderFiles(options: {
     try {
       const token = await getAccessToken();
       if (token && !token.startsWith('ya29.al_nashi_')) {
-        const oauthFiles = await searchDriveFiles(token, folderId, '');
+        const oauthFiles = await searchDriveFiles(token, folderId, query);
         if (oauthFiles.length > 0) {
           rawFiles = oauthFiles;
           totalInFolder = oauthFiles.length;

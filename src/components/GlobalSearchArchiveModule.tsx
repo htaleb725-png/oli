@@ -55,10 +55,12 @@ export const GlobalSearchArchiveModule: React.FC = () => {
     canPrintOfficialCard, 
     currentUser,
     blockCitizen,
-    unblockCitizen
+    unblockCitizen,
+    globalSearchQuery,
+    setGlobalSearchQuery
   } = useApp();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(globalSearchQuery || '');
   const [selectedCitizen, setSelectedCitizen] = useState<Citizen | null>(citizens[0] || null);
   const [visibleCitizensLimit, setVisibleCitizensLimit] = useState(60);
   const [noticeBanner, setNoticeBanner] = useState<string | null>(null);
@@ -152,6 +154,26 @@ export const GlobalSearchArchiveModule: React.FC = () => {
       return isAdminOrDirector && matchingReqCitizenIds.has(c.Citizen_ID);
     }).sort((a, b) => parseTs(b) - parseTs(a));
   }, [citizens, requests, searchQuery, isAdminOrDirector]);
+
+  // Sync incoming search query from top Navbar global search bar
+  useEffect(() => {
+    if (globalSearchQuery !== undefined && globalSearchQuery !== searchQuery) {
+      setSearchQuery(globalSearchQuery);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [globalSearchQuery]);
+
+  // Auto-select top matching citizen whenever search results change so dossier displays immediately
+  useEffect(() => {
+    if (filteredCitizens.length > 0) {
+      const stillVisible = selectedCitizen && filteredCitizens.some(c => c.Citizen_ID === selectedCitizen.Citizen_ID);
+      if (!stillVisible) {
+        setSelectedCitizen(filteredCitizens[0]);
+      }
+    } else if (searchQuery.trim()) {
+      setSelectedCitizen(null);
+    }
+  }, [filteredCitizens, searchQuery]);
 
   // Strictly match ONLY this citizen's requests (by exact Citizen_ID or exact normalized full name — NEVER partial substring!)
   const citizenRequests = useMemo(() => {
@@ -285,13 +307,19 @@ export const GlobalSearchArchiveModule: React.FC = () => {
         <input
           type="text"
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
+          onChange={(e) => {
+            setSearchQuery(e.target.value);
+            setGlobalSearchQuery(e.target.value);
+          }}
           placeholder="ابحث بالاسم الرباعي، الرقم التعريفي (ONA-XXXX)، رقم الهاتف، القضاء، اللقب، أو المهنة..."
           className="w-full pr-10 pl-4 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-800 placeholder-slate-400 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all text-right shadow-xs"
         />
         {searchQuery && (
           <button
-            onClick={() => setSearchQuery('')}
+            onClick={() => {
+              setSearchQuery('');
+              setGlobalSearchQuery('');
+            }}
             className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-700 px-2 py-0.5 bg-slate-100 rounded"
           >
             مسح البحث

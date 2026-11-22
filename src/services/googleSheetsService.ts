@@ -9,6 +9,15 @@ import {
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { Citizen, OfficeRequest, Interview, OrganizationRecord, OfficialLetter, AuditLog, DropdownItem, ChequeRecord } from '../types';
+import {
+  CITIZENS_SHEET_HEADERS,
+  CITIZENS_SHEET_RANGE,
+  REQUESTS_SHEET_HEADERS,
+  REQUESTS_SHEET_RANGE,
+  citizenToSheetRow,
+  requestToSheetRow,
+  mapSheetRowByHeaders
+} from './googleSheetsSchema';
 
 // Initialize Firebase App singleton
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -561,35 +570,17 @@ export const syncAllDataToGoogleSheets = async (
         ['سجل الرقابة والأمان الإداري', String(data.auditLogs.length), 'محمي وغير قابل للتعديل ✓', nowFormatted, 'سجل النشاطات والحركات البرمجية']
       ]
     },
-    // 2. Citizens
+    // 2. Citizens (Unified 18 Isolated Arabic Columns A1:R)
     {
-      range: 'سجل_المراجعين_Citizens!A1:R',
-      headers: [
-        'الرقم التعريفي', 'الاسم الأول', 'اسم الأب', 'اسم الجد', 'اسم والد الجد',
-        'اللقب / العشيرة', 'الاسم الكامل الرباعي', 'الهاتف الرئيسي', 'الهاتف الثانوي',
-        'الجنس', 'المهنة / العمل', 'التحصيل الدراسي', 'التقييم الجماهيري', 'القضاء',
-        'الناحية / الحي', 'جهة التزكية / المعرف', 'تاريخ التسجيل', 'مسؤول الإدخال'
-      ],
-      rows: data.citizens.map(c => [
-        c.Citizen_ID, c.FirstName, c.FatherName, c.GrandFatherName, c.GreatGrandFatherName,
-        c.Surname, c.FullName, c.Phone1, c.Phone2 || '', c.Gender, c.Job, c.Education,
-        c.Rating, c.District, c.SubDistrict, c.ReferralSource || '', c.CreatedAt, c.CreatedBy || 'الاستعلامات'
-      ])
+      range: CITIZENS_SHEET_RANGE,
+      headers: CITIZENS_SHEET_HEADERS,
+      rows: data.citizens.map(c => citizenToSheetRow(c))
     },
-    // 3. Citizen Requests
+    // 3. Citizen Requests (Unified 20 Isolated Arabic Columns A1:T)
     {
-      range: 'طلبات_المواطنين_Requests!A1:N',
-      headers: [
-        'رقم الطلب', 'الرقم التعريفي للمواطن', 'اسم المواطن', 'رقم الهاتف', 'الجهة المعنية',
-        'حالة المعاملة', 'المرحلة الإجرائية', 'درجة الأسبقية', 'تفاصيل الطلب',
-        'مرفق كتاب الطلب (Drive)', 'مرفق كتاب الإجابة (Drive)', 'توجيهات وملاحظات النائب', 'تاريخ المعاملة', 'الموظف المسؤول'
-      ],
-      rows: data.requests.map(r => [
-        r.Request_ID, r.Citizen_ID, r.CitizenName, r.CitizenPhone, r.Entity,
-        r.RequestStatus, r.ProcessingStatus, r.Priority, r.Details,
-        r.AttachmentRequest || '', r.AttachmentResponse || '', r.DeputyNotes || '',
-        r.CreatedAt, r.CreatedBy || 'الإدارة'
-      ])
+      range: REQUESTS_SHEET_RANGE,
+      headers: REQUESTS_SHEET_HEADERS,
+      rows: data.requests.map(r => requestToSheetRow(r))
     },
     // 4. Interviews
     {
@@ -1017,20 +1008,11 @@ export const pushSingleRecordToSheetsRealtime = async (
         break;
       case 'citizens':
         sheetName = 'سجل_المراجعين_Citizens';
-        rowValues = [
-          record.Citizen_ID, record.FirstName, record.FatherName, record.GrandFatherName, record.GreatGrandFatherName,
-          record.Surname, record.FullName, record.Phone1, record.Phone2 || '', record.Gender, record.Job, record.Education,
-          record.Rating, record.District, record.SubDistrict, record.ReferralSource || '', record.CreatedAt, record.CreatedBy || 'الاستعلامات'
-        ];
+        rowValues = citizenToSheetRow(record);
         break;
       case 'requests':
         sheetName = 'طلبات_المواطنين_Requests';
-        rowValues = [
-          record.Request_ID, record.Citizen_ID, record.CitizenName, record.CitizenPhone, record.Entity,
-          record.RequestStatus, record.ProcessingStatus, record.Priority, record.Details,
-          record.AttachmentRequest || '', record.AttachmentResponse || '', record.DeputyNotes || '',
-          record.CreatedAt, record.CreatedBy || 'الإدارة'
-        ];
+        rowValues = requestToSheetRow(record);
         break;
       case 'interviews':
         sheetName = 'مقابلات_النائب_Interviews';
@@ -1258,8 +1240,8 @@ export const fetchAllDataFromGoogleSheets = async (
 }> => {
   try {
     const ranges = [
-      'سجل_المراجعين_Citizens!A2:R',
-      'طلبات_المواطنين_Requests!A2:N',
+      'سجل_المراجعين_Citizens!A1:Z',
+      'طلبات_المواطنين_Requests!A1:Z',
       'مقابلات_النائب_Interviews!A2:O',
       'الكتب_الرسمية_OfficialLetters!A2:J',
       'صكوك_المساعدات_المالية_Cheques!A2:L',
@@ -1290,55 +1272,81 @@ export const fetchAllDataFromGoogleSheets = async (
       return str.length > 0 && !str.startsWith('[محذوف') && !str.startsWith('[deleted') && !str.includes('تم حذف');
     };
 
-    // Map citizens
-    const citizensRows = valueRanges[0]?.values || [];
+    // Header-aware Citizens parser (supports BOTH new clean Arabic headers AND older English/Arabic layouts)
+    const citizensAll = valueRanges[0]?.values || [];
+    const citHeaders: string[] = citizensAll[0] || CITIZENS_SHEET_HEADERS;
+    const citizensRows = citizensAll.slice(1);
     const citizens: Citizen[] = citizensRows
       .filter((r: any[]) => r && isNonDeletedId(r[0]) && (r[1] || r[6]))
       .map((r: any[]) => {
-        const name = r[6] || r[1] || r[0] || 'مواطن';
+        const m = mapSheetRowByHeaders(citHeaders, r);
+        const fullName =
+          m['الاسم الكامل'] ||
+          m['الاسم الكامل الرباعي'] ||
+          m['FullName'] ||
+          r[1] ||
+          r[6] ||
+          'مواطن';
+        const parts = fullName.split(/\s+/);
         return {
-          Citizen_ID: String(r[0]).trim(),
-          FirstName: r[1] || name.split(' ')[0] || '',
-          FatherName: r[2] || '',
-          GrandFatherName: r[3] || '',
-          GreatGrandFatherName: r[4] || '',
-          Surname: r[5] || '',
-          FullName: name,
-          Phone1: r[7] ? String(r[7]).trim() : '',
-          Phone2: r[8] ? String(r[8]).trim() : '',
-          Gender: (r[9] as any) || 'ذكر',
-          Job: r[10] || '',
-          Education: r[11] || '',
-          Rating: (r[12] as any) || 'لائق',
-          District: r[13] || '',
-          SubDistrict: r[14] || '',
-          ReferralSource: r[15] || '',
-          CreatedAt: r[16] || new Date().toISOString().split('T')[0],
-          CreatedBy: r[17] || 'الاستعلامات',
-          PhotoUrl: r[18] ? String(r[18]).trim() : undefined
+          Citizen_ID: String(m['الرقم التعريفي'] || m['Citizen_ID'] || r[0] || '').trim(),
+          FirstName: m['الاسم الأول'] || m['FirstName'] || parts[0] || '',
+          FatherName: m['اسم الأب'] || m['FatherName'] || parts[1] || '',
+          GrandFatherName: m['اسم الجد'] || m['GrandFatherName'] || parts[2] || '',
+          GreatGrandFatherName: m['اسم والد الجد'] || m['GreatGrandFatherName'] || parts[3] || '',
+          Surname: m['اللقب / العشيرة'] || m['Surname'] || '',
+          FullName: fullName,
+          Phone1: m['رقم الهاتف'] || m['الهاتف الرئيسي'] || m['Phone1'] || '',
+          Phone2: m['الهاتف البديل'] || m['الهاتف الثانوي'] || m['Phone2'] || '',
+          Gender: ((m['الجنس'] || m['Gender']) === 'أنثى' ? 'أنثى' : 'ذكر') as any,
+          Job: m['المهنة / العمل'] || m['المهنة'] || m['Job'] || '',
+          Education: m['التحصيل الدراسي'] || m['Education'] || '',
+          Rating: (m['التقييم'] || m['التقييم الجماهيري'] || m['Rating'] || 'لائق') as any,
+          District: m['القضاء'] || m['District'] || '',
+          SubDistrict: m['الناحية / المنطقة'] || m['الناحية / الحي'] || m['SubDistrict'] || '',
+          ReferralSource: m['المعرف / التزكية'] || m['جهة التزكية / المعرف'] || m['ReferralSource'] || '',
+          RegisteredVia: (m['مصدر التسجيل'] || m['RegisteredVia'] || 'الاستعلامات') as any,
+          CreatedAt: m['تاريخ التسجيل'] || m['CreatedAt'] || new Date().toISOString().split('T')[0],
+          CreatedBy: m['الموظف المسؤول'] || m['مسؤول الإدخال'] || m['CreatedBy'] || 'الاستعلامات'
         };
       });
 
-    // Map requests
-    const requestsRows = valueRanges[1]?.values || [];
+    // Header-aware Requests parser (supports BOTH new 20-col Arabic schema AND older 14-col/19-col layouts)
+    const requestsAll = valueRanges[1]?.values || [];
+    const reqHeaders: string[] = requestsAll[0] || REQUESTS_SHEET_HEADERS;
+    const requestsRows = requestsAll.slice(1);
     const requests: OfficeRequest[] = requestsRows
       .filter((r: any[]) => r && isNonDeletedId(r[0]) && (r[1] || r[2]))
-      .map((r: any[]) => ({
-        Request_ID: String(r[0]).trim(),
-        Citizen_ID: r[1] ? String(r[1]).trim() : '',
-        CitizenName: r[2] || r[1] || '',
-        CitizenPhone: r[3] ? String(r[3]).trim() : '',
-        Entity: r[4] || '',
-        RequestStatus: (r[5] as any) || 'مستلم',
-        ProcessingStatus: (r[6] as any) || 'قيد التدقيق',
-        Priority: (r[7] as any) || 'عادي',
-        Details: r[8] || '',
-        AttachmentRequest: r[9] || undefined,
-        AttachmentResponse: r[10] || undefined,
-        DeputyNotes: r[11] || '',
-        CreatedAt: r[12] || new Date().toISOString().split('T')[0],
-        CreatedBy: r[13] || 'الإدارة'
-      }));
+      .map((r: any[]) => {
+        const m = mapSheetRowByHeaders(reqHeaders, r);
+        const delivery =
+          m['حالة الاستلام'] || m['DeliveryStatus'] || m['حالة المعاملة'] || m['RequestStatus'] || 'غير مستلم';
+        const cleanDelivery: 'مستلم' | 'غير مستلم' = delivery === 'مستلم' ? 'مستلم' : 'غير مستلم';
+        return {
+          Request_ID: String(m['رقم الطلب'] || m['Request_ID'] || r[0] || '').trim(),
+          Citizen_ID: String(m['الرقم التعريفي للمواطن'] || m['Citizen_ID'] || r[1] || '').trim(),
+          CitizenName: m['اسم صاحب الطلب'] || m['اسم المواطن'] || m['CitizenName'] || r[2] || '',
+          CitizenPhone: m['رقم الهاتف'] || m['CitizenPhone'] || r[3] || '',
+          Entity: m['الوزارة / الجهة'] || m['الجهة المعنية'] || m['Entity'] || r[4] || '',
+          Details: m['الموضوع / تفاصيل الطلب'] || m['تفاصيل الطلب'] || m['Details'] || '',
+          OutgoingNumber: m['العدد / الصادر'] || m['OutgoingNumber'] || undefined,
+          OutgoingDate: m['تاريخ الصادر'] || m['OutgoingDate'] || undefined,
+          ProcessingStatus: (m['حالة الإنجاز'] || m['المرحلة الإجرائية'] || m['ProcessingStatus'] || 'قيد التدقيق') as any,
+          DeliveryStatus: cleanDelivery,
+          RequestStatus: cleanDelivery as any,
+          Priority: (m['الأسبقية'] || m['درجة الأسبقية'] || m['Priority'] || 'عام') as any,
+          Address: m['العنوان / السكن'] || m['Address'] || undefined,
+          Education: m['التحصيل الدراسي'] || m['Education'] || undefined,
+          Job: m['المهنة'] || m['Job'] || undefined,
+          ReferralSource: m['المعرف / التزكية'] || m['ReferralSource'] || undefined,
+          Margin: m['الهامش / التوجيه'] || m['Margin'] || undefined,
+          DeputyNotes: m['توجيهات وملاحظات النائب'] || m['الهامش / التوجيه'] || m['DeputyNotes'] || '',
+          TargetDepartment: m['القسم المختص'] || m['TargetDepartment'] || undefined,
+          OtherNotes: m['الملاحظات'] || m['OtherNotes'] || undefined,
+          CreatedAt: m['تاريخ التسجيل'] || m['تاريخ المعاملة'] || m['CreatedAt'] || new Date().toISOString().split('T')[0],
+          CreatedBy: m['الموظف المسؤول'] || m['CreatedBy'] || 'الإدارة'
+        };
+      });
 
     // Map interviews
     const interviewsRows = valueRanges[2]?.values || [];

@@ -1186,7 +1186,7 @@ async function startServer() {
         });
       }
 
-      const limit = Math.min(Math.max(parseInt(String(req.query.limit || '120'), 10) || 120, 1), 500);
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit || '5000'), 10) || 5000, 1), 5000);
       const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
 
       res.json({
@@ -1511,12 +1511,33 @@ async function startServer() {
   });
 
   // --- Dynamic Desktop PWA App Icon & Web App Manifest (Reflects Custom Replaced Icon Immediately) ---
-  function getDynamicIconMeta(): { logoUrl: string; mimeType: string; versionTag: string } {
+  function getDynamicIconMeta(): {
+    logoUrl: string;
+    pwaIcon192: string;
+    pwaIcon512: string;
+    mimeType: string;
+    hasGenuinePng: boolean;
+    versionTag: string;
+  } {
     const store = loadSettingsStore();
-    const logoUrl = String(store.systemSettings?.logoUrl || '').trim();
-    const versionTag = String(store.settingsVersion || Date.parse(store.updatedAt || '') || 1);
+    const s = store.systemSettings || {};
+    const pwaIcon192 = String(s.pwaIcon192 || '').trim();
+    const pwaIcon512 = String(s.pwaIcon512 || '').trim();
+    const logoUrl = String(s.logoUrl || s.customImages?.appIcon || s.parliamentEmblemUrl || '').trim();
+    const hasGenuinePng =
+      pwaIcon192.startsWith('data:image/png;base64,') ||
+      pwaIcon512.startsWith('data:image/png;base64,');
+    const versionTag = String(
+      store.settingsVersion ||
+        (pwaIcon192 ? pwaIcon192.length : 0) + (logoUrl ? logoUrl.length : 1) ||
+        Date.parse(store.updatedAt || '') ||
+        1
+    );
+
     let mimeType = 'image/svg+xml';
-    if (logoUrl.startsWith('data:image/')) {
+    if (hasGenuinePng) {
+      mimeType = 'image/png';
+    } else if (logoUrl.startsWith('data:image/')) {
       const m = logoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
       if (m && m[1]) mimeType = m[1];
     } else if (/\.png(\?|$)/i.test(logoUrl)) {
@@ -1528,15 +1549,34 @@ async function startServer() {
     } else if (logoUrl.startsWith('http://') || logoUrl.startsWith('https://')) {
       mimeType = 'image/png';
     }
-    return { logoUrl, mimeType, versionTag };
+    return { logoUrl, pwaIcon192, pwaIcon512, mimeType, hasGenuinePng, versionTag };
   }
 
-  app.get('/api/pwa-icon/:size', async (_req, res) => {
+  app.get('/api/pwa-icon/:size', async (req, res) => {
     try {
-      const { logoUrl } = getDynamicIconMeta();
+      const sizeParam = String(req.params.size || '192');
+      const wantRaw = req.query.raw === '1';
+      const { logoUrl, pwaIcon192, pwaIcon512 } = getDynamicIconMeta();
       res.setHeader('Cache-Control', 'no-cache, must-revalidate');
 
-      // 1. Custom uploaded Data URL icon saved by Developer
+      // 1. Prefer genuine pre-rendered square 192x192 / 512x512 PNG icons (guaranteed Chromium/Edge Desktop PWA compliance!)
+      if (!wantRaw) {
+        const preferredPng =
+          sizeParam === '512'
+            ? pwaIcon512 || pwaIcon192
+            : pwaIcon192 || pwaIcon512;
+        if (preferredPng && preferredPng.startsWith('data:image/')) {
+          const match = preferredPng.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+          if (match) {
+            const buf = Buffer.from(match[2], 'base64');
+            res.setHeader('Content-Type', match[1]);
+            res.send(buf);
+            return;
+          }
+        }
+      }
+
+      // 2. Custom uploaded Data URL icon saved by Developer
       if (logoUrl.startsWith('data:image/')) {
         const match = logoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
         if (match) {
@@ -1547,11 +1587,11 @@ async function startServer() {
         }
       }
 
-      // 2. Custom external HTTP/HTTPS icon URL (proxy cleanly so Desktop PWA installer never hits CORS)
+      // 3. Custom external HTTP/HTTPS icon URL (proxy cleanly so Desktop PWA installer never hits CORS)
       if (logoUrl.startsWith('http://') || logoUrl.startsWith('https://')) {
         try {
           const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 4000);
+          const timer = setTimeout(() => controller.abort(), 5000);
           const upstream = await fetch(logoUrl, { signal: controller.signal, redirect: 'follow' });
           clearTimeout(timer);
           const ct = upstream.headers.get('content-type') || 'image/png';
@@ -1566,7 +1606,7 @@ async function startServer() {
         }
       }
 
-      // 3. Fallback to bundled office emblem SVG
+      // 4. Fallback to bundled office emblem SVG
       const svgPath = path.join(process.cwd(), 'public', 'icon.svg');
       if (fs.existsSync(svgPath)) {
         res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
@@ -1593,6 +1633,7 @@ async function startServer() {
     res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({
+      id: '/',
       name: appName,
       short_name: shortName,
       description: 'النظام الإداري والمكتبي المتكامل لمكتب النائب علا الناشي لإدارة المراجعين، الطلبات، مقابلات النائب، الأرشيف، وبطاقات المعلومات الرسمية',

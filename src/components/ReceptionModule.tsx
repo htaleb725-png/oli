@@ -1344,9 +1344,6 @@ export const ReceptionModule: React.FC = () => {
               }
             ]}
           />
-
-          {/* Embedded Professional Analytics Dashboard for Reception */}
-          <DepartmentAnalyticsDashboard department="reception" compact />
         </div>
       )}
 

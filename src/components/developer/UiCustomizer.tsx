@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { generatePwaPngIcons } from '../../utils/pwaIconHelper';
 import { UiCustomizationSettings } from '../../types';
 import { 
   Palette, 
@@ -120,12 +121,15 @@ export const UiCustomizer: React.FC = () => {
   ];
 
   // Save System Texts
-  const handleSaveSystemTexts = (e: React.FormEvent) => {
+  const handleSaveSystemTexts = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanTicker = tickerNewsText
       .split('\n')
       .map(t => t.trim())
       .filter(Boolean);
+
+    const cleanLogo = logoUrl.trim();
+    const generatedIcons = cleanLogo ? await generatePwaPngIcons(cleanLogo) : null;
 
     updateSettings({
       appName: appName.trim(),
@@ -136,7 +140,12 @@ export const UiCustomizer: React.FC = () => {
       officeAddress: officeAddress.trim(),
       hotline: hotline.trim(),
       tickerNews: cleanTicker.length > 0 ? cleanTicker : ['أهلاً بكم في منظومة إدارة العمل والمعاملات الرسمية'],
-      logoUrl: logoUrl.trim(),
+      logoUrl: cleanLogo,
+      ...(generatedIcons
+        ? { pwaIcon192: generatedIcons.icon192, pwaIcon512: generatedIcons.icon512 }
+        : !cleanLogo
+        ? { pwaIcon192: '', pwaIcon512: '' }
+        : {}),
       parliamentEmblemUrl: parliamentEmblemUrl.trim(),
       footerText: footerText.trim() || undefined,
       loadingScreenTitle: loadingScreenTitle.trim() || undefined,

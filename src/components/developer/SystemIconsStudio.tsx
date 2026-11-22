@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { generatePwaPngIcons } from '../../utils/pwaIconHelper';
 import {
   Palette,
   Image as ImageIcon,
@@ -124,12 +125,20 @@ export const SystemIconsStudio: React.FC = () => {
     updateSettings({ customTilesConfig: next });
   };
 
-  const handleSaveAllIdentityAndTiles = () => {
+  const handleSaveAllIdentityAndTiles = async () => {
+    const cleanLogo = logoUrl.trim();
+    const generatedIcons = cleanLogo ? await generatePwaPngIcons(cleanLogo) : null;
+
     updateSettings({
       appName: appName.trim(),
       deputyName: deputyName.trim(),
       deputyTitle: deputyTitle.trim(),
-      logoUrl: logoUrl.trim(),
+      logoUrl: cleanLogo,
+      ...(generatedIcons
+        ? { pwaIcon192: generatedIcons.icon192, pwaIcon512: generatedIcons.icon512 }
+        : !cleanLogo
+        ? { pwaIcon192: '', pwaIcon512: '' }
+        : {}),
       parliamentEmblemUrl: parliamentEmblemUrl.trim(),
       customImages: {
         ...(systemSettings.customImages || {}),

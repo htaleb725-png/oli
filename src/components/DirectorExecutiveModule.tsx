@@ -1103,9 +1103,6 @@ export const DirectorExecutiveModule: React.FC = () => {
               }
             ]}
           />
-
-          {/* Executive All-Departments Analytics Dashboard for Office Director */}
-          <DepartmentAnalyticsDashboard department="executive_all" />
         </div>
       )}
 

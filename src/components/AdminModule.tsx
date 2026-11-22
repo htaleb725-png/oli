@@ -407,7 +407,7 @@ export const AdminModule: React.FC = () => {
 
       const nowStamp = new Date().toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
       const currentUploader = currentUser?.FullName || 'موظف الإدارة';
-      const nextOutgoing = computeNextOutgoingNumber(requests, systemSettings);
+      const nextOutgoing = computeNextOutgoingNumber(requests, systemSettings, officialLetters);
       const todayIso = new Date().toISOString().split('T')[0];
       const deliveryVal: 'مستلم' | 'غير مستلم' = requestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم';
 
@@ -747,9 +747,6 @@ export const AdminModule: React.FC = () => {
             }
           ]}
         />
-
-        {/* Embedded Professional Department Analytics Dashboard for Admin */}
-        <DepartmentAnalyticsDashboard department="admin" compact />
         </div>
       )}
 

@@ -275,9 +275,6 @@ export const MachineModule: React.FC = () => {
               }
             ]}
           />
-
-          {/* Embedded Professional Analytics Dashboard for Machine */}
-          <DepartmentAnalyticsDashboard department="machine" compact />
         </div>
       )}
 

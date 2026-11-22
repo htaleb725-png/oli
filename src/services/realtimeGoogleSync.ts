@@ -1,4 +1,12 @@
 import { getAccessToken, pushSingleRecordToSheetsRealtime, deleteRecordFromSheetsRealtime } from './googleSheetsService';
+import {
+  CITIZENS_SHEET_APPEND_RANGE,
+  REQUESTS_SHEET_APPEND_RANGE,
+  citizenToSheetRow,
+  requestToSheetRow,
+  toCleanSheetCitizenPayload,
+  toCleanSheetRequestPayload
+} from './googleSheetsSchema';
 import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord, User } from '../types';
 
 /**
@@ -189,9 +197,18 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
       }
     }
 
-    // 2. Webhook / Apps Script Web App sync (if configured)
+    // 2. Webhook / Apps Script Web App sync (if configured) — send strictly clean isolated scalar fields (zero JSON/base64 blobs)
     if (resolvedUrl && resolvedUrl.startsWith('http')) {
       try {
+        const cleanWebhookData =
+          item.action === 'delete'
+            ? item.data
+            : item.entityType === 'citizens'
+            ? toCleanSheetCitizenPayload(item.data)
+            : item.entityType === 'requests'
+            ? toCleanSheetRequestPayload(item.data)
+            : item.data;
+
         await fetch(resolvedUrl, {
           method: 'POST',
           mode: 'no-cors',
@@ -205,8 +222,8 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
             id: targetId,
             Citizen_ID: targetId,
             Request_ID: targetId,
-            data: item.data,
-            record: item.data,
+            data: cleanWebhookData,
+            record: cleanWebhookData,
             timestamp: item.timestamp,
             source: 'al_nashi_office_system'
           })
@@ -240,22 +257,9 @@ export async function pushBulkDataToGoogleSheets(
   let directSheetsSent = false;
   let chunksSent = 0;
 
-  // Strip heavy base64 images before sending over webhook/REST
-  const cleanCitizens = (citizensList || []).map(c => {
-    const copy: any = { ...c };
-    if (typeof copy.PhotoUrl === 'string' && copy.PhotoUrl.startsWith('data:')) delete copy.PhotoUrl;
-    return copy;
-  });
-  const cleanRequests = (requestsList || []).map(r => {
-    const copy: any = { ...r };
-    if (typeof copy.AttachedRequestImage === 'string' && copy.AttachedRequestImage.startsWith('data:')) {
-      delete copy.AttachedRequestImage;
-    }
-    if (Array.isArray(copy.ScanAttachments)) {
-      copy.ScanAttachments = [];
-    }
-    return copy;
-  });
+  // Sanitize into strictly flat, isolated single-cell objects (zero raw JSON/base64, identical to manual registration!)
+  const cleanCitizens = (citizensList || []).map(c => toCleanSheetCitizenPayload(c));
+  const cleanRequests = (requestsList || []).map(r => toCleanSheetRequestPayload(r));
 
   // 1. Push in chunks of 80 rows to Google Apps Script Webhook (bulk_sync merges & upserts safely without wiping!)
   if (resolvedUrl && resolvedUrl.startsWith('http') && (cleanCitizens.length > 0 || cleanRequests.length > 0)) {
@@ -292,30 +296,14 @@ export async function pushBulkDataToGoogleSheets(
     }
   }
 
-  // 2. Also append directly via Google Sheets REST API if OAuth access token is active
-  if (resolvedSheetId && (cleanCitizens.length > 0 || cleanRequests.length > 0)) {
+  // 2. Also append directly via Google Sheets REST API using the EXACT SAME unified 18-col Citizens & 20-col Requests schema
+  if (resolvedSheetId && (citizensList.length > 0 || requestsList.length > 0)) {
     try {
       const token = await getAccessToken();
       if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
-        if (cleanCitizens.length > 0) {
-          const citRows = cleanCitizens.map(c => [
-            c.Citizen_ID || '',
-            c.FullName || '',
-            c.Phone1 || '',
-            c.Phone2 || '',
-            c.Gender || 'ذكر',
-            c.Surname || '',
-            c.District || '',
-            c.SubDistrict || '',
-            c.ResidentialArea || '',
-            c.Job || '',
-            c.Education || '',
-            c.Rating || '',
-            c.ReferralSource || '',
-            c.CreatedAt || '',
-            c.CreatedBy || ''
-          ]);
-          const encCitRange = encodeURIComponent('سجل_المراجعين_Citizens!A:O');
+        if (citizensList.length > 0) {
+          const citRows = citizensList.map(c => citizenToSheetRow(c));
+          const encCitRange = encodeURIComponent(CITIZENS_SHEET_APPEND_RANGE);
           const resCit = await fetch(
             `https://sheets.googleapis.com/v4/spreadsheets/${resolvedSheetId}/values/${encCitRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
             {
@@ -329,29 +317,9 @@ export async function pushBulkDataToGoogleSheets(
           );
           if (resCit.ok) directSheetsSent = true;
         }
-        if (cleanRequests.length > 0) {
-          const reqRows = cleanRequests.map(r => [
-            r.Request_ID || '',
-            r.Citizen_ID || '',
-            r.CitizenName || '',
-            r.CitizenPhone || '',
-            r.Entity || '',
-            r.Details || '',
-            r.OutgoingNumber || '',
-            r.OutgoingDate || '',
-            r.Address || r.ResidentialArea || '',
-            r.ReferralSource || '',
-            r.Margin || '',
-            r.ProcessingStatus || 'منجز',
-            r.DeliveryStatus || r.RequestStatus || 'غير مستلم',
-            r.Education || '',
-            r.Job || '',
-            r.TargetDepartment || r.RegisteredVia || 'admin',
-            r.CreatedAt || '',
-            r.CreatedBy || '',
-            r.OtherNotes || ''
-          ]);
-          const encReqRange = encodeURIComponent('طلبات_المواطنين_Requests!A:S');
+        if (requestsList.length > 0) {
+          const reqRows = requestsList.map(r => requestToSheetRow(r));
+          const encReqRange = encodeURIComponent(REQUESTS_SHEET_APPEND_RANGE);
           const resReq = await fetch(
             `https://sheets.googleapis.com/v4/spreadsheets/${resolvedSheetId}/values/${encReqRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
             {

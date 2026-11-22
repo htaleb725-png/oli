@@ -15,6 +15,10 @@ import {
   FileCheck
 } from 'lucide-react';
 import { Citizen, OfficeRequest } from '../types';
+import {
+  splitCombinedOutgoingAndDate,
+  scanMaxOutgoingSequences
+} from '../utils/outgoingNumberHelper';
 
 interface LegacyDataImporterModalProps {
   isOpen: boolean;
@@ -37,7 +41,7 @@ interface CleanedRow {
 }
 
 export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = ({ isOpen, onClose }) => {
-  const { citizens, batchImportRecords, addAuditLog, currentUser } = useApp();
+  const { citizens, batchImportRecords, addAuditLog, currentUser, systemSettings, updateSystemSettings } = useApp();
 
   const [file, setFile] = useState<File | null>(null);
   const [cleanedRows, setCleanedRows] = useState<CleanedRow[]>([]);
@@ -140,8 +144,9 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
           }
           const citId = citizensMap.get(name)!;
 
-          const rawOutgoing = String(row['العدد'] || row['رقم الصادر'] || row['العدد الصادر'] || row['الصادر'] || row['OutgoingNumber'] || '').trim();
-          const rawOutgoingDate = String(row['تاريخ الصادر'] || row['تاريخ الكتاب'] || row['التاريخ'] || row['تاريخ_الصادر'] || row['OutgoingDate'] || '').trim();
+          const rawOutgoingCell = row['العدد'] || row['رقم الصادر'] || row['العدد الصادر'] || row['الصادر'] || row['رقم الكتاب'] || row['العدد والتاريخ'] || row['OutgoingNumber'] || '';
+          const rawOutgoingDateCell = row['تاريخ الصادر'] || row['تاريخ الكتاب'] || row['التاريخ'] || row['تاريخ_الصادر'] || row['OutgoingDate'] || '';
+          const splitOut = splitCombinedOutgoingAndDate(rawOutgoingCell, rawOutgoingDateCell);
 
           cleaned.push({
             citizenId: citId,
@@ -154,8 +159,8 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
             district: district,
             details: details,
             totalCitizenRequestsCount: nameFrequency[name] || 1,
-            outgoingNumber: rawOutgoing || undefined,
-            outgoingDate: rawOutgoingDate || undefined
+            outgoingNumber: splitOut.outgoingNumber || undefined,
+            outgoingDate: splitOut.outgoingDate || undefined
           });
         }
 
@@ -225,6 +230,18 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
     }
 
     try {
+      const scanned = scanMaxOutgoingSequences(requestsToCreate);
+      const settingsPatch: Record<string, any> = {};
+      if (scanned.maxNasiriyah > (Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0)) {
+        settingsPatch.lastOutgoingNumberNasiriyah = scanned.maxNasiriyah;
+      }
+      if (scanned.maxSuq > (Number(systemSettings?.lastOutgoingNumberSuq) || 0)) {
+        settingsPatch.lastOutgoingNumberSuq = scanned.maxSuq;
+      }
+      if (Object.keys(settingsPatch).length > 0) {
+        updateSystemSettings(settingsPatch);
+      }
+
       await batchImportRecords(Array.from(uniqueCitizensMap.values()), requestsToCreate);
       setIsProcessing(false);
       setIsImported(true);

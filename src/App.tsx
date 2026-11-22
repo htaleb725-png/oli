@@ -36,6 +36,7 @@ import {
   getHomeSectionForRole,
   SOCIAL_CARE_LEGACY_CUSTOM_ID
 } from './utils/permissions';
+import { generatePwaPngIcons, buildInlineManifestDataUrl } from './utils/pwaIconHelper';
 
 const MainAppLayout: React.FC = () => {
   const { 
@@ -54,6 +55,7 @@ const MainAppLayout: React.FC = () => {
     isSessionLoading,
     sessionLoadingMessage,
     systemSettings,
+    updateSystemSettings,
     customSections
   } = useApp();
 
@@ -69,35 +71,109 @@ const MainAppLayout: React.FC = () => {
     }
   };
 
-  // Dynamic Browser Tab Title, Favicon & Server-Served Web App Manifest Sync with Developer Customizations
+  const lastRenderedLogoRef = React.useRef<string>('');
+
+  // Dynamic Browser Tab Title, Favicon & Genuine PNG Desktop PWA App Icon Sync (AI Studio + Vercel)
   React.useEffect(() => {
+    let cancelled = false;
     if (systemSettings?.appName) {
       document.title = systemSettings.appName;
     }
 
+    const customLogo = (
+      systemSettings?.logoUrl ||
+      systemSettings?.customImages?.appIcon ||
+      ''
+    ).trim();
+    const existing192 = (systemSettings?.pwaIcon192 || '').trim();
+    const existing512 = (systemSettings?.pwaIcon512 || '').trim();
     const versionTag = String(
       systemSettings?.settingsVersion ||
-        (systemSettings?.logoUrl ? systemSettings.logoUrl.length : 1)
+        (existing192 ? existing192.length : 0) + (customLogo ? customLogo.length : 1)
     );
-    const customLogo = systemSettings?.logoUrl?.trim() || '';
-    const iconHref = customLogo ? `/api/pwa-icon/192?v=${encodeURIComponent(versionTag)}` : './icon.svg';
 
-    const favicon = document.querySelector("link[rel='icon']") as HTMLLinkElement | null;
-    if (favicon) {
-      favicon.href = customLogo.startsWith('data:image/') ? customLogo : iconHref;
-    }
-    const touchIcon = document.querySelector("link[rel='apple-touch-icon']") as HTMLLinkElement | null;
-    if (touchIcon) {
-      touchIcon.href = customLogo.startsWith('data:image/') ? customLogo : iconHref;
-    }
+    const applyIconsToDom = async (png192: string, png512: string) => {
+      if (cancelled) return;
+      const faviconHref =
+        png192 ||
+        (customLogo.startsWith('data:image/')
+          ? customLogo
+          : customLogo
+          ? `/api/pwa-icon/192?v=${encodeURIComponent(versionTag)}`
+          : './icon.svg');
 
-    // Point manifest to live server-generated /manifest.json with cache-busting version
-    // (Chromium/Edge Desktop PWA installer requires an HTTP manifest URL, NOT a blob: URL!)
-    const manifestLink = document.querySelector("link[rel='manifest']") as HTMLLinkElement | null;
-    if (manifestLink) {
-      manifestLink.setAttribute('href', `/manifest.json?v=${encodeURIComponent(versionTag)}`);
-    }
-  }, [systemSettings?.appName, systemSettings?.logoUrl, systemSettings?.settingsVersion]);
+      const favicon = document.querySelector("link[rel='icon']") as HTMLLinkElement | null;
+      if (favicon) favicon.href = faviconHref;
+      const touchIcon = document.querySelector("link[rel='apple-touch-icon']") as HTMLLinkElement | null;
+      if (touchIcon) touchIcon.href = faviconHref;
+
+      const manifestLink = document.querySelector("link[rel='manifest']") as HTMLLinkElement | null;
+      if (!manifestLink) return;
+
+      // Check whether Express dynamic /api/pwa-icon/192 endpoint exists (Node server vs static Vercel)
+      try {
+        const probe = await fetch(`/api/pwa-icon/192?v=${encodeURIComponent(versionTag)}`, {
+          method: 'HEAD',
+          cache: 'no-store'
+        });
+        if (!cancelled && probe.ok) {
+          manifestLink.setAttribute('href', `/manifest.json?v=${encodeURIComponent(versionTag)}`);
+          return;
+        }
+      } catch {
+        // Static host (e.g. Vercel) — fall through to inline manifest with genuine PNG icons
+      }
+
+      if (!cancelled && png192 && png512) {
+        manifestLink.setAttribute(
+          'href',
+          buildInlineManifestDataUrl(
+            systemSettings?.appName || 'نظام مكتب النائب علا الناشي',
+            png192,
+            png512
+          )
+        );
+      }
+    };
+
+    (async () => {
+      let final192 = existing192;
+      let final512 = existing512;
+
+      // If Developer uploaded/linked a custom logo and PNG desktop icons aren't generated for this exact logo yet, generate them now
+      if (
+        customLogo &&
+        (!final192 || !final512 || (lastRenderedLogoRef.current && lastRenderedLogoRef.current !== customLogo))
+      ) {
+        const generated = await generatePwaPngIcons(customLogo);
+        if (!cancelled && generated) {
+          final192 = generated.icon192;
+          final512 = generated.icon512;
+          lastRenderedLogoRef.current = customLogo;
+          if (final192 !== existing192 || final512 !== existing512) {
+            updateSystemSettings({
+              pwaIcon192: final192,
+              pwaIcon512: final512
+            });
+          }
+        }
+      } else if (customLogo && final192 && final512) {
+        lastRenderedLogoRef.current = customLogo;
+      }
+
+      await applyIconsToDom(final192, final512);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    systemSettings?.appName,
+    systemSettings?.logoUrl,
+    systemSettings?.pwaIcon192,
+    systemSettings?.pwaIcon512,
+    systemSettings?.settingsVersion
+  ]);
 
   const handleManualCloudSync = async () => {
     setIsCloudSyncing(true);

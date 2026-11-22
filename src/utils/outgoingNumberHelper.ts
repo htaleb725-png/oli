@@ -1,4 +1,4 @@
-import { OfficeRequest, SystemSettings } from '../types';
+import { OfficeRequest, OfficialLetter, SystemSettings } from '../types';
 
 /**
  * Convert Arabic-Indic (٠-٩) and Persian (۰-۹) digits to Western ASCII digits (0-9)
@@ -37,8 +37,8 @@ export function parseExcelDateValue(raw: any): string {
     }
   }
 
-  // YYYY-MM-DD or YYYY/MM/DD
-  const ymd = normalized.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  // YYYY-MM-DD or YYYY/MM/DD (anywhere inside string)
+  const ymd = normalized.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
   if (ymd) {
     const y = ymd[1];
     const m = ymd[2].padStart(2, '0');
@@ -46,8 +46,8 @@ export function parseExcelDateValue(raw: any): string {
     return `${y}-${m}-${d}`;
   }
 
-  // DD/MM/YYYY or DD-MM-YYYY
-  const dmy = normalized.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  // DD/MM/YYYY or DD-MM-YYYY (anywhere inside string)
+  const dmy = normalized.match(/(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
   if (dmy) {
     const d = dmy[1].padStart(2, '0');
     const m = dmy[2].padStart(2, '0');
@@ -67,6 +67,54 @@ export function parseExcelDateValue(raw: any): string {
   return normalized;
 }
 
+/**
+ * Splits a combined Iraqi Excel cell like "ن / 12 / 450 في 2026/03/12" or "450 - 12/03/2026"
+ * cleanly into separate outgoingNumber and outgoingDate values.
+ */
+export function splitCombinedOutgoingAndDate(
+  rawOutgoing: any,
+  rawDate?: any
+): { outgoingNumber: string; outgoingDate: string } {
+  const outStr = toWesternDigits(rawOutgoing || '').trim();
+  let dateStr = parseExcelDateValue(rawDate);
+
+  if (!outStr) {
+    return { outgoingNumber: '', outgoingDate: dateStr };
+  }
+
+  // Detect embedded full date inside outgoing cell (YYYY/MM/DD or DD/MM/YYYY)
+  const datePatterns = [
+    /(?:في|بتاريخ|تاريخ)?\s*(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/,
+    /(?:في|بتاريخ|تاريخ)?\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})/
+  ];
+
+  let cleanedOutgoing = outStr;
+  for (const pat of datePatterns) {
+    const match = cleanedOutgoing.match(pat);
+    if (match) {
+      if (!dateStr && match[1]) {
+        dateStr = parseExcelDateValue(match[1]);
+      }
+      cleanedOutgoing = cleanedOutgoing
+        .replace(match[0], ' ')
+        .replace(/[-–—|،,]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+  }
+
+  // Strip trailing keywords left behind like "في" or "بتاريخ"
+  cleanedOutgoing = cleanedOutgoing
+    .replace(/(?:في|بتاريخ|العدد|رقم\s*الكتاب|رقم\s*الصادر)\s*:?\s*$/i, '')
+    .replace(/^(?:العدد|رقم\s*الكتاب|رقم\s*الصادر)\s*:?\s*/i, '')
+    .trim();
+
+  return {
+    outgoingNumber: cleanedOutgoing || outStr,
+    outgoingDate: dateStr
+  };
+}
+
 export type OutgoingBranch = 'nasiriyah' | 'suq_al_shuyoukh' | 'general';
 
 export interface ParsedOutgoingInfo {
@@ -78,24 +126,38 @@ export interface ParsedOutgoingInfo {
 /**
  * Intelligently extract the outgoing sequence number and office branch from ANY Iraqi outgoing format:
  * Examples:
- * - "ن / 12 / 450" -> { seq: 450, branch: 'nasiriyah' }
- * - "س / 14 / 320" -> { seq: 320, branch: 'suq_al_shuyoukh' }
- * - "ن / ٢٦ / ٤٥٠" -> { seq: 450, branch: 'nasiriyah' }
- * - "450 / 2026"   -> { seq: 450, branch: 'general' }
- * - "2026/450"     -> { seq: 450, branch: 'general' }
- * - "450"          -> { seq: 450, branch: 'general' }
+ * - "ن / 12 / 450"              -> { seq: 450, branch: 'nasiriyah' }
+ * - "س / 14 / 320"              -> { seq: 320, branch: 'suq_al_shuyoukh' }
+ * - "ن / ٢٦ / ٤٥٠"              -> { seq: 450, branch: 'nasiriyah' }
+ * - "ن/12/450 في 2026/03/12"    -> { seq: 450, branch: 'nasiriyah' }
+ * - "450 في 12/03/2026"         -> { seq: 450, branch: 'general' }
+ * - "450 / 2026"                -> { seq: 450, branch: 'general' }
+ * - "2026/450"                  -> { seq: 450, branch: 'general' }
+ * - "450"                       -> { seq: 450, branch: 'general' }
  */
 export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutgoingInfo {
-  const normalized = toWesternDigits(rawOutgoing || '').trim();
-  if (!normalized) {
+  const rawNormalized = toWesternDigits(rawOutgoing || '').trim();
+  if (!rawNormalized) {
     return { seq: 0, branch: 'general', normalized: '' };
+  }
+
+  // CRITICAL: Strip embedded dates BEFORE tokenizing numbers so dates like 12/3/2026 NEVER corrupt the sequence!
+  const normalized = rawNormalized
+    .replace(/(?:في|بتاريخ|تاريخ)\s*\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}/gi, ' ')
+    .replace(/\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b/g, ' ')
+    .replace(/\b\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) {
+    return { seq: 0, branch: 'general', normalized: rawNormalized };
   }
 
   // Detect branch prefix
   let branch: OutgoingBranch = 'general';
-  if (/^س(\s|\/|-|$)|سوق\s*الشيوخ/i.test(normalized) || /(^|\s)س\s*\//.test(normalized)) {
+  if (/^س(\s|\/|-|$)|سوق\s*الشيوخ/i.test(normalized) || /(^|\s)س\s*\//.test(normalized) || /\/\s*س(\s|$)/.test(normalized)) {
     branch = 'suq_al_shuyoukh';
-  } else if (/^ن(\s|\/|-|$)|الناصرية|ناصرية/i.test(normalized) || /(^|\s)ن\s*\//.test(normalized)) {
+  } else if (/^ن(\s|\/|-|$)|الناصرية|ناصرية/i.test(normalized) || /(^|\s)ن\s*\//.test(normalized) || /\/\s*ن(\s|$)/.test(normalized)) {
     branch = 'nasiriyah';
   }
 
@@ -107,7 +169,8 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
     if (m) {
       for (const digits of m) {
         const val = parseInt(digits, 10);
-        if (!isNaN(val) && val > 0) {
+        // Ignore absurdly long phone numbers (10+ digits) accidentally pasted into outgoing cells
+        if (!isNaN(val) && val > 0 && digits.length <= 7) {
           numericTokens.push(val);
         }
       }
@@ -137,12 +200,13 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
     return { seq: nonYearTokens[0], branch, normalized };
   }
 
-  // Multiple non-year numbers exist, e.g., ["12", "450"] from "ن / 12 / 450" or ["14", "320"] from "س / 14 / 320" or ["26", "15"] from "ن / 26 / 15"
+  // Multiple non-year numbers exist:
+  // e.g., ["12", "450"] from "ن / 12 / 450", ["14", "320"] from "س / 14 / 320", or reversed ["450", "12"] from "450 / 12 / ن"
   const currentYearShort = parseInt(String(new Date().getFullYear()).slice(-2), 10);
   const first = nonYearTokens[0];
   const last = nonYearTokens[nonYearTokens.length - 1];
 
-  // If the first token is a known branch code (12 for Nasiriyah, 14 for Suq) or 2-digit year (23..30), the sequence is the last token!
+  // Standard prefix code first: "ن / 12 / 450" or "ن / 26 / 450"
   if (
     first === 12 ||
     first === 14 ||
@@ -152,17 +216,65 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
     return { seq: last, branch, normalized };
   }
 
-  // Otherwise pick the last token (standard Iraqi format: Code / Seq), or max if last is smaller than a 2-digit code
-  return { seq: Math.max(last, ...nonYearTokens.filter((n) => n !== 12 && n !== 14)), branch, normalized };
+  // Reversed Iraqi format: "450 / 12 / ن" or "450 / 14 / س"
+  if (last === 12 || last === 14 || last === currentYearShort) {
+    return { seq: first, branch, normalized };
+  }
+
+  // Otherwise pick the largest non-branch-code token
+  const nonCodeTokens = nonYearTokens.filter((n) => n !== 12 && n !== 14);
+  return {
+    seq: nonCodeTokens.length > 0 ? Math.max(...nonCodeTokens) : last,
+    branch,
+    normalized
+  };
 }
 
 /**
- * Compute the next authoritative outgoing number across ALL requests (active + archived Excel imports)
- * and systemSettings baselines so archiving ANY Excel file immediately advances the outgoing counter.
+ * Scan any list of OfficeRequests (and optional OfficialLetters) to find the highest outgoing sequence
+ * per office branch so importing Excel archives ALWAYS advances the outgoing counter accurately.
+ */
+export function scanMaxOutgoingSequences(
+  requests: OfficeRequest[],
+  officialLetters?: OfficialLetter[]
+): { maxNasiriyah: number; maxSuq: number; maxAny: number } {
+  let maxNasiriyah = 0;
+  let maxSuq = 0;
+  let maxAny = 0;
+
+  const inspectRaw = (raw?: string | null) => {
+    if (!raw || !String(raw).trim()) return;
+    const parsed = extractOutgoingSequence(raw);
+    if (parsed.seq <= 0) return;
+    if (parsed.seq > maxAny) maxAny = parsed.seq;
+    if (parsed.branch === 'suq_al_shuyoukh') {
+      if (parsed.seq > maxSuq) maxSuq = parsed.seq;
+    } else if (parsed.branch === 'nasiriyah') {
+      if (parsed.seq > maxNasiriyah) maxNasiriyah = parsed.seq;
+    } else {
+      if (parsed.seq > maxNasiriyah) maxNasiriyah = parsed.seq;
+      if (parsed.seq > maxSuq) maxSuq = parsed.seq;
+    }
+  };
+
+  for (const r of requests || []) {
+    inspectRaw(r?.OutgoingNumber);
+  }
+  for (const l of officialLetters || []) {
+    inspectRaw(l?.LetterNumber);
+  }
+
+  return { maxNasiriyah, maxSuq, maxAny };
+}
+
+/**
+ * Compute the next authoritative outgoing number across ALL requests (active + archived Excel imports),
+ * official letters, and systemSettings baselines so archiving ANY Excel file immediately advances the outgoing counter.
  */
 export function computeNextOutgoingNumber(
   requests: OfficeRequest[],
-  systemSettings?: Partial<SystemSettings> | null
+  systemSettings?: Partial<SystemSettings> | null,
+  officialLetters?: OfficialLetter[]
 ): {
   nextNumber: string;
   nextSeq: number;
@@ -174,7 +286,7 @@ export function computeNextOutgoingNumber(
     outgoingDate: string;
     citizenName: string;
     seq: number;
-    request: OfficeRequest;
+    request?: OfficeRequest;
   };
 } {
   const isSuq = systemSettings?.officeBranch === 'suq_al_shuyoukh';
@@ -193,7 +305,7 @@ export function computeNextOutgoingNumber(
         outgoingDate: string;
         citizenName: string;
         seq: number;
-        request: OfficeRequest;
+        request?: OfficeRequest;
       }
     | undefined;
 
@@ -202,7 +314,7 @@ export function computeNextOutgoingNumber(
     const parsed = extractOutgoingSequence(r.OutgoingNumber);
     if (parsed.seq <= 0) continue;
 
-    // Count matching branch records + general/numeric records (do not mix Suq into Nasiriyah if explicitly prefixed)
+    // Count matching branch records + general/numeric records
     const appliesToBranch = parsed.branch === 'general' || parsed.branch === targetBranch;
     if (appliesToBranch) {
       if (parsed.seq > maxFound) {
@@ -215,6 +327,26 @@ export function computeNextOutgoingNumber(
           citizenName: r.CitizenName || 'غير محدد',
           seq: parsed.seq,
           request: r
+        };
+      }
+    }
+  }
+
+  for (const l of officialLetters || []) {
+    if (!l?.LetterNumber || !String(l.LetterNumber).trim()) continue;
+    const parsed = extractOutgoingSequence(l.LetterNumber);
+    if (parsed.seq <= 0) continue;
+    const appliesToBranch = parsed.branch === 'general' || parsed.branch === targetBranch;
+    if (appliesToBranch) {
+      if (parsed.seq > maxFound) {
+        maxFound = parsed.seq;
+      }
+      if (!bestRecord || parsed.seq > bestRecord.seq) {
+        bestRecord = {
+          outgoingNumber: l.LetterNumber,
+          outgoingDate: l.LetterDate || '',
+          citizenName: l.CitizenName || l.Recipient || 'كتاب رسمي',
+          seq: parsed.seq
         };
       }
     }

@@ -8,115 +8,209 @@
 
 export const GOOGLE_APPS_SCRIPT_SOURCE = `/**
  * =========================================================================
- * منظومة مكتب النائب المهندسة علا عودة الناشي - الإصدار السحابي المركزي 2026
- * محرك المزامنة التلقائي الذكي المزدوج (Dual-Sync Dynamic Engine)
- * يدعم الاكتشاف التلقائي للأقسام والحقول الجديدة وإنشاء الأوراق والأعمدة فورياً
+ * منظومة مكتب النائب المهندسة علا عودة الناشي - الإصدار السحابي المنظم 2026
+ * محرك المزامنة الموحد بأعمدة عربية معزولة ومنظمة 100% (بدون تداخل أو حقول JSON)
+ * يدعم التسجيل المباشر + رفع وتصفية ملفات الإكسل + البحث المباشر في Google Drive
  * =========================================================================
  */
 
-// تهيئة وإنشاء الجداول الأساسية
+// الجداول الأساسية بأعمدتها العربية المعزولة والثابتة (كل معلومة في عمود مستقل تماماً)
+var CORE_SCHEMAS = {
+  'سجل_المراجعين_Citizens': {
+    idKey: 'Citizen_ID',
+    columns: [
+      { header: 'الرقم التعريفي', key: 'Citizen_ID', aliases: ['Citizen_ID', 'id', 'الرقم التعريفي'] },
+      { header: 'الاسم الكامل', key: 'FullName', aliases: ['FullName', 'CitizenName', 'الاسم الكامل', 'الاسم الكامل الرباعي', 'اسم المواطن'] },
+      { header: 'الاسم الأول', key: 'FirstName', aliases: ['FirstName', 'الاسم الأول'] },
+      { header: 'اسم الأب', key: 'FatherName', aliases: ['FatherName', 'اسم الأب'] },
+      { header: 'اسم الجد', key: 'GrandFatherName', aliases: ['GrandFatherName', 'اسم الجد'] },
+      { header: 'اللقب / العشيرة', key: 'Surname', aliases: ['Surname', 'اللقب / العشيرة', 'اللقب'] },
+      { header: 'رقم الهاتف', key: 'Phone1', aliases: ['Phone1', 'Phone', 'رقم الهاتف', 'الهاتف الرئيسي'] },
+      { header: 'الهاتف البديل', key: 'Phone2', aliases: ['Phone2', 'الهاتف البديل', 'الهاتف الثانوي'] },
+      { header: 'القضاء', key: 'District', aliases: ['District', 'القضاء'] },
+      { header: 'الناحية / المنطقة', key: 'SubDistrict', aliases: ['SubDistrict', 'ResidentialArea', 'الناحية / المنطقة', 'الناحية / الحي'] },
+      { header: 'الجنس', key: 'Gender', aliases: ['Gender', 'الجنس'] },
+      { header: 'المهنة / العمل', key: 'Job', aliases: ['Job', 'المهنة / العمل', 'المهنة'] },
+      { header: 'التحصيل الدراسي', key: 'Education', aliases: ['Education', 'التحصيل الدراسي'] },
+      { header: 'التقييم', key: 'Rating', aliases: ['Rating', 'التقييم', 'التقييم الجماهيري'] },
+      { header: 'المعرف / التزكية', key: 'ReferralSource', aliases: ['ReferralSource', 'المعرف / التزكية', 'جهة التزكية / المعرف'] },
+      { header: 'مصدر التسجيل', key: 'RegisteredVia', aliases: ['RegisteredVia', 'مصدر التسجيل'] },
+      { header: 'تاريخ التسجيل', key: 'CreatedAt', aliases: ['CreatedAt', 'تاريخ التسجيل'] },
+      { header: 'الموظف المسؤول', key: 'CreatedBy', aliases: ['CreatedBy', 'الموظف المسؤول', 'مسؤول الإدخال'] }
+    ]
+  },
+  'طلبات_المواطنين_Requests': {
+    idKey: 'Request_ID',
+    columns: [
+      { header: 'رقم الطلب', key: 'Request_ID', aliases: ['Request_ID', 'id', 'رقم الطلب'] },
+      { header: 'الرقم التعريفي للمواطن', key: 'Citizen_ID', aliases: ['Citizen_ID', 'الرقم التعريفي للمواطن'] },
+      { header: 'اسم صاحب الطلب', key: 'CitizenName', aliases: ['CitizenName', 'FullName', 'اسم صاحب الطلب', 'اسم المواطن'] },
+      { header: 'رقم الهاتف', key: 'CitizenPhone', aliases: ['CitizenPhone', 'Phone1', 'رقم الهاتف'] },
+      { header: 'الوزارة / الجهة', key: 'Entity', aliases: ['Entity', 'الوزارة / الجهة', 'الجهة المعنية'] },
+      { header: 'الموضوع / تفاصيل الطلب', key: 'Details', aliases: ['Details', 'الموضوع / تفاصيل الطلب', 'تفاصيل الطلب', 'الموضوع'] },
+      { header: 'العدد / الصادر', key: 'OutgoingNumber', aliases: ['OutgoingNumber', 'العدد / الصادر', 'رقم الصادر'] },
+      { header: 'تاريخ الصادر', key: 'OutgoingDate', aliases: ['OutgoingDate', 'تاريخ الصادر', 'تاريخ الكتاب'] },
+      { header: 'حالة الإنجاز', key: 'ProcessingStatus', aliases: ['ProcessingStatus', 'حالة الإنجاز', 'المرحلة الإجرائية', 'حالة الطلب'] },
+      { header: 'حالة الاستلام', key: 'DeliveryStatus', aliases: ['DeliveryStatus', 'RequestStatus', 'حالة الاستلام', 'حالة المعاملة'] },
+      { header: 'الأسبقية', key: 'Priority', aliases: ['Priority', 'الأسبقية', 'درجة الأسبقية'] },
+      { header: 'العنوان / السكن', key: 'Address', aliases: ['Address', 'ResidentialArea', 'العنوان / السكن', 'العنوان'] },
+      { header: 'التحصيل الدراسي', key: 'Education', aliases: ['Education', 'التحصيل الدراسي'] },
+      { header: 'المهنة', key: 'Job', aliases: ['Job', 'المهنة'] },
+      { header: 'المعرف / التزكية', key: 'ReferralSource', aliases: ['ReferralSource', 'المعرف / التزكية'] },
+      { header: 'الهامش / التوجيه', key: 'Margin', aliases: ['Margin', 'DeputyNotes', 'DirectorNotes', 'الهامش / التوجيه', 'توجيهات وملاحظات النائب'] },
+      { header: 'القسم المختص', key: 'TargetDepartment', aliases: ['TargetDepartment', 'RegisteredVia', 'القسم المختص'] },
+      { header: 'الملاحظات', key: 'OtherNotes', aliases: ['OtherNotes', 'ReceptionNotes', 'الملاحظات'] },
+      { header: 'تاريخ التسجيل', key: 'CreatedAt', aliases: ['CreatedAt', 'تاريخ التسجيل', 'تاريخ المعاملة'] },
+      { header: 'الموظف المسؤول', key: 'CreatedBy', aliases: ['CreatedBy', 'الموظف المسؤول'] }
+    ]
+  },
+  'مقابلات_النائب_Interviews': {
+    idKey: 'Interview_ID',
+    columns: [
+      { header: 'رمز المقابلة', key: 'Interview_ID', aliases: ['Interview_ID', 'id', 'رمز المقابلة'] },
+      { header: 'الرقم التعريفي', key: 'Citizen_ID', aliases: ['Citizen_ID', 'الرقم التعريفي'] },
+      { header: 'اسم المواطن', key: 'FullName', aliases: ['FullName', 'CitizenName', 'اسم المواطن'] },
+      { header: 'موضوع المقابلة', key: 'Subject', aliases: ['Subject', 'موضوع المقابلة'] },
+      { header: 'رقم الهاتف', key: 'Phone1', aliases: ['Phone1', 'رقم الهاتف', 'الهاتف 1'] },
+      { header: 'العنوان / السكن', key: 'Address', aliases: ['Address', 'العنوان / السكن', 'السكن / العنوان'] },
+      { header: 'تاريخ المقابلة', key: 'InterviewDate', aliases: ['InterviewDate', 'تاريخ المقابلة'] },
+      { header: 'حالة المقابلة', key: 'Status', aliases: ['Status', 'حالة المقابلة'] },
+      { header: 'توجيه النائب', key: 'DeputyNotes', aliases: ['DeputyNotes', 'توجيه النائب'] },
+      { header: 'النتيجة', key: 'Outcome', aliases: ['Outcome', 'النتيجة', 'النتيجة والإجراء المتخذ'] }
+    ]
+  },
+  'الكتب_الرسمية_Letters': {
+    idKey: 'Letter_ID',
+    columns: [
+      { header: 'رمز الكتاب', key: 'Letter_ID', aliases: ['Letter_ID', 'id', 'رمز الكتاب'] },
+      { header: 'العدد / الصادر', key: 'LetterNumber', aliases: ['LetterNumber', 'Letter_Number', 'العدد / الصادر', 'العدد / الرقم الإداري'] },
+      { header: 'تاريخ الكتاب', key: 'LetterDate', aliases: ['LetterDate', 'Letter_Date', 'تاريخ الكتاب', 'التاريخ'] },
+      { header: 'الجهة الموجه إليها', key: 'Recipient', aliases: ['Recipient', 'To_Entity', 'الجهة الموجه إليها'] },
+      { header: 'الموضوع', key: 'Subject', aliases: ['Subject', 'الموضوع'] },
+      { header: 'اسم المواطن', key: 'CitizenName', aliases: ['CitizenName', 'اسم المواطن'] },
+      { header: 'الحالة', key: 'Status', aliases: ['Status', 'الحالة'] },
+      { header: 'المنشئ', key: 'ClerkName', aliases: ['ClerkName', 'المنشئ', 'الطباع / المنشئ'] }
+    ]
+  },
+  'صكوك_المساعدات_Cheques': {
+    idKey: 'id',
+    columns: [
+      { header: 'معرف الصك', key: 'id', aliases: ['id', 'معرف القيد', 'معرف الصك'] },
+      { header: 'رقم الصك', key: 'ChequeNumber', aliases: ['ChequeNumber', 'رقم الصك'] },
+      { header: 'الرقم التعريفي', key: 'Citizen_ID', aliases: ['Citizen_ID', 'الرقم التعريفي'] },
+      { header: 'اسم المستفيد', key: 'CitizenName', aliases: ['CitizenName', 'اسم المستفيد'] },
+      { header: 'المبلغ', key: 'Amount', aliases: ['Amount', 'المبلغ', 'المبلغ (د.ع)'] },
+      { header: 'المصرف', key: 'BankName', aliases: ['BankName', 'المصرف', 'اسم المصرف / الصندوق'] },
+      { header: 'الغرض', key: 'Purpose', aliases: ['Purpose', 'الغرض', 'الغرض من الصرف'] },
+      { header: 'الحالة', key: 'Status', aliases: ['Status', 'الحالة', 'حالة الصرف'] },
+      { header: 'تاريخ التحرير', key: 'IssueDate', aliases: ['IssueDate', 'تاريخ التحرير'] }
+    ]
+  },
+  'السجل_التنظيمي_Org': {
+    idKey: 'Citizen_ID',
+    columns: [
+      { header: 'الرقم التعريفي', key: 'Citizen_ID', aliases: ['Citizen_ID', 'Org_ID', 'الرقم التعريفي'] },
+      { header: 'الاسم الكامل', key: 'FullName', aliases: ['FullName', 'الاسم الكامل'] },
+      { header: 'القضاء', key: 'District', aliases: ['District', 'القضاء'] },
+      { header: 'الناحية', key: 'SubDistrict', aliases: ['SubDistrict', 'الناحية'] },
+      { header: 'التقييم التنظيمي', key: 'OrgRating', aliases: ['OrgRating', 'التقييم التنظيمي', 'التقييم الجماهيري'] },
+      { header: 'الملاحظات', key: 'Notes', aliases: ['Notes', 'الملاحظات'] },
+      { header: 'آخر تحديث', key: 'LastUpdated', aliases: ['LastUpdated', 'UpdatedAt', 'آخر تحديث'] }
+    ]
+  }
+};
+
+// تنظيف كل خلية لضمان عدم تداخل الأسطر أو إدخال كائنات JSON أو صور Base64
+function cleanCellVal(val) {
+  if (val === undefined || val === null) return '';
+  if (typeof val === 'boolean') return val ? 'نعم' : 'لا';
+  if (typeof val === 'object') return '';
+  var str = String(val).trim();
+  if (!str) return '';
+  if (str.indexOf('data:image/') === 0 || str.indexOf('data:application/') === 0) return '';
+  if ((str.indexOf('[{') === 0 && str.slice(-2) === '}]') || (str.indexOf('{"') === 0 && str.slice(-1) === '}')) {
+    return '';
+  }
+  return str.replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s{2,}/g, ' ').slice(0, 1500);
+}
+
+// تهيئة وتنسيق الجداول الأساسية بأعمدة عربية معزولة ومنظمة (يمين إلى يسار)
 function setupSpreadsheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  
-  var coreTabs = [
-    { 
-      name: 'سجل_المراجعين_Citizens', 
-      headers: ['Citizen_ID', 'FullName', 'Phone1', 'Phone2', 'District', 'SubDistrict', 'Gender', 'Rating', 'Job', 'Education', 'ReferralSource', 'CreatedAt', 'PhotoUrl', 'UpdatedAt'] 
-    },
-    { 
-      name: 'طلبات_المواطنين_Requests', 
-      headers: ['Request_ID', 'Citizen_ID', 'CitizenName', 'CitizenPhone', 'Entity', 'Details', 'OutgoingNumber', 'OutgoingDate', 'Address', 'ReferralSource', 'Margin', 'ProcessingStatus', 'DeliveryStatus', 'Education', 'Job', 'TargetDepartment', 'CreatedAt', 'CreatedBy', 'OtherNotes', 'UpdatedAt'] 
-    },
-    { 
-      name: 'مقابلات_النائب_Interviews', 
-      headers: ['Interview_ID', 'Citizen_ID', 'CitizenName', 'InterviewDate', 'Status', 'CreatedAt', 'UpdatedAt'] 
-    },
-    { 
-      name: 'الكتب_الرسمية_Letters', 
-      headers: ['Letter_ID', 'Letter_Number', 'Letter_Date', 'To_Entity', 'Subject', 'Recipient', 'Status', 'ClerkName', 'UpdatedAt'] 
-    },
-    { 
-      name: 'صكوك_المساعدات_Cheques', 
-      headers: ['id', 'ChequeNumber', 'Citizen_ID', 'CitizenName', 'Amount', 'BankName', 'Purpose', 'Status', 'IssueDate', 'DueDate', 'UpdatedAt'] 
-    },
-    { 
-      name: 'السجل_التنظيمي_Org', 
-      headers: ['Org_ID', 'Citizen_ID', 'FullName', 'OrgRating', 'UpdatedAt'] 
-    },
-    { 
-      name: 'الأقسام_المخصصة_Sections', 
-      headers: ['id', 'title', 'description', 'icon', 'badgeColor', 'fieldsJson', 'createdAt', 'updatedAt'] 
-    },
-    { 
-      name: 'سجلات_الأقسام_Records', 
-      headers: ['id', 'sectionId', 'dataJson', 'createdAt', 'createdBy', 'updatedAt'] 
-    },
-    { 
-      name: 'إعدادات_القوائم_Dropdowns', 
-      headers: ['Category', 'Value', 'UpdatedAt'] 
-    }
-  ];
-
-  coreTabs.forEach(function(t) {
-    var sheet = ss.getSheetByName(t.name);
+  Object.keys(CORE_SCHEMAS).forEach(function(sheetName) {
+    var schema = CORE_SCHEMAS[sheetName];
+    var sheet = ss.getSheetByName(sheetName);
     if (!sheet) {
-      sheet = ss.insertSheet(t.name);
+      sheet = ss.insertSheet(sheetName);
     }
-    ensureSheetHeaders(sheet, t.headers);
+    try { sheet.setRightToLeft(true); } catch (e) {}
+    var headers = schema.columns.map(function(c) { return c.header; });
+    ensureCleanStructuredHeaders(sheet, headers);
   });
-
-  return { status: 'success', message: 'تم تجهيز وتنسيق كافة الجداول بنجاح' };
+  return { status: 'success', message: 'تم تجهيز وتنسيق كافة الجداول بأعمدة معزولة ومنظمة بنجاح' };
 }
 
-/**
- * دالة ذكية لفحص وتوسيع رؤوس الأعمدة تلقائياً دون لمس البيانات القديمة
- */
-function ensureSheetHeaders(sheet, requiredHeaders) {
+function ensureCleanStructuredHeaders(sheet, headers) {
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
-
   if (lastRow === 0 || lastCol === 0) {
-    // الورقة فارغة بالكامل، ننشئ سطر الرؤوس
-    sheet.appendRow(requiredHeaders);
-    var range = sheet.getRange(1, 1, 1, requiredHeaders.length);
-    range.setBackground('#0f172a');
-    range.setFontColor('#fbbf24');
-    range.setFontWeight('bold');
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    var headerRange = sheet.getRange(1, 1, 1, headers.length);
+    headerRange.setBackground('#0f172a');
+    headerRange.setFontColor('#fbbf24');
+    headerRange.setFontWeight('bold');
+    headerRange.setHorizontalAlignment('center');
     sheet.setFrozenRows(1);
-    return requiredHeaders;
+    return headers;
   }
-
-  // قراءة الأعمدة الحالية
-  var existingHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
-    return String(h).trim();
-  });
-
-  var newHeadersToAdd = [];
-  requiredHeaders.forEach(function(h) {
-    var cleanH = String(h).trim();
-    if (cleanH && existingHeaders.indexOf(cleanH) === -1) {
-      newHeadersToAdd.push(cleanH);
-    }
-  });
-
-  // إضافة أي عمود جديد إلى اليمين وتنسيقه فورياً
-  if (newHeadersToAdd.length > 0) {
-    var startCol = lastCol + 1;
-    var addRange = sheet.getRange(1, startCol, 1, newHeadersToAdd.length);
-    addRange.setValues([newHeadersToAdd]);
-    addRange.setBackground('#0f172a');
-    addRange.setFontColor('#fbbf24');
-    addRange.setFontWeight('bold');
-    sheet.setFrozenRows(1);
-    return existingHeaders.concat(newHeadersToAdd);
-  }
-
-  return existingHeaders;
+  return sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) { return String(h || '').trim(); });
 }
 
 /**
- * تحديد اسم الورقة المناسب للقسم (يدعم الأقسام الأساسية وأي قسم جديد يضاف في الكود مستقبلاً)
+ * أداة إعادة تنظيم وتنسيق الجداول المختلطة القديمة بضغطة واحدة دون فقدان أي سجل!
  */
+function reorganizeAllSheetsCleanly() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  Object.keys(CORE_SCHEMAS).forEach(function(sheetName) {
+    var schema = CORE_SCHEMAS[sheetName];
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet || sheet.getLastRow() <= 1) return;
+    var existing = getSheetRecords(ss, sheetName);
+    sheet.clearContents();
+    try { sheet.setRightToLeft(true); } catch (e) {}
+    var headers = schema.columns.map(function(c) { return c.header; });
+    var rows = [headers];
+    existing.forEach(function(rec) {
+      rows.push(schema.columns.map(function(col) {
+        return cleanCellVal(extractFieldBySchemaColumn(rec, col));
+      }));
+    });
+    sheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
+    var headerRange = sheet.getRange(1, 1, 1, headers.length);
+    headerRange.setBackground('#0f172a');
+    headerRange.setFontColor('#fbbf24');
+    headerRange.setFontWeight('bold');
+    headerRange.setHorizontalAlignment('center');
+    sheet.setFrozenRows(1);
+  });
+}
+
+function extractFieldBySchemaColumn(item, col) {
+  if (item[col.key] !== undefined && item[col.key] !== null && String(item[col.key]).trim() !== '') {
+    return item[col.key];
+  }
+  if (item[col.header] !== undefined && item[col.header] !== null && String(item[col.header]).trim() !== '') {
+    return item[col.header];
+  }
+  for (var i = 0; i < col.aliases.length; i++) {
+    var a = col.aliases[i];
+    if (item[a] !== undefined && item[a] !== null && String(item[a]).trim() !== '') {
+      return item[a];
+    }
+  }
+  return '';
+}
+
 function resolveSheetName(table) {
   var clean = String(table || '').trim();
   switch (clean) {
@@ -132,23 +226,16 @@ function resolveSheetName(table) {
     case 'custom_records': return 'سجلات_الأقسام_Records';
     case 'dropdowns': return 'إعدادات_القوائم_Dropdowns';
     default:
-      // إذا كان اسماً عربياً أو قسماً جديداً مضافاً بالكود
-      if (clean.indexOf(' ') > -1) {
-        return clean.replace(/\\s+/g, '_');
-      }
+      if (clean.indexOf(' ') > -1) return clean.replace(/\\s+/g, '_');
       return clean || 'سجل_المراجعين_Citizens';
   }
 }
 
-/**
- * دالة GET: جلب البيانات وقراءة المنظومة
- */
 function doGet(e) {
   try {
     var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'getAllData';
     var ss = SpreadsheetApp.getActiveSpreadsheet();
 
-    // 1. جلب كافة الجداول بطلب واحد
     if (action === 'getAllData') {
       var citizens = getSheetRecords(ss, 'سجل_المراجعين_Citizens');
       var requests = getSheetRecords(ss, 'طلبات_المواطنين_Requests');
@@ -185,11 +272,17 @@ function doGet(e) {
     if (action === 'getRequests') return jsonResponse({ success: true, data: getSheetRecords(ss, 'طلبات_المواطنين_Requests') });
     if (action === 'getInterviews') return jsonResponse({ success: true, data: getSheetRecords(ss, 'مقابلات_النائب_Interviews') });
 
-    // استعراض والبحث المباشر في مجلد Google Drive عبر GET (سريع ومتوافق مع Vercel)
+    if (action === 'reorganizeSheets') {
+      reorganizeAllSheetsCleanly();
+      return jsonResponse({ success: true, message: 'تم إعادة ترتيب وتنظيم كافة الأعمدة والبيانات بنجاح' });
+    }
+
+    // استعراض والبحث المباشر في مجلد Google Drive عبر GET (حتى 2500 ملف)
     if (action === 'listDriveFiles' || action === 'searchDriveFiles') {
       var targetFolderId = (e && e.parameter && e.parameter.folderId) ? e.parameter.folderId : '';
       var qText = (e && e.parameter && (e.parameter.query || e.parameter.q)) ? (e.parameter.query || e.parameter.q) : '';
-      var driveFiles = handleDriveList(targetFolderId, qText);
+      var lim = (e && e.parameter && e.parameter.limit) ? Number(e.parameter.limit) : 2500;
+      var driveFiles = handleDriveList(targetFolderId, qText, lim);
       return jsonResponse({
         success: true,
         folderId: targetFolderId,
@@ -210,21 +303,14 @@ function doGet(e) {
   }
 }
 
-/**
- * دالة POST: استقبال وحفظ ومزامنة وتوسيع البيانات والأقسام تلقائياً
- */
 function doPost(e) {
   var lock = LockService.getScriptLock();
   lock.tryLock(30000);
-  
+
   try {
     var contents = {};
     if (e && e.postData && e.postData.contents) {
-      try {
-        contents = JSON.parse(e.postData.contents);
-      } catch (parseErr) {
-        contents = {};
-      }
+      try { contents = JSON.parse(e.postData.contents); } catch (parseErr) { contents = {}; }
     }
 
     var action = contents.action || 'appendRow';
@@ -234,164 +320,175 @@ function doPost(e) {
 
     setupSpreadsheet();
 
-    // 1. مزامنة الهيكل والأقسام الجديدة تلقائياً (Schema Auto-Sync)
+    if (action === 'reorganizeSheets') {
+      reorganizeAllSheetsCleanly();
+      return jsonResponse({ success: true, message: 'تمت إعادة تنظيم جميع الأعمدة بنجاح' });
+    }
+
     if (action === 'syncSchema' || action === 'registerSection') {
       var sections = contents.sections || [];
       if (data && data.title) sections.push(data);
-      
       sections.forEach(function(sec) {
         var sheetName = resolveSheetName(sec.title || sec.name || sec.id);
         var s = ss.getSheetByName(sheetName);
         if (!s) s = ss.insertSheet(sheetName);
-        
-        var fieldHeaders = ['id'];
+        try { s.setRightToLeft(true); } catch (e) {}
+        var fieldHeaders = ['المعرف'];
         if (sec.fields && Array.isArray(sec.fields)) {
           sec.fields.forEach(function(f) {
-            var fName = f.name || f.key || f.label;
+            var fName = f.label || f.name || f.key;
             if (fName && fieldHeaders.indexOf(fName) === -1) fieldHeaders.push(fName);
           });
         }
-        fieldHeaders.push('createdAt', 'updatedAt');
-        ensureSheetHeaders(s, fieldHeaders);
+        fieldHeaders.push('تاريخ التسجيل', 'الموظف المسؤول');
+        ensureCleanStructuredHeaders(s, fieldHeaders);
       });
-
-      return jsonResponse({
-        success: true,
-        message: 'تم فحص ومزامنة وتوسيع هيكل الأقسام والأعمدة بنجاح',
-        timestamp: new Date().toISOString()
-      });
+      return jsonResponse({ success: true, message: 'تمت مزامنة هيكل الأقسام بنجاح' });
     }
 
-    // 2. مزامنة شاملة لكافة الجداول (Bulk / Full Sync)
     if (action === 'bulk_sync' || action === 'syncAll') {
       handleBulkSync(ss, data);
       return jsonResponse({
         success: true,
-        message: 'تم بنجاح حفظ وتحديث كافة بيانات المنظومة في Google Sheets',
+        message: 'تم بنجاح حفظ وتحديث كافة البيانات بأعمدة معزولة ومنظمة في Google Sheets',
         timestamp: new Date().toISOString()
       });
     }
 
-    // 3. رفع ملف أو صورة إلى Google Drive
     if (action === 'uploadFile') {
-      var fileRes = handleDriveUpload(contents);
-      return jsonResponse(fileRes);
+      return jsonResponse(handleDriveUpload(contents));
     }
 
-    // 3.1 استعراض والبحث في ملفات وصور Google Drive المباشرة
     if (action === 'listDriveFiles') {
       var targetFolderId = contents.folderId || '1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc';
       var searchQuery = contents.query || '';
-      var listRes = handleDriveList(targetFolderId, searchQuery);
-      return jsonResponse({
-        success: true,
-        files: listRes
-      });
+      var reqLimit = Number(contents.limit) || 2500;
+      var listRes = handleDriveList(targetFolderId, searchQuery, reqLimit);
+      return jsonResponse({ success: true, totalInFolder: listRes.length, files: listRes });
     }
 
-    // 3.2 حذف ملف من مجلد Google Drive
     if (action === 'deleteDriveFile') {
-      var delRes = handleDriveDelete(contents.fileId);
-      return jsonResponse(delRes);
+      return jsonResponse(handleDriveDelete(contents.fileId));
     }
 
-    // 4. العمليات الفردية (إضافة / تعديل / حذف)
     var targetSheetName = resolveSheetName(table);
     var sheet = ss.getSheetByName(targetSheetName);
     if (!sheet) {
       sheet = ss.insertSheet(targetSheetName);
+      try { sheet.setRightToLeft(true); } catch (e) {}
     }
 
-    var targetId = contents.id || data.id || data.Citizen_ID || data.Request_ID || data.Interview_ID || data.Letter_ID || data.Cheque_ID || data.Org_ID;
+    var targetId = contents.id || data.Citizen_ID || data.Request_ID || data.Interview_ID || data.Letter_ID || data.id;
 
     if (action === 'delete') {
       handleDelete(sheet, targetId);
+    } else if (CORE_SCHEMAS[targetSheetName]) {
+      handleStructuredUpsertBatch(sheet, CORE_SCHEMAS[targetSheetName], [data]);
     } else {
-      handleDynamicUpsert(sheet, data, targetId);
+      handleCustomUpsert(sheet, data, targetId);
     }
 
     return jsonResponse({
       success: true,
-      message: 'تم تحديث السجل وتوسيع الأعمدة بنجاح في Google Sheets',
+      message: 'تم حفظ السجل في عموده المخصص بنجاح في Google Sheets',
       sheet: targetSheetName,
       timestamp: new Date().toISOString()
     });
-
   } catch (err) {
-    return jsonResponse({
-      success: false,
-      error: err.toString()
-    });
+    return jsonResponse({ success: false, error: err.toString() });
   } finally {
     lock.releaseLock();
   }
 }
 
 /**
- * دالة الإدخال والتحديث الذكية مع الاكتشاف التلقائي للأعمدة الجديدة
+ * إدخال وتحديث منظم (Single + Bulk) للجداول الأساسية بدون إضافة أي أعمدة عشوائية أو JSON!
+ * يكتب كل حقل في عموده المخصص بدقة سواء كان الجدول بالعناوين العربية الجديدة أو القديمة.
  */
-function handleDynamicUpsert(sheet, item, targetId) {
-  if (!item || typeof item !== 'object') return;
+function handleStructuredUpsertBatch(sheet, schema, items) {
+  if (!Array.isArray(items) || items.length === 0) return;
 
-  // 1. استخراج كل المفاتيح القادمة من الكود/الواجهة
-  var itemKeys = Object.keys(item);
-  var preferredFirstCol = item.Citizen_ID ? 'Citizen_ID' : item.Request_ID ? 'Request_ID' : item.Interview_ID ? 'Interview_ID' : item.Letter_ID ? 'Letter_ID' : 'id';
-  
-  var desiredHeaders = [preferredFirstCol];
-  itemKeys.forEach(function(k) {
-    if (k !== preferredFirstCol && desiredHeaders.indexOf(k) === -1) {
-      desiredHeaders.push(k);
+  var standardHeaders = schema.columns.map(function(c) { return c.header; });
+  var existingHeaders = ensureCleanStructuredHeaders(sheet, standardHeaders);
+
+  // بناء خريطة تطابق بين رؤوس الأعمدة الموجودة وحقول المخطط الرسمي
+  var colToSchema = existingHeaders.map(function(h) {
+    for (var cIdx = 0; cIdx < schema.columns.length; cIdx++) {
+      var col = schema.columns[cIdx];
+      if (h === col.header || h === col.key || col.aliases.indexOf(h) !== -1) {
+        return col;
+      }
     }
+    return null;
   });
 
-  // 2. تحديث وتوسيع رؤوس الأعمدة دون المساس برؤوس أخرى
-  var headers = ensureSheetHeaders(sheet, desiredHeaders);
-
-  // 3. البحث عن الصف إن كان موجوداً مسبقاً للتعديل عليه
-  var idToMatch = String(targetId || item[preferredFirstCol] || item.id || '').trim();
-  var foundRow = -1;
+  // قراءة المعرفات الموجودة في العمود الأول دفعة واحدة (أسرع بـ 50 مرة من القراءة صفاً بصف!)
   var lastRow = sheet.getLastRow();
-
-  if (idToMatch && lastRow > 1) {
-    var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-    for (var i = 0; i < ids.length; i++) {
-      if (String(ids[i][0]).trim() === idToMatch) {
-        foundRow = i + 2;
-        break;
-      }
+  var idRowMap = {};
+  if (lastRow > 1) {
+    var existingIds = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (var r = 0; r < existingIds.length; r++) {
+      var key = String(existingIds[r][0] || '').trim();
+      if (key) idRowMap[key] = r + 2;
     }
   }
 
-  // 4. بناء قيم الصف بما يطابق تماماً ترتيب الأعمدة الحالي
-  var existingRowVals = [];
-  if (foundRow > 0) {
-    existingRowVals = sheet.getRange(foundRow, 1, 1, headers.length).getValues()[0];
-  }
+  var rowsToAppend = [];
 
-  var rowVals = headers.map(function(h, colIdx) {
-    if (item[h] !== undefined && item[h] !== null) {
-      var val = item[h];
-      if (typeof val === 'object') {
-        return JSON.stringify(val);
-      }
-      return val;
+  items.forEach(function(item) {
+    if (!item || typeof item !== 'object') return;
+    var idCol = schema.columns[0];
+    var idVal = cleanCellVal(extractFieldBySchemaColumn(item, idCol));
+    if (!idVal) return;
+
+    var rowVals = existingHeaders.map(function(_h, colIdx) {
+      var matchedCol = colToSchema[colIdx];
+      if (!matchedCol) return '';
+      return cleanCellVal(extractFieldBySchemaColumn(item, matchedCol));
+    });
+
+    var existingRowNum = idRowMap[idVal];
+    if (existingRowNum) {
+      var prevRow = sheet.getRange(existingRowNum, 1, 1, existingHeaders.length).getValues()[0];
+      var merged = rowVals.map(function(v, idx) {
+        return v !== '' ? v : (prevRow[idx] !== undefined ? prevRow[idx] : '');
+      });
+      sheet.getRange(existingRowNum, 1, 1, merged.length).setValues([merged]);
+    } else {
+      idRowMap[idVal] = lastRow + rowsToAppend.length + 1;
+      rowsToAppend.push(rowVals);
     }
-    // الحفاظ على القيمة القديمة إن لم يتم إرسال قيمة جديدة
-    return (existingRowVals[colIdx] !== undefined) ? existingRowVals[colIdx] : '';
   });
 
-  if (foundRow > 0) {
-    sheet.getRange(foundRow, 1, 1, rowVals.length).setValues([rowVals]);
-  } else {
-    sheet.appendRow(rowVals);
+  if (rowsToAppend.length > 0) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, rowsToAppend.length, existingHeaders.length).setValues(rowsToAppend);
   }
+}
+
+function handleCustomUpsert(sheet, item, targetId) {
+  if (!item || typeof item !== 'object') return;
+  var flat = {};
+  Object.keys(item).forEach(function(k) {
+    if (k === 'data' && item.data && typeof item.data === 'object') {
+      Object.keys(item.data).forEach(function(dk) {
+        flat[dk] = cleanCellVal(item.data[dk]);
+      });
+    } else {
+      var cleaned = cleanCellVal(item[k]);
+      if (cleaned !== '' || k === 'id') flat[k] = cleaned;
+    }
+  });
+  var keys = Object.keys(flat);
+  if (keys.length === 0) return;
+  var headers = ensureCleanStructuredHeaders(sheet, keys);
+  var rowVals = headers.map(function(h) { return flat[h] !== undefined ? flat[h] : ''; });
+  sheet.appendRow(rowVals);
 }
 
 function handleDelete(sheet, id) {
   if (!id) return;
   var lastRow = sheet.getLastRow();
   if (lastRow <= 1) return;
-
   var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
   for (var i = 0; i < ids.length; i++) {
     if (String(ids[i][0]).trim() === String(id).trim()) {
@@ -409,7 +506,8 @@ function getSheetRecords(ss, sheetName) {
   if (lastRow <= 1 || lastCol < 1) return [];
 
   var values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
-  var headers = values[0];
+  var headers = values[0].map(function(h) { return String(h || '').trim(); });
+  var schema = CORE_SCHEMAS[sheetName];
   var records = [];
 
   for (var i = 1; i < values.length; i++) {
@@ -418,7 +516,19 @@ function getSheetRecords(ss, sheetName) {
     var item = {};
     for (var j = 0; j < headers.length; j++) {
       var h = headers[j];
-      item[h] = row[j] !== undefined ? row[j] : '';
+      if (!h) continue;
+      var cell = row[j] !== undefined && row[j] !== null ? row[j] : '';
+      item[h] = cell;
+      if (schema) {
+        for (var c = 0; c < schema.columns.length; c++) {
+          var col = schema.columns[c];
+          if (h === col.header || h === col.key || col.aliases.indexOf(h) !== -1) {
+            if (item[col.key] === undefined || item[col.key] === '') {
+              item[col.key] = cell;
+            }
+          }
+        }
+      }
     }
     if (item.FullName && !item.CitizenName) item.CitizenName = item.FullName;
     if (item.Phone1 && !item.CitizenPhone) item.CitizenPhone = item.Phone1;
@@ -429,26 +539,23 @@ function getSheetRecords(ss, sheetName) {
 
 function handleBulkSync(ss, allData) {
   if (!allData || typeof allData !== 'object') return;
-
   var mapping = [
     { key: 'citizens', name: 'سجل_المراجعين_Citizens' },
     { key: 'requests', name: 'طلبات_المواطنين_Requests' },
     { key: 'interviews', name: 'مقابلات_النائب_Interviews' },
     { key: 'officialLetters', name: 'الكتب_الرسمية_Letters' },
     { key: 'cheques', name: 'صكوك_المساعدات_Cheques' },
-    { key: 'organizationRecords', name: 'السجل_التنظيمي_Org' },
-    { key: 'customSections', name: 'الأقسام_المخصصة_Sections' },
-    { key: 'customRecords', name: 'سجلات_الأقسام_Records' }
+    { key: 'organizationRecords', name: 'السجل_التنظيمي_Org' }
   ];
-
   mapping.forEach(function(m) {
     var items = allData[m.key];
     if (Array.isArray(items) && items.length > 0) {
       var sheet = ss.getSheetByName(m.name);
-      if (!sheet) sheet = ss.insertSheet(m.name);
-      items.forEach(function(it) {
-        handleDynamicUpsert(sheet, it, it.id || it.Citizen_ID || it.Request_ID || it.Interview_ID || it.Letter_ID);
-      });
+      if (!sheet) {
+        sheet = ss.insertSheet(m.name);
+        try { sheet.setRightToLeft(true); } catch (e) {}
+      }
+      handleStructuredUpsertBatch(sheet, CORE_SCHEMAS[m.name], items);
     }
   });
 }
@@ -457,18 +564,11 @@ function handleDriveUpload(contents) {
   var folderId = contents.folderId;
   var fileName = contents.fileName || ('document_' + Date.now() + '.jpg');
   var base64Data = contents.fileData || contents.data;
-
-  if (!base64Data) {
-    return { success: false, error: 'لم يتم إرسال بيانات الملف' };
-  }
+  if (!base64Data) return { success: false, error: 'لم يتم إرسال بيانات الملف' };
 
   var folder;
   if (folderId) {
-    try {
-      folder = DriveApp.getFolderById(folderId);
-    } catch (e) {
-      folder = DriveApp.getRootFolder();
-    }
+    try { folder = DriveApp.getFolderById(folderId); } catch (e) { folder = DriveApp.getRootFolder(); }
   } else {
     folder = DriveApp.getRootFolder();
   }
@@ -507,8 +607,9 @@ function normalizeArabicForDrive(str) {
     .toLowerCase();
 }
 
-function handleDriveList(folderId, query) {
+function handleDriveList(folderId, query, maxLimit) {
   var results = [];
+  var limit = Math.min(Math.max(Number(maxLimit) || 2500, 1), 2500);
   try {
     var folder;
     if (folderId) {
@@ -523,7 +624,7 @@ function handleDriveList(folderId, query) {
     var qTokens = normQ ? normQ.split(' ').filter(function(t) { return t.length > 0; }) : [];
     var files = folder.getFiles();
     var count = 0;
-    while (files.hasNext() && count < 250) {
+    while (files.hasNext() && count < limit) {
       var f = files.next();
       if (f.isTrashed()) continue;
       var name = f.getName();
@@ -584,8 +685,8 @@ export const APPS_SCRIPT_PRODUCTION_CODE = GOOGLE_APPS_SCRIPT_SOURCE;
 export const APPS_SCRIPT_SETUP_GUIDE = [
   'افتح ملف Google Sheets المخصص لمنظومة مكتب النائب',
   'من القائمة العلوية اضغط على Extensions (الإضافات) ثم اختر Apps Script',
-  'احذف أي كود موجود في نافذة Code.gs والصق هذا الكود الكامل بالكامل ثم احفظ (Ctrl + S)',
-  'اضغط على زر Deploy (نشر) بالأعلى واختر New deployment (نشر جديد)',
-  'اضغط على ترس الإعدادات واختر Web app (تطبيق ويب)، واجعل Execute as: Me (حسابي)، و Who has access: Anyone (أي شخص)',
-  'اضغط Deploy وامنح الأذونات، ثم انسخ رابط الويب الممنوح وضعه في متغير VITE_GOOGLE_APPS_SCRIPT_URL في Vercel أو في إعدادات المنظومة!'
+  'احذف أي كود موجود في نافذة Code.gs والصق هذا الكود الكامل ثم احفظ (Ctrl + S)',
+  'اختياري لترتيب البيانات القديمة المخربطة فوراً: اختر الدالة reorganizeAllSheetsCleanly من الشريط العلوي واضغط Run لترتيب كل عمود وحده بدون حذف أي سجل!',
+  'اضغط على زر Deploy (نشر) بالأعلى واختر New deployment (نشر جديد) -> Web app -> Execute as: Me -> Who has access: Anyone',
+  'انسخ رابط الويب الجديد واحفظه في إعدادات الربط السحابي بالنظام!'
 ];

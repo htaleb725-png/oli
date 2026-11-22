@@ -318,13 +318,6 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({
           columns={4}
           items={hubSubTiles}
         />
-
-        <DepartmentAnalyticsDashboard
-          department={section.id === 'social_care_section' || section.title.includes('رعاية') ? 'social_care' : 'custom'}
-          customSectionId={section.id}
-          customSectionTitle={section.title}
-          compact
-        />
       </div>
     );
   }

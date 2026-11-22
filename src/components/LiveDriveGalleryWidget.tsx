@@ -111,7 +111,10 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState<boolean>(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string>('');
-  const [visibleCount, setVisibleCount] = useState<number>(compact ? 12 : 48);
+  const [visibleCount, setVisibleCount] = useState<number>(compact ? 12 : 24);
+  const [remoteDriveHits, setRemoteDriveHits] = useState<UnifiedDriveFile[]>([]);
+  const [isSearchingDriveLive, setIsSearchingDriveLive] = useState<boolean>(false);
+  const hasLoadedOnceRef = useRef<boolean>(false);
 
   // Local IndexedDB images
   const [localImages, setLocalImages] = useState<ImageRecord[]>([]);
@@ -147,7 +150,7 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
       if (isFetchingRef.current) return;
       isFetchingRef.current = true;
       if (!opts?.silent) {
-        if (driveFiles.length === 0) setIsLoading(true);
+        if (!hasLoadedOnceRef.current) setIsLoading(true);
         else setIsRefreshing(true);
       }
 
@@ -157,11 +160,12 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
             folderId: resolvedFolderId,
             appsScriptUrl,
             forceRefresh: opts?.forceRefresh,
-            limit: 250
+            limit: 5000
           }),
           getAllImagesFromDB().catch(() => [] as ImageRecord[])
         ]);
 
+        hasLoadedOnceRef.current = true;
         setDriveFiles(driveResult.files);
         setTotalInFolder(driveResult.totalInFolder);
         setDriveSource(driveResult.source);
@@ -190,17 +194,16 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
         setIsRefreshing(false);
       }
     },
-    [resolvedFolderId, appsScriptUrl, driveFiles.length]
+    [resolvedFolderId, appsScriptUrl]
   );
 
   // Initial load & reload when Developer changes Drive Folder ID or Apps Script URL
   useEffect(() => {
     setFolderInput(resolvedFolderId);
-    loadArchiveData({ forceRefresh: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedFolderId, appsScriptUrl]);
+    loadArchiveData({ forceRefresh: false });
+  }, [resolvedFolderId, appsScriptUrl, loadArchiveData]);
 
-  // Live 25-second auto-poll so newly added photos/PDFs in Drive appear automatically
+  // Gentle 45-second auto-poll so newly added photos/PDFs in Drive appear automatically without lag
   useEffect(() => {
     if (!autoRefreshEnabled) return;
     const interval = setInterval(() => {
@@ -208,13 +211,71 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
         return;
       }
       loadArchiveData({ silent: true, forceRefresh: true });
-    }, 25000);
+    }, 45000);
     return () => clearInterval(interval);
   }, [autoRefreshEnabled, loadArchiveData]);
 
-  // Filtered Google Drive files (Arabic-normalized full OR partial name match)
+  // Live debounced remote Google Drive search while typing (catches any newly added or remote-only files in Drive)
+  useEffect(() => {
+    if (!activeQuery || activeQuery.length < 2) {
+      setRemoteDriveHits([]);
+      setIsSearchingDriveLive(false);
+      return;
+    }
+    setVisibleCount(compact ? 16 : 48);
+
+    // If all Drive files are already loaded locally via server proxy, local filtering is already 100% exhaustive in 0ms;
+    // still run a lightweight 280ms remote search when using Apps Script / OAuth or when folder has more files than loaded.
+    const needsRemoteQuery =
+      driveSource === 'apps_script' ||
+      driveSource === 'oauth_api' ||
+      driveSource === 'none' ||
+      (totalInFolder > 0 && driveFiles.length < totalInFolder);
+
+    if (!needsRemoteQuery) {
+      setRemoteDriveHits([]);
+      setIsSearchingDriveLive(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsSearchingDriveLive(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetchLiveDriveFolderFiles({
+          folderId: resolvedFolderId,
+          appsScriptUrl,
+          query: activeQuery,
+          limit: 500
+        });
+        if (!cancelled) {
+          setRemoteDriveHits(res.files || []);
+        }
+      } catch {
+        if (!cancelled) setRemoteDriveHits([]);
+      } finally {
+        if (!cancelled) setIsSearchingDriveLive(false);
+      }
+    }, 280);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [activeQuery, compact, driveSource, driveFiles.length, totalInFolder, resolvedFolderId, appsScriptUrl]);
+
+  // Filtered Google Drive files (0ms instant Arabic-normalized partial & progressive full-name match across ALL Drive files + remote hits)
   const matchedDriveFiles = useMemo(() => {
-    return driveFiles.filter((file) => {
+    const combinedMap = new Map<string, UnifiedDriveFile>();
+    for (const f of driveFiles) combinedMap.set(f.id, f);
+    if (activeQuery && remoteDriveHits.length > 0) {
+      for (const f of remoteDriveHits) {
+        if (!combinedMap.has(f.id)) combinedMap.set(f.id, f);
+      }
+    }
+
+    const pool = Array.from(combinedMap.values());
+    return pool.filter((file) => {
       if (activeQuery) {
         const match =
           matchesArabicPartial(file.name, activeQuery) ||
@@ -226,7 +287,7 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
       if (categoryFilter === 'system') return false;
       return true;
     });
-  }, [driveFiles, activeQuery, categoryFilter]);
+  }, [driveFiles, remoteDriveHits, activeQuery, categoryFilter]);
 
   // Matched System Records (Citizens + Requests + Documents + IndexedDB images)
   const matchedSystemResults = useMemo(() => {
@@ -579,9 +640,12 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
                   setInternalQuery(e.target.value);
                   setVisibleCount(compact ? 12 : 48);
                 }}
-                placeholder="ابحث بالاسم الكامل أو جزء من الاسم (يبحث فوراً في النظام + Google Drive معاً)..."
-                className="w-full pr-10 pl-20 py-2.5 rounded-xl bg-white dark:bg-[#090F1E] border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-emerald-500 outline-none"
+                placeholder="اكتب أي اسم أو جزء من الاسم (مثل: علي) للبحث الفوري المباشر في Google Drive والنظام معاً..."
+                className="w-full pr-10 pl-24 py-2.5 rounded-xl bg-white dark:bg-[#090F1E] border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-emerald-500 outline-none"
               />
+              {isSearchingDriveLive && (
+                <Loader2 className="w-3.5 h-3.5 text-emerald-500 animate-spin absolute left-14 top-1/2 -translate-y-1/2" />
+              )}
               {internalQuery && (
                 <button
                   type="button"
@@ -823,6 +887,10 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
                                 onClick={() => {
                                   setZoomLevel(1);
                                   setRotation(0);
+                                  const fullImg =
+                                    driveSource === 'server_proxy'
+                                      ? `/api/drive/image/${encodeURIComponent(file.id)}?sz=w1600`
+                                      : file.previewImageUrl;
                                   setPreviewTarget({
                                     kind: 'drive',
                                     id: file.id,
@@ -833,7 +901,7 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
                                         : file.category === 'image'
                                         ? 'صورة محفوظة في Google Drive'
                                         : 'وثيقة محفوظة في Google Drive',
-                                    imageUrl: file.previewImageUrl,
+                                    imageUrl: fullImg,
                                     fallbackImageUrl: file.fallbackImageUrl,
                                     embedPreviewUrl: file.embedPreviewUrl,
                                     driveFile: file
@@ -842,26 +910,33 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
                                 className="h-40 rounded-xl bg-slate-100 dark:bg-[#090F1E] overflow-hidden cursor-pointer relative flex items-center justify-center border border-slate-200/70 dark:border-slate-800"
                               >
                                 <img
-                                  src={file.previewImageUrl}
+                                  src={
+                                    driveSource === 'server_proxy'
+                                      ? file.proxyImageUrl
+                                      : file.previewImageUrl
+                                  }
                                   alt={file.name}
                                   loading="lazy"
+                                  decoding="async"
+                                  referrerPolicy="no-referrer"
                                   onError={(e) => {
                                     const el = e.currentTarget;
                                     const step = Number(el.dataset.errStep || '0');
-                                    if (step === 0) {
-                                      el.dataset.errStep = '1';
-                                      el.src = file.fallbackImageUrl;
-                                    } else if (step === 1) {
-                                      el.dataset.errStep = '2';
-                                      el.src = file.proxyImageUrl;
+                                    const chain =
+                                      driveSource === 'server_proxy'
+                                        ? [file.previewImageUrl, file.fallbackImageUrl]
+                                        : [file.fallbackImageUrl, file.proxyImageUrl];
+                                    if (step < chain.length) {
+                                      el.dataset.errStep = String(step + 1);
+                                      el.src = chain[step];
                                     } else {
                                       el.style.display = 'none';
                                     }
                                   }}
-                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                                 />
                                 {isPdfOrDoc && (
-                                  <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md bg-slate-900/85 text-white text-[10px] font-black backdrop-blur-xs">
+                                  <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md bg-slate-900/85 text-white text-[10px] font-black">
                                     {file.category === 'pdf' ? 'عرض PDF' : 'معاينة وثيقة'}
                                   </div>
                                 )}
@@ -886,11 +961,15 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
                                 onClick={() => {
                                   setZoomLevel(1);
                                   setRotation(0);
+                                  const fullImg =
+                                    driveSource === 'server_proxy'
+                                      ? `/api/drive/image/${encodeURIComponent(file.id)}?sz=w1600`
+                                      : file.previewImageUrl;
                                   setPreviewTarget({
                                     kind: 'drive',
                                     id: file.id,
                                     title: file.name,
-                                    imageUrl: file.previewImageUrl,
+                                    imageUrl: fullImg,
                                     fallbackImageUrl: file.fallbackImageUrl,
                                     embedPreviewUrl: file.embedPreviewUrl,
                                     driveFile: file
@@ -1272,6 +1351,7 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
                 <img
                   src={previewTarget.imageUrl}
                   alt={previewTarget.title}
+                  referrerPolicy="no-referrer"
                   style={{
                     transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
                     transition: 'transform 180ms ease'

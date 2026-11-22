@@ -496,10 +496,6 @@ export const InterviewsModule: React.FC = () => {
         />
       )}
 
-      {viewMode === 'hub' && (
-        <DepartmentAnalyticsDashboard department="interviews" compact />
-      )}
-
       {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}
       {viewMode === 'table' && (
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
