@@ -17,7 +17,8 @@ export type RealtimeEntityType =
   | 'drive_archive' 
   | 'dropdowns'
   | 'custom_sections'
-  | 'custom_records';
+  | 'custom_records'
+  | 'settings';
 
 export type RealtimeActionType = 'insert' | 'update' | 'upsert' | 'delete';
 

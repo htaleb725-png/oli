@@ -984,7 +984,7 @@ export const uploadImageToDrive = async (
 export const pushSingleRecordToSheetsRealtime = async (
   token: string,
   spreadsheetId: string,
-  entityType: 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'drive_archive' | 'dropdowns' | 'custom_sections' | 'custom_records',
+  entityType: 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'drive_archive' | 'dropdowns' | 'custom_sections' | 'custom_records' | 'settings',
   record: any
 ): Promise<boolean> => {
   try {
@@ -1078,6 +1078,17 @@ export const pushSingleRecordToSheetsRealtime = async (
           record.Category || 'عام',
           record.Value || '',
           new Date().toLocaleDateString('ar-IQ')
+        ];
+        break;
+      case 'settings':
+        sheetName = 'إعدادات_النظام_Settings';
+        rowValues = [
+          record.id || 'main_settings',
+          record.appName || '',
+          record.officeName || '',
+          record.deputyName || '',
+          record.province || '',
+          new Date().toISOString()
         ];
         break;
     }
@@ -1480,4 +1491,80 @@ export const searchDriveFiles = async (
     return [];
   }
 };
+
+/**
+ * Deletes a file from Google Drive via REST API
+ */
+export const deleteDriveFile = async (token: string, fileId: string): Promise<boolean> => {
+  try {
+    const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+    return res.ok || res.status === 204;
+  } catch (err) {
+    console.warn('deleteDriveFile error:', err);
+    return false;
+  }
+};
+
+/**
+ * Searches and lists Google Drive files via Apps Script webhook
+ */
+export const searchDriveFilesViaAppsScript = async (
+  scriptUrl: string,
+  folderId?: string,
+  queryText?: string
+): Promise<DriveFileItem[]> => {
+  try {
+    if (!scriptUrl || !scriptUrl.trim()) return [];
+    const cleanUrl = scriptUrl.trim();
+    const res = await fetch(cleanUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'listDriveFiles',
+        folderId: folderId || '',
+        queryText: queryText || ''
+      })
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.files || [];
+  } catch (err) {
+    console.warn('searchDriveFilesViaAppsScript error:', err);
+    return [];
+  }
+};
+
+/**
+ * Deletes a file from Google Drive via Apps Script webhook
+ */
+export const deleteDriveFileViaAppsScript = async (
+  scriptUrl: string,
+  fileId: string
+): Promise<boolean> => {
+  try {
+    if (!scriptUrl || !scriptUrl.trim()) return false;
+    const cleanUrl = scriptUrl.trim();
+    const res = await fetch(cleanUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'deleteDriveFile',
+        fileId: fileId
+      })
+    });
+    if (!res.ok) return false;
+    const json = await res.json();
+    return json.success === true;
+  } catch (err) {
+    console.warn('deleteDriveFileViaAppsScript error:', err);
+    return false;
+  }
+};
+
 

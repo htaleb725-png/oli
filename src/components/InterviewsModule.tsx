@@ -1342,6 +1342,7 @@ export const InterviewsModule: React.FC = () => {
                     placeholder="اختر العشيرة أو اللقب..."
                     className="w-full"
                     allowCustom={true}
+                    category="Surname"
                   />
                 </div>
               </div>

@@ -524,10 +524,26 @@ export async function fsDeleteCustomRecord(recordId: string): Promise<void> {
   }
 }
 
+// Helper to build a deterministic ASCII-safe Firestore document ID for Arabic dropdown values
+export function buildSafeDropdownDocId(category: string, value: string, existingId?: string): string {
+  if (existingId && /^[a-zA-Z0-9_\-\.]+$/.test(existingId)) {
+    return existingId;
+  }
+  const cleanCat = (category || 'cat').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24) || 'cat';
+  let hash = 0;
+  const raw = `${category}::${(value || '').trim().toLowerCase()}`;
+  for (let i = 0; i < raw.length; i++) {
+    hash = ((hash << 5) - hash) + raw.charCodeAt(i);
+    hash |= 0;
+  }
+  const unsignedHex = (hash >>> 0).toString(36);
+  return `DD_${cleanCat}_${unsignedHex}_${raw.length}`;
+}
+
 // 11. Dropdown items
 export async function fsSaveDropdown(dropdown: DropdownItem): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.DROPDOWNS);
-  const docId = dropdown.id || `${dropdown.Category}_${dropdown.ItemValue}`.replace(/[\s/]/g, '_');
+  const docId = buildSafeDropdownDocId(dropdown.Category, dropdown.ItemValue, dropdown.id);
   const path = `${col}/${docId}`;
   try {
     await setDoc(doc(db, col, docId), {
@@ -540,9 +556,9 @@ export async function fsSaveDropdown(dropdown: DropdownItem): Promise<void> {
   }
 }
 
-export async function fsDeleteDropdown(category: string, value: string): Promise<void> {
+export async function fsDeleteDropdown(category: string, value: string, existingId?: string): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.DROPDOWNS);
-  const docId = `${category}_${value}`.replace(/[\s/]/g, '_');
+  const docId = buildSafeDropdownDocId(category, value, existingId);
   const path = `${col}/${docId}`;
   try {
     await deleteDoc(doc(db, col, docId));
@@ -592,16 +608,21 @@ export async function fsBulkPushAll(data: {
     const colSections = getFSCol(FS_COLLECTIONS.CUSTOM_SECTIONS);
     const colRecords = getFSCol(FS_COLLECTIONS.CUSTOM_RECORDS);
     const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
+    const colDropdowns = getFSCol(FS_COLLECTIONS.DROPDOWNS);
 
     data.citizens.forEach(c => items.push({ col: colCitizens, id: c.Citizen_ID, docData: c }));
     data.requests.forEach(r => items.push({ col: colRequests, id: r.Request_ID, docData: r }));
     data.interviews.forEach(i => items.push({ col: colInterviews, id: i.Interview_ID, docData: i }));
     data.officialLetters.forEach(l => items.push({ col: colLetters, id: l.Letter_ID, docData: l }));
     data.cheques.forEach(ch => items.push({ col: colCheques, id: ch.id, docData: ch }));
-    data.organizationRecords.forEach(o => items.push({ col: colOrgs, id: o.Org_ID, docData: o }));
+    data.organizationRecords.forEach(o => items.push({ col: colOrgs, id: o.Org_ID || o.Citizen_ID, docData: o }));
     data.users.forEach(u => items.push({ col: colUsers, id: u.User_ID, docData: u }));
     data.customSections.forEach(s => items.push({ col: colSections, id: s.id, docData: s }));
     data.customRecords.forEach(cr => items.push({ col: colRecords, id: cr.id, docData: cr }));
+    data.dropdowns.forEach(dd => {
+      const safeId = buildSafeDropdownDocId(dd.Category, dd.ItemValue, dd.id);
+      items.push({ col: colDropdowns, id: safeId, docData: { id: safeId, Category: dd.Category, ItemValue: dd.ItemValue } });
+    });
     
     // Save settings
     items.push({ col: colSettings, id: 'general', docData: data.systemSettings });
@@ -642,6 +663,7 @@ export async function fsBulkPullAll(): Promise<{
   users: User[];
   customSections: CustomSection[];
   customRecords: CustomSectionRecord[];
+  dropdowns: DropdownItem[];
   systemSettings?: Partial<SystemSettings>;
   developerPasscode?: string;
   error?: string;
@@ -661,6 +683,7 @@ export async function fsBulkPullAll(): Promise<{
     const colUsers = getFSCol(FS_COLLECTIONS.USERS);
     const colSections = getFSCol(FS_COLLECTIONS.CUSTOM_SECTIONS);
     const colRecords = getFSCol(FS_COLLECTIONS.CUSTOM_RECORDS);
+    const colDropdowns = getFSCol(FS_COLLECTIONS.DROPDOWNS);
     const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
     const colDeleted = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
 
@@ -674,6 +697,7 @@ export async function fsBulkPullAll(): Promise<{
       users,
       rawCustomSections,
       rawCustomRecords,
+      dropdowns,
       deletedDocsSnap,
       settingsSnap,
       passcodeSnap
@@ -687,6 +711,7 @@ export async function fsBulkPullAll(): Promise<{
       fetchCol<User>(colUsers),
       fetchCol<CustomSection>(colSections),
       fetchCol<CustomSectionRecord>(colRecords),
+      fetchCol<DropdownItem>(colDropdowns).catch(() => []),
       getDocs(collection(db, colDeleted)).catch(() => null),
       getDoc(doc(db, colSettings, 'general')).catch(() => null),
       getDoc(doc(db, colSettings, 'developer_auth')).catch(() => null)
@@ -725,6 +750,7 @@ export async function fsBulkPullAll(): Promise<{
       users,
       customSections,
       customRecords,
+      dropdowns,
       systemSettings,
       developerPasscode
     };
@@ -741,6 +767,7 @@ export async function fsBulkPullAll(): Promise<{
       users: [],
       customSections: [],
       customRecords: [],
+      dropdowns: [],
       error: err.message
     };
   }

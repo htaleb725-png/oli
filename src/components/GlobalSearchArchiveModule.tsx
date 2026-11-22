@@ -26,6 +26,7 @@ import {
   Phone
 } from 'lucide-react';
 import { getAllImagesFromDB, ImageRecord } from '../utils/imageDb';
+import { printImageIsolated } from '../utils/printReceiptHelper';
 
 export const GlobalSearchArchiveModule: React.FC = () => {
   const { 
@@ -831,26 +832,13 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                 </button>
                 <button
                   onClick={() => {
-                    const printWin = window.open('', '_blank');
-                    if (printWin) {
-                      printWin.document.write(`
-                        <html>
-                          <head>
-                            <title>${previewOcrImage.citizenName} - وثيقة رسمية</title>
-                            <style>
-                              body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-                              img { max-width: 95%; max-height: 95vh; object-fit: contain; }
-                            </style>
-                          </head>
-                          <body>
-                            <img src="${previewOcrImage.dataUrl}" onload="window.print();window.close();" />
-                          </body>
-                        </html>
-                      `);
-                      printWin.document.close();
-                    }
+                    printImageIsolated(
+                      previewOcrImage.dataUrl,
+                      `${previewOcrImage.citizenName || 'مراجع'} - وثيقة رسمية`,
+                      previewOcrImage.fileName || ''
+                    );
                   }}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors"
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors cursor-pointer"
                   title="طباعة الوثيقة"
                 >
                   <Printer className="w-4 h-4" />

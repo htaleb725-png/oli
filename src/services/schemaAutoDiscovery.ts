@@ -158,6 +158,29 @@ export async function autoSyncAllSchemas(customSections: CustomSection[] = []): 
           ]
         });
       }
+      if (cs.subSections && cs.subSections.length > 0) {
+        cs.subSections.forEach(sub => {
+          const subKey = `${cs.id}__${sub.id}`;
+          if (!allSections.some(s => s.id === subKey)) {
+            allSections.push({
+              id: subKey,
+              name: `${cs.title}_${sub.title}`.replace(/\s+/g, '_'),
+              title: `${cs.title} - ${sub.title}`,
+              isCustom: true,
+              fields: [
+                { key: 'id', label: 'المعرف' },
+                ...(sub.fields || []).map(f => ({
+                  key: f.name || f.id,
+                  label: f.label || f.name,
+                  type: f.type
+                })),
+                { key: 'createdAt', label: 'تاريخ الإنشاء' },
+                { key: 'updatedAt', label: 'تاريخ التحديث' }
+              ]
+            });
+          }
+        });
+      }
     });
 
     // 2. Persist active schema manifest in Firebase Firestore (settings/schema_manifest) with merge: true

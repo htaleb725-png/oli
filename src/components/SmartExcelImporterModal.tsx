@@ -90,7 +90,9 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     citizens, 
     currentUser, 
     batchImportRecords,
-    addAuditLog 
+    addAuditLog,
+    systemSettings,
+    updateSystemSettings
   } = useApp();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -112,6 +114,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     deduplicatedWithinFile: number;
     normalizedEntitiesCount: number;
     sheetsProcessed: number;
+    detectedMaxOutgoing?: number;
   } | null>(null);
 
   if (!isOpen) return null;
@@ -243,6 +246,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     let existingMatchedCount = 0;
     let deduplicatedCount = 0;
     let normalizedEntitiesCount = 0;
+    let maxOutgoingInFile = 0;
 
     const nowStamp = new Date().toISOString().split('T')[0];
     const year = new Date().getFullYear();
@@ -264,7 +268,35 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           return matchKey ? String(row[matchKey]).trim() : '';
         };
 
-        const rawName = findVal([/اسم/i, /مواطن/i, /مراجع/i, /name/i, /صاحب الطلب/i, /المستفيد/i]);
+        // Specific 14 columns matching exactly what the user requested:
+        // 1. ت (الرقم التسلسلي)
+        const rawSeq = findVal([/^ت$/i, /^تسلسل$/i, /^م$/i, /^seq$/i, /^no$/i, /^id$/i]);
+        // 2. اسم صاحب الطلب
+        const rawName = findVal([/صاحب الطلب/i, /^الاسم$/i, /اسم المواطن/i, /اسم المراجع/i, /اسم/i, /name/i, /المستفيد/i]);
+        // 3. اسم الدائرة / او الوزارة
+        const rawEntity = findVal([/اسم الدائرة/i, /الدائرة/i, /الوزارة/i, /وزار/i, /جه/i, /دائر/i, /مؤسس/i, /ministry/i, /entity/i, /الجهة/i]);
+        // 4. الموضوع
+        const rawSubject = findVal([/الموضوع/i, /موضوع/i, /طلب/i, /تفاصيل/i, /معامل/i, /subject/i, /details/i, /الغرض/i]);
+        // 5. رقم الكتاب / العدد
+        const rawOutgoing = findVal([/رقم الكتاب/i, /^العدد$/i, /رقم الصادر/i, /صادر/i, /outgoing/i, /كتاب/i]);
+        // 6. تاريخ الكتاب
+        const rawOutgoingDate = findVal([/تاريخ الكتاب/i, /تاريخ الصادر/i, /تاريخ/i, /date/i]);
+        // 7. رقم الهاتف
+        const rawPhone = cleanPhoneNumber(findVal([/رقم الهاتف/i, /هاتف/i, /موبايل/i, /جوال/i, /phone/i, /mobile/i]));
+        // 8. المعرف
+        const rawReferrer = findVal([/المعرف/i, /معرف/i, /تزكية/i, /منسق/i, /referrer/i]);
+        // 9. عنوان السكن
+        const rawAddress = findVal([/عنوان السكن/i, /عنوان/i, /سكن/i, /قضاء/i, /منطق/i, /حي/i, /district/i, /address/i]);
+        // 10. الهامش
+        const rawMargin = findVal([/الهامش/i, /هامش/i, /توجيه/i, /margin/i, /directive/i]);
+        // 11. حالة الطلب
+        const rawStatus = findVal([/حالة الطلب/i, /الحالة/i, /status/i]);
+        // 12. التحصيل الدراسي
+        const rawEducation = findVal([/التحصيل الدراسي/i, /تحصيل/i, /شهادة/i, /education/i]);
+        // 13. نوع العمل
+        const rawJob = findVal([/نوع العمل/i, /نوع المهنة/i, /عمل/i, /مهن/i, /وظيفة/i, /job/i]);
+        // 14. ملاحظات اخرى
+        const rawNotes = findVal([/ملاحظات اخرى/i, /ملاحظات/i, /ملاحظة/i, /notes/i]);
 
         // STRICT GHOST-FILTER: Reject empty rows, header rows, or meaningless names
         if (
@@ -273,6 +305,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           rawName.toLowerCase() === 'undefined' || 
           rawName.toLowerCase() === 'null' ||
           rawName === 'الاسم' ||
+          rawName === 'اسم صاحب الطلب' ||
           rawName === 'اسم المواطن' ||
           rawName === 'ت' ||
           rawName === 'name' ||
@@ -282,14 +315,19 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           continue;
         }
 
-        const rawPhone = cleanPhoneNumber(findVal([/هاتف/i, /موبايل/i, /رقم/i, /phone/i, /mobile/i]));
-        const rawEntity = findVal([/وزار/i, /جه/i, /دائر/i, /مؤسس/i, /ministry/i, /entity/i, /الجهة/i]);
-        const rawDetails = findVal([/طلب/i, /موضوع/i, /تفاصيل/i, /معامل/i, /subject/i, /details/i, /الغرض/i]);
-        const rawDistrict = findVal([/قضاء/i, /سكن/i, /منطق/i, /عنوان/i, /district/i, /address/i]) || 'الناصرية';
-        const rawOutgoing = findVal([/صادر/i, /العدد/i, /رقم الصادر/i, /outgoing/i]);
-        const rawOutgoingDate = findVal([/تاريخ الصادر/i, /تاريخ كتاب الصادر/i, /تاريخ/i, /date/i]);
-        const rawJob = findVal([/عمل/i, /مهن/i, /وظيفة/i, /job/i]);
-        const rawReferrer = findVal([/معرف/i, /تزكية/i, /منسق/i, /referrer/i]);
+        // Track maximum outgoing number found in file for subsequent auto-numbering
+        if (rawOutgoing) {
+          const numMatches = rawOutgoing.match(/\d+/g);
+          if (numMatches) {
+            for (const m of numMatches) {
+              const val = parseInt(m, 10);
+              // Avoid year numbers (2020-2035) when evaluating sequence
+              if (val > 0 && (val < 2020 || val > 2035)) {
+                if (val > maxOutgoingInFile) maxOutgoingInFile = val;
+              }
+            }
+          }
+        }
 
         const normName = normalizeArabicName(rawName);
         const standardizedEntity = normalizeEntityName(rawEntity);
@@ -319,15 +357,20 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             Surname: parts.length > 4 ? parts.slice(4).join(' ') : 'عام',
             FullName: rawName,
             Phone1: rawPhone || '07800000000',
-            District: rawDistrict,
+            District: rawAddress || 'قضاء الناصرية (المركز)',
+            ResidentialArea: rawAddress || undefined,
             SubDistrict: 'المركز',
             Gender: 'ذكر',
             Rating: 'لائق',
             Job: rawJob || 'كاسب',
+            Education: rawEducation || 'إعدادية فما دون',
             ReferralSource: rawReferrer || `استيراد إكسل (${item.sheetName})`,
-            CreatedAt: nowStamp,
+            CreatedAt: rawOutgoingDate || nowStamp,
             CreatedBy: currentUser?.FullName || 'موظف الإدارة',
-            RegisteredVia: 'إدارة'
+            RegisteredVia: 'إدارة',
+            // Flag as historical so it is preserved in search/archive but does not clutter daily active queue
+            IsHistoricalImported: true,
+            IsArchived: true
           };
 
           workingNewCitizens.set(normName, targetCitizen);
@@ -346,6 +389,10 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         const requestId = `REQ-${year}-${Date.now().toString().slice(-4)}-${Math.floor(100 + Math.random() * 900)}`;
         const sheetTag = item.sheetName.includes('مقابل') ? '[مقابلة رسمية]' : (item.sheetName.includes('رعاي') ? '[شبكة الحماية]' : '');
 
+        const finalStatus = rawStatus?.includes('قيد') ? 'قيد الإجراء' : 
+                            (rawStatus?.includes('رفض') ? 'مرفوض' : 
+                            (rawOutgoing || rawStatus?.includes('منجز') ? 'منجز' : 'منجز'));
+
         const newRequest: OfficeRequest = {
           Request_ID: requestId,
           Citizen_ID: targetCitizen.Citizen_ID,
@@ -353,16 +400,29 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           CitizenPhone: targetCitizen.Phone1,
           Entity: standardizedEntity,
           RequestStatus: 'مستلم',
-          ProcessingStatus: rawOutgoing ? 'منجز' : 'قيد الإجراء',
+          ProcessingStatus: finalStatus,
           Priority: 'عام',
-          Details: `${sheetTag ? `${sheetTag} ` : ''}${rawDetails || `طلب مسجل ضمن ورقة (${item.sheetName})`}`,
+          Details: `${sheetTag ? `${sheetTag} ` : ''}${rawSubject || `طلب مسجل ضمن ورقة (${item.sheetName})`}`,
           OutgoingNumber: rawOutgoing || undefined,
           OutgoingDate: rawOutgoingDate || (rawOutgoing ? nowStamp : undefined),
           RegisteredVia: 'إدارة',
-          Address: rawDistrict,
-          CreatedAt: nowStamp,
+          Address: rawAddress || targetCitizen.District || 'الناصرية',
+          ResidentialArea: rawAddress || targetCitizen.ResidentialArea,
+          Margin: rawMargin || undefined,
+          Education: rawEducation || targetCitizen.Education,
+          Job: rawJob || targetCitizen.Job,
+          ReferralSource: rawReferrer || targetCitizen.ReferralSource,
+          CreatedAt: rawOutgoingDate || nowStamp,
           CreatedBy: `استيراد إكسل (${currentUser?.FullName || 'الإدارة'})`,
-          OtherNotes: `مستورد من ملف: ${fileName} - ورقة العمل: [${item.sheetName}]`
+          OtherNotes: [
+            rawNotes,
+            rawMargin ? `الهامش: ${rawMargin}` : '',
+            rawSeq ? `تسلسل بالملف: ${rawSeq}` : '',
+            `ملف: ${fileName} [${item.sheetName}]`
+          ].filter(Boolean).join(' | '),
+          // Flag as historical so it is preserved in records/archive without congesting daily active workflow
+          IsHistoricalImported: true,
+          IsArchived: true
         };
 
         createdRequests.push(newRequest);
@@ -390,6 +450,22 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         
         const finalNewCitizensList = Array.from(new Set(workingNewCitizens.values()));
 
+        // Update system outgoing baselines if max outgoing was detected in file
+        if (maxOutgoingInFile > 0) {
+          const currentNas = systemSettings.lastOutgoingNumberNasiriyah || 0;
+          const currentSuq = systemSettings.lastOutgoingNumberSuq || 0;
+          const settingsUpdates: any = {};
+          if (maxOutgoingInFile > currentNas) {
+            settingsUpdates.lastOutgoingNumberNasiriyah = maxOutgoingInFile;
+          }
+          if (maxOutgoingInFile > currentSuq) {
+            settingsUpdates.lastOutgoingNumberSuq = maxOutgoingInFile;
+          }
+          if (Object.keys(settingsUpdates).length > 0) {
+            updateSystemSettings(settingsUpdates);
+          }
+        }
+
         batchImportRecords(finalNewCitizensList, createdRequests)
           .then(() => {
             setIsProcessing(false);
@@ -401,13 +477,14 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
               existingMatched: existingMatchedCount,
               deduplicatedWithinFile: deduplicatedCount,
               normalizedEntitiesCount: normalizedEntitiesCount,
-              sheetsProcessed: selectedSheets.length
+              sheetsProcessed: selectedSheets.length,
+              detectedMaxOutgoing: maxOutgoingInFile > 0 ? maxOutgoingInFile : undefined
             });
 
             addAuditLog(
               'استيراد إكسل ذكي شامل',
               'قسم الإدارة',
-              `تم استيراد ${createdRequests.length} معاملة من ${selectedSheets.length} أوراق عمل وتوليد/توحيد ${finalNewCitizensList.length} مواطن برمز ONA بواسطة ${currentUser?.FullName}`
+              `تم استيراد ${createdRequests.length} معاملة من ${selectedSheets.length} أوراق عمل وتوليد/توحيد ${finalNewCitizensList.length} مواطن برمز ONA${maxOutgoingInFile > 0 ? ` وضبط آخر صادر على (${maxOutgoingInFile})` : ''} بواسطة ${currentUser?.FullName}`
             );
           })
           .catch((err) => {
@@ -625,6 +702,18 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
                 <strong className="text-purple-700 dark:text-purple-300 text-sm font-mono">{importSummary.sheetsProcessed}</strong>
               </div>
             </div>
+
+            {importSummary.detectedMaxOutgoing && (
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 text-xs font-bold flex items-center justify-between flex-wrap gap-2">
+                <span>📌 تم رصد أعلى عدد صادر في الملف المستورد:</span>
+                <span className="font-mono text-sm font-black bg-amber-500 text-slate-950 px-2.5 py-0.5 rounded-md">
+                  {importSummary.detectedMaxOutgoing}
+                </span>
+                <span className="text-[11px] text-amber-800 dark:text-amber-300">
+                  (ستبدأ الكتب الإدارية الصادرة الجديدة تلقائياً من: {importSummary.detectedMaxOutgoing + 1})
+                </span>
+              </div>
+            )}
 
             <p className="text-[11px] text-emerald-800 dark:text-emerald-300 font-bold">
               ✓ كافة المراجعين والمعاملات أصبحت متاحة فورياً للاستعلامات، قسم الإدارة، والبحث والأرشيف السحابي.

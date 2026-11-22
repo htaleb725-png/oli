@@ -19,7 +19,11 @@ import {
   MapPin,
   Megaphone,
   Image as ImageIcon,
-  KeyRound
+  KeyRound,
+  Plus,
+  Trash2,
+  Upload,
+  Replace
 } from 'lucide-react';
 
 export const UiCustomizer: React.FC = () => {
@@ -38,6 +42,45 @@ export const UiCustomizer: React.FC = () => {
   const [tickerNewsText, setTickerNewsText] = useState((systemSettings.tickerNews || []).join('\n'));
   const [logoUrl, setLogoUrl] = useState(systemSettings.logoUrl || '');
   const [parliamentEmblemUrl, setParliamentEmblemUrl] = useState(systemSettings.parliamentEmblemUrl || '');
+  const [footerText, setFooterText] = useState(systemSettings.footerText || '');
+  const [loadingScreenTitle, setLoadingScreenTitle] = useState(systemSettings.loadingScreenTitle || '');
+  const [loadingScreenSubtitle, setLoadingScreenSubtitle] = useState(systemSettings.loadingScreenSubtitle || '');
+  const [loginWelcomeTitle, setLoginWelcomeTitle] = useState(systemSettings.loginWelcomeTitle || '');
+  const [loginWelcomeSubtitle, setLoginWelcomeSubtitle] = useState(systemSettings.loginWelcomeSubtitle || '');
+  const [textReplacements, setTextReplacements] = useState<{ from: string; to: string }[]>(
+    systemSettings.textReplacements || []
+  );
+  const [newReplaceFrom, setNewReplaceFrom] = useState('');
+  const [newReplaceTo, setNewReplaceTo] = useState('');
+
+  const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: string) => void) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') setter(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAddTextReplacement = () => {
+    const from = newReplaceFrom.trim();
+    const to = newReplaceTo.trim();
+    if (!from || !to || from === to) return;
+    const updated = [...textReplacements.filter(r => r.from !== from), { from, to }];
+    setTextReplacements(updated);
+    updateSettings({ textReplacements: updated });
+    setNewReplaceFrom('');
+    setNewReplaceTo('');
+    setSavedSuccess(true);
+    setTimeout(() => setSavedSuccess(false), 2500);
+  };
+
+  const handleRemoveTextReplacement = (from: string) => {
+    const updated = textReplacements.filter(r => r.from !== from);
+    setTextReplacements(updated);
+    updateSettings({ textReplacements: updated });
+  };
 
   // UI Dimensions & Visual Style State
   const currentUi = systemSettings.uiCustomizations || {
@@ -94,7 +137,13 @@ export const UiCustomizer: React.FC = () => {
       hotline: hotline.trim(),
       tickerNews: cleanTicker.length > 0 ? cleanTicker : ['أهلاً بكم في منظومة إدارة العمل والمعاملات الرسمية'],
       logoUrl: logoUrl.trim(),
-      parliamentEmblemUrl: parliamentEmblemUrl.trim()
+      parliamentEmblemUrl: parliamentEmblemUrl.trim(),
+      footerText: footerText.trim() || undefined,
+      loadingScreenTitle: loadingScreenTitle.trim() || undefined,
+      loadingScreenSubtitle: loadingScreenSubtitle.trim() || undefined,
+      loginWelcomeTitle: loginWelcomeTitle.trim() || undefined,
+      loginWelcomeSubtitle: loginWelcomeSubtitle.trim() || undefined,
+      textReplacements
     });
 
     setSavedSuccess(true);
@@ -349,6 +398,133 @@ export const UiCustomizer: React.FC = () => {
                 placeholder="أهلاً وسهلاً بكم في منظومة إدارة العمل والمعاملات الرسمية&#10;متابعة مستمرة لطلبات المواطنين وإنجاز المعاملات أولاً بأول"
                 className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none leading-relaxed"
               />
+            </div>
+
+            {/* Box 4: نصوص شاشة الدخول وشاشة التحميل والتذييل */}
+            <div className="md:col-span-2 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
+              <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+                <Sparkles className="w-4 h-4 text-purple-600" />
+                <span>تعديل نصوص شاشة التحميل، بوابة الدخول، وتذييل النظام (Footer):</span>
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    عنوان شاشة التحميل بعد الدخول:
+                  </label>
+                  <input
+                    type="text"
+                    value={loadingScreenTitle}
+                    onChange={(e) => setLoadingScreenTitle(e.target.value)}
+                    placeholder="مثال: جاري تهيئة ومزامنة بيانات المنظومة..."
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    الوصف الفرعي لشاشة التحميل:
+                  </label>
+                  <input
+                    type="text"
+                    value={loadingScreenSubtitle}
+                    onChange={(e) => setLoadingScreenSubtitle(e.target.value)}
+                    placeholder="مثال: مكتب النائب المهندسة علا عودة الناشي — مجلس النواب العراقي"
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    نص تذييل النظام أسفل الشاشة (Footer):
+                  </label>
+                  <input
+                    type="text"
+                    value={footerText}
+                    onChange={(e) => setFooterText(e.target.value)}
+                    placeholder="مثال: منظومة مكتب النائب علا الناشي — جميع الحقوق محفوظة"
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div className="flex items-end gap-2">
+                  <label className="flex-1 inline-flex items-center justify-center gap-1.5 h-10 px-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 text-xs font-bold cursor-pointer hover:bg-indigo-100">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>تغيير شعار المنظومة (صورة)</span>
+                    <input type="file" accept="image/*" onChange={(e) => handleImageFileUpload(e, setLogoUrl)} className="hidden" />
+                  </label>
+                  <label className="flex-1 inline-flex items-center justify-center gap-1.5 h-10 px-3 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs font-bold cursor-pointer hover:bg-amber-100">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>تغيير شعار البرلمان (صورة)</span>
+                    <input type="file" accept="image/*" onChange={(e) => handleImageFileUpload(e, setParliamentEmblemUrl)} className="hidden" />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Box 5: محرك استبدال أي نص أو كتابة في النظام بالكامل */}
+            <div data-no-text-replace="true" className="md:col-span-2 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800/80 space-y-4 shadow-xs">
+              <div>
+                <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <Replace className="w-4 h-4 text-indigo-600" />
+                  <span>محرك تعديل أي كتابة أو عبارة في كامل النظام (استبدال فوري شامل)</span>
+                </h4>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                  أدخل أي كلمة أو جملة تظهر في أي مكان بالنظام (عناوين، أزرار، قوائم، بطاقات) واكتب البديل الجديد ليتم استبدالها فوراً ودائماً لكل المستخدمين.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
+                <div className="sm:col-span-5">
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">النص الحالي في النظام:</label>
+                  <input
+                    type="text"
+                    value={newReplaceFrom}
+                    onChange={(e) => setNewReplaceFrom(e.target.value)}
+                    placeholder="مثال: قسم المكنة والطباعة"
+                    className="w-full h-9 px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs"
+                  />
+                </div>
+                <div className="sm:col-span-5">
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">النص الجديد البديل:</label>
+                  <input
+                    type="text"
+                    value={newReplaceTo}
+                    onChange={(e) => setNewReplaceTo(e.target.value)}
+                    placeholder="مثال: شعبة الطباعة والكتب الرسمية"
+                    className="w-full h-9 px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={handleAddTextReplacement}
+                    disabled={!newReplaceFrom.trim() || !newReplaceTo.trim()}
+                    className="w-full h-9 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-black text-xs flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>تطبيق</span>
+                  </button>
+                </div>
+              </div>
+
+              {textReplacements.length > 0 && (
+                <div className="space-y-1.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                  {textReplacements.map((rule, i) => (
+                    <div key={i} className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 text-xs">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="line-through text-slate-500">{rule.from}</span>
+                        <span className="text-indigo-500 font-black">←</span>
+                        <span className="font-black text-emerald-700 dark:text-emerald-400">{rule.to}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveTextReplacement(rule.from)}
+                        className="p-1 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+                        title="إلغاء هذا الاستبدال"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

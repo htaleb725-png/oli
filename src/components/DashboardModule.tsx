@@ -43,11 +43,17 @@ import {
   Settings,
   LayoutGrid,
   Globe,
-  ShieldAlert
+  ShieldAlert,
+  HeartHandshake
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
+import {
+  canUserAccessSection,
+  mapTileIdToSectionId,
+  SOCIAL_CARE_LEGACY_CUSTOM_ID
+} from '../utils/permissions';
 
 export interface DashboardModuleProps {
   onBackToDirectorHub?: () => void;
@@ -335,23 +341,40 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
         iconColor: 'text-red-600 dark:text-red-400',
         iconBg: 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800',
         badge: citizens.filter(c => c.IsBlocked).length > 0 ? `${citizens.filter(c => c.IsBlocked).length} محظور` : null,
-        badgeColor: 'bg-red-600 text-white animate-pulse',
+        badgeColor: 'bg-red-600 text-white',
         onClick: () => setActiveSection('blacklist')
+      },
+      {
+        id: 'tile_social_care',
+        ...getMeta('tile_social_care', 'قسم الرعاية الاجتماعية', 'إدارة شؤون ومعاملات الحماية والرعاية الاجتماعية المستقل'),
+        icon: HeartHandshake,
+        iconColor: 'text-emerald-600 dark:text-emerald-400',
+        iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+        badge: `${customRecords.filter(r => r.sectionId === SOCIAL_CARE_LEGACY_CUSTOM_ID).length} سجل`,
+        badgeColor: 'bg-emerald-600 text-white',
+        onClick: () => setActiveSection('social_care')
       }
     ];
 
-    // Add Custom Dynamic Sections configured by Developer
+    // Add Custom Dynamic Sections configured by Developer (excluding standalone Social Care to prevent duplication)
     customSections.forEach((sec) => {
-      const secRecs = customRecords.filter(r => r.sectionId === sec.id);
+      if (sec.id === SOCIAL_CARE_LEGACY_CUSTOM_ID) return;
+      const tileId = `tile_custom_${sec.id}`;
+      const tileConf = systemSettings?.customTilesConfig?.[tileId];
+      const isHub = Boolean(sec.isMultiSectionHub && sec.subSections && sec.subSections.length > 0);
+      const secRecs = customRecords.filter(
+        r => r.sectionId === sec.id || r.sectionId.startsWith(`${sec.id}__`)
+      );
       list.push({
-        id: `tile_custom_${sec.id}`,
-        title: sec.title,
-        subtitle: sec.description || 'قسم مخصص تم إنشاؤه عبر لوحة المطور',
+        id: tileId,
+        title: tileConf?.title?.trim() || sec.title,
+        subtitle: tileConf?.subtitle?.trim() || sec.description || (isHub ? 'أيقونة متعددة الأقسام الفرعية' : 'قسم مخصص تم إنشاؤه عبر لوحة المطور'),
         icon: Layers,
+        iconImgUrl: tileConf?.iconUrl?.trim() || sec.iconUrl?.trim() || undefined,
         iconColor: 'text-indigo-600 dark:text-indigo-400',
         iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-        badge: `${secRecs.length} سجل`,
-        badgeColor: 'bg-indigo-600 text-white',
+        badge: isHub ? `${sec.subSections!.length} أقسام` : `${secRecs.length} سجل`,
+        badgeColor: isHub ? 'bg-amber-600 text-white' : 'bg-indigo-600 text-white',
         onClick: () => setActiveSection(`custom_section_${sec.id}`)
       });
     });
@@ -360,8 +383,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       list.push(
         {
           id: 'tile_master_admin',
-          title: 'لوحة تحكم المطور والإعدادات',
-          subtitle: 'إدارة المستخدمين وقواعد البيانات والصلاحيات',
+          ...getMeta('tile_master_admin', 'لوحة تحكم المطور والإعدادات', 'إدارة المستخدمين وقواعد البيانات والصلاحيات'),
           icon: Settings,
           iconColor: 'text-orange-600 dark:text-orange-400',
           iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800',
@@ -371,8 +393,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
         },
         {
           id: 'tile_apps_script',
-          title: 'مزامنة Google Sheets السحابية',
-          subtitle: 'ربط ومزامنة الجداول الخارجية',
+          ...getMeta('tile_apps_script', 'مزامنة Google Sheets السحابية', 'ربط ومزامنة الجداول الخارجية'),
           icon: CloudDownload,
           iconColor: 'text-blue-600 dark:text-blue-400',
           iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
@@ -383,81 +404,33 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       );
     }
 
-    const userRole = currentUser?.Role;
-
-    // Strict Role-Based Filtering: employees only see their assigned department and permitted tiles
+    // Strict Centralized RBAC & Visibility Filtering:
+    // - Hidden tiles configured by Developer in Icons Studio are hidden immediately
+    // - Social Care is strictly restricted and NEVER appears unless granted
     const filteredList = list.filter(tile => {
-      if (userRole === 'developer' || userRole === 'director' || userRole === 'deputy') {
-        return true;
+      if (systemSettings?.customTilesConfig?.[tile.id]?.hidden) {
+        return false;
       }
-
-      // Allow dynamic custom sections created for everyone or assigned
-      if (tile.id.startsWith('tile_custom_')) {
-        return true;
-      }
-
-      switch (userRole) {
-        case 'reception':
-        case 'reception_officer':
-          return tile.id === 'tile_reception' || tile.id === 'tile_search_archive';
-
-        case 'admin':
-        case 'admin_officer':
-          return [
-            'tile_admin',
-            'tile_drive_requests',
-            'tile_search_archive',
-            'tile_reports',
-            'tile_whatsapp',
-            'tile_blacklist'
-          ].includes(tile.id);
-
-        case 'interviews_officer':
-          return [
-            'tile_interviews',
-            'tile_search_archive',
-            'tile_reports',
-            'tile_whatsapp'
-          ].includes(tile.id);
-
-        case 'organization':
-        case 'organization_officer':
-          return [
-            'tile_organization',
-            'tile_search_archive',
-            'tile_reports',
-            'tile_whatsapp'
-          ].includes(tile.id);
-
-        case 'machine':
-        case 'machine_officer':
-          return [
-            'tile_machine',
-            'tile_search_archive',
-            'tile_reports'
-          ].includes(tile.id);
-
-        case 'audit':
-          return [
-            'tile_audit',
-            'tile_search_archive',
-            'tile_reports',
-            'tile_blacklist'
-          ].includes(tile.id);
-
-        case 'archive':
-          return [
-            'tile_search_archive',
-            'tile_reports'
-          ].includes(tile.id);
-
-        default:
-          return tile.id === 'tile_search_archive' || tile.id === 'tile_reports';
-      }
+      const mappedSectionId = mapTileIdToSectionId(tile.id);
+      return canUserAccessSection(currentUser, mappedSectionId, customSections);
     });
 
     return filteredList;
-  }, [citizens.length, requests.length, urgentRequestsCount, pendingDirectorReviewCount, interviews.length, organizationRecords.length, auditLogs.length, isDeveloper, currentUser?.Role, setActiveSection, customSections, customRecords.length, systemSettings?.customTilesConfig]);
+  }, [
+    citizens,
+    requests.length,
+    urgentRequestsCount,
+    pendingDirectorReviewCount,
+    interviews.length,
+    organizationRecords.length,
+    auditLogs.length,
+    isDeveloper,
+    currentUser,
+    setActiveSection,
+    customSections,
+    customRecords,
+    systemSettings?.customTilesConfig
+  ]);
 
   const handleExportToExcel = () => {
     const data = employeeStats.map((emp, index) => ({
@@ -613,13 +586,13 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
               </div>
             </div>
 
-            {pendingDirectorReviewCount > 0 && (
+            {pendingDirectorReviewCount > 0 && canUserAccessSection(currentUser, 'director', customSections) && (
               <button
                 onClick={() => setActiveSection('director')}
-                className="h-8.5 px-3 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer animate-pulse shrink-0"
+                className="h-8.5 px-3 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
               >
                 <Briefcase className="w-3.5 h-3.5" />
-                <span>{pendingDirectorReviewCount} طلب استعلامات بانتظار قرار المدير ⚡</span>
+                <span>{pendingDirectorReviewCount} طلب استعلامات بانتظار قرار المدير</span>
               </button>
             )}
           </div>

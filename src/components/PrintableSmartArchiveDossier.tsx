@@ -1,6 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useApp } from '../context/AppContext';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 import {
   Printer,
   X,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react';
 
 export const PrintableSmartArchiveDossier: React.FC = () => {
+  const printRef = useRef<HTMLDivElement>(null);
   const {
     printableArchiveCitizen,
     setPrintableArchiveCitizen,
@@ -28,11 +30,13 @@ export const PrintableSmartArchiveDossier: React.FC = () => {
     addAuditLog
   } = useApp();
 
-  // Auto trigger print when opened for a true 1-click experience
+  // Auto trigger isolated print when opened for a true 1-click experience
   useEffect(() => {
     if (printableArchiveCitizen) {
       const timer = setTimeout(() => {
-        window.print();
+        if (printRef.current) {
+          printElementIsolated(printRef.current, { title: `وثيقة أرشفة ذكية - ${printableArchiveCitizen.citizen.FullName}` });
+        }
       }, 500);
       return () => clearTimeout(timer);
     }
@@ -49,7 +53,11 @@ export const PrintableSmartArchiveDossier: React.FC = () => {
       'الأرشيف طويل الأمد',
       `تمت طباعة/تحميل النسخة الاحتياطية PDF للمراجع ${citizen.FullName} [${archiveCode}] بواسطة ${currentUser?.FullName}`
     );
-    window.print();
+    if (printRef.current) {
+      printElementIsolated(printRef.current, { title: `وثيقة أرشفة ذكية - ${citizen.FullName}` });
+    } else {
+      window.print();
+    }
   };
 
   return (
@@ -95,7 +103,7 @@ export const PrintableSmartArchiveDossier: React.FC = () => {
         </div>
 
         {/* Printable Official Document Area */}
-        <div className="print-container p-6 sm:p-10 space-y-6 text-right font-['Cairo',sans-serif] bg-white">
+        <div ref={printRef} className="print-container p-6 sm:p-10 space-y-6 text-right font-['Cairo',sans-serif] bg-white">
           
           {/* Header Bar */}
           <div className="border-b-2 border-slate-900 pb-5">

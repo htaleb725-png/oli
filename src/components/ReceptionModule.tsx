@@ -46,6 +46,8 @@ import {
 import { UnifiedCitizenCardModal } from './UnifiedCitizenCardModal';
 import { SearchableSelect } from './SearchableSelect';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+import { RequiredFieldsManager } from './developer/RequiredFieldsManager';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 
 export const DHI_QAR_DISTRICTS = [
   'قضاء الناصرية (المركز)',
@@ -193,7 +195,8 @@ export const ReceptionModule: React.FC = () => {
     addReceptionCustomField,
     deleteReceptionCustomField,
     toggleReceptionDefaultField,
-    checkIfCitizenBlocked
+    checkIfCitizenBlocked,
+    updateSystemSettings
   } = useApp();
 
   const isDeveloper = currentUser?.Role === 'developer';
@@ -245,6 +248,8 @@ export const ReceptionModule: React.FC = () => {
   const [editCitPhone1, setEditCitPhone1] = useState('');
   const [editCitPhone2, setEditCitPhone2] = useState('');
   const [editCitDistrict, setEditCitDistrict] = useState(DHI_QAR_DISTRICTS[0]);
+  const [editCitResidentialArea, setEditCitResidentialArea] = useState('');
+  const [editCitNearestLandmark, setEditCitNearestLandmark] = useState('');
   const [editCitJob, setEditCitJob] = useState('كاسب');
   const [editCitEducation, setEditCitEducation] = useState('إعدادية فما دون');
   const [editCitAttendanceType, setEditCitAttendanceType] = useState<'شخصياً' | 'بيد شخص آخر (معتمد)'>('شخصياً');
@@ -263,6 +268,8 @@ export const ReceptionModule: React.FC = () => {
     setEditCitPhone1(cit.Phone1 || '');
     setEditCitPhone2(cit.Phone2 || '');
     setEditCitDistrict(cit.District || DHI_QAR_DISTRICTS[0]);
+    setEditCitResidentialArea(cit.ResidentialArea || '');
+    setEditCitNearestLandmark(cit.NearestLandmark || '');
     setEditCitJob(cit.Job || 'كاسب');
     setEditCitEducation(cit.Education || 'إعدادية فما دون');
     setEditCitAttendanceType((cit.AttendanceType as any) || 'شخصياً');
@@ -292,6 +299,8 @@ export const ReceptionModule: React.FC = () => {
       Phone1: editCitPhone1.trim(),
       Phone2: editCitPhone2.trim() || undefined,
       District: editCitDistrict,
+      ResidentialArea: editCitResidentialArea.trim() || undefined,
+      NearestLandmark: editCitNearestLandmark.trim() || undefined,
       Job: editCitJob.trim() || 'كاسب',
       Education: editCitEducation,
       AttendanceType: editCitAttendanceType,
@@ -352,6 +361,8 @@ export const ReceptionModule: React.FC = () => {
   const [phone2, setPhone2] = useState('');
   const [district, setDistrict] = useState(DHI_QAR_DISTRICTS[0]);
   const [customDistrict, setCustomDistrict] = useState('');
+  const [residentialArea, setResidentialArea] = useState('');
+  const [nearestLandmark, setNearestLandmark] = useState('');
   const [job, setJob] = useState('كاسب');
   const [education, setEducation] = useState('إعدادية فما دون');
   const [notes, setNotes] = useState('');
@@ -360,6 +371,30 @@ export const ReceptionModule: React.FC = () => {
   const [proxyPhone, setProxyPhone] = useState('');
   const [proxyAddress, setProxyAddress] = useState('');
   const [proxyRelation, setProxyRelation] = useState('معتمد');
+  const [showRequiredFieldsModal, setShowRequiredFieldsModal] = useState(false);
+
+  // Helper to check if a field is required according to developer configuration
+  const isFieldRequired = (fieldName: string, defaultVal: boolean = false): boolean => {
+    if (systemSettings?.requiredFieldsConfig && systemSettings.requiredFieldsConfig[fieldName] !== undefined) {
+      return Boolean(systemSettings.requiredFieldsConfig[fieldName]);
+    }
+    return defaultVal;
+  };
+
+  // Dynamic Residential Area options
+  const residentialAreaOptions = useMemo(() => {
+    const fromDropdowns = dropdowns
+      .filter(d => d.Category === 'ResidentialArea')
+      .map(d => d.ItemValue);
+    const fromSettings = systemSettings?.receptionResidentialAreas || [];
+    const defaults = [
+      'الشهداء', 'أريدو', 'الإسكان القديم', 'الإدارة المحلية', 'حي المعلمين', 
+      'سومر', 'الصالحية', 'الشرقية', 'المنصورية', 'الثورة', 'التضحية', 
+      'الشموخ', 'الحواسم', 'الشيباني', 'الفداء', 'المهدي', 'الفضلية', 
+      'حي أور', 'حي الحسين', 'حي الزهراء', 'حي المتنزه', 'دور الشروق', 'الفرات'
+    ];
+    return Array.from(new Set([...fromSettings, ...fromDropdowns, ...defaults]));
+  }, [dropdowns, systemSettings?.receptionResidentialAreas]);
 
   // Multi-Requests list builder for new registration
   const [requestsList, setRequestsList] = useState<RequestDraftItem[]>([
@@ -388,6 +423,8 @@ export const ReceptionModule: React.FC = () => {
   const [intvPhone1, setIntvPhone1] = useState('');
   const [intvPhone2, setIntvPhone2] = useState('');
   const [intvDistrict, setIntvDistrict] = useState(DHI_QAR_DISTRICTS[0]);
+  const [intvResidentialArea, setIntvResidentialArea] = useState('');
+  const [intvNearestLandmark, setIntvNearestLandmark] = useState('');
   const [intvJob, setIntvJob] = useState('كاسب');
   const [intvEducation, setIntvEducation] = useState('إعدادية فما دون');
   const [intvAttendanceType, setIntvAttendanceType] = useState<'شخصياً' | 'بيد شخص آخر (معتمد)'>('شخصياً');
@@ -576,6 +613,8 @@ export const ReceptionModule: React.FC = () => {
     setIntvPhone1(cit.Phone1 || '');
     setIntvPhone2(cit.Phone2 || '');
     setIntvDistrict(cit.District || DHI_QAR_DISTRICTS[0]);
+    setIntvResidentialArea(cit.ResidentialArea || '');
+    setIntvNearestLandmark(cit.NearestLandmark || '');
     setIntvJob(cit.Job || 'كاسب');
     setIntvEducation(cit.Education || 'إعدادية فما دون');
 
@@ -598,6 +637,8 @@ export const ReceptionModule: React.FC = () => {
     setIntvPhone1('');
     setIntvPhone2('');
     setIntvDistrict(DHI_QAR_DISTRICTS[0]);
+    setIntvResidentialArea('');
+    setIntvNearestLandmark('');
     setIntvJob('كاسب');
     setIntvEducation('إعدادية فما دون');
     setIntvAttendanceType('شخصياً');
@@ -659,6 +700,8 @@ export const ReceptionModule: React.FC = () => {
         Phone1: intvPhone1.trim(),
         Phone2: intvPhone2.trim() || undefined,
         District: intvDistrict,
+        ResidentialArea: intvResidentialArea.trim() || undefined,
+        NearestLandmark: intvNearestLandmark.trim() || undefined,
         Job: intvJob.trim() || 'كاسب',
         Education: intvEducation,
         AttendanceType: intvAttendanceType,
@@ -680,6 +723,8 @@ export const ReceptionModule: React.FC = () => {
         Phone2: intvPhone2.trim() || undefined,
         Gender: 'ذكر' as Gender,
         District: intvDistrict,
+        ResidentialArea: intvResidentialArea.trim() || undefined,
+        NearestLandmark: intvNearestLandmark.trim() || undefined,
         SubDistrict: 'المركز',
         Job: intvJob.trim() || 'كاسب',
         Education: intvEducation,
@@ -850,6 +895,8 @@ export const ReceptionModule: React.FC = () => {
       Phone2: phone2.trim() || undefined,
       Gender: 'ذكر' as Gender,
       District: finalDistrict,
+      ResidentialArea: residentialArea.trim() || undefined,
+      NearestLandmark: nearestLandmark.trim() || undefined,
       SubDistrict: 'المركز',
       Job: job.trim() || 'كاسب',
       Education: education,
@@ -1144,6 +1191,17 @@ export const ReceptionModule: React.FC = () => {
             >
               <Sliders className="w-4 h-4 text-purple-600" />
               <span>تخصيص حقول الاستعلامات</span>
+            </button>
+          )}
+
+          {isDeveloper && (
+            <button
+              onClick={() => setShowRequiredFieldsModal(true)}
+              className="px-3.5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 border border-amber-600 text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+              title="تخصيص الحقول الضرورية وتحديد أي حقل إجباري أو اختياري لكافة شاشات الاستعلامات"
+            >
+              <Settings2 className="w-4 h-4 text-slate-950" />
+              <span>تخصيص الحقول الضرورية (للمطور)</span>
             </button>
           )}
 
@@ -1479,6 +1537,7 @@ export const ReceptionModule: React.FC = () => {
                     placeholder="اختر العشيرة أو اللقب..."
                     className="w-full shadow-2xs"
                     allowCustom={true}
+                    category="Surname"
                   />
                 </div>
 
@@ -1615,9 +1674,12 @@ export const ReceptionModule: React.FC = () => {
               </div>
             </div>
 
+            {/* ROW 1: القضاء + منطقة السكن + أقرب نقطة دالة */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div>
-                <label className="block text-slate-700 font-bold mb-1 text-[11px]">القضاء / منطقة السكن *</label>
+                <label className="block text-slate-700 font-bold mb-1 text-[11px]">
+                  القضاء {isFieldRequired('District', true) ? '*' : '(اختياري)'}
+                </label>
                 <SearchableSelect
                   options={DHI_QAR_DISTRICTS}
                   value={district}
@@ -1625,6 +1687,7 @@ export const ReceptionModule: React.FC = () => {
                   placeholder="ابحث أو اختر القضاء..."
                   className="w-full shadow-2xs"
                   allowCustom={true}
+                  category="District"
                 />
                 {district === 'أخرى' && (
                   <input
@@ -1633,13 +1696,47 @@ export const ReceptionModule: React.FC = () => {
                     onChange={(e) => setCustomDistrict(e.target.value)}
                     placeholder="اكتب اسم القضاء أو المنطقة..."
                     className="w-full h-9 px-3 mt-1.5 rounded-lg bg-white border border-blue-300 text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-right text-xs"
-                    required
+                    required={isFieldRequired('District', true)}
                   />
                 )}
               </div>
 
               <div>
-                <label className="block text-slate-700 font-bold mb-1 text-[11px]">المهنة (قائمة وبحث ذكي) *</label>
+                <label className="block text-slate-700 font-bold mb-1 text-[11px]">
+                  منطقة السكن / الحي {isFieldRequired('ResidentialArea', false) ? '*' : '(قائمة وبحث)'}
+                </label>
+                <SearchableSelect
+                  options={residentialAreaOptions}
+                  value={residentialArea}
+                  onChange={(val) => setResidentialArea(val)}
+                  placeholder="مثال: الشهداء، أريدو، الإسكان..."
+                  className="w-full shadow-2xs"
+                  allowCustom={true}
+                  category="ResidentialArea"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-bold mb-1 text-[11px]">
+                  أقرب نقطة دالة {isFieldRequired('NearestLandmark', false) ? '*' : '(اختياري)'}
+                </label>
+                <input
+                  type="text"
+                  value={nearestLandmark}
+                  onChange={(e) => setNearestLandmark(e.target.value)}
+                  placeholder="مثال: قرب جامع، مدرسة، مستشفى، فلكة..."
+                  className="w-full h-10 sm:h-9 px-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none text-right text-xs shadow-2xs"
+                  required={isFieldRequired('NearestLandmark', false)}
+                />
+              </div>
+            </div>
+
+            {/* ROW 2: المهنة + التحصيل الدراسي */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-slate-700 font-bold mb-1 text-[11px]">
+                  المهنة (قائمة وبحث ذكي) {isFieldRequired('Job', false) ? '*' : '(اختياري)'}
+                </label>
                 <SearchableSelect
                   options={allJobsList}
                   value={job}
@@ -1647,11 +1744,14 @@ export const ReceptionModule: React.FC = () => {
                   placeholder="ابحث أو اختر المهنة (مثال: د ك)..."
                   className="w-full shadow-2xs"
                   allowCustom={true}
+                  category="Job"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-700 font-bold mb-1 text-[11px]">التحصيل الدراسي *</label>
+                <label className="block text-slate-700 font-bold mb-1 text-[11px]">
+                  التحصيل الدراسي {isFieldRequired('Education', false) ? '*' : '(اختياري)'}
+                </label>
                 <SearchableSelect
                   options={allEducationsList}
                   value={education}
@@ -1659,6 +1759,7 @@ export const ReceptionModule: React.FC = () => {
                   placeholder="اختر التحصيل الدراسي..."
                   className="w-full shadow-2xs"
                   allowCustom={true}
+                  category="Education"
                 />
               </div>
             </div>
@@ -1867,6 +1968,7 @@ export const ReceptionModule: React.FC = () => {
                           value={reqItem.entity}
                           onChange={(val) => handleRequestSlotChange(reqItem.id, 'entity', val)}
                           placeholder="ابحث أو اختر الوزارة أو الدائرة..."
+                          category="Entity"
                         />
                       </div>
 
@@ -2105,7 +2207,7 @@ export const ReceptionModule: React.FC = () => {
                       <button
                         onClick={() => {
                           setCitizenForPrintInfo(cit);
-                          setTimeout(() => window.print(), 300);
+                          setTimeout(() => printElementIsolated('printableCitizenInfoCard', { title: `بطاقة مراجع - ${cit.FullName}` }), 250);
                         }}
                         className="h-9 px-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-[11px] flex items-center justify-center gap-1 transition-colors cursor-pointer border border-purple-200 active:scale-95"
                         title="طباعة بطاقة ومعلومات المراجع الرسمية"
@@ -2210,7 +2312,7 @@ export const ReceptionModule: React.FC = () => {
                             <button
                               onClick={() => {
                                 setCitizenForPrintInfo(cit);
-                                setTimeout(() => window.print(), 300);
+                                setTimeout(() => printElementIsolated('printableCitizenInfoCard', { title: `بطاقة مراجع - ${cit.FullName}` }), 250);
                               }}
                               className="px-2 py-1 rounded-md bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-[10px] flex items-center gap-0.5 transition-colors cursor-pointer"
                               title="طباعة بطاقة ومعلومات المراجع الرسمية"
@@ -2333,7 +2435,7 @@ export const ReceptionModule: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => window.print()}
+                  onClick={() => printElementIsolated('receptionInterviewsPrintArea', { title: 'كشف المقابلات المباشرة - مكتب النائب' })}
                   className="flex-1 sm:flex-none px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs transition-colors"
                   title="طباعة جدول المقابلات A4"
                 >
@@ -2493,6 +2595,7 @@ export const ReceptionModule: React.FC = () => {
                         placeholder="اختر العشيرة أو اللقب..."
                         className="w-full shadow-2xs"
                         allowCustom={true}
+                        category="Surname"
                       />
                     </div>
 
@@ -2630,20 +2733,54 @@ export const ReceptionModule: React.FC = () => {
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                   <div>
-                    <label className="block text-slate-700 font-bold mb-1">القضاء / منطقة السكن *</label>
-                    <select
+                    <label className="block text-slate-700 font-bold mb-1">
+                      القضاء {isFieldRequired('District') ? '*' : <span className="text-slate-400 font-normal text-[11px]">(اختياري)</span>}
+                    </label>
+                    <SearchableSelect
+                      options={DHI_QAR_DISTRICTS}
                       value={intvDistrict}
-                      onChange={(e) => setIntvDistrict(e.target.value)}
-                      className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-900 font-semibold focus:bg-white focus:ring-2 focus:ring-amber-500 outline-none text-right shadow-2xs"
-                    >
-                      {DHI_QAR_DISTRICTS.map((d, i) => (
-                        <option key={i} value={d}>{d}</option>
-                      ))}
-                    </select>
+                      onChange={(val) => setIntvDistrict(val)}
+                      placeholder="اختر أو اكتب القضاء..."
+                      className="w-full shadow-2xs"
+                      allowCustom={true}
+                      category="District"
+                    />
                   </div>
 
                   <div>
-                    <label className="block text-slate-700 font-bold mb-1">المهنة (قائمة وبحث ذكي) *</label>
+                    <label className="block text-slate-700 font-bold mb-1">
+                      منطقة السكن / الحي {isFieldRequired('ResidentialArea') ? '*' : <span className="text-slate-400 font-normal text-[11px]">(اختياري)</span>}
+                    </label>
+                    <SearchableSelect
+                      options={residentialAreaOptions}
+                      value={intvResidentialArea}
+                      onChange={(val) => setIntvResidentialArea(val)}
+                      placeholder="اختر أو اكتب الحي / المنطقة..."
+                      className="w-full shadow-2xs"
+                      allowCustom={true}
+                      category="ResidentialArea"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-700 font-bold mb-1">
+                      أقرب نقطة دالة {isFieldRequired('NearestLandmark') ? '*' : <span className="text-slate-400 font-normal text-[11px]">(غير مطلوبة)</span>}
+                    </label>
+                    <input
+                      type="text"
+                      value={intvNearestLandmark}
+                      onChange={(e) => setIntvNearestLandmark(e.target.value)}
+                      placeholder="قرب مدرسة، جامع، مستوصف..."
+                      className="w-full h-10 px-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-900 font-semibold focus:bg-white focus:ring-2 focus:ring-amber-500 outline-none text-right shadow-2xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-slate-700 font-bold mb-1">
+                      المهنة (قائمة وبحث ذكي) {isFieldRequired('Job') ? '*' : <span className="text-slate-400 font-normal text-[11px]">(اختياري)</span>}
+                    </label>
                     <SearchableSelect
                       options={allJobsList}
                       value={intvJob}
@@ -2651,11 +2788,14 @@ export const ReceptionModule: React.FC = () => {
                       placeholder="ابحث أو اختر المهنة (مثال: د ك)..."
                       className="w-full shadow-2xs"
                       allowCustom={true}
+                      category="Job"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-slate-700 font-bold mb-1">التحصيل الدراسي *</label>
+                    <label className="block text-slate-700 font-bold mb-1">
+                      التحصيل الدراسي {isFieldRequired('Education') ? '*' : <span className="text-slate-400 font-normal text-[11px]">(اختياري)</span>}
+                    </label>
                     <SearchableSelect
                       options={allEducationsList}
                       value={intvEducation}
@@ -2663,6 +2803,7 @@ export const ReceptionModule: React.FC = () => {
                       placeholder="اختر التحصيل الدراسي..."
                       className="w-full shadow-2xs"
                       allowCustom={true}
+                      category="Education"
                     />
                   </div>
                 </div>
@@ -2788,7 +2929,7 @@ export const ReceptionModule: React.FC = () => {
               </div>
 
               {/* Interviews Presentation */}
-              <div className="rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
+              <div id="receptionInterviewsPrintArea" className="rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
                 {filteredInterviewRecords.length === 0 ? (
                   <div className="p-8 text-center text-slate-500 font-medium text-xs bg-white">
                     لا توجد مقابلات تطابق معايير البحث الحالية.
@@ -2975,7 +3116,7 @@ export const ReceptionModule: React.FC = () => {
               </button>
 
               <button
-                onClick={() => window.print()}
+                onClick={() => printElementIsolated('receptionOfficialPrintArea', { title: 'تقرير قسم الاستعلامات ومقابلات النائب' })}
                 className="flex-1 sm:flex-none h-9 px-3.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer transition-colors active:scale-95"
                 title="طباعة التقرير"
               >
@@ -3629,6 +3770,7 @@ export const ReceptionModule: React.FC = () => {
                     onChange={(val) => setEditCitSurname(val)}
                     placeholder="العشيرة..."
                     allowCustom={true}
+                    category="Surname"
                   />
                 </div>
                 <div>
@@ -3656,17 +3798,40 @@ export const ReceptionModule: React.FC = () => {
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <div>
-                  <label className="block text-slate-700 font-bold mb-1 text-[11px]">القضاء / السكن</label>
-                  <select
+                  <label className="block text-slate-700 font-bold mb-1 text-[11px]">القضاء</label>
+                  <SearchableSelect
+                    options={DHI_QAR_DISTRICTS}
                     value={editCitDistrict}
-                    onChange={(e) => setEditCitDistrict(e.target.value)}
-                    className="w-full h-8.5 px-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 focus:bg-white outline-none text-right"
-                  >
-                    {DHI_QAR_DISTRICTS.map((d, i) => (
-                      <option key={i} value={d}>{d}</option>
-                    ))}
-                  </select>
+                    onChange={(val) => setEditCitDistrict(val)}
+                    placeholder="القضاء..."
+                    allowCustom={true}
+                    category="District"
+                  />
                 </div>
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1 text-[11px]">منطقة السكن / الحي</label>
+                  <SearchableSelect
+                    options={residentialAreaOptions}
+                    value={editCitResidentialArea}
+                    onChange={(val) => setEditCitResidentialArea(val)}
+                    placeholder="الحي أو المنطقة..."
+                    allowCustom={true}
+                    category="ResidentialArea"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1 text-[11px]">أقرب نقطة دالة (غير مطلوبة)</label>
+                  <input
+                    type="text"
+                    value={editCitNearestLandmark}
+                    onChange={(e) => setEditCitNearestLandmark(e.target.value)}
+                    placeholder="قرب جامع، مدرسة..."
+                    className="w-full h-8.5 px-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 focus:bg-white outline-none text-right"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div>
                   <label className="block text-slate-700 font-bold mb-1 text-[11px]">المهنة</label>
                   <SearchableSelect
@@ -3675,6 +3840,7 @@ export const ReceptionModule: React.FC = () => {
                     onChange={(val) => setEditCitJob(val)}
                     placeholder="المهنة..."
                     allowCustom={true}
+                    category="Job"
                   />
                 </div>
                 <div>
@@ -3685,6 +3851,7 @@ export const ReceptionModule: React.FC = () => {
                     onChange={(val) => setEditCitEducation(val)}
                     placeholder="التحصيل الدراسي..."
                     allowCustom={true}
+                    category="Education"
                   />
                 </div>
               </div>
@@ -3970,7 +4137,13 @@ export const ReceptionModule: React.FC = () => {
                 <div><span className="text-slate-500">اسم المراجع:</span> <strong className="text-slate-900 font-bold">{citizenForPrintInfo.FullName}</strong></div>
                 <div><span className="text-slate-500">العشيرة:</span> <strong>{citizenForPrintInfo.Surname || '-'}</strong></div>
                 <div><span className="text-slate-500">رقم الهاتف:</span> <strong className="font-mono">{citizenForPrintInfo.Phone1}</strong></div>
-                <div><span className="text-slate-500">القضاء والسكن:</span> <strong>{citizenForPrintInfo.District}</strong></div>
+                <div><span className="text-slate-500">القضاء:</span> <strong>{citizenForPrintInfo.District}</strong></div>
+                {citizenForPrintInfo.ResidentialArea && (
+                  <div><span className="text-slate-500">منطقة السكن / الحي:</span> <strong>{citizenForPrintInfo.ResidentialArea}</strong></div>
+                )}
+                {citizenForPrintInfo.NearestLandmark && (
+                  <div><span className="text-slate-500">أقرب نقطة دالة:</span> <strong>{citizenForPrintInfo.NearestLandmark}</strong></div>
+                )}
                 <div><span className="text-slate-500">المهنة:</span> <strong>{citizenForPrintInfo.Job || 'كاسب'}</strong></div>
                 <div><span className="text-slate-500">طريقة الحضور:</span> <strong>{citizenForPrintInfo.AttendanceType}</strong></div>
                 {citizenForPrintInfo.AttendanceType === 'بيد شخص آخر (معتمد)' && (
@@ -4000,7 +4173,7 @@ export const ReceptionModule: React.FC = () => {
 
             <div className="flex items-center gap-2">
               <button
-                onClick={() => window.print()}
+                onClick={() => printElementIsolated('printableCitizenInfoCard', { title: `بطاقة مراجع - ${citizenForPrintInfo.FullName}` })}
                 className="flex-1 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
               >
                 <Printer className="w-3.5 h-3.5" />
@@ -4187,6 +4360,17 @@ export const ReceptionModule: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Developer Required Fields Modal */}
+      {showRequiredFieldsModal && (
+        <RequiredFieldsManager
+          currentConfig={systemSettings.requiredFieldsConfig}
+          onSave={async (newConfig) => {
+            await updateSystemSettings({ requiredFieldsConfig: newConfig });
+          }}
+          onClose={() => setShowRequiredFieldsModal(false)}
+        />
       )}
 
     </div>

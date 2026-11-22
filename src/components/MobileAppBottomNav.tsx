@@ -11,7 +11,8 @@ import {
   Printer, 
   Users2,
   FolderKanban,
-  ShieldCheck
+  ShieldCheck,
+  HeartHandshake
 } from 'lucide-react';
 
 interface Props {
@@ -48,6 +49,9 @@ export const MobileAppBottomNav: React.FC<Props> = ({ onOpenLogoutModal }) => {
     }
     if (role === 'machine' || role === 'machine_officer') {
       return { id: 'machine', label: 'المكنة', icon: Printer };
+    }
+    if (role === 'social_care' || role === 'social_care_officer') {
+      return { id: 'social_care', label: 'الرعاية', icon: HeartHandshake };
     }
     if (role === 'audit') {
       return { id: 'audit', label: 'المتابعة', icon: ShieldCheck };

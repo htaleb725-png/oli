@@ -22,6 +22,7 @@ import {
   Scissors
 } from 'lucide-react';
 import { Citizen } from '../types';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 
 interface DirectScannerPrinterProps {
   initialCitizenId?: string;
@@ -223,7 +224,7 @@ export const DirectScannerPrinter: React.FC<DirectScannerPrinterProps> = ({
 
   // 1-Click Direct Print
   const handleDirectPrint = () => {
-    window.print();
+    printElementIsolated('printable-scanner-document', { title: `مسح ضوئي - ${selectedCitizen?.FullName || 'وثيقة رسمية'}` });
   };
 
   // Save to Citizen Archive
@@ -295,7 +296,7 @@ export const DirectScannerPrinter: React.FC<DirectScannerPrinterProps> = ({
         `تم مسح المستمسكات وتدقيق المعاملة بالإدارة وإحالتها للمتابعة الميدانية والانتخابية.`
       );
     }
-    window.print();
+    printElementIsolated('printable-scanner-document', { title: `معاملة رسمية - ${selectedCitizen?.FullName || 'مراجع'}` });
   };
 
   return (

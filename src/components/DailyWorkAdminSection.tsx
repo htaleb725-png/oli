@@ -65,6 +65,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     unblockCitizen,
     currentUser,
     systemSettings,
+    updateSystemSettings,
     setSelectedCitizenForHistory,
     setPrintableBadgeCitizen
   } = useApp();
@@ -131,23 +132,34 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [formAttachedImage, setFormAttachedImage] = useState<string>('');
 
   // Generate auto sequential outgoing number starting from 1 if no outgoings exist, or max + 1
+  // Generate auto sequential outgoing number according to office branch and year:
+  // Nasiriyah: ن / <السنة> / <العدد> (e.g. ن / 26 / 15)
+  // Suq Al-Shuyoukh: س / <السنة> / <العدد> (e.g. س / 26 / 14)
   const generateOutgoingNumber = () => {
-    const year = new Date().getFullYear();
+    const yearFull = new Date().getFullYear();
+    const yearShort = String(yearFull).slice(-2); // e.g. "26"
+
+    const isSuq = systemSettings?.officeBranch === 'suq_al_shuyoukh';
+    const branchPrefix = isSuq ? 'س' : 'ن';
+    const baseline = isSuq 
+      ? (systemSettings?.lastOutgoingNumberSuq || 0)
+      : (systemSettings?.lastOutgoingNumberNasiriyah || 0);
+
     const existingOutgoings = requests
       .map(r => r.OutgoingNumber)
       .filter((n): n is string => Boolean(n && n.trim()));
 
-    if (existingOutgoings.length === 0) {
-      return `ص/${year}/1`;
-    }
+    let maxNum = baseline;
 
-    let maxNum = 0;
     for (const outg of existingOutgoings) {
       const matches = String(outg).match(/\d+/g);
       if (matches) {
         for (const m of matches) {
           const val = parseInt(m, 10);
           if (val >= 2020 && val <= 2040 && matches.length > 1) {
+            continue;
+          }
+          if (val === parseInt(yearShort, 10) && matches.length > 1) {
             continue;
           }
           if (val > maxNum) {
@@ -158,20 +170,41 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     }
 
     const nextSeq = maxNum === 0 ? 1 : maxNum + 1;
-    return `ص/${year}/${nextSeq}`;
+    return `${branchPrefix} / ${yearShort} / ${nextSeq}`;
   };
 
-  // Real-time detection of last registered citizen
-  const lastRegisteredCitizen = useMemo(() => {
-    if (!citizens || citizens.length === 0) return null;
-    for (let i = citizens.length - 1; i >= 0; i--) {
-      const c = citizens[i];
-      if (c && c.FullName && c.FullName.trim()) {
-        return c;
+  // Real-time detection of last completed request citizen in administration (strictly completed/outgoing requests)
+  const lastCompletedAdminCitizen = useMemo(() => {
+    if (!requests || requests.length === 0) return null;
+    const completedReqs = requests
+      .filter(r => (r.OutgoingNumber && r.OutgoingNumber.trim()) || r.ProcessingStatus === 'منجز')
+      .slice()
+      .reverse();
+
+    for (const req of completedReqs) {
+      const cit = citizens.find(c => c.Citizen_ID === req.Citizen_ID);
+      if (cit && cit.FullName && cit.FullName.trim()) {
+        return {
+          citizen: cit,
+          request: req,
+          outgoingNumber: req.OutgoingNumber || 'منجز'
+        };
+      }
+      if (req.CitizenName && req.CitizenName.trim()) {
+        return {
+          citizen: {
+            Citizen_ID: req.Citizen_ID,
+            FullName: req.CitizenName,
+            Phone1: req.CitizenPhone || '',
+            District: req.Address || 'الناصرية'
+          } as Citizen,
+          request: req,
+          outgoingNumber: req.OutgoingNumber || 'منجز'
+        };
       }
     }
-    return citizens[citizens.length - 1];
-  }, [citizens]);
+    return null;
+  }, [requests, citizens]);
 
   // Real-time detection of last outgoing number and date recorded in requests
   const lastOutgoingRecord = useMemo(() => {
@@ -205,7 +238,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
 
   const nextAutoOutgoingNumber = useMemo(() => {
     return generateOutgoingNumber();
-  }, [requests]);
+  }, [requests, systemSettings?.officeBranch, systemSettings?.lastOutgoingNumberNasiriyah, systemSettings?.lastOutgoingNumberSuq]);
 
   // Collective Outgoing (صادر موحد لمجموعة مراجعين)
   const [isBulkOutgoingModalOpen, setIsBulkOutgoingModalOpen] = useState(false);
@@ -612,27 +645,31 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   }, [citizens]);
 
   // Aggregate daily records: Citizens with their requests
+  // Exclude historical imported or archived records from the daily pending queue unless searching
   const dailyRecords = useMemo(() => {
-    return citizens.map(cit => {
-      const citRequests = requests.filter(r => r.Citizen_ID === cit.Citizen_ID);
-      // Determine overall director state
-      const hasRejection = citRequests.some(r => r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض');
-      const hasSpecial = citRequests.some(r => r.DirectorDecision === 'خاص');
-      const hasGeneral = citRequests.some(r => r.DirectorDecision === 'عام');
-      const hasPending = citRequests.some(r => !r.DirectorDecision && r.ProcessingStatus !== 'منجز');
-      const hasCompleted = citRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber));
+    const isSearching = Boolean(searchTerm.trim());
+    return citizens
+      .filter(cit => isSearching || (!cit.IsHistoricalImported && !cit.IsArchived))
+      .map(cit => {
+        const citRequests = requests.filter(r => r.Citizen_ID === cit.Citizen_ID);
+        // Determine overall director state
+        const hasRejection = citRequests.some(r => r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض');
+        const hasSpecial = citRequests.some(r => r.DirectorDecision === 'خاص');
+        const hasGeneral = citRequests.some(r => r.DirectorDecision === 'عام');
+        const hasPending = citRequests.some(r => !r.DirectorDecision && r.ProcessingStatus !== 'منجز');
+        const hasCompleted = citRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber));
 
-      return {
-        citizen: cit,
-        requests: citRequests,
-        hasRejection,
-        hasSpecial,
-        hasGeneral,
-        hasPending,
-        hasCompleted
-      };
-    });
-  }, [citizens, requests]);
+        return {
+          citizen: cit,
+          requests: citRequests,
+          hasRejection,
+          hasSpecial,
+          hasGeneral,
+          hasPending,
+          hasCompleted
+        };
+      });
+  }, [citizens, requests, searchTerm]);
 
   // Filter daily records
   const filteredDailyRecords = useMemo(() => {
@@ -790,27 +827,27 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
 
       {/* REAL-TIME LIVE STATUS BAR: آخر اسم مسجل + آخر عدد صادر مسجل + العدد القادم المقترح + صادر موحد + أرشيف صور Drive */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border-2 border-amber-400/50 dark:border-amber-500/40 shadow-sm">
-        {/* Card 1: آخر اسم مسجل */}
+        {/* Card 1: آخر اسم مكتمل طلبه بالإدارة */}
         <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
           <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 flex items-center justify-center shrink-0">
             <User className="w-5 h-5" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">آخر اسم مسجل بالنظام:</span>
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">آخر اسم مكتمل طلبه بالإدارة:</span>
               <span className="inline-flex items-center gap-1 text-[9px] font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
                 مباشر
               </span>
             </div>
-            <div className="font-black text-xs sm:text-sm text-slate-900 dark:text-white truncate mt-0.5" title={lastRegisteredCitizen?.FullName || 'لا يوجد'}>
-              {lastRegisteredCitizen?.FullName || 'لا يوجد مسجلين بعد'}
+            <div className="font-black text-xs sm:text-sm text-slate-900 dark:text-white truncate mt-0.5" title={lastCompletedAdminCitizen?.citizen.FullName || 'لا يوجد'}>
+              {lastCompletedAdminCitizen?.citizen.FullName || 'لا يوجد طلب منجز بعد'}
             </div>
-            {lastRegisteredCitizen && (
+            {lastCompletedAdminCitizen && (
               <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate flex items-center gap-1 font-mono mt-0.5" dir="ltr">
-                <span>{lastRegisteredCitizen.Phone1 || '-'}</span>
+                <span>الصادر: {lastCompletedAdminCitizen.outgoingNumber}</span>
                 <span>•</span>
-                <span>{lastRegisteredCitizen.District || 'المركز'}</span>
+                <span>{lastCompletedAdminCitizen.citizen.District || 'المركز'}</span>
               </div>
             )}
           </div>
@@ -834,18 +871,46 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           </div>
         </div>
 
-        {/* Card 3: العدد القادم المقترح تلقائياً */}
+        {/* Card 3: العدد القادم المقترح تلقائياً مع تبديل المكتب (الناصرية ن / سوق الشيوخ س) */}
         <div className="flex items-center gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60">
           <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-800 dark:text-emerald-200 flex items-center justify-center shrink-0">
             <Hash className="w-5 h-5" />
           </div>
           <div className="min-w-0 flex-1">
-            <span className="text-[11px] font-bold text-emerald-900 dark:text-emerald-300 block">العدد القادم المقترح تلقائياً:</span>
-            <div className="font-black text-sm font-mono text-emerald-950 dark:text-emerald-100 mt-0.5">
+            <div className="flex items-center justify-between gap-1">
+              <span className="text-[11px] font-bold text-emerald-900 dark:text-emerald-300 block">العدد القادم المقترح:</span>
+              <div className="inline-flex items-center rounded-lg bg-emerald-100/90 dark:bg-emerald-900/70 p-0.5 border border-emerald-300/70 dark:border-emerald-700">
+                <button
+                  type="button"
+                  onClick={() => updateSystemSettings({ officeBranch: 'nasiriyah' })}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-black transition-all cursor-pointer ${
+                    systemSettings?.officeBranch !== 'suq_al_shuyoukh'
+                      ? 'bg-emerald-700 text-white shadow-xs'
+                      : 'text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200/70'
+                  }`}
+                  title="مكتب الناصرية (بادئة ن)"
+                >
+                  الناصرية (ن)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSystemSettings({ officeBranch: 'suq_al_shuyoukh' })}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-black transition-all cursor-pointer ${
+                    systemSettings?.officeBranch === 'suq_al_shuyoukh'
+                      ? 'bg-emerald-700 text-white shadow-xs'
+                      : 'text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200/70'
+                  }`}
+                  title="مكتب سوق الشيوخ (بادئة س)"
+                >
+                  سوق الشيوخ (س)
+                </button>
+              </div>
+            </div>
+            <div className="font-black text-sm font-mono text-emerald-950 dark:text-emerald-100 mt-0.5" dir="ltr">
               {nextAutoOutgoingNumber}
             </div>
             <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5">
-              يبدأ من 1 تلقائياً وقابل للتعديل
+              تاريخ اليوم: {new Date().toISOString().split('T')[0]} • قابل للتعديل
             </div>
           </div>
         </div>
@@ -1618,6 +1683,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     onChange={setFormEntity}
                     placeholder="اختر أو اكتب للبحث عن الوزارة أو الدائرة..."
                     required
+                    category="Entity"
                   />
                 </div>
 
@@ -2057,6 +2123,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                       value={editDistrict}
                       onChange={setEditDistrict}
                       placeholder="اختر أو اكتب القضاء..."
+                      category="District"
                     />
                   </div>
 
@@ -2084,6 +2151,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                       value={editSurname}
                       onChange={setEditSurname}
                       placeholder="اختر أو اكتب العشيرة..."
+                      category="Surname"
                     />
                   </div>
 
@@ -2197,6 +2265,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                         onChange={setEditEntity}
                         placeholder="اختر أو اكتب الجهة المعنية..."
                         required
+                        category="Entity"
                       />
                     </div>
 
@@ -2396,6 +2465,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     onChange={setBulkEntity}
                     placeholder="اختر أو اكتب الوزارة / الدائرة..."
                     required
+                    category="Entity"
                   />
                 </div>
               </div>

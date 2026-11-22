@@ -17,6 +17,7 @@ import {
   Search,
   FileText
 } from 'lucide-react';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 
 export type DepartmentType = 'reception' | 'organization' | 'interviews' | 'admin';
 
@@ -267,7 +268,7 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
       departmentArabicName,
       `طباعة تقرير ${periodArabicName} بعدد ${itemsToPrint.length} سجل`
     );
-    window.print();
+    printElementIsolated('department-work-report-print', { title: `${departmentArabicName} - ${periodArabicName}` });
   };
 
   // Export to Excel
@@ -504,7 +505,7 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
         </div>
 
         {/* Printable & Table View Area */}
-        <div className="p-4 flex-1 overflow-y-auto" ref={printableRef}>
+        <div id="department-work-report-print" className="p-4 flex-1 overflow-y-auto" ref={printableRef}>
           
           {/* Printable Official Header (Visible in print) */}
           <div className="hidden print:block mb-4 p-4 border-b-2 border-slate-900 text-center font-['Tajawal']" dir="rtl">

@@ -490,7 +490,7 @@ export const Navbar: React.FC = () => {
                       <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold bg-blue-50 dark:bg-blue-900/40 px-1.5 py-0.5 rounded">مطور النظام</span>
                     </div>
                     <div className="space-y-1 max-h-52 overflow-y-auto pr-0.5">
-                      {users.slice(0, 8).map((u, idx) => (
+                      {users.map((u, idx) => (
                         <button
                           key={`${u.User_ID}-${idx}`}
                           onClick={() => {
@@ -506,7 +506,7 @@ export const Navbar: React.FC = () => {
                         >
                           <span className="truncate">{u.FullName}</span>
                           <span className="text-[10px] text-slate-500 dark:text-slate-400 shrink-0 font-normal mr-1">
-                            [{u.Role === 'reception' ? 'الاستعلامات' : u.Role === 'admin' ? 'الإدارة' : u.Role === 'interviews_officer' ? 'المقابلات' : u.Role === 'organization' ? 'التنظيم' : u.Role === 'machine' ? 'المكنة' : u.Role === 'audit' ? 'الرقابة' : u.RoleArabic.slice(0, 10)}]
+                            [{u.Role === 'reception' || u.Role === 'reception_officer' ? 'الاستعلامات' : u.Role === 'admin' || u.Role === 'admin_officer' ? 'الإدارة' : u.Role === 'interviews_officer' ? 'المقابلات' : u.Role === 'organization' || u.Role === 'organization_officer' ? 'التنظيم' : u.Role === 'machine' || u.Role === 'machine_officer' ? 'المكنة' : u.Role === 'social_care' || u.Role === 'social_care_officer' ? 'الرعاية' : u.Role === 'audit' ? 'الرقابة' : u.RoleArabic.slice(0, 12)}]
                           </span>
                         </button>
                       ))}

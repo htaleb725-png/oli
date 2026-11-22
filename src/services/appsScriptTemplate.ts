@@ -265,6 +265,23 @@ function doPost(e) {
       return jsonResponse(fileRes);
     }
 
+    // 3.1 استعراض والبحث في ملفات وصور Google Drive المباشرة
+    if (action === 'listDriveFiles') {
+      var targetFolderId = contents.folderId || '1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc';
+      var searchQuery = contents.query || '';
+      var listRes = handleDriveList(targetFolderId, searchQuery);
+      return jsonResponse({
+        success: true,
+        files: listRes
+      });
+    }
+
+    // 3.2 حذف ملف من مجلد Google Drive
+    if (action === 'deleteDriveFile') {
+      var delRes = handleDriveDelete(contents.fileId);
+      return jsonResponse(delRes);
+    }
+
     // 4. العمليات الفردية (إضافة / تعديل / حذف)
     var targetSheetName = resolveSheetName(table);
     var sheet = ss.getSheetByName(targetSheetName);
@@ -463,6 +480,49 @@ function handleDriveUpload(contents) {
     webViewLink: file.getUrl(),
     directUrl: 'https://drive.google.com/uc?export=view&id=' + file.getId()
   };
+}
+
+function handleDriveList(folderId, query) {
+  var results = [];
+  try {
+    var folder;
+    if (folderId) {
+      try { folder = DriveApp.getFolderById(folderId); } catch(e) { folder = DriveApp.getRootFolder(); }
+    } else {
+      folder = DriveApp.getRootFolder();
+    }
+    var files = folder.getFiles();
+    var count = 0;
+    while (files.hasNext() && count < 80) {
+      var f = files.next();
+      var name = f.getName();
+      var mime = f.getMimeType();
+      if (!query || name.toLowerCase().indexOf(query.toLowerCase()) !== -1) {
+        results.push({
+          id: f.getId(),
+          name: name,
+          mimeType: mime,
+          size: f.getSize(),
+          url: 'https://drive.google.com/uc?export=view&id=' + f.getId(),
+          viewUrl: f.getUrl(),
+          createdTime: f.getDateCreated().toISOString()
+        });
+        count++;
+      }
+    }
+  } catch (err) {}
+  return results;
+}
+
+function handleDriveDelete(fileId) {
+  try {
+    if (!fileId) return { success: false, error: 'معرف الملف غير محدد' };
+    var f = DriveApp.getFileById(fileId);
+    f.setTrashed(true);
+    return { success: true, message: 'تم نقل الملف إلى سلة محذوفات Google Drive' };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
 }
 
 function jsonResponse(data) {

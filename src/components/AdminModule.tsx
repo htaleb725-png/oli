@@ -52,6 +52,7 @@ import { SYSTEM_PERMISSIONS } from '../types';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 import { SmartExcelImporterModal } from './SmartExcelImporterModal';
 import { PlusCircle, FileSpreadsheet, UploadCloud } from 'lucide-react';
+import { printImageIsolated } from '../utils/printReceiptHelper';
 
 export const AdminModule: React.FC = () => {
   const { 
@@ -2351,21 +2352,11 @@ export const AdminModule: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    const printWindow = window.open('', '_blank');
-                    if (printWindow) {
-                      printWindow.document.write(`
-                        <html>
-                          <head>
-                            <title>طباعة صورة المسح الضوئي</title>
-                            <style>body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; } img { max-width: 100%; height: auto; }</style>
-                          </head>
-                          <body onload="window.print()">
-                            <img src="${fullPreviewScan.url}" />
-                          </body>
-                        </html>
-                      `);
-                      printWindow.document.close();
-                    }
+                    printImageIsolated(
+                      fullPreviewScan.url,
+                      'طباعة صورة المسح الضوئي',
+                      `الموظف الموثق: ${fullPreviewScan.uploadedBy || ''} | ${fullPreviewScan.uploadedAt || ''}`
+                    );
                   }}
                   className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer"
                 >

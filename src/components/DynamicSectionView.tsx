@@ -1,24 +1,24 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { CustomSection, CustomSectionRecord, CustomFieldDefinition, CustomFieldType } from '../types';
-import { 
-  Plus, 
-  Search, 
-  Trash2, 
-  Edit3, 
-  Download, 
-  Printer, 
-  Upload, 
-  Image as ImageIcon, 
-  X, 
-  FileText, 
-  Calendar, 
-  Hash, 
+import {
+  CustomSection,
+  CustomSectionRecord,
+  CustomFieldDefinition,
+  CustomFieldType,
+  CustomSubSection
+} from '../types';
+import {
+  Plus,
+  Search,
+  Trash2,
+  Edit3,
+  Download,
+  Printer,
+  Upload,
+  Image as ImageIcon,
   Layers,
-  ChevronDown,
   Eye,
   CheckCircle2,
-  AlertCircle,
   ArrowRight,
   BarChart3,
   LayoutDashboard,
@@ -26,37 +26,42 @@ import {
   Sliders,
   Settings2,
   FolderOpen,
-  PieChart as PieIcon,
   Clock,
-  Sparkles,
-  ShieldCheck,
-  Check
+  HeartHandshake,
+  FolderKanban,
+  AlertCircle
 } from 'lucide-react';
-import { 
-  ResponsiveContainer, 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  CartesianGrid, 
-  Cell, 
-  PieChart, 
-  Pie 
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  Cell
 } from 'recharts';
 import * as XLSX from 'xlsx';
+import { SearchableSelect } from './SearchableSelect';
+import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../utils/permissions';
 
 interface DynamicSectionViewProps {
   section?: CustomSection;
   sectionId?: string;
+  isStandaloneSocialCare?: boolean;
 }
 
-export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section: propSection, sectionId }) => {
-  const { 
+export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({
+  section: propSection,
+  sectionId,
+  isStandaloneSocialCare
+}) => {
+  const {
     customSections,
-    customRecords, 
-    addCustomRecord, 
-    updateCustomRecord, 
+    customRecords,
+    addCustomRecord,
+    updateCustomRecord,
     deleteCustomRecord,
     updateCustomSection,
     currentUser,
@@ -65,9 +70,15 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
   } = useApp();
 
   const isDeveloper = currentUser?.Role === 'developer';
-  const isAuthorizedToEditSchema = isDeveloper || currentUser?.Role === 'director' || currentUser?.Role === 'admin';
+  const isAuthorizedToEditSchema =
+    isDeveloper || currentUser?.Role === 'director' || currentUser?.Role === 'admin';
 
-  const section = propSection || customSections.find(s => s.id === sectionId);
+  const section = propSection || customSections.find((s) => s.id === sectionId);
+  const isSocialCare =
+    Boolean(isStandaloneSocialCare) || section?.id === SOCIAL_CARE_LEGACY_CUSTOM_ID;
+
+  // Multi-Section Hub navigation state
+  const [activeSubSectionId, setActiveSubSectionId] = useState<string | null>(null);
 
   // Sub-navigation within this department
   const [activeTab, setActiveTab] = useState<'dashboard' | 'records' | 'gallery'>('dashboard');
@@ -76,6 +87,8 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
   const [editingRecord, setEditingRecord] = useState<CustomSectionRecord | null>(null);
   const [viewingImage, setViewingImage] = useState<string | null>(null);
   const [showFieldBuilderModal, setShowFieldBuilderModal] = useState(false);
+  const [pendingDeleteRecordId, setPendingDeleteRecordId] = useState<string | null>(null);
+  const [actionToast, setActionToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Field Builder state (for adding new field)
   const [newFieldLabel, setNewFieldLabel] = useState('');
@@ -88,34 +101,58 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
-  if (!section) {
-    return (
-      <div className="p-12 bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 text-center space-y-4" dir="rtl">
-        <h3 className="text-base font-black text-slate-800 dark:text-white">هذا القسم المخصص غير متوفر أو تم حذفه من قبل المطور</h3>
-        <button
-          onClick={() => setActiveSection('dashboard')}
-          className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs cursor-pointer shadow-sm flex items-center gap-2 mx-auto"
-        >
-          <ArrowRight className="w-4 h-4" />
-          <span>العودة للشاشة الرئيسية</span>
-        </button>
-      </div>
-    );
-  }
+  // Reset sub-section when switching between custom sections
+  useEffect(() => {
+    setActiveSubSectionId(null);
+    setActiveTab('dashboard');
+    setSearchQuery('');
+  }, [section?.id]);
 
-  // Filter records belonging to this section
+  const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+    setActionToast({ type, text });
+    setTimeout(() => setActionToast(null), 3500);
+  };
+
+  const isMultiHub = Boolean(
+    section?.isMultiSectionHub && section.subSections && section.subSections.length > 0
+  );
+  const activeSub: CustomSubSection | undefined = useMemo(() => {
+    if (!section || !activeSubSectionId) return undefined;
+    return (section.subSections || []).find((sub) => sub.id === activeSubSectionId);
+  }, [section, activeSubSectionId]);
+
+  const isHubMode = isMultiHub && !activeSub;
+
+  const effectiveSectionId = useMemo(() => {
+    if (!section) return '';
+    return activeSub ? `${section.id}__${activeSub.id}` : section.id;
+  }, [section, activeSub]);
+
+  const effectiveTitle = activeSub ? activeSub.title : section?.title || '';
+  const effectiveDescription = activeSub
+    ? activeSub.description || section?.description
+    : section?.description;
+  const effectiveFields: CustomFieldDefinition[] = useMemo(() => {
+    if (!section) return [];
+    return activeSub ? activeSub.fields || [] : section.fields || [];
+  }, [section, activeSub]);
+  const effectiveIconUrl = activeSub?.iconUrl || section?.iconUrl;
+
+  // Filter records belonging to this section (or active sub-section)
   const sectionRecords = useMemo(() => {
-    return customRecords.filter(r => r.sectionId === section.id);
-  }, [customRecords, section.id]);
+    if (!effectiveSectionId) return [];
+    return customRecords.filter((r) => r.sectionId === effectiveSectionId);
+  }, [customRecords, effectiveSectionId]);
 
   // Search filter
   const filteredRecords = useMemo(() => {
     if (!searchQuery.trim()) return sectionRecords;
     const q = searchQuery.toLowerCase();
-    return sectionRecords.filter(record => 
-      Object.values(record.data || {}).some(val => 
-        typeof val === 'string' && val.toLowerCase().includes(q)
-      ) || (record.createdBy && record.createdBy.toLowerCase().includes(q))
+    return sectionRecords.filter(
+      (record) =>
+        Object.values(record.data || {}).some(
+          (val) => typeof val === 'string' && val.toLowerCase().includes(q)
+        ) || (record.createdBy && record.createdBy.toLowerCase().includes(q))
     );
   }, [sectionRecords, searchQuery]);
 
@@ -123,20 +160,20 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
   const stats = useMemo(() => {
     const total = sectionRecords.length;
     const todayStr = new Date().toLocaleDateString('ar-IQ');
-    const todayCount = sectionRecords.filter(r => r.createdAt && r.createdAt.includes(todayStr)).length;
-    
-    // Count records with images
-    const imageFieldIds = section.fields.filter(f => f.type === 'image').map(f => f.id);
-    const withImagesCount = sectionRecords.filter(r => 
-      imageFieldIds.some(fId => Boolean(r.data?.[fId]))
+    const todayCount = sectionRecords.filter(
+      (r) => r.createdAt && r.createdAt.includes(todayStr)
     ).length;
 
-    // First dropdown field breakdown
-    const firstDropdownField = section.fields.find(f => f.type === 'dropdown');
+    const imageFieldIds = effectiveFields.filter((f) => f.type === 'image').map((f) => f.id);
+    const withImagesCount = sectionRecords.filter((r) =>
+      imageFieldIds.some((fId) => Boolean(r.data?.[fId]))
+    ).length;
+
+    const firstDropdownField = effectiveFields.find((f) => f.type === 'dropdown');
     let breakdown: { name: string; count: number }[] = [];
     if (firstDropdownField) {
       const counts: Record<string, number> = {};
-      sectionRecords.forEach(r => {
+      sectionRecords.forEach((r) => {
         const val = r.data?.[firstDropdownField.id] || 'غير محدد';
         counts[val] = (counts[val] || 0) + 1;
       });
@@ -150,12 +187,183 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
       breakdown,
       firstDropdownLabel: firstDropdownField?.label || 'الفئات'
     };
-  }, [sectionRecords, section.fields]);
+  }, [sectionRecords, effectiveFields]);
+
+  // Sub-section tiles when viewing a Multi-Section Hub
+  const hubSubTiles: OfficeTileItem[] = useMemo(() => {
+    if (!section || !section.subSections) return [];
+    const palette = [
+      { color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800', badge: 'bg-amber-600 text-white' },
+      { color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800', badge: 'bg-blue-600 text-white' },
+      { color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800', badge: 'bg-emerald-600 text-white' },
+      { color: 'text-indigo-600 dark:text-indigo-400', bg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800', badge: 'bg-indigo-600 text-white' },
+      { color: 'text-purple-600 dark:text-purple-400', bg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800', badge: 'bg-purple-600 text-white' }
+    ];
+
+    return section.subSections.map((sub, idx) => {
+      const style = palette[idx % palette.length];
+      const subStorageKey = `${section.id}__${sub.id}`;
+      const count = customRecords.filter((r) => r.sectionId === subStorageKey).length;
+      return {
+        id: `sub_tile_${sub.id}`,
+        title: sub.title,
+        subtitle: sub.description || (sub.targetBuiltInSection ? 'انتقال مباشر إلى قسم مدمج' : 'قسم فرعي مستقل ببياناته وحقوله'),
+        icon: FolderKanban,
+        iconImgUrl: sub.iconUrl?.trim() || undefined,
+        iconColor: style.color,
+        iconBg: style.bg,
+        badge: sub.targetBuiltInSection ? 'قسم مدمج' : `${count} سجل`,
+        badgeColor: style.badge,
+        onClick: () => {
+          if (sub.targetBuiltInSection) {
+            setActiveSection(sub.targetBuiltInSection);
+          } else {
+            setActiveSubSectionId(sub.id);
+            setActiveTab('dashboard');
+          }
+        }
+      };
+    });
+  }, [section, customRecords, setActiveSection]);
+
+  if (!section) {
+    return (
+      <div
+        className="p-12 bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 text-center space-y-4"
+        dir="rtl"
+      >
+        <h3 className="text-base font-black text-slate-800 dark:text-white">
+          هذا القسم غير متوفر أو تم حذفه من قبل المطور
+        </h3>
+        <button
+          onClick={() => setActiveSection('dashboard')}
+          className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs cursor-pointer shadow-sm flex items-center gap-2 mx-auto"
+        >
+          <ArrowRight className="w-4 h-4" />
+          <span>العودة للشاشة الرئيسية</span>
+        </button>
+      </div>
+    );
+  }
+
+  const renderSectionIcon = (size: 'lg' | 'sm' = 'lg') => {
+    if (effectiveIconUrl) {
+      return (
+        <img
+          src={effectiveIconUrl}
+          alt={effectiveTitle}
+          className="w-full h-full object-cover rounded-xl"
+        />
+      );
+    }
+    if (isSocialCare || section.icon === 'HeartHandshake') {
+      return <HeartHandshake className={size === 'lg' ? 'w-7 h-7' : 'w-4 h-4'} />;
+    }
+    const rawIcon = section.icon || '';
+    // Avoid rendering raw Lucide English identifiers as plain text
+    if (!rawIcon || /^[A-Za-z0-9_-]+$/.test(rawIcon)) {
+      return <Layers className={size === 'lg' ? 'w-7 h-7' : 'w-4 h-4'} />;
+    }
+    return <span>{rawIcon}</span>;
+  };
+
+  // Multi-Section Hub View (when developer created an icon containing multiple sub-sections)
+  if (isHubMode) {
+    return (
+      <div className="space-y-6 animate-in fade-in duration-300" dir="rtl">
+        <div className="p-6 rounded-3xl bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border border-slate-700/80 shadow-xl flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5 text-white">
+          <div className="flex items-center gap-4 flex-wrap">
+            <button
+              onClick={() => setActiveSection('dashboard')}
+              className="group px-4 py-2.5 rounded-2xl bg-slate-800/90 hover:bg-amber-500 hover:text-slate-950 text-amber-400 font-black text-xs border border-amber-500/30 shadow-lg transition-all cursor-pointer flex items-center gap-2 active:scale-95"
+            >
+              <ArrowRight className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
+              <span>رجوع للأقسام الرئيسية</span>
+            </button>
+
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center text-2xl font-black overflow-hidden">
+              {renderSectionIcon('lg')}
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2 text-xs text-amber-300 font-bold">
+                <span>أيقونة مجمّعة متعددة الأقسام</span>
+                <span className="text-slate-500">•</span>
+                <span className="font-mono tabular-nums text-slate-300">
+                  {section.subSections?.length || 0} أقسام فرعية
+                </span>
+              </div>
+              <h2 className="text-xl sm:text-2xl font-black mt-0.5 text-white">{section.title}</h2>
+              {section.description && (
+                <p className="text-xs text-slate-400 mt-1 max-w-2xl">{section.description}</p>
+              )}
+            </div>
+          </div>
+
+          {isDeveloper && (
+            <button
+              onClick={() => setActiveSection('master_admin')}
+              className="px-4 py-2.5 rounded-xl bg-indigo-600/25 hover:bg-indigo-600/40 text-indigo-200 border border-indigo-400/40 font-bold text-xs flex items-center gap-2 cursor-pointer"
+            >
+              <Settings2 className="w-4 h-4" />
+              <span>تعديل أو إضافة أقسام فرعية (لوحة المطور)</span>
+            </button>
+          )}
+        </div>
+
+        <OfficeIconTilesGrid
+          title={`الأقسام الفرعية داخل ${section.title}`}
+          subtitle="اختر أي قسم فرعي للدخول الفوري إلى لوحته وسجلاته المستقلة"
+          columns={4}
+          items={hubSubTiles}
+        />
+      </div>
+    );
+  }
+
+  // Persist a newly added dropdown value permanently into section/subSection schema (syncs to Firestore + Google Sheets)
+  const handleAddDropdownOptionToSchema = (fieldId: string, newVal: string) => {
+    const clean = newVal.trim();
+    if (!clean) return;
+
+    if (activeSub && section.subSections) {
+      const updatedSubs = section.subSections.map((sub) => {
+        if (sub.id !== activeSub.id) return sub;
+        return {
+          ...sub,
+          fields: (sub.fields || []).map((f) => {
+            if (f.id !== fieldId) return f;
+            const existing = f.options || [];
+            if (existing.includes(clean)) return f;
+            return { ...f, options: [...existing, clean] };
+          })
+        };
+      });
+      updateCustomSection({
+        ...section,
+        subSections: updatedSubs,
+        updatedAt: new Date().toISOString()
+      });
+    } else {
+      const updatedFields = section.fields.map((f) => {
+        if (f.id !== fieldId) return f;
+        const existing = f.options || [];
+        if (existing.includes(clean)) return f;
+        return { ...f, options: [...existing, clean] };
+      });
+      updateCustomSection({
+        ...section,
+        fields: updatedFields,
+        updatedAt: new Date().toISOString()
+      });
+    }
+    showToast(`تمت إضافة "${clean}" وتثبيته دائماً في القائمة`);
+  };
 
   const handleOpenAdd = () => {
     const initial: Record<string, any> = {};
-    section.fields.forEach(f => {
-      initial[f.id] = f.type === 'number' ? '' : '';
+    effectiveFields.forEach((f) => {
+      initial[f.id] = '';
     });
     setFormData(initial);
     setFormErrors({});
@@ -175,14 +383,14 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
     if (!file) return;
 
     if (file.size > 3 * 1024 * 1024) {
-      alert('حجم الصورة كبير جداً، يرجى اختيار صورة أصغر من 3 ميغابايت');
+      showToast('حجم الصورة كبير جداً، يرجى اختيار صورة أصغر من 3 ميغابايت', 'error');
       return;
     }
 
     const reader = new FileReader();
     reader.onload = (event) => {
       const base64 = event.target?.result as string;
-      setFormData(prev => ({
+      setFormData((prev) => ({
         ...prev,
         [fieldId]: base64
       }));
@@ -194,7 +402,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
     e.preventDefault();
     const errors: Record<string, string> = {};
 
-    section.fields.forEach(f => {
+    effectiveFields.forEach((f) => {
       if (f.required && (!formData[f.id] || String(formData[f.id]).trim() === '')) {
         errors[f.id] = `حقل "${f.label}" مطلوب`;
       }
@@ -211,33 +419,39 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
         data: formData,
         updatedAt: new Date().toISOString()
       });
+      showToast('تم تحديث السجل وحفظه في قاعدة البيانات بنجاح');
     } else {
       addCustomRecord({
-        sectionId: section.id,
+        sectionId: effectiveSectionId,
         data: formData,
         createdBy: currentUser?.FullName || 'موظف النظام'
       });
+      showToast('تم تسجيل القيد الجديد ومزامنته سحابياً بنجاح');
     }
 
     setShowAddModal(false);
     setFormData({});
   };
 
-  const handleDelete = (id: string) => {
-    if (window.confirm('هل أنت متأكد من رغبتك بحذف هذا السجل نهائياً؟')) {
-      deleteCustomRecord(id);
-    }
+  const handleConfirmDelete = (id: string) => {
+    deleteCustomRecord(id);
+    setPendingDeleteRecordId(null);
+    showToast('تم حذف السجل بنجاح');
   };
 
-  // Add new field to this section schema
+  // Add new field to this section or active sub-section schema
   const handleAddNewField = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newFieldLabel.trim()) return;
 
     const newFieldId = `f_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
-    const parsedOptions = newFieldType === 'dropdown' 
-      ? newFieldOptionsRaw.split(',').map(o => o.trim()).filter(Boolean)
-      : undefined;
+    const parsedOptions =
+      newFieldType === 'dropdown'
+        ? newFieldOptionsRaw
+            .split(',')
+            .map((o) => o.trim())
+            .filter(Boolean)
+        : undefined;
 
     const newField: CustomFieldDefinition = {
       id: newFieldId,
@@ -249,39 +463,62 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
       options: parsedOptions
     };
 
-    const updatedSection: CustomSection = {
-      ...section,
-      fields: [...section.fields, newField],
-      updatedAt: new Date().toISOString()
-    };
+    if (activeSub && section.subSections) {
+      const updatedSubs = section.subSections.map((sub) =>
+        sub.id === activeSub.id ? { ...sub, fields: [...(sub.fields || []), newField] } : sub
+      );
+      updateCustomSection({
+        ...section,
+        subSections: updatedSubs,
+        updatedAt: new Date().toISOString()
+      });
+    } else {
+      updateCustomSection({
+        ...section,
+        fields: [...section.fields, newField],
+        updatedAt: new Date().toISOString()
+      });
+    }
 
-    updateCustomSection(updatedSection);
     setNewFieldLabel('');
     setNewFieldPlaceholder('');
     setNewFieldOptionsRaw('');
     setNewFieldRequired(false);
     setShowFieldBuilderModal(false);
+    showToast(`تمت إضافة الحقل "${newField.label}" ومزامنته تلقائياً`);
   };
 
-  // Delete field from this section schema
+  // Delete field from this section or active sub-section schema
   const handleDeleteField = (fieldId: string, fieldLabel: string) => {
-    if (section.fields.length <= 1) {
-      alert('يجب الإبقاء على حقل واحد على الأقل في هذا القسم');
+    if (effectiveFields.length <= 1) {
+      showToast('يجب الإبقاء على حقل واحد على الأقل في هذا القسم', 'error');
       return;
     }
-    if (window.confirm(`هل أنت متأكد من حذف الحقل "${fieldLabel}"؟ لن تظهر بيانات هذا الحقل في السجلات الجديدة.`)) {
-      const updatedSection: CustomSection = {
+
+    if (activeSub && section.subSections) {
+      const updatedSubs = section.subSections.map((sub) =>
+        sub.id === activeSub.id
+          ? { ...sub, fields: (sub.fields || []).filter((f) => f.id !== fieldId) }
+          : sub
+      );
+      updateCustomSection({
         ...section,
-        fields: section.fields.filter(f => f.id !== fieldId),
+        subSections: updatedSubs,
         updatedAt: new Date().toISOString()
-      };
-      updateCustomSection(updatedSection);
+      });
+    } else {
+      updateCustomSection({
+        ...section,
+        fields: section.fields.filter((f) => f.id !== fieldId),
+        updatedAt: new Date().toISOString()
+      });
     }
+    showToast(`تم حذف الحقل "${fieldLabel}" من نموذج القسم`);
   };
 
   const exportToExcel = () => {
     if (sectionRecords.length === 0) {
-      alert('لا توجد سجلات لتصديرها');
+      showToast('لا توجد سجلات لتصديرها حالياً', 'error');
       return;
     }
 
@@ -291,7 +528,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
         'تاريخ الإدخال': r.createdAt,
         'مسؤول الإدخال': r.createdBy || '-'
       };
-      section.fields.forEach(f => {
+      effectiveFields.forEach((f) => {
         if (f.type !== 'image') {
           rowObj[f.label] = r.data[f.id] || '-';
         } else {
@@ -303,69 +540,116 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
 
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, section.title.slice(0, 30));
-    XLSX.writeFile(workbook, `${section.title}_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.utils.book_append_sheet(workbook, worksheet, effectiveTitle.slice(0, 30));
+    XLSX.writeFile(
+      workbook,
+      `${effectiveTitle}_${new Date().toISOString().split('T')[0]}.xlsx`
+    );
   };
 
   const handlePrintReport = () => {
     window.print();
   };
 
-  // Button styling based on uiCustomizations
-  const btnSizeClass = systemSettings.uiCustomizations?.buttonSize === 'large' 
-    ? 'h-11 px-5 text-sm' 
-    : systemSettings.uiCustomizations?.buttonSize === 'compact' 
-      ? 'h-8 px-3 text-xs' 
-      : 'h-9 px-4 text-xs';
+  const btnSizeClass =
+    systemSettings.uiCustomizations?.buttonSize === 'large'
+      ? 'h-11 px-5 text-sm'
+      : systemSettings.uiCustomizations?.buttonSize === 'compact'
+        ? 'h-8 px-3 text-xs'
+        : 'h-9 px-4 text-xs';
 
-  const inputSizeClass = systemSettings.uiCustomizations?.inputFieldSize === 'large'
-    ? 'py-3 text-sm'
-    : systemSettings.uiCustomizations?.inputFieldSize === 'compact'
-      ? 'py-1.5 text-xs'
-      : 'py-2 text-xs';
+  const inputSizeClass =
+    systemSettings.uiCustomizations?.inputFieldSize === 'large'
+      ? 'py-3 text-sm'
+      : systemSettings.uiCustomizations?.inputFieldSize === 'compact'
+        ? 'py-1.5 text-xs'
+        : 'py-2 text-xs';
 
   const COLORS = ['#f59e0b', '#0ea5e9', '#10b981', '#8b5cf6', '#ec4899', '#f97316'];
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300" dir="rtl">
+      {/* Inline Non-Blocking Toast Feedback */}
+      {actionToast && (
+        <div
+          className={`p-3.5 rounded-2xl border text-xs font-bold flex items-center gap-2 shadow-sm ${
+            actionToast.type === 'error'
+              ? 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'
+              : 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+          }`}
+        >
+          {actionToast.type === 'error' ? (
+            <AlertCircle className="w-4 h-4 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+          )}
+          <span>{actionToast.text}</span>
+        </div>
+      )}
+
       {/* Top Isolated Department Header Banner */}
-      <div className="p-6 rounded-3xl bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border border-slate-700/80 shadow-2xl flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6 text-white">
-        
+      <div
+        className={`p-6 rounded-3xl border shadow-xl flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6 text-white ${
+          isSocialCare
+            ? 'bg-gradient-to-r from-[#071D1A] via-[#0B2C26] to-[#081A24] border-emerald-500/30'
+            : 'bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-slate-700/80'
+        }`}
+      >
         {/* Left Side: Back Button & Section Identity */}
         <div className="flex items-center gap-4 flex-wrap">
           <button
-            onClick={() => setActiveSection('dashboard')}
+            onClick={() => {
+              if (activeSub) {
+                setActiveSubSectionId(null);
+              } else {
+                setActiveSection('dashboard');
+              }
+            }}
             className="group px-4 py-2.5 rounded-2xl bg-slate-800/90 hover:bg-amber-500 hover:text-slate-950 text-amber-400 font-black text-xs border border-amber-500/30 shadow-lg transition-all cursor-pointer flex items-center gap-2 active:scale-95"
-            title="الرجوع إلى لوحة الأقسام والشاشة الرئيسية"
+            title={activeSub ? `الرجوع إلى ${section.title}` : 'الرجوع إلى لوحة الأقسام الرئيسية'}
           >
             <ArrowRight className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
-            <span>زر رجوع للأقسام الرئيسية</span>
+            <span>{activeSub ? `رجوع إلى ${section.title}` : 'رجوع للأقسام الرئيسية'}</span>
           </button>
 
-          <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center text-3xl font-black shadow-inner">
-            {section.icon || '📁'}
+          <div
+            className={`w-14 h-14 rounded-2xl border flex items-center justify-center text-2xl font-black shadow-inner overflow-hidden ${
+              isSocialCare
+                ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                : 'bg-amber-500/15 border-amber-500/30 text-amber-400'
+            }`}
+          >
+            {renderSectionIcon('lg')}
           </div>
 
           <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                <Sparkles className="w-3 h-3" />
-                <span>قسم إداري مستقل متكامل</span>
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span
+                className={`font-black ${
+                  isSocialCare ? 'text-emerald-300' : 'text-amber-300'
+                }`}
+              >
+                {isSocialCare
+                  ? 'قسم مستقل ومقيد بالصلاحية'
+                  : activeSub
+                    ? `قسم فرعي ضمن: ${section.title}`
+                    : 'قسم إداري مستقل متكامل'}
               </span>
-              <span className="text-xs text-slate-400 font-bold">
+              <span className="text-slate-500">|</span>
+              <span className="text-slate-300 font-mono tabular-nums font-bold">
                 {sectionRecords.length} سجل مقيد
               </span>
-              <span className="text-xs text-slate-500">|</span>
-              <span className="text-xs text-slate-400">
-                {section.fields.length} حقل مخصص
+              <span className="text-slate-500">|</span>
+              <span className="text-slate-400 font-mono tabular-nums">
+                {effectiveFields.length} حقل
               </span>
             </div>
-            <h2 className="text-xl sm:text-2xl font-black mt-1 tracking-tight text-white flex items-center gap-2">
-              <span>{section.title}</span>
+            <h2 className="text-xl sm:text-2xl font-black mt-1 tracking-tight text-white">
+              {effectiveTitle}
             </h2>
-            {section.description && (
-              <p className="text-xs text-slate-400 mt-1 max-w-xl line-clamp-1">
-                {section.description}
+            {effectiveDescription && (
+              <p className="text-xs text-slate-300/80 mt-1 max-w-xl line-clamp-1">
+                {effectiveDescription}
               </p>
             )}
           </div>
@@ -380,7 +664,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               title="تعديل، إضافة أو حذف حقول هذا القسم بدون كود"
             >
               <Settings2 className="w-4 h-4 text-indigo-400" />
-              <span>إدارة حقول القسم</span>
+              <span>إدارة الحقول</span>
             </button>
           )}
 
@@ -412,7 +696,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
         </div>
       </div>
 
-      {/* Department Navigation Tabs (داش بورد واحصائيات / السجلات / معرض الصور) */}
+      {/* Department Navigation Tabs */}
       <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 max-w-xl">
         <button
           onClick={() => setActiveTab('dashboard')}
@@ -435,7 +719,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
           }`}
         >
           <TableIcon className="w-4 h-4" />
-          <span>سجل البيانات والبحث ({sectionRecords.length})</span>
+          <span className="font-mono tabular-nums">السجلات ({sectionRecords.length})</span>
         </button>
 
         <button
@@ -451,16 +735,15 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
         </button>
       </div>
 
-      {/* TAB 1: Department Dashboard & Statistics (داش بورد واحصائيات) */}
+      {/* TAB 1: Department Dashboard & Statistics */}
       {activeTab === 'dashboard' && (
         <div className="space-y-6">
-          {/* Action Icons Grid inside the Department */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <button
               onClick={handleOpenAdd}
               className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm hover:border-amber-500/60 hover:shadow-lg transition-all text-right group cursor-pointer"
             >
-              <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
                 <Plus className="w-6 h-6" />
               </div>
               <h4 className="text-sm font-black text-slate-900 dark:text-white">تسجيل جديد</h4>
@@ -471,7 +754,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               onClick={() => setActiveTab('records')}
               className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm hover:border-sky-500/60 hover:shadow-lg transition-all text-right group cursor-pointer"
             >
-              <div className="w-12 h-12 rounded-2xl bg-sky-500/10 text-sky-500 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+              <div className="w-12 h-12 rounded-2xl bg-sky-500/10 text-sky-500 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
                 <Search className="w-6 h-6" />
               </div>
               <h4 className="text-sm font-black text-slate-900 dark:text-white">بحث واستعلام</h4>
@@ -482,11 +765,13 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               onClick={() => setActiveTab('gallery')}
               className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm hover:border-emerald-500/60 hover:shadow-lg transition-all text-right group cursor-pointer"
             >
-              <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
                 <ImageIcon className="w-6 h-6" />
               </div>
               <h4 className="text-sm font-black text-slate-900 dark:text-white">الصور والوثائق</h4>
-              <p className="text-[11px] text-slate-500 mt-1">{stats.withImagesCount} مستند محفوظ</p>
+              <p className="text-[11px] text-slate-500 mt-1 font-mono tabular-nums">
+                {stats.withImagesCount} مستند محفوظ
+              </p>
             </button>
 
             {isAuthorizedToEditSchema && (
@@ -494,11 +779,11 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                 onClick={() => setShowFieldBuilderModal(true)}
                 className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm hover:border-indigo-500/60 hover:shadow-lg transition-all text-right group cursor-pointer"
               >
-                <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
                   <Sliders className="w-6 h-6" />
                 </div>
                 <h4 className="text-sm font-black text-slate-900 dark:text-white">تخصيص الحقول</h4>
-                <p className="text-[11px] text-slate-500 mt-1">إضافة/حذف حقول بدون كود</p>
+                <p className="text-[11px] text-slate-500 mt-1">إضافة أو تعديل حقول القسم</p>
               </button>
             )}
           </div>
@@ -508,16 +793,16 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
             <div className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-500">إجمالي السجلات المقيدة</span>
-                <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center font-bold">
-                  {section.icon || '📁'}
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center font-bold overflow-hidden">
+                  {renderSectionIcon('sm')}
                 </div>
               </div>
-              <div className="text-2xl font-black text-slate-900 dark:text-white mt-2">
+              <div className="text-2xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-2">
                 {stats.total}
               </div>
               <div className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>محفوظة مباشرة بقاعدة البيانات</span>
+                <span>محفوظة ومزامنة سحابياً</span>
               </div>
             </div>
 
@@ -528,12 +813,10 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                   <Clock className="w-4 h-4" />
                 </div>
               </div>
-              <div className="text-2xl font-black text-slate-900 dark:text-white mt-2">
+              <div className="text-2xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-2">
                 {stats.todayCount}
               </div>
-              <div className="text-[11px] text-slate-500 mt-1">
-                مدخلات اليوم في قسم {section.title}
-              </div>
+              <div className="text-[11px] text-slate-500 mt-1">مدخلات اليوم في {effectiveTitle}</div>
             </div>
 
             <div className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -543,12 +826,10 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                   <ImageIcon className="w-4 h-4" />
                 </div>
               </div>
-              <div className="text-2xl font-black text-slate-900 dark:text-white mt-2">
+              <div className="text-2xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-2">
                 {stats.withImagesCount}
               </div>
-              <div className="text-[11px] text-slate-500 mt-1">
-                معاملات تتضمن صوراً أو وثائق
-              </div>
+              <div className="text-[11px] text-slate-500 mt-1">معاملات تتضمن صوراً أو وثائق</div>
             </div>
 
             <div className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -558,18 +839,15 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                   <Sliders className="w-4 h-4" />
                 </div>
               </div>
-              <div className="text-2xl font-black text-slate-900 dark:text-white mt-2">
-                {section.fields.length}
+              <div className="text-2xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-2">
+                {effectiveFields.length}
               </div>
-              <div className="text-[11px] text-slate-500 mt-1">
-                قابلة للتوسعة والإضافة في أي وقت
-              </div>
+              <div className="text-[11px] text-slate-500 mt-1">تُزامن تلقائياً مع Sheets و Firestore</div>
             </div>
           </div>
 
-          {/* Interactive Visual Statistics Charts */}
+          {/* Interactive Visual Statistics Charts & Schema Overview */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Chart 1: Breakdown by Status / Dropdown Field */}
             <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <div>
@@ -605,15 +883,16 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               )}
             </div>
 
-            {/* Quick Schema Overview for this Section */}
             <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <div>
                     <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                      مخطط حقول القسم الحالي ({section.fields.length} حقول)
+                      مخطط حقول القسم الحالي ({effectiveFields.length} حقول)
                     </h4>
-                    <p className="text-[11px] text-slate-500">الحقول النشطة التي يملأها الموظف عند التسجيل</p>
+                    <p className="text-[11px] text-slate-500">
+                      الحقول النشطة التي يملأها الموظف عند التسجيل
+                    </p>
                   </div>
                   {isAuthorizedToEditSchema && (
                     <button
@@ -627,10 +906,10 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                 </div>
 
                 <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-52 overflow-y-auto pr-1">
-                  {section.fields.map(f => (
+                  {effectiveFields.map((f) => (
                     <div key={f.id} className="py-2 flex items-center justify-between text-xs">
                       <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-amber-500" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                         <span className="font-bold text-slate-800 dark:text-slate-200">{f.label}</span>
                         {f.required && (
                           <span className="text-[10px] text-rose-500 font-bold">(إلزامي)</span>
@@ -640,7 +919,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                         <span className="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-[10px] font-mono text-slate-500">
                           {f.type === 'text' && 'نص'}
                           {f.type === 'number' && 'رقم'}
-                          {f.type === 'dropdown' && 'قائمة خيارات'}
+                          {f.type === 'dropdown' && 'قائمة منسدلة'}
                           {f.type === 'image' && 'صورة / مستند'}
                           {f.type === 'date' && 'تاريخ'}
                           {f.type === 'textarea' && 'ملاحظات مطولة'}
@@ -649,7 +928,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                         {isAuthorizedToEditSchema && (
                           <button
                             onClick={() => handleDeleteField(f.id, f.label)}
-                            className="text-slate-400 hover:text-rose-500 transition-colors p-1"
+                            className="text-slate-400 hover:text-rose-500 transition-colors p-1 cursor-pointer"
                             title="حذف هذا الحقل من القسم"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -662,8 +941,8 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               </div>
 
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-500">
-                <span>يتم حفظ جميع التغييرات في الحقول مباشرة بقاعدة البيانات</span>
-                <span className="text-amber-500 font-bold">بدون الحاجة لأي كود برمجي</span>
+                <span>يتم حفظ جميع التغييرات تلقائياً في Firestore و Google Sheets</span>
+                <span className="text-amber-500 font-bold">مزامنة فورية</span>
               </div>
             </div>
           </div>
@@ -673,7 +952,6 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
       {/* TAB 2: Records Table & Search */}
       {activeTab === 'records' && (
         <div className="space-y-4">
-          {/* Search Bar */}
           <div className="flex items-center justify-between gap-4 p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex-wrap">
             <div className="relative flex-1 min-w-[260px]">
               <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -687,7 +965,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
             </div>
 
             <div className="flex items-center gap-3">
-              <span className="text-xs font-bold text-slate-500">
+              <span className="text-xs font-bold text-slate-500 font-mono tabular-nums">
                 عرض {filteredRecords.length} من أصل {sectionRecords.length}
               </span>
               <button
@@ -700,15 +978,14 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
             </div>
           </div>
 
-          {/* Records Table */}
           <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
             {filteredRecords.length === 0 ? (
               <div className="py-16 text-center space-y-3">
-                <div className="w-16 h-16 mx-auto rounded-3xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 text-2xl">
-                  {section.icon || '📂'}
+                <div className="w-16 h-16 mx-auto rounded-3xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 text-2xl overflow-hidden">
+                  {renderSectionIcon('lg')}
                 </div>
                 <h4 className="text-sm font-bold text-slate-700 dark:text-slate-300">
-                  لا توجد سجلات مسجلة في قسم {section.title} حتى الآن
+                  لا توجد سجلات مسجلة في {effectiveTitle} حتى الآن
                 </h4>
                 <p className="text-xs text-slate-400 max-w-sm mx-auto">
                   اضغط على زر &quot;إضافة سجل جديد&quot; للبدء بإدخال البيانات مع الصور والمرفقات والقوائم المنسدلة.
@@ -727,27 +1004,27 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                   <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 font-black">
                     <tr>
                       <th className="p-3.5 text-center w-12">#</th>
-                      {section.fields.map(f => (
+                      {effectiveFields.map((f) => (
                         <th key={f.id} className="p-3.5 whitespace-nowrap">
                           {f.label}
                         </th>
                       ))}
                       <th className="p-3.5 whitespace-nowrap">تاريخ الإدخال</th>
                       <th className="p-3.5 whitespace-nowrap">بواسطة</th>
-                      <th className="p-3.5 text-center w-24">الإجراءات</th>
+                      <th className="p-3.5 text-center w-28">الإجراءات</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {filteredRecords.map((record, index) => (
-                      <tr 
+                      <tr
                         key={record.id}
                         className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors text-slate-800 dark:text-slate-200"
                       >
-                        <td className="p-3.5 text-center font-mono text-slate-400">
+                        <td className="p-3.5 text-center font-mono tabular-nums text-slate-400">
                           {index + 1}
                         </td>
 
-                        {section.fields.map(field => {
+                        {effectiveFields.map((field) => {
                           const val = record.data?.[field.id];
 
                           if (field.type === 'image') {
@@ -760,7 +1037,11 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                                     className="group relative w-10 h-10 rounded-xl overflow-hidden border border-slate-300 dark:border-slate-700 flex items-center justify-center bg-slate-100 dark:bg-slate-800 hover:scale-105 transition-transform cursor-pointer"
                                     title="عرض الصورة بالحجم الكامل"
                                   >
-                                    <img src={val} alt={field.label} className="w-full h-full object-cover" />
+                                    <img
+                                      src={val}
+                                      alt={field.label}
+                                      className="w-full h-full object-cover"
+                                    />
                                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-[10px]">
                                       <Eye className="w-3.5 h-3.5" />
                                     </div>
@@ -773,16 +1054,20 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                           }
 
                           return (
-                            <td key={field.id} className="p-3.5 font-medium whitespace-nowrap max-w-xs truncate">
-                              {val !== undefined && val !== null && String(val) !== '' 
-                                ? String(val) 
-                                : <span className="text-slate-400">-</span>
-                              }
+                            <td
+                              key={field.id}
+                              className="p-3.5 font-medium whitespace-nowrap max-w-xs truncate"
+                            >
+                              {val !== undefined && val !== null && String(val) !== '' ? (
+                                String(val)
+                              ) : (
+                                <span className="text-slate-400">-</span>
+                              )}
                             </td>
                           );
                         })}
 
-                        <td className="p-3.5 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                        <td className="p-3.5 font-mono tabular-nums text-[11px] text-slate-500 whitespace-nowrap">
                           {record.createdAt}
                         </td>
 
@@ -791,24 +1076,43 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                         </td>
 
                         <td className="p-3.5">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEdit(record)}
-                              className="w-7 h-7 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 hover:bg-blue-100 flex items-center justify-center transition-colors cursor-pointer"
-                              title="تعديل السجل"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(record.id)}
-                              className="w-7 h-7 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 hover:bg-rose-100 flex items-center justify-center transition-colors cursor-pointer"
-                              title="حذف السجل"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                          {pendingDeleteRecordId === record.id ? (
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handleConfirmDelete(record.id)}
+                                className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-black cursor-pointer"
+                              >
+                                تأكيد
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPendingDeleteRecordId(null)}
+                                className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-[10px] font-bold cursor-pointer"
+                              >
+                                إلغاء
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEdit(record)}
+                                className="w-7 h-7 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 hover:bg-blue-100 flex items-center justify-center transition-colors cursor-pointer"
+                                title="تعديل السجل"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPendingDeleteRecordId(record.id)}
+                                className="w-7 h-7 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 hover:bg-rose-100 flex items-center justify-center transition-colors cursor-pointer"
+                                title="حذف السجل"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -820,12 +1124,12 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
         </div>
       )}
 
-      {/* TAB 3: Photo & Document Gallery (معرض الصور والمرفقات) */}
+      {/* TAB 3: Photo & Document Gallery */}
       {activeTab === 'gallery' && (
         <div className="space-y-4">
           <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
             <h4 className="text-sm font-black text-slate-900 dark:text-white mb-2">
-              معرض المستندات والوثائق والصور المرفقة بقسم {section.title}
+              معرض المستندات والوثائق والصور المرفقة بقسم {effectiveTitle}
             </h4>
             <p className="text-xs text-slate-500 mb-6">
               استعراض كافة الصور والمستندات المحفوظة مع إمكانية التكبير والمعاينة الفورية
@@ -838,8 +1142,10 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                {sectionRecords.map(record => {
-                  const imageField = section.fields.find(f => f.type === 'image' && Boolean(record.data?.[f.id]));
+                {sectionRecords.map((record) => {
+                  const imageField = effectiveFields.find(
+                    (f) => f.type === 'image' && Boolean(record.data?.[f.id])
+                  );
                   if (!imageField) return null;
                   const imgUrl = record.data[imageField.id];
 
@@ -851,8 +1157,12 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                     >
                       <img src={imgUrl} alt="Attached" className="w-full h-full object-cover" />
                       <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex flex-col justify-end p-2 transition-opacity text-white text-[10px]">
-                        <span className="font-bold truncate">{record.data[section.fields[0]?.id] || 'سجل'}</span>
-                        <span className="text-[9px] text-slate-300 font-mono">{record.createdAt}</span>
+                        <span className="font-bold truncate">
+                          {record.data[effectiveFields[0]?.id] || 'سجل'}
+                        </span>
+                        <span className="text-[9px] text-slate-300 font-mono">
+                          {record.createdAt}
+                        </span>
                       </div>
                     </div>
                   );
@@ -865,9 +1175,11 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
 
       {/* Add / Edit Record Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in" dir="rtl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in"
+          dir="rtl"
+        >
           <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto">
-            {/* Modal Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center font-bold">
@@ -875,10 +1187,12 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                 </div>
                 <div>
                   <h3 className="text-base font-black text-slate-900 dark:text-white">
-                    {editingRecord ? `تعديل سجل في ${section.title}` : `إضافة سجل جديد إلى ${section.title}`}
+                    {editingRecord
+                      ? `تعديل سجل في ${effectiveTitle}`
+                      : `إضافة سجل جديد إلى ${effectiveTitle}`}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    املأ الحقول التالية مع إمكانية رفع الصور والمرفقات
+                    املأ الحقول التالية — يمكنك إضافة خيارات جديدة لأي قائمة منسدلة وتثبيتها مباشرة
                   </p>
                 </div>
               </div>
@@ -891,10 +1205,9 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               </button>
             </div>
 
-            {/* Dynamic Form */}
             <form onSubmit={handleSave} className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {section.fields.map(field => {
+                {effectiveFields.map((field) => {
                   const error = formErrors[field.id];
 
                   if (field.type === 'dropdown') {
@@ -904,18 +1217,16 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                         <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
                           {field.label} {field.required && <span className="text-rose-500">*</span>}
                         </label>
-                        <select
+                        <SearchableSelect
                           value={formData[field.id] || ''}
-                          onChange={(e) => setFormData({ ...formData, [field.id]: e.target.value })}
-                          className={`w-full px-3.5 bg-slate-50 dark:bg-slate-800/90 border rounded-xl text-slate-900 dark:text-white text-xs focus:outline-none focus:border-amber-500 ${inputSizeClass} ${
-                            error ? 'border-rose-500' : 'border-slate-300 dark:border-slate-700'
-                          }`}
-                        >
-                          <option value="">-- اختر من القائمة --</option>
-                          {options.map((opt, i) => (
-                            <option key={i} value={opt}>{opt}</option>
-                          ))}
-                        </select>
+                          onChange={(val) => setFormData({ ...formData, [field.id]: val })}
+                          options={options}
+                          placeholder={field.placeholder || `اختر أو أضف ${field.label}...`}
+                          allowCustom={true}
+                          persistKey={`custom_${effectiveSectionId}_${field.id}`}
+                          onAddOption={(newVal) => handleAddDropdownOptionToSchema(field.id, newVal)}
+                          className={error ? 'ring-1 ring-rose-500 rounded-xl' : ''}
+                        />
                         {error && <p className="text-[11px] text-rose-500 font-bold">{error}</p>}
                       </div>
                     );
@@ -924,18 +1235,28 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                   if (field.type === 'image') {
                     const imgVal = formData[field.id];
                     return (
-                      <div key={field.id} className="sm:col-span-2 space-y-1.5 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700">
+                      <div
+                        key={field.id}
+                        className="sm:col-span-2 space-y-1.5 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700"
+                      >
                         <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                          {field.label} (أيقونة رفع وحفظ الصور والمستندات) {field.required && <span className="text-rose-500">*</span>}
+                          {field.label} (رفع وحفظ الصور والمستندات){' '}
+                          {field.required && <span className="text-rose-500">*</span>}
                         </label>
-                        
+
                         <div className="flex items-center gap-4">
                           {imgVal ? (
                             <div className="relative w-24 h-24 rounded-2xl overflow-hidden border-2 border-amber-500 shadow-md">
-                              <img src={imgVal} alt="Uploaded" className="w-full h-full object-cover" />
+                              <img
+                                src={imgVal}
+                                alt="Uploaded"
+                                className="w-full h-full object-cover"
+                              />
                               <button
                                 type="button"
-                                onClick={() => setFormData(prev => ({ ...prev, [field.id]: '' }))}
+                                onClick={() =>
+                                  setFormData((prev) => ({ ...prev, [field.id]: '' }))
+                                }
                                 className="absolute top-1 right-1 w-6 h-6 rounded-full bg-rose-600 text-white flex items-center justify-center text-xs cursor-pointer shadow-md"
                                 title="إلغاء الصورة"
                               >
@@ -952,7 +1273,9 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                           <div className="flex-1 space-y-2">
                             <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs cursor-pointer transition-all shadow-sm">
                               <Upload className="w-4 h-4" />
-                              <span>{imgVal ? 'استبدال الصورة' : 'رفع صورة من الجهاز أو الكاميرا'}</span>
+                              <span>
+                                {imgVal ? 'استبدال الصورة' : 'رفع صورة من الجهاز أو الكاميرا'}
+                              </span>
                               <input
                                 type="file"
                                 accept="image/*"
@@ -979,7 +1302,9 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                         <textarea
                           rows={3}
                           value={formData[field.id] || ''}
-                          onChange={(e) => setFormData({ ...formData, [field.id]: e.target.value })}
+                          onChange={(e) =>
+                            setFormData({ ...formData, [field.id]: e.target.value })
+                          }
                           placeholder={field.placeholder || `أدخل ${field.label}...`}
                           className={`w-full px-3.5 bg-slate-50 dark:bg-slate-800/90 border rounded-xl text-slate-900 dark:text-white text-xs focus:outline-none focus:border-amber-500 py-2 ${
                             error ? 'border-rose-500' : 'border-slate-300 dark:border-slate-700'
@@ -996,9 +1321,17 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                         {field.label} {field.required && <span className="text-rose-500">*</span>}
                       </label>
                       <input
-                        type={field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'}
+                        type={
+                          field.type === 'number'
+                            ? 'number'
+                            : field.type === 'date'
+                              ? 'date'
+                              : 'text'
+                        }
                         value={formData[field.id] || ''}
-                        onChange={(e) => setFormData({ ...formData, [field.id]: e.target.value })}
+                        onChange={(e) =>
+                          setFormData({ ...formData, [field.id]: e.target.value })
+                        }
                         placeholder={field.placeholder || `أدخل ${field.label}...`}
                         className={`w-full px-3.5 bg-slate-50 dark:bg-slate-800/90 border rounded-xl text-slate-900 dark:text-white text-xs focus:outline-none focus:border-amber-500 ${inputSizeClass} ${
                           error ? 'border-rose-500' : 'border-slate-300 dark:border-slate-700'
@@ -1010,7 +1343,6 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                 })}
               </div>
 
-              {/* Modal Actions */}
               <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-3">
                 <button
                   type="button"
@@ -1031,9 +1363,12 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
         </div>
       )}
 
-      {/* Field Designer & Schema Builder Modal (إضافة وحذف وإدراج حقول بدون كود) */}
+      {/* Field Designer & Schema Builder Modal */}
       {showFieldBuilderModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in" dir="rtl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in"
+          dir="rtl"
+        >
           <div className="w-full max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800">
               <div className="flex items-center gap-3">
@@ -1042,10 +1377,10 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                 </div>
                 <div>
                   <h3 className="text-base font-black text-slate-900 dark:text-white">
-                    تخصيص وإدارة حقول {section.title}
+                    تخصيص وإدارة حقول {effectiveTitle}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    أضف حقولاً جديدة أو احذف حقولاً موجودة ويتم حفظها مباشرة بقاعدة البيانات
+                    أضف حقولاً جديدة أو احذف حقولاً موجودة وتُحفظ وتُزامن تلقائياً مع Sheets و Firestore
                   </p>
                 </div>
               </div>
@@ -1058,18 +1393,19 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               </button>
             </div>
 
-            {/* Existing Fields List */}
             <div className="space-y-2">
               <h4 className="text-xs font-black text-slate-700 dark:text-slate-300">
-                الحقول الموجودة حالياً ({section.fields.length}):
+                الحقول الموجودة حالياً ({effectiveFields.length}):
               </h4>
               <div className="divide-y divide-slate-100 dark:divide-slate-800 rounded-2xl border border-slate-200 dark:border-slate-800 p-2 max-h-48 overflow-y-auto">
-                {section.fields.map(f => (
+                {effectiveFields.map((f) => (
                   <div key={f.id} className="py-2 px-2 flex items-center justify-between text-xs">
                     <div>
                       <span className="font-bold text-slate-900 dark:text-white">{f.label}</span>
                       <span className="mr-2 text-[10px] text-slate-500">({f.type})</span>
-                      {f.required && <span className="mr-2 text-[10px] text-rose-500 font-bold">*إلزامي</span>}
+                      {f.required && (
+                        <span className="mr-2 text-[10px] text-rose-500 font-bold">*إلزامي</span>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -1084,8 +1420,10 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
               </div>
             </div>
 
-            {/* Form to Add New Field */}
-            <form onSubmit={handleAddNewField} className="space-y-4 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <form
+              onSubmit={handleAddNewField}
+              className="space-y-4 pt-3 border-t border-slate-200 dark:border-slate-800"
+            >
               <h4 className="text-xs font-black text-amber-500 flex items-center gap-1.5">
                 <Plus className="w-4 h-4" />
                 <span>إدراج حقل جديد لهذا القسم</span>
@@ -1171,7 +1509,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
                 <button
                   type="button"
                   onClick={() => setShowFieldBuilderModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs"
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
                 >
                   إغلاق
                 </button>
@@ -1189,21 +1527,21 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({ section:
 
       {/* Full Image Preview Modal */}
       {viewingImage && (
-        <div 
+        <div
           onClick={() => setViewingImage(null)}
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md cursor-pointer animate-in fade-in"
         >
           <div className="relative max-w-3xl max-h-[85vh] overflow-hidden rounded-3xl bg-black border border-slate-800 shadow-2xl">
             <button
               onClick={() => setViewingImage(null)}
-              className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/20 text-white hover:bg-white/40 flex items-center justify-center text-sm font-bold z-10"
+              className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/20 text-white hover:bg-white/40 flex items-center justify-center text-sm font-bold z-10 cursor-pointer"
             >
               ✕
             </button>
-            <img 
-              src={viewingImage} 
-              alt="Full Preview" 
-              className="w-full h-full object-contain max-h-[85vh]" 
+            <img
+              src={viewingImage}
+              alt="Full Preview"
+              className="w-full h-full object-contain max-h-[85vh]"
             />
           </div>
         </div>

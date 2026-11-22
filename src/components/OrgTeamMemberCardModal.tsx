@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { OrgTeamMember } from '../types';
 import { X, Printer, UserCheck, ShieldCheck, MapPin, Phone, Calendar, Award } from 'lucide-react';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 
 interface OrgTeamMemberCardModalProps {
   isOpen: boolean;
@@ -18,7 +19,11 @@ export const OrgTeamMemberCardModal: React.FC<OrgTeamMemberCardModalProps> = ({
   if (!isOpen || !member) return null;
 
   const handlePrint = () => {
-    window.print();
+    if (cardRef.current) {
+      printElementIsolated(cardRef.current, { title: `بطاقة كادر تنظيمي - ${member.FullName}` });
+    } else {
+      window.print();
+    }
   };
 
   return (

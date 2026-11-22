@@ -31,6 +31,11 @@ import { SessionLoadingOverlay } from './components/SessionLoadingOverlay';
 import { MobileAppBottomNav } from './components/MobileAppBottomNav';
 import { AdminLogoutExportModal } from './components/AdminLogoutExportModal';
 import { playUiClickSound } from './utils/audio';
+import {
+  canUserAccessSection,
+  getHomeSectionForRole,
+  SOCIAL_CARE_LEGACY_CUSTOM_ID
+} from './utils/permissions';
 
 const MainAppLayout: React.FC = () => {
   const { 
@@ -48,7 +53,8 @@ const MainAppLayout: React.FC = () => {
     syncAllToFirestoreNow,
     isSessionLoading,
     sessionLoadingMessage,
-    systemSettings
+    systemSettings,
+    customSections
   } = useApp();
 
   const [isCloudSyncing, setIsCloudSyncing] = React.useState(false);
@@ -161,88 +167,81 @@ const MainAppLayout: React.FC = () => {
     }
   }, [departmentGreeting, setDepartmentGreeting]);
 
-  // Helper to determine the home workspace for each role
-  const getHomeSectionForRole = (role?: string): string => {
-    switch (role) {
-      case 'reception':
-      case 'reception_officer':
-        return 'reception';
-      case 'admin':
-      case 'admin_officer':
-        return 'admin';
-      case 'interviews_officer':
-        return 'interviews';
-      case 'organization':
-      case 'organization_officer':
-        return 'organization';
-      case 'machine':
-      case 'machine_officer':
-        return 'machine';
-      case 'audit':
-        return 'audit';
-      case 'archive':
-        return 'search_archive';
-      case 'developer':
-      case 'director':
-      case 'deputy':
-      default:
-        return 'dashboard';
-    }
-  };
+  // Developer Live Global Text Replacement Engine (applies anywhere in the UI safely)
+  React.useEffect(() => {
+    const rules = (systemSettings?.textReplacements || []).filter(
+      (r) => r.from && r.to && r.from.trim() !== '' && r.from !== r.to
+    );
+    if (rules.length === 0) return;
+
+    const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'CODE', 'PRE']);
+    let isApplying = false;
+
+    const applyToTree = () => {
+      if (isApplying || !document.body) return;
+      isApplying = true;
+      try {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node) {
+          const parentEl = node.parentElement;
+          if (
+            parentEl &&
+            !SKIP_TAGS.has(parentEl.tagName) &&
+            !parentEl.closest('[data-no-text-replace="true"]')
+          ) {
+            const currentText = node.nodeValue;
+            if (currentText && currentText.trim().length > 0) {
+              let nextText = currentText;
+              for (const rule of rules) {
+                if (nextText.includes(rule.from)) {
+                  nextText = nextText.split(rule.from).join(rule.to);
+                }
+              }
+              if (nextText !== currentText) {
+                node.nodeValue = nextText;
+              }
+            }
+          }
+          node = walker.nextNode();
+        }
+      } finally {
+        isApplying = false;
+      }
+    };
+
+    applyToTree();
+    let rafId: number | null = null;
+    const observer = new MutationObserver(() => {
+      if (isApplying) return;
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(applyToTree);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    return () => {
+      observer.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [systemSettings?.textReplacements, activeSection, isAuthenticated]);
 
   if (!isAuthenticated) {
     return <SplashLanding />;
   }
 
-  // RBAC Permission Guard
-  const canUserAccess = (section: string): boolean => {
-    if (!currentUser) return false;
-    const role = currentUser.Role;
-    if (role === 'developer' || role === 'director' || role === 'deputy') return true;
-
-    // Every department has access to its statistics dashboard
-    if (section === 'dashboard') return true;
-
-    // Allow custom dynamic sections created by the developer
-    if (section.startsWith('custom_section_')) return true;
-
-    switch (role) {
-      case 'reception':
-      case 'reception_officer':
-        return ['dashboard', 'reception', 'search_archive'].includes(section);
-      case 'admin':
-      case 'admin_officer':
-        return ['dashboard', 'admin', 'drive_requests', 'search_archive', 'reports', 'whatsapp', 'blacklist'].includes(section);
-      case 'interviews_officer':
-        return ['dashboard', 'interviews', 'search_archive', 'reports', 'whatsapp'].includes(section);
-      case 'organization':
-      case 'organization_officer':
-        return ['dashboard', 'organization', 'search_archive', 'reports', 'whatsapp'].includes(section);
-      case 'machine':
-      case 'machine_officer':
-        return ['dashboard', 'machine', 'search_archive', 'reports'].includes(section);
-      case 'audit':
-        return ['dashboard', 'audit', 'search_archive', 'reports', 'blacklist'].includes(section);
-      case 'archive':
-        return ['dashboard', 'search_archive', 'reports'].includes(section);
-      default:
-        return ['dashboard', 'search_archive', 'reports'].includes(section);
-    }
-  };
-
   const renderActiveModule = () => {
-    // If the employee is trying to access a section outside their department/role, redirect safely
-    if (!canUserAccess(activeSection)) {
+    // Strict centralized RBAC guard (including standalone Social Care & custom sections)
+    if (!canUserAccessSection(currentUser, activeSection, customSections)) {
       const homeSec = getHomeSectionForRole(currentUser?.Role);
       return (
-        <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center space-y-4 max-w-lg mx-auto shadow-xs">
-          <div className="w-12 h-12 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center mx-auto text-xl font-bold">
+        <div className="p-8 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-center space-y-4 max-w-lg mx-auto shadow-xs">
+          <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto text-xl font-bold">
             !
           </div>
           <div className="space-y-1">
-            <h3 className="text-base font-bold text-slate-900">هذا القسم غير متاح لصلاحية حسابك</h3>
-            <p className="text-xs text-slate-500">
-              أنت مسجل حالياً كـ ({currentUser?.RoleArabic}). يرجى استخدام الأقسام المخصصة لمهامك الإدارية أو التواصل مع المطور / المدير لمنحك الصلاحية.
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">هذا القسم غير متاح لصلاحية حسابك</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              أنت مسجل حالياً كـ ({currentUser?.RoleArabic}). يرجى استخدام الأقسام المخصصة لمهامك الإدارية أو التواصل مع المطور أو المدير التنفيذي لمنحك الصلاحية.
             </p>
           </div>
           <button
@@ -258,7 +257,7 @@ const MainAppLayout: React.FC = () => {
     // Dynamic Custom Sections created by developer
     if (activeSection.startsWith('custom_section_')) {
       const secId = activeSection.replace('custom_section_', '');
-      return <DynamicSectionView sectionId={secId} />;
+      return <DynamicSectionView sectionId={secId} isStandaloneSocialCare={secId === SOCIAL_CARE_LEGACY_CUSTOM_ID} />;
     }
 
     switch (activeSection) {
@@ -292,6 +291,8 @@ const MainAppLayout: React.FC = () => {
         return <AppsScriptSyncModule />;
       case 'blacklist':
         return <BlacklistModule />;
+      case 'social_care':
+        return <DynamicSectionView sectionId={SOCIAL_CARE_LEGACY_CUSTOM_ID} isStandaloneSocialCare={true} />;
       default:
         return <DashboardModule />;
     }
@@ -353,27 +354,30 @@ const MainAppLayout: React.FC = () => {
 
       {/* High-Density Executive Footer */}
       <footer className="no-print h-9 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 text-[11px] text-slate-500 dark:text-slate-400 font-medium z-10 transition-colors duration-200">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-          <span>منظومة مكتب النائب علا الناشي © {new Date().getFullYear()} - الإصدار التنفيذي عالي الكثافة (High Density)</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-1.5 h-3.5 bg-amber-500 rounded-full shrink-0" />
+          <span className="truncate">
+            {systemSettings?.footerText?.trim() ||
+              `منظومة ${systemSettings?.officeName || systemSettings?.appName || 'مكتب النائب علا الناشي'} © ${new Date().getFullYear()}`}
+          </span>
         </div>
-        <div className="flex items-center gap-3 text-[10px] text-slate-400">
+        <div className="flex items-center gap-3 text-[10px] text-slate-400 shrink-0">
           <button
             type="button"
             onClick={handleManualCloudSync}
             disabled={isCloudSyncing}
-            className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300 font-bold bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 px-2.5 py-0.5 rounded-full border border-emerald-300 dark:border-emerald-700 transition-all cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300 font-bold bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 px-2.5 py-0.5 rounded-lg border border-emerald-300 dark:border-emerald-700 transition-all cursor-pointer disabled:opacity-50"
             title="مزامنة شاملة لكافة بيانات النظام مع Firebase Firestore الآن"
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${isCloudSyncing ? 'bg-amber-500 animate-ping' : 'bg-emerald-500'}`}></span>
-            <span>{isCloudSyncing ? 'جاري رفع البيانات...' : 'مزامنة Firebase السحابية ⚡'}</span>
+            <span className={`w-1.5 h-1.5 rounded-full ${isCloudSyncing ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+            <span>{isCloudSyncing ? 'جاري رفع البيانات...' : 'مزامنة Firebase السحابية'}</span>
           </button>
           {cloudSyncMsg && (
             <span className="text-emerald-600 dark:text-emerald-400 font-bold animate-in fade-in">
               {cloudSyncMsg}
             </span>
           )}
-          <span className="hidden sm:inline font-mono">DB v4.3.0-PRO</span>
+          <span className="hidden sm:inline font-mono tabular-nums">v4.5.0</span>
         </div>
       </footer>
 
@@ -407,13 +411,20 @@ const MainAppLayout: React.FC = () => {
       {/* Live System Update Notification */}
       <AppUpdateNotification />
 
-      {/* 2-Second Employee Entry Loading Message Overlay */}
+      {/* Ceremonial Post-Login Loading Screen Overlay */}
       <SessionLoadingOverlay 
         isLoading={isSessionLoading} 
         message={sessionLoadingMessage}
         userName={currentUser?.FullName}
         userRole={currentUser?.RoleArabic}
         officeName={systemSettings?.officeName || systemSettings?.appName}
+        emblemUrl={
+          systemSettings?.customImages?.loadingEmblem ||
+          systemSettings?.parliamentEmblemUrl ||
+          systemSettings?.logoUrl
+        }
+        customTitle={systemSettings?.loadingScreenTitle}
+        customSubtitle={systemSettings?.loadingScreenSubtitle}
       />
     </div>
   );

@@ -36,9 +36,11 @@ import {
   Download,
   Printer,
   Trash2,
-  FolderPlus
+  FolderPlus,
+  HeartHandshake
 } from 'lucide-react';
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
+import { UsersAndPermissionsManager } from './developer/UsersAndPermissionsManager';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
@@ -82,8 +84,8 @@ export const DirectorExecutiveModule: React.FC = () => {
     });
   };
 
-  // Navigation mode: 'inbox' (وارد الاستعلامات) | 'icon_hub' (شبكة الأيقونات) | 'manage_sections' (إدارة واستحداث الأقسام)
-  const [directorMainTab, setDirectorMainTab] = useState<'inbox' | 'icon_hub' | 'manage_sections'>('inbox');
+  // Navigation mode: 'inbox' (وارد الاستعلامات) | 'icon_hub' (شبكة الأيقونات) | 'permissions' (صلاحيات الموظفين والأقسام) | 'manage_sections' (إدارة واستحداث الأقسام)
+  const [directorMainTab, setDirectorMainTab] = useState<'inbox' | 'icon_hub' | 'permissions' | 'manage_sections'>('inbox');
 
   // Deletion modals state for permanent removal
   const [requestToDelete, setRequestToDelete] = useState<OfficeRequest | null>(null);
@@ -288,6 +290,19 @@ export const DirectorExecutiveModule: React.FC = () => {
           >
             <Layers className="w-4 h-4" />
             <span>شبكة أيقونات الأقسام الرسمية</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDirectorMainTab('permissions')}
+            className={`flex-1 md:flex-initial h-10 px-4 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              directorMainTab === 'permissions'
+                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/25 ring-2 ring-emerald-500/40'
+                : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+            }`}
+          >
+            <KeyRound className="w-4 h-4" />
+            <span>قسم الصلاحيات والموظفين ({users.length})</span>
           </button>
 
           <button
@@ -857,6 +872,35 @@ export const DirectorExecutiveModule: React.FC = () => {
         </div>
       )}
 
+      {/* ---------------- VIEW 3: PERMISSIONS & STAFF MANAGEMENT (قسم الصلاحيات والموظفين كما في لوحة المطور) ---------------- */}
+      {directorMainTab === 'permissions' && (
+        <div className="space-y-4 animate-in fade-in duration-200">
+          <div className="bg-gradient-to-r from-emerald-900 to-teal-950 p-4 sm:p-5 rounded-2xl sm:rounded-3xl text-white flex items-center justify-between border border-emerald-400/30 shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-white/10 flex items-center justify-center text-white border border-white/20">
+                <KeyRound className="w-6 h-6 text-amber-300" />
+              </div>
+              <div>
+                <h3 className="font-black text-base sm:text-lg">قسم الصلاحيات وإدارة كادر المكتب</h3>
+                <p className="text-xs text-emerald-100 mt-0.5 font-medium">
+                  إضافة وتعديل حسابات الموظفين، منح أو سحب صلاحية قسم الرعاية الاجتماعية المستقل، وتخصيص الأقسام المسموح بدخولها لكل موظف
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDirectorMainTab('inbox')}
+              className="px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>العودة للوارد</span>
+            </button>
+          </div>
+
+          <UsersAndPermissionsManager mode={currentUser?.Role === 'developer' ? 'developer' : 'director'} />
+        </div>
+      )}
+
       {/* ---------------- VIEW 2: ICON HUB (تصفح جميع أقسام النظام بالأيقونات) ---------------- */}
       {directorMainTab === 'icon_hub' && (
         <div className="space-y-4 animate-in fade-in duration-200">
@@ -909,6 +953,17 @@ export const DirectorExecutiveModule: React.FC = () => {
                 badge: requests.length,
                 badgeColor: 'bg-amber-600 text-white',
                 onClick: () => setActiveSection('admin')
+              },
+              {
+                id: 'tile_social_care',
+                title: 'قسم الرعاية الاجتماعية (مستقل)',
+                subtitle: 'شبكة الحماية الاجتماعية، المعين المتفرغ، والباحث الاجتماعي',
+                icon: HeartHandshake,
+                iconColor: 'text-emerald-600 dark:text-emerald-400',
+                iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
+                badge: customRecords.filter(r => r.sectionId === 'sec_social_welfare').length,
+                badgeColor: 'bg-emerald-600 text-white',
+                onClick: () => setActiveSection('social_care')
               },
               {
                 id: 'dept_audit',
@@ -984,13 +1039,13 @@ export const DirectorExecutiveModule: React.FC = () => {
               {
                 id: 'dept_users_roles',
                 title: 'إدارة وصلاحيات المستخدمين',
-                subtitle: 'حسابات الموظفين، الأدوار، ومراقبة الصلاحيات',
+                subtitle: 'حسابات الموظفين، الأدوار، ومنح صلاحيات الأقسام والرعاية',
                 icon: KeyRound,
                 iconColor: 'text-orange-600 dark:text-orange-400',
                 iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800',
                 badge: users.length,
                 badgeColor: 'bg-orange-600 text-white',
-                onClick: () => setActiveSection('master_admin')
+                onClick: () => setDirectorMainTab('permissions')
               },
               {
                 id: 'dept_employee_stats',

@@ -89,6 +89,141 @@ export const printHtmlSafely = (html: string) => {
   }
 };
 
+/**
+ * Universal print helper for any element on the page (report, modal content, badge, letter, document image).
+ * Extracts the inner HTML or element, wraps it in full standalone HTML with fonts and print CSS,
+ * and prints via isolated hidden iframe. NEVER prints surrounding UI or modals!
+ */
+export const printElementIsolated = (elementOrId: HTMLElement | string, options?: { title?: string; landscape?: boolean }) => {
+  let targetEl: HTMLElement | null = null;
+  if (typeof elementOrId === 'string') {
+    targetEl = document.getElementById(elementOrId);
+  } else {
+    targetEl = elementOrId;
+  }
+
+  if (!targetEl) {
+    window.print();
+    return;
+  }
+
+  const contentHtml = targetEl.innerHTML;
+  const pageTitle = options?.title || 'طباعة مستند رسمي - مكتب مجلس النواب';
+  const orientation = options?.landscape ? '@page { size: landscape; margin: 8mm; }' : '@page { size: A4 portrait; margin: 10mm; }';
+
+  const fullHtml = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>${pageTitle}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=Tajawal:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    ${orientation}
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Cairo', 'Tajawal', sans-serif;
+      direction: rtl;
+      text-align: right;
+      color: #000000;
+      background: #ffffff;
+      margin: 0;
+      padding: 12px;
+      font-size: 13px;
+    }
+    .no-print, button, input[type="button"], input[type="submit"] {
+      display: none !important;
+    }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #cbd5e1; padding: 6px 10px; text-align: right; }
+    th { background-color: #f1f5f9; font-weight: bold; }
+    img { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  ${contentHtml}
+</body>
+</html>`;
+
+  printHtmlSafely(fullHtml);
+};
+
+export const printImageIsolated = (imageUrl: string, title?: string, citizenInfo?: string) => {
+  const fullHtml = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>${title || 'طباعة صورة المعاملة - أرشيف Google Drive'}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap" rel="stylesheet">
+  <style>
+    @page { size: A4 portrait; margin: 10mm; }
+    body {
+      font-family: 'Cairo', sans-serif;
+      direction: rtl;
+      text-align: center;
+      margin: 0;
+      padding: 10px;
+      background: #ffffff;
+      color: #000000;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+    }
+    .title { font-size: 15px; font-weight: 900; }
+    .subtitle { font-size: 11px; color: #475569; }
+    .image-container {
+      margin: 10px auto;
+      max-height: 80vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    img {
+      max-width: 100%;
+      max-height: 78vh;
+      object-fit: contain;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+    }
+    .footer {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #64748b;
+      border-top: 1px dashed #cbd5e1;
+      padding-top: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div style="text-align: right;">
+      <div class="title">جمهورية العراق - مجلس النواب العراقي</div>
+      <div class="subtitle">مكتب النائب المهندسة علا عودة الناشي - قسم الأرشيف والتوثيق</div>
+    </div>
+    <div style="text-align: left; font-size: 11px; font-family: monospace;">
+      <div>التاريخ: ${new Date().toLocaleDateString('ar-IQ')}</div>
+      ${citizenInfo ? `<div>المواطن: ${citizenInfo}</div>` : ''}
+    </div>
+  </div>
+  <div class="image-container">
+    <img src="${imageUrl}" alt="صورة المعاملة الأرشيفية" />
+  </div>
+  <div class="footer">
+    وثيقة رسمية صادرة من الأرشيف الإلكتروني المركزي المربوط بـ Google Drive
+  </div>
+</body>
+</html>`;
+
+  printHtmlSafely(fullHtml);
+};
+
 export const printSingleOutgoingReceipt = (data: SingleReceiptData) => {
   const officeTitle = data.officeName || 'مكتب مجلس النواب العراقي';
   const deputyTitle = data.deputyName || 'عضو مجلس النواب';

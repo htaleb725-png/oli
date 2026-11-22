@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useApp } from '../context/AppContext';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 import { 
   Printer, 
   X, 
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react';
 
 export const PrintableIdCard: React.FC = () => {
+  const printRef = useRef<HTMLDivElement>(null);
   const { 
     printableCitizenCard, 
     setPrintableCitizenCard, 
@@ -47,7 +49,11 @@ export const PrintableIdCard: React.FC = () => {
       'البحث الشامل',
       `تمت طباعة بطاقة المعلومات الشاملة للمواطن ${printableCitizenCard.FullName} (${printableCitizenCard.Citizen_ID}) بواسطة ${currentUser?.FullName}`
     );
-    window.print();
+    if (printRef.current) {
+      printElementIsolated(printRef.current, { title: `بطاقة المعلومات - ${printableCitizenCard.FullName}` });
+    } else {
+      window.print();
+    }
   };
 
   return (
@@ -111,7 +117,7 @@ export const PrintableIdCard: React.FC = () => {
           </div>
         ) : (
           /* Printable Document Area */
-          <div className="print-container p-8 md:p-10 space-y-6 text-right font-['Cairo',sans-serif]">
+          <div ref={printRef} className="print-container p-8 md:p-10 space-y-6 text-right font-['Cairo',sans-serif]">
             {/* Document Official Header */}
             <div className="border-b-2 border-slate-800 pb-5">
               <div className="flex items-center justify-between">

@@ -3,6 +3,8 @@ export type UserRole =
   | 'director'           // مدير المكتب
   | 'admin'              // موظف الإدارة
   | 'reception'          // موظف الاستعلامات
+  | 'social_care'        // مسؤول قسم الرعاية الاجتماعية (مستقل)
+  | 'social_care_officer'
   | 'deputy'             // النائب
   | 'organization'       // موظف التنظيم
   | 'machine'            // مدير مكنة المكتب
@@ -32,7 +34,33 @@ export const SYSTEM_PERMISSIONS: PermissionDefinition[] = [
   { id: 'org_evaluation', name: 'التقييم التنظيمي والنتيجة النهائية', category: 'التنظيم', description: 'تثبيت النتائج الـ 4، استبيان الرضا، والمفاتيح' },
   { id: 'official_letters', name: 'تحرير وطباعة الكتب والمخاطبات', category: 'المكنة والطباعة', description: 'إصدار الكتب الرسمية وإدراج الهوامش' },
   { id: 'export_reports', name: 'تصدير التقارير وسجلات الإكسل', category: 'التقارير', description: 'تصدير إحصائيات الأداء وسجلات المراجعين' },
-  { id: 'view_archive', name: 'الاطلاع على الأرشيف والسجل العام', category: 'الأرشيف', description: 'معاينة أرشيف الصور والملفات والسجل التاريخي' }
+  { id: 'view_archive', name: 'الاطلاع على الأرشيف والسجل العام', category: 'الأرشيف', description: 'معاينة أرشيف الصور والملفات والسجل التاريخي' },
+  { id: 'access_social_care', name: 'الدخول وإدارة قسم الرعاية الاجتماعية', category: 'قسم الرعاية المستقل', description: 'صلاحية فتح والعمل على قسم الرعاية الاجتماعية وشبكة الحماية' },
+  { id: 'manage_permissions', name: 'إدارة الموظفين ومنح الصلاحيات', category: 'الإدارة العليا', description: 'إضافة وتعديل الموظفين ومنح صلاحيات الأقسام' }
+];
+
+export interface SystemSectionOption {
+  id: string;
+  label: string;
+  description: string;
+  restrictedByDefault?: boolean;
+  developerOnly?: boolean;
+}
+
+export const SYSTEM_SECTIONS_REGISTRY: SystemSectionOption[] = [
+  { id: 'reception', label: 'قسم الاستعلامات والمراجعين', description: 'تسجيل المراجعين والبطاقات والاستعلام' },
+  { id: 'admin', label: 'قسم الإدارة والمعاملات', description: 'متابعة الطلبات والصادر والوارد الحكومي' },
+  { id: 'social_care', label: 'قسم الرعاية الاجتماعية (مستقل)', description: 'شبكة الحماية، المعين المتفرغ، والماستر كارد — يتطلب صلاحية صريحة', restrictedByDefault: true },
+  { id: 'director', label: 'قسم مدير المكتب التنفيذي', description: 'اعتماد وتوجيه وارد الاستعلامات والإشراف' },
+  { id: 'interviews', label: 'قسم مقابلات النائب', description: 'جدول المواعيد والمقابلات المباشرة' },
+  { id: 'organization', label: 'قسم التنظيم والجماهير', description: 'شؤون العشائر والموقف الجماهيري' },
+  { id: 'machine', label: 'قسم المكنة والطباعة', description: 'طباعة الكتب والمخاطبات الرسمية' },
+  { id: 'search_archive', label: 'قسم البحث الشامل والأرشيف', description: 'البحث العام واستخراج الهويات والملفات' },
+  { id: 'drive_requests', label: 'أرشيف بريد Google Drive', description: 'عرض وبحث وطباعة وحذف ملفات Drive' },
+  { id: 'reports', label: 'قسم التقارير والإحصائيات', description: 'مؤشرات الأداء وتصدير Excel' },
+  { id: 'audit', label: 'قسم الرقابة والتدقيق والمتابعة', description: 'سجل الحوكمة والرقابة والمتابعة' },
+  { id: 'whatsapp', label: 'مراسلات الواتساب التلقائية', description: 'إشعار وتحديث المراجعين عبر الواتساب' },
+  { id: 'blacklist', label: 'القائمة السوداء والمحظورين', description: 'سجل المحظورين والرقابة الأمنية' }
 ];
 
 export interface User {
@@ -46,9 +74,11 @@ export interface User {
   Active?: boolean;
   FullName: string;
   Department: string;
+  JobTitle?: string;
   Avatar?: string;
   CreatedAt?: string;
   Permissions?: string[]; // الصلاحيات الممنوحة للموظف
+  AllowedSections?: string[]; // الأقسام المسموح للموظف برؤيتها والدخول إليها (يحددها المطور أو المدير التنفيذي)
 }
 
 export type CitizenRating = 'لائق' | 'غير لائق' | 'قلق' | 'غير محترم' | string;
@@ -90,6 +120,8 @@ export interface Citizen {
   Rating: CitizenRating;
   District: string;
   SubDistrict: string;
+  ResidentialArea?: string; // منطقة السكن / الحي / المحلة (الشهداء، أريدو، الإسكان القديم...)
+  NearestLandmark?: string; // أقرب نقطة دالة (اختياري)
   ReferralSource?: string;
   CreatedAt: string;
   CreatedBy?: string;
@@ -109,6 +141,7 @@ export interface Citizen {
   BlockedAt?: string;     // تاريخ الحظر
   BlockedBy?: string;     // الموظف القائم بالحظر
   IsArchived?: boolean;   // هل تم نقله إلى الأرشيف طويل الأمد
+  IsHistoricalImported?: boolean; // مستورد من شيت إكسل تاريخي (لا يزاحم العمل اليومي المباشر)
   ArchivedAt?: string;   // تاريخ الأرشفة الذكية
   ArchivedBy?: string;   // الموظف الذي قام بالأرشفة
   ArchiveNotes?: string; // ملاحظات الأرشفة
@@ -174,7 +207,11 @@ export interface OfficeRequest {
   Job?: string;            // نوع العمل
   ReferralSource?: string; // المعرف
   Address?: string;        // عنوان السكن
+  ResidentialArea?: string;// منطقة السكن
+  NearestLandmark?: string;// أقرب نقطة دالة
+  Margin?: string;         // الهامش الرسمي
   OtherNotes?: string;     // ملاحظات أخرى
+  IsHistoricalImported?: boolean; // مستورد من شيت إكسل تاريخي (لا يزاحم العمل اليومي المباشر)
   IsBlocked?: boolean;     // هل المراجع محظور
   BlockReason?: string;    // سبب الحظر
   IsArchived?: boolean;    // هل تم نقل الطلب إلى الأرشيف طويل الأمد
@@ -347,6 +384,7 @@ export type DropdownCategory =
   | 'Education' 
   | 'District' 
   | 'SubDistrict' 
+  | 'ResidentialArea'
   | 'ReferralSource';
 
 export interface DropdownItem {
@@ -457,7 +495,22 @@ export interface SystemSettings {
     iconUrl?: string;
     iconColor?: string;
     bgGradient?: string;
+    hidden?: boolean;
   }>;
+  hiddenBuiltInTiles?: string[]; // أيقونات الأقسام المخفية أو المحذوفة من لوحة التحكم من قبل المطور
+  customTextOverrides?: Record<string, string>; // قاموس تعديل جميع نصوص النظام بالكامل للمطور
+  textReplacements?: Array<{ id?: string; from: string; to: string }>; // استبدال فوري لأي نص في كامل النظام
+  customImages?: Record<string, string>; // صور مخصصة لأي عنصر في النظام (خلفيات، شعارات، شاشة التحميل...)
+  footerText?: string; // نص التذييل أسفل المنظومة
+  loadingScreenTitle?: string; // عنوان شاشة تحميل البيانات بعد الدخول
+  loadingScreenSubtitle?: string; // وصف شاشة تحميل البيانات بعد الدخول
+  loginWelcomeTitle?: string; // عنوان الترحيب في واجهة الدخول
+  loginWelcomeSubtitle?: string; // الوصف الفرعي في واجهة الدخول
+  officeBranch?: 'nasiriyah' | 'suq_al_shuyoukh' | string; // فرع المكتب (الناصرية / سوق الشيوخ)
+  requiredFieldsConfig?: Record<string, boolean>; // للمطور: تحديد أي حقل إلزامي أو اختياري في النظام
+  receptionResidentialAreas?: string[]; // قائمة مناطق السكن المنسدلة
+  lastOutgoingNumberNasiriyah?: number; // آخر عدد صادر مسجل لمكتب الناصرية
+  lastOutgoingNumberSuq?: number; // آخر عدد صادر مسجل لمكتب سوق الشيوخ
   receptionCustomFields?: CustomFieldDefinition[]; // الحقول المخصصة التي يضيفها المطور للاستعلامات
   receptionHiddenDefaultFields?: string[]; // الحقول الافتراضية التي يقرر المطور إخفاءها من الاستعلامات
 }
@@ -476,6 +529,16 @@ export interface CustomFieldDefinition {
   defaultValue?: any;
 }
 
+export interface CustomSubSection {
+  id: string;
+  title: string;
+  description?: string;
+  iconUrl?: string;
+  badgeColor?: string;
+  fields: CustomFieldDefinition[];
+  targetBuiltInSection?: string; // اختياري: ربط القسم الفرعي بقسم داخلي موجود
+}
+
 export interface CustomSection {
   id: string;
   title: string;
@@ -487,6 +550,11 @@ export interface CustomSection {
   updatedAt?: string;
   createdBy?: string;
   fields: CustomFieldDefinition[];
+  isMultiSectionHub?: boolean; // أيقونة مجمّعة تحتوي عدة أقسام فرعية داخلها
+  subSections?: CustomSubSection[]; // الأقسام الفرعية داخل هذه الأيقونة
+  allowedRoles?: string[]; // الأدوار المسموح لها برؤية هذا القسم (فارغ = للمطور والمدير فقط أو حسب الصلاحية)
+  allowedUserIds?: string[]; // معرفات الموظفين الممنوحين صلاحية هذا القسم
+  isStandaloneRestricted?: boolean; // قسم مستقل لا يظهر لبقية الأقسام إلا بصلاحية المطور
   enableDashboard?: boolean;
   enablePhotoGallery?: boolean;
   enableExcelExport?: boolean;

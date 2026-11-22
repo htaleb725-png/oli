@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { OfficeRequest } from '../types';
 import { 
@@ -26,83 +26,191 @@ import {
   Maximize2,
   FileImage,
   Upload,
-  ArrowLeft
+  ArrowLeft,
+  Trash2,
+  RefreshCw,
+  Loader2,
+  Edit3
 } from 'lucide-react';
 import { SmartImageArchiveModule } from './SmartImageArchiveModule';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
+import {
+  searchDriveFiles,
+  deleteDriveFile,
+  searchDriveFilesViaAppsScript,
+  deleteDriveFileViaAppsScript,
+  getAccessToken,
+  DriveFileItem
+} from '../services/googleSheetsService';
+import { getAllImagesFromDB, deleteImageFromDB, ImageRecord } from '../utils/imageDb';
+import { printElementIsolated, printImageIsolated } from '../utils/printReceiptHelper';
 
 export const DriveRequestsArchiveModule: React.FC = () => {
   const { 
     requests, 
     citizens, 
     currentUser, 
-    systemSettings, 
+    systemSettings,
+    driveFolderId: contextDriveFolderId,
+    setGoogleDriveFolderId,
     updateRequest, 
     addAuditLog, 
     addDocument 
   } = useApp();
 
   // Target Google Drive Folder ID
-  const driveFolderId = systemSettings.googleDriveFolderId || '1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc';
+  const driveFolderId = contextDriveFolderId || systemSettings.googleDriveFolderId || '1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc';
   const driveFolderUrl = `https://drive.google.com/drive/folders/${driveFolderId}`;
 
-  // RBAC for opening Google Drive folder:
-  // "فتح ملف كوكل درايف هاي بس للمطور مايكدر الموضف فتحه واعطاء المطور بالاعدادات يمنحها الى مدير الادارة او لا"
+  // RBAC for opening/editing Google Drive folder
+  const isDeveloper = currentUser?.Role === 'developer';
   const canOpenDriveFolder = 
-    currentUser?.Role === 'developer' || 
+    isDeveloper || 
     (Boolean(systemSettings.allowAdminOpenDriveFolder) && (currentUser?.Role === 'director' || currentUser?.Role === 'admin' || currentUser?.Role === 'admin_officer'));
 
-  // Main Tab: Hub vs Smart Images vs Image viewer vs standard request list
+  // Folder editing for developer
+  const [isEditingFolder, setIsEditingFolder] = useState(false);
+  const [folderInputVal, setFolderInputVal] = useState(driveFolderId);
+
+  // Main Tab: Hub vs Smart Images vs Live Drive Gallery & Search vs standard request list
   const [activeMainTab, setActiveMainTab] = useState<'hub' | 'smart_images' | 'image_viewer' | 'requests_list'>('hub');
 
-  // Google Drive Image Viewer State
-  const [driveImageSearchName, setDriveImageSearchName] = useState('كرار علي');
+  // Live Google Drive + Local System Search & Gallery State
+  const [driveImageSearchName, setDriveImageSearchName] = useState('');
+  const [liveDriveFiles, setLiveDriveFiles] = useState<DriveFileItem[]>([]);
+  const [liveLocalImages, setLiveLocalImages] = useState<ImageRecord[]>([]);
+  const [isLoadingDriveGallery, setIsLoadingDriveGallery] = useState(false);
+  const [driveStatusMsg, setDriveStatusMsg] = useState<string | null>(null);
+  const [selectedViewerImage, setSelectedViewerImage] = useState<{
+    id: string;
+    name: string;
+    imageUrl: string;
+    webViewLink?: string;
+    source: 'drive' | 'local' | 'request';
+    citizenName?: string;
+    rawDriveFile?: DriveFileItem;
+    rawLocalImage?: ImageRecord;
+  } | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [rotation, setRotation] = useState(0);
-  const [searchedCitizenName, setSearchedCitizenName] = useState('كرار علي');
-  const [hasSearched, setHasSearched] = useState(true);
-  const [isSecretSearching, setIsSecretSearching] = useState(false);
-  const [secretSearchProgress, setSecretSearchProgress] = useState(0);
-  const [secretPulledRequest, setSecretPulledRequest] = useState<OfficeRequest | null>(null);
 
-  // Trigger secret background Drive search
-  const handleSecretDriveSearch = (nameToSearch: string) => {
-    setIsSecretSearching(true);
-    setSecretSearchProgress(15);
-    
-    setTimeout(() => setSecretSearchProgress(45), 400);
-    setTimeout(() => setSecretSearchProgress(75), 800);
-    setTimeout(() => {
-      setSecretSearchProgress(100);
-      setIsSecretSearching(false);
+  // Helpers for Drive image URL and Apps Script URL
+  const getDriveHighResUrl = (file: DriveFileItem) => {
+    if (file.thumbnailLink) {
+      return file.thumbnailLink.replace(/=s\d+/, '=s1600');
+    }
+    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1600`;
+  };
 
-      // Create or locate the Drive request
-      const cleanName = nameToSearch.trim();
-      const generatedId = `DRV-${Date.now().toString().slice(-4)}`;
-      const newDriveReq: OfficeRequest = {
-        Request_ID: generatedId,
-        Citizen_ID: `ONA-${Math.floor(1000 + Math.random() * 9000)}`,
-        CitizenName: cleanName,
-        CitizenPhone: '078' + Math.floor(10000000 + Math.random() * 90000000),
-        Entity: 'وزارة الإعمار والإسكان والبلديات العامة',
-        RequestStatus: 'مستلم',
-        ProcessingStatus: 'قيد التدقيق',
-        Priority: 'عاجل',
-        Details: `طلب رسمي ومستندات مؤرشفة في مجلد Google Drive السري باسم المواطن (${cleanName}) - تم استرجاع الكتاب والمعاملة عبر عملية البحث السرية للمنظومة.`,
-        DeputyNotes: 'تم سحب الكتاب من Google Drive - للمتابعة الفورية والتنسيق مع الجهة المعنية',
-        CreatedAt: new Date().toISOString().split('T')[0],
-        CreatedBy: currentUser?.FullName || 'استيراد آلي من Google Drive'
-      };
+  const getConfiguredScriptUrl = () => {
+    return (
+      systemSettings.appsScriptUrl ||
+      systemSettings.googleAppsScriptUrl ||
+      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '')
+    ).trim();
+  };
 
-      setSecretPulledRequest(newDriveReq);
-      updateRequest(newDriveReq);
+  // REAL Live Load & Search across BOTH System + Google Drive folder
+  const loadLiveDriveAndSystemImages = async (queryText?: string) => {
+    setIsLoadingDriveGallery(true);
+    setDriveStatusMsg(null);
+    try {
+      const q = (queryText ?? driveImageSearchName).trim().toLowerCase();
 
-      addAuditLog(
-        'عملية بحث وسحب سرية من Google Drive',
-        'أرشيف Google Drive',
-        `تمت بنجاح عملية البحث السرية وجلب كتاب ومعاملة المواطن (${cleanName}) من مجلد Drive ${driveFolderId}`
-      );
-    }, 1200);
+      // 1. Fetch Local IndexedDB Archive Images
+      const allLocal = await getAllImagesFromDB();
+      const filteredLocal = q
+        ? allLocal.filter(img =>
+            (img.citizenName && img.citizenName.toLowerCase().includes(q)) ||
+            (img.fileName && img.fileName.toLowerCase().includes(q)) ||
+            (img.extractedText && img.extractedText.toLowerCase().includes(q)) ||
+            (img.entity && img.entity.toLowerCase().includes(q)) ||
+            (img.details && img.details.toLowerCase().includes(q))
+          )
+        : allLocal;
+      setLiveLocalImages(filteredLocal);
+
+      // 2. Fetch Real Google Drive Folder Files (via OAuth API or Apps Script webhook)
+      let driveResults: DriveFileItem[] = [];
+      const token = await getAccessToken();
+      if (token) {
+        driveResults = await searchDriveFiles(token, driveFolderId, queryText ?? driveImageSearchName);
+      }
+
+      if (driveResults.length === 0) {
+        const scriptUrl = getConfiguredScriptUrl();
+        if (scriptUrl) {
+          driveResults = await searchDriveFilesViaAppsScript(scriptUrl, driveFolderId, queryText ?? driveImageSearchName);
+        }
+      }
+
+      setLiveDriveFiles(driveResults);
+    } catch (err) {
+      console.warn('Error loading Drive gallery:', err);
+      setDriveStatusMsg('تعذر جلب بعض الملفات من Google Drive حالياً.');
+    } finally {
+      setIsLoadingDriveGallery(false);
+    }
+  };
+
+  // Auto-load all Drive images whenever user opens the image_viewer tab or folder changes
+  useEffect(() => {
+    if (activeMainTab === 'image_viewer') {
+      loadLiveDriveAndSystemImages(driveImageSearchName);
+    }
+  }, [activeMainTab, driveFolderId]);
+
+  const handleSaveDriveFolder = () => {
+    const raw = folderInputVal.trim();
+    if (!raw) return;
+    let extractedId = raw;
+    const match = raw.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+      extractedId = match[1];
+    }
+    setGoogleDriveFolderId(extractedId);
+    setFolderInputVal(extractedId);
+    setIsEditingFolder(false);
+    setDriveStatusMsg(`✓ تم تحديث رابط/معرف مجلد Google Drive إلى (${extractedId}) وجاري تحميل جميع الصور...`);
+    setTimeout(() => setDriveStatusMsg(null), 4000);
+  };
+
+  const handleDeleteDriveItem = async (file: DriveFileItem) => {
+    if (!window.confirm(`هل أنت متأكد من حذف الصورة/الملف (${file.name}) نهائياً من Google Drive؟`)) return;
+    try {
+      let ok = false;
+      const token = await getAccessToken();
+      if (token) ok = await deleteDriveFile(token, file.id);
+      if (!ok) {
+        const scriptUrl = getConfiguredScriptUrl();
+        if (scriptUrl) ok = await deleteDriveFileViaAppsScript(scriptUrl, file.id);
+      }
+      if (ok) {
+        setLiveDriveFiles(prev => prev.filter(f => f.id !== file.id));
+        if (selectedViewerImage?.id === file.id) setSelectedViewerImage(null);
+        addAuditLog('حذف صورة من Google Drive', 'أرشيف البريد', `تم حذف الملف (${file.name}) من Google Drive`);
+        setDriveStatusMsg(`✓ تم حذف (${file.name}) من Google Drive بنجاح.`);
+      } else {
+        setDriveStatusMsg('⚠️ تعذر الحذف من Google Drive. يرجى التأكد من تفعيل Apps Script أو ربط حساب Google.');
+      }
+    } catch (err) {
+      console.error('Delete Drive error:', err);
+    }
+    setTimeout(() => setDriveStatusMsg(null), 4000);
+  };
+
+  const handleDeleteLocalItem = async (img: ImageRecord) => {
+    if (!window.confirm(`هل أنت متأكد من حذف الصورة (${img.fileName}) من أرشيف النظام؟`)) return;
+    try {
+      await deleteImageFromDB(img.id);
+      setLiveLocalImages(prev => prev.filter(i => i.id !== img.id));
+      if (selectedViewerImage?.id === img.id) setSelectedViewerImage(null);
+      addAuditLog('حذف صورة من أرشيف البريد', 'أرشيف البريد', `تم حذف الصورة (${img.fileName})`);
+      setDriveStatusMsg(`✓ تم حذف الصورة (${img.fileName}) بنجاح.`);
+      setTimeout(() => setDriveStatusMsg(null), 3500);
+    } catch (err) {
+      console.error('Delete local image error:', err);
+    }
   };
 
   // Search & Filter State
@@ -122,8 +230,9 @@ export const DriveRequestsArchiveModule: React.FC = () => {
   const [newReqDriveFile, setNewReqDriveFile] = useState('');
   const [newReqPriority, setNewReqPriority] = useState<'عام' | 'عاجل' | 'خاص جداً'>('عاجل');
 
-  // Printable ref for clean print
+  // Printable ref for clean isolated print
   const printableRef = useRef<HTMLDivElement>(null);
+  const requestsTableRef = useRef<HTMLDivElement>(null);
 
   // Filter requests based on user input
   const filteredRequests = requests.filter(req => {
@@ -144,7 +253,7 @@ export const DriveRequestsArchiveModule: React.FC = () => {
     return matchesSearch && matchesStatus && matchesPriority;
   });
 
-  // Print function
+  // Clean isolated Print function (prints ONLY the target document, never the system UI)
   const handlePrint = (req?: OfficeRequest) => {
     const targetReq = req || previewRequest;
     if (!targetReq) return;
@@ -155,10 +264,14 @@ export const DriveRequestsArchiveModule: React.FC = () => {
       `طباعة المعاملة ${targetReq.Request_ID} للمواطن ${targetReq.CitizenName}`
     );
 
-    window.print();
+    if (printableRef.current) {
+      printElementIsolated(printableRef.current, { title: `معاملة رسمية - ${targetReq.CitizenName}` });
+    } else {
+      window.print();
+    }
   };
 
-  // Save / Export as PDF function (Triggers browser print-to-pdf dialog with dedicated styling)
+  // Clean isolated Save / Export as PDF function
   const handleSaveAsPDF = (req?: OfficeRequest) => {
     const targetReq = req || previewRequest;
     if (!targetReq) return;
@@ -174,8 +287,12 @@ export const DriveRequestsArchiveModule: React.FC = () => {
     );
 
     setTimeout(() => {
-      window.print();
-    }, 150);
+      if (printableRef.current) {
+        printElementIsolated(printableRef.current, { title: `تصدير PDF - ${targetReq.CitizenName}` });
+      } else {
+        window.print();
+      }
+    }, 200);
   };
 
   // Handle adding new Drive-linked request
@@ -349,7 +466,14 @@ export const DriveRequestsArchiveModule: React.FC = () => {
               icon: Printer,
               iconColor: 'text-teal-600 dark:text-teal-400',
               iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',
-              onClick: () => window.print()
+              onClick: () => {
+                setActiveMainTab('requests_list');
+                setTimeout(() => {
+                  if (requestsTableRef.current) {
+                    printElementIsolated(requestsTableRef.current, { title: 'كشف الأرشيف السحابي للمعاملات', landscape: true });
+                  }
+                }, 250);
+              }
             }
           ]}
         />
@@ -415,22 +539,23 @@ export const DriveRequestsArchiveModule: React.FC = () => {
         <SmartImageArchiveModule />
       )}
 
-      {/* TAB 1: GOOGLE DRIVE IMAGE VIEWER (Requested by user) */}
+      {/* TAB 1: LIVE GOOGLE DRIVE GALLERY + SIMULTANEOUS SYSTEM & DRIVE SEARCH */}
       {activeMainTab === 'image_viewer' && (
         <div className="space-y-4">
-          <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs space-y-3">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div className="space-y-0.5">
-                <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                  <Search className="w-4 h-4 text-blue-600" />
-                  <span>البحث في مجلد Google Drive باسم المواطن لسحب الصورة</span>
+          {/* Search & Folder Configuration Bar */}
+          <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
+            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <h3 className="font-black text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                  <Search className="w-4 h-4 text-emerald-600" />
+                  <span>أرشيف البريد الحي — عرض والبحث في جميع صور Google Drive والنظام</span>
                 </h3>
-                <p className="text-xs text-slate-500">
-                  ابحث باسم المواطن أو صاحب المعاملة، وسيقوم النظام بجلب الصورة المحفوظة في مجلد Google Drive فورياً مع إمكانية التكبير والتصغير والطباعة المباشرة.
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  يستعرض جميع الصور الموجودة في مجلد Google Drive المثبت، وعند البحث يبحث في النظام وفي Google Drive معاً مع إمكانية الطباعة المنفردة والحذف المباشر.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 w-full sm:w-auto">
+              <div className="flex items-center gap-2 w-full lg:w-auto flex-wrap">
                 <div className="relative flex-1 sm:w-80">
                   <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input
@@ -439,297 +564,404 @@ export const DriveRequestsArchiveModule: React.FC = () => {
                     onChange={(e) => setDriveImageSearchName(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
-                        setSearchedCitizenName(driveImageSearchName.trim());
-                        setHasSearched(true);
-                        setZoomLevel(1);
-                        setRotation(0);
+                        loadLiveDriveAndSystemImages(driveImageSearchName);
                       }
                     }}
-                    placeholder="اكتب اسم المواطن (مثال: كرار علي، حسن طالب)..."
-                    className="w-full pr-9 pl-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-900 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                    placeholder="ابحث بالاسم، رقم الصادر، أو اسم الملف في النظام وDrive..."
+                    className="w-full pr-9 pl-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-xs focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
                 </div>
                 <button
-                  onClick={() => {
-                    setSearchedCitizenName(driveImageSearchName.trim());
-                    setHasSearched(true);
-                    setZoomLevel(1);
-                    setRotation(0);
-                  }}
-                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs cursor-pointer shadow-xs transition-colors shrink-0"
+                  type="button"
+                  onClick={() => loadLiveDriveAndSystemImages(driveImageSearchName)}
+                  disabled={isLoadingDriveGallery}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer shadow-xs transition-colors flex items-center gap-1.5 shrink-0"
                 >
-                  بحث في Drive
+                  {isLoadingDriveGallery ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                  <span>بحث في النظام و Drive</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDriveImageSearchName('');
+                    loadLiveDriveAndSystemImages('');
+                  }}
+                  className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs cursor-pointer flex items-center gap-1 shrink-0"
+                  title="عرض كل الصور في المجلد"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDriveGallery ? 'animate-spin' : ''}`} />
+                  <span>عرض الكل</span>
                 </button>
               </div>
             </div>
+
+            {/* Developer Folder Link Editor */}
+            {isDeveloper && (
+              <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between flex-wrap gap-2 text-xs">
+                <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                  <FolderKanban className="w-4 h-4 text-amber-500" />
+                  <span>مجلد Google Drive المثبت حالياً:</span>
+                  <code className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 font-mono text-emerald-700 dark:text-emerald-400 font-bold">
+                    {driveFolderId}
+                  </code>
+                </div>
+                {isEditingFolder ? (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <input
+                      type="text"
+                      value={folderInputVal}
+                      onChange={(e) => setFolderInputVal(e.target.value)}
+                      placeholder="الصق رابط مجلد Google Drive أو معرف المجلد..."
+                      className="w-72 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-amber-400 text-xs font-mono text-left outline-none"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveDriveFolder}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer"
+                    >
+                      حفظ المجلد
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingFolder(false)}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFolderInputVal(driveFolderId);
+                      setIsEditingFolder(true);
+                    }}
+                    className="px-3 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 font-bold text-xs flex items-center gap-1 cursor-pointer"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>تغيير رابط مجلد Drive (للمطور)</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {driveStatusMsg && (
+              <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-bold">
+                {driveStatusMsg}
+              </div>
+            )}
           </div>
 
-          {/* Viewer Result */}
+          {/* Matched System Requests with Attached Images */}
           {(() => {
-            const trimmedName = searchedCitizenName.trim().toLowerCase();
-            const matchedReq = requests.find(r => 
-              (r.CitizenName && r.CitizenName.toLowerCase().includes(trimmedName)) ||
-              (r.Request_ID && r.Request_ID.toLowerCase().includes(trimmedName))
-            );
-            const matchedCitizen = citizens.find(c => 
-              c.FullName.toLowerCase().includes(trimmedName) || 
-              c.Citizen_ID.toLowerCase().includes(trimmedName)
-            );
-
-            if (!trimmedName || !hasSearched) {
+            const q = driveImageSearchName.trim().toLowerCase();
+            const requestImages = requests.filter(r => {
+              const hasImg = Boolean(r.AttachedRequestImage || (r.ScanAttachments && r.ScanAttachments.length > 0));
+              if (!hasImg) return false;
+              if (!q) return true;
               return (
-                <div className="p-12 text-center bg-white rounded-2xl border border-slate-200 text-slate-400 text-xs">
-                  أدخل اسم المواطن في شريط البحث أعلاه واضغط على "بحث في Drive" لجلب صورة الطلب من الأرشيف.
+                (r.CitizenName && r.CitizenName.toLowerCase().includes(q)) ||
+                (r.Request_ID && r.Request_ID.toLowerCase().includes(q)) ||
+                (r.OutgoingNumber && r.OutgoingNumber.toLowerCase().includes(q)) ||
+                (r.Entity && r.Entity.toLowerCase().includes(q)) ||
+                (r.Details && r.Details.toLowerCase().includes(q))
+              );
+            });
+
+            const totalFound = liveDriveFiles.length + liveLocalImages.length + requestImages.length;
+
+            if (isLoadingDriveGallery) {
+              return (
+                <div className="p-12 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                  <Loader2 className="w-10 h-10 text-emerald-600 animate-spin mx-auto" />
+                  <div className="text-sm font-black text-slate-800 dark:text-white">
+                    جاري جلب الصور والملفات مباشرة من Google Drive ومنظومة المكتب...
+                  </div>
                 </div>
               );
             }
 
-            // If Secret Searching is active
-            if (isSecretSearching) {
+            if (totalFound === 0) {
               return (
-                <div className="p-10 text-center bg-white rounded-2xl border border-blue-200 shadow-sm space-y-4">
-                  <div className="w-16 h-16 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto animate-pulse">
-                    <Sparkles className="w-8 h-8 animate-spin" />
-                  </div>
-                  <h3 className="text-base font-bold text-slate-900">
-                    جاري تنفيذ عملية بحث سرية داخل ملف Google Drive...
-                  </h3>
-                  <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-                    يقوم النظام حالياً بمسح ملف Google Drive المشفر الخاص بمكتب النائب والبحث عن أي مستند أو كتاب باسم "{searchedCitizenName}".
+                <div className="p-10 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                  <FileImage className="w-12 h-12 text-slate-300 mx-auto" />
+                  <h4 className="font-black text-sm text-slate-800 dark:text-white">
+                    لم يتم العثور على صور مطابقة في Google Drive أو النظام {q ? `للبحث "${driveImageSearchName}"` : ''}
+                  </h4>
+                  <p className="text-xs text-slate-500 max-w-lg mx-auto">
+                    تأكد من نشر كود Google Apps Script المحدّث في إعدادات المطور أو ربط حساب Google Drive، وأن المجلد ({driveFolderId}) يحتوي على الصور.
                   </p>
-                  <div className="w-full max-w-md mx-auto bg-slate-100 rounded-full h-2 overflow-hidden">
-                    <div 
-                      className="bg-blue-600 h-full rounded-full transition-all duration-300"
-                      style={{ width: `${secretSearchProgress}%` }}
-                    />
-                  </div>
-                  <span className="text-xs font-mono font-bold text-blue-700">
-                    جاري جلب المستند المشفر... ({secretSearchProgress}%)
-                  </span>
                 </div>
               );
             }
-
-            // If not found in local archive and no secret request yet
-            const effectiveMatchedReq = matchedReq || (secretPulledRequest?.CitizenName.toLowerCase().includes(trimmedName) ? secretPulledRequest : null);
-            if (!effectiveMatchedReq && !matchedCitizen) {
-              return (
-                <div className="p-8 text-center bg-white rounded-2xl border border-amber-200 shadow-xs space-y-4">
-                  <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
-                    <Search className="w-7 h-7" />
-                  </div>
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900">
-                      لم يتم العثور على طلب مسجل محلياً باسم "{searchedCitizenName}"
-                    </h3>
-                    <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed mt-1">
-                      الطلب غير موجود في قاعدة البيانات المباشرة. يمكنك تشغيل آلية البحث السرية داخل ملف Google Drive لجلب المستند والصورة فورياً.
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => handleSecretDriveSearch(searchedCitizenName)}
-                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-xs shadow-md transition-all flex items-center gap-2 mx-auto cursor-pointer active:scale-95"
-                  >
-                    <Sparkles className="w-4 h-4 text-amber-300" />
-                    <span>تشغيل البحث السري داخل Google Drive لجلب الطلب</span>
-                  </button>
-                </div>
-              );
-            }
-
-            // Document / Image Found!
-            const displayReq = effectiveMatchedReq || {
-              Request_ID: 'REQ-DRIVE-2026',
-              Citizen_ID: matchedCitizen?.Citizen_ID || 'CIT-000',
-              CitizenName: matchedCitizen?.FullName || searchedCitizenName,
-              CitizenPhone: matchedCitizen?.Phone1 || '07800000000',
-              Entity: 'وزارة العمل والشؤون الاجتماعية (شبكة الحماية)',
-              RequestStatus: 'مستلم',
-              ProcessingStatus: 'قيد التدقيق',
-              Priority: 'عاجل',
-              Details: 'طلب مسجل ضمن مجلد الأرشيف الرسمي للنائب علا الناشي',
-              CreatedAt: '2026-03-01'
-            } as OfficeRequest;
-
-            const imageSrc = displayReq.AttachedRequestImage || 'https://images.unsplash.com/photo-1568667256549-094345857637?auto=format&fit=crop&w=1200&q=80';
 
             return (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-                {/* Viewer Top Action Bar */}
-                <div className="p-3 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <FileImage className="w-4 h-4 text-emerald-400" />
-                    <span className="font-bold text-xs">
-                      صورة الطلب المؤرشفة: {displayReq.CitizenName} ({displayReq.Request_ID})
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono">
-                      Google Drive Verified
-                    </span>
-                  </div>
-
-                  {/* Zoom, Rotate, Save, Print Controls */}
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {/* Zoom In */}
-                    <button
-                      onClick={() => setZoomLevel(prev => Math.min(3, prev + 0.25))}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white transition-colors cursor-pointer"
-                      title="تكبير الصورة (+)"
-                    >
-                      <ZoomIn className="w-4 h-4" />
-                    </button>
-
-                    {/* Zoom Out */}
-                    <button
-                      onClick={() => setZoomLevel(prev => Math.max(0.5, prev - 0.25))}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white transition-colors cursor-pointer"
-                      title="تصغير الصورة (-)"
-                    >
-                      <ZoomOut className="w-4 h-4" />
-                    </button>
-
-                    {/* Rotate */}
-                    <button
-                      onClick={() => setRotation(prev => (prev + 90) % 360)}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white transition-colors cursor-pointer"
-                      title="تدوير الصورة 90 درجة"
-                    >
-                      <RotateCcw className="w-4 h-4 rotate-180" />
-                    </button>
-
-                    {/* Reset Zoom */}
-                    <button
-                      onClick={() => {
-                        setZoomLevel(1);
-                        setRotation(0);
-                      }}
-                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white text-xs font-mono transition-colors cursor-pointer flex items-center gap-1"
-                      title="إعادة ضبط الحجم"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      <span>{Math.round(zoomLevel * 100)}%</span>
-                    </button>
-
-                    <div className="h-4 w-px bg-slate-700 mx-1"></div>
-
-                    {/* Save Image */}
-                    <button
-                      onClick={() => {
-                        addAuditLog(
-                          'تنزيل وحفظ صورة طلب من Google Drive',
-                          'أرشيف Google Drive',
-                          `تنزيل صورة الطلب للمعاملة ${displayReq.Request_ID} للمواطن ${displayReq.CitizenName}`
-                        );
-                        const link = document.createElement('a');
-                        link.href = imageSrc;
-                        link.download = `طلب_Drive_${displayReq.CitizenName.replace(/\s+/g, '_')}.jpg`;
-                        link.target = '_blank';
-                        link.click();
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-                      title="حفظ الصورة في جهازك كصورة"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>حفظ كصورة</span>
-                    </button>
-
-                    {/* Save as PDF */}
-                    <button
-                      onClick={() => handleSaveAsPDF(displayReq)}
-                      className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-                      title="حفظ الطلب كملف PDF"
-                    >
-                      <FileText className="w-3.5 h-3.5" />
-                      <span>حفظ كـ PDF</span>
-                    </button>
-
-                    {/* Print Image */}
-                    <button
-                      onClick={() => {
-                        addAuditLog(
-                          'طباعة صورة طلب من Google Drive',
-                          'أرشيف Google Drive',
-                          `طباعة الورقة الرسمية للمعاملة ${displayReq.Request_ID} للمواطن ${displayReq.CitizenName}`
-                        );
-                        window.print();
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-                      title="طباعة مباشرة"
-                    >
-                      <Printer className="w-3.5 h-3.5" />
-                      <span>طباعة مباشرة</span>
-                    </button>
-                  </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-300 px-1">
+                  <span>إجمالي الصور والمستندات المستخرجة: {totalFound}</span>
+                  <span className="text-emerald-700 dark:text-emerald-400">
+                    Google Drive: {liveDriveFiles.length} | أرشيف النظام: {liveLocalImages.length + requestImages.length}
+                  </span>
                 </div>
 
-                {/* Image Display Area with Pan & Zoom */}
-                <div className="p-6 bg-slate-100 dark:bg-slate-950 flex items-center justify-center min-h-[480px] overflow-auto">
-                  <div 
-                    className="relative transition-transform duration-200 shadow-xl border border-slate-300 bg-white rounded-lg p-2 max-w-2xl print-container"
-                    style={{
-                      transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
-                      transformOrigin: 'center center'
-                    }}
-                  >
-                    {/* Visual Parliament Paper Frame */}
-                    <div className="border border-slate-900 p-6 space-y-4 font-['Cairo',sans-serif] text-slate-900 bg-white min-w-[500px]">
-                      <div className="border-b-2 border-slate-900 pb-3 flex items-center justify-between">
-                        <div className="text-right space-y-0.5">
-                          <div className="text-[11px] font-bold">جمهورية العراق</div>
-                          <div className="text-[11px] font-bold">مجلس النواب العراقي</div>
-                          <div className="text-xs font-extrabold text-blue-900">مكتب النائب المهندسة علا عودة الناشي</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+                  {/* 1. Google Drive Real Files */}
+                  {liveDriveFiles.map((file) => {
+                    const imgUrl = getDriveHighResUrl(file);
+                    return (
+                      <div key={file.id} className="bg-white dark:bg-slate-900 rounded-2xl border-2 border-emerald-500/30 hover:border-emerald-500 shadow-xs p-3 flex flex-col justify-between transition-all">
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
+                              Google Drive ☁️
+                            </span>
+                            {file.modifiedTime && (
+                              <span className="text-[10px] font-mono text-slate-400" dir="ltr">
+                                {new Date(file.modifiedTime).toLocaleDateString('ar-IQ')}
+                              </span>
+                            )}
+                          </div>
+                          <div
+                            onClick={() => {
+                              setZoomLevel(1);
+                              setRotation(0);
+                              setSelectedViewerImage({
+                                id: file.id,
+                                name: file.name,
+                                imageUrl: imgUrl,
+                                webViewLink: file.webViewLink,
+                                source: 'drive',
+                                citizenName: file.name,
+                                rawDriveFile: file
+                              });
+                            }}
+                            className="h-36 rounded-xl bg-slate-100 dark:bg-slate-800 overflow-hidden cursor-pointer relative group flex items-center justify-center"
+                          >
+                            <img src={imgUrl} alt={file.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-bold transition-opacity">
+                              <Eye className="w-4 h-4 ml-1" />
+                              <span>معاينة وتكبير</span>
+                            </div>
+                          </div>
+                          <div className="mt-2 text-xs font-bold text-slate-900 dark:text-white truncate" title={file.name}>
+                            {file.name}
+                          </div>
                         </div>
-                        <div className="text-center">
-                          <img 
-                            src={systemSettings.parliamentEmblemUrl} 
-                            alt="شعار مجلس النواب" 
-                            className="w-12 h-12 object-contain mx-auto"
-                            crossOrigin="anonymous"
-                          />
-                        </div>
-                        <div className="text-left font-mono text-[10px]" dir="ltr">
-                          <div><strong>Drive Ref:</strong> {displayReq.Request_ID}</div>
-                          <div><strong>Date:</strong> {displayReq.CreatedAt}</div>
+
+                        <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
+                          <button
+                            type="button"
+                            onClick={() => printImageIsolated(imgUrl, file.name, file.name)}
+                            className="flex-1 py-1.5 px-2 rounded-lg bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200 font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>طباعة</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDriveItem(file)}
+                            className="flex-1 py-1.5 px-2 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/40 text-rose-700 dark:text-rose-200 font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>حذف</span>
+                          </button>
+                          {file.webViewLink && (
+                            <a
+                              href={file.webViewLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                              title="فتح في Google Drive"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          )}
                         </div>
                       </div>
+                    );
+                  })}
 
-                      <div className="pt-2">
-                        <h4 className="font-extrabold text-sm text-slate-950">إلى / {displayReq.Entity} المحترم</h4>
-                        <h5 className="font-bold text-xs text-slate-800 mt-1">م / طلب المواطن ({displayReq.CitizenName})</h5>
+                  {/* 2. Local Archived Images */}
+                  {liveLocalImages.map((img) => (
+                    <div key={img.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-blue-300/60 dark:border-blue-800 hover:border-blue-500 shadow-xs p-3 flex flex-col justify-between transition-all">
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-blue-100 text-blue-900 dark:bg-blue-950 dark:text-blue-300">
+                            أرشيف النظام 💾
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400" dir="ltr">
+                            {img.uploadedAt ? new Date(img.uploadedAt).toLocaleDateString('ar-IQ') : 'اليوم'}
+                          </span>
+                        </div>
+                        <div
+                          onClick={() => {
+                            setZoomLevel(1);
+                            setRotation(0);
+                            setSelectedViewerImage({
+                              id: img.id,
+                              name: img.fileName,
+                              imageUrl: img.dataUrl,
+                              source: 'local',
+                              citizenName: img.citizenName,
+                              rawLocalImage: img
+                            });
+                          }}
+                          className="h-36 rounded-xl bg-slate-100 dark:bg-slate-800 overflow-hidden cursor-pointer relative group"
+                        >
+                          <img src={img.dataUrl} alt={img.fileName} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-bold transition-opacity">
+                            <Eye className="w-4 h-4 ml-1" />
+                            <span>معاينة وتكبير</span>
+                          </div>
+                        </div>
+                        <div className="mt-2 text-xs font-bold text-slate-900 dark:text-white truncate">
+                          {img.citizenName || img.fileName}
+                        </div>
+                        {img.entity && <div className="text-[10px] text-slate-400 truncate">{img.entity}</div>}
                       </div>
 
-                      <div className="text-xs leading-relaxed text-slate-900 py-3 min-h-[140px] text-justify whitespace-pre-line border-y border-dashed border-slate-200">
-                        {displayReq.Details}
-                      </div>
-
-                      {displayReq.DeputyNotes && (
-                        <div className="p-2.5 rounded bg-blue-50 border border-blue-200 text-xs text-blue-950">
-                          <strong>هامش النائب:</strong> {displayReq.DeputyNotes}
-                        </div>
-                      )}
-
-                      <div className="pt-4 flex items-end justify-between text-[11px]">
-                        <div className="font-mono text-slate-500">
-                          هاتف: {displayReq.CitizenPhone}
-                        </div>
-                        <div className="text-center space-y-0.5">
-                          <div className="font-bold">المهندسة علا عودة الناشي</div>
-                          <div className="text-[10px] text-slate-600">عضو مجلس النواب العراقي</div>
-                          <div className="pt-2 text-[9px] text-slate-400 font-mono">[ختم وتوقيع النائب الرسمي]</div>
-                        </div>
+                      <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
+                        <button
+                          type="button"
+                          onClick={() => printImageIsolated(img.dataUrl, img.fileName, img.citizenName)}
+                          className="flex-1 py-1.5 px-2 rounded-lg bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200 font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>طباعة</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteLocalItem(img)}
+                          className="flex-1 py-1.5 px-2 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/40 text-rose-700 dark:text-rose-200 font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>حذف</span>
+                        </button>
                       </div>
                     </div>
-                  </div>
-                </div>
+                  ))}
 
-                {/* Footer notes */}
-                <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
-                  <span>تم سحب هذه الوثيقة من مجلد Google Drive للمكتب: {driveFolderId}</span>
-                  <span>التحكم: استخدم أزرار التكبير والتصغير لفحص تفاصيل الكتاب بدقة</span>
+                  {/* 3. Attached Scan Images from Office Requests */}
+                  {requestImages.map((req) => {
+                    const imgSrc = req.AttachedRequestImage || req.ScanAttachments?.[0]?.url || '';
+                    if (!imgSrc) return null;
+                    return (
+                      <div key={req.Request_ID} className="bg-white dark:bg-slate-900 rounded-2xl border border-amber-300/60 dark:border-amber-800 hover:border-amber-500 shadow-xs p-3 flex flex-col justify-between transition-all">
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                              مرفق معاملة 📄
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400">{req.OutgoingNumber || req.Request_ID}</span>
+                          </div>
+                          <div
+                            onClick={() => {
+                              setZoomLevel(1);
+                              setRotation(0);
+                              setSelectedViewerImage({
+                                id: req.Request_ID,
+                                name: `${req.CitizenName} - ${req.Entity}`,
+                                imageUrl: imgSrc,
+                                source: 'request',
+                                citizenName: req.CitizenName
+                              });
+                            }}
+                            className="h-36 rounded-xl bg-slate-100 dark:bg-slate-800 overflow-hidden cursor-pointer relative group"
+                          >
+                            <img src={imgSrc} alt={req.CitizenName} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                          </div>
+                          <div className="mt-2 text-xs font-bold text-slate-900 dark:text-white truncate">{req.CitizenName}</div>
+                          <div className="text-[10px] text-slate-400 truncate">{req.Entity}</div>
+                        </div>
+                        <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
+                          <button
+                            type="button"
+                            onClick={() => printImageIsolated(imgSrc, req.Entity, req.CitizenName)}
+                            className="flex-1 py-1.5 px-2 rounded-lg bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200 font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>طباعة</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`هل تريد إزالة الصورة المرفقة من معاملة (${req.CitizenName})؟`)) {
+                                updateRequest({ ...req, AttachedRequestImage: undefined, ScanAttachments: [] });
+                              }
+                            }}
+                            className="flex-1 py-1.5 px-2 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/40 text-rose-700 dark:text-rose-200 font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>حذف الصورة</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
           })()}
+
+          {/* Fullscreen Image Lightbox with Zoom, Rotate, Isolated Print & Delete */}
+          {selectedViewerImage && (
+            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+              <div className="bg-slate-900 text-white rounded-3xl max-w-4xl w-full p-4 space-y-3 border border-slate-700 flex flex-col max-h-[92vh]">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2.5 gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FileImage className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="text-xs font-black truncate">{selectedViewerImage.name}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => printImageIsolated(selectedViewerImage.imageUrl, selectedViewerImage.name, selectedViewerImage.citizenName)}
+                      className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center gap-1 cursor-pointer"
+                    >
+                      <Printer className="w-4 h-4" />
+                      <span>طباعة الصورة فقط</span>
+                    </button>
+                    {selectedViewerImage.rawDriveFile && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteDriveItem(selectedViewerImage.rawDriveFile!)}
+                        className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1 cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span>حذف من Drive</span>
+                      </button>
+                    )}
+                    {selectedViewerImage.rawLocalImage && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteLocalItem(selectedViewerImage.rawLocalImage!)}
+                        className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1 cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span>حذف</span>
+                      </button>
+                    )}
+                    <button onClick={() => setZoomLevel(z => Math.min(3, z + 0.25))} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 cursor-pointer"><ZoomIn className="w-4 h-4" /></button>
+                    <button onClick={() => setZoomLevel(z => Math.max(0.5, z - 0.25))} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 cursor-pointer"><ZoomOut className="w-4 h-4" /></button>
+                    <button onClick={() => setRotation(r => (r + 90) % 360)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 cursor-pointer"><RotateCcw className="w-4 h-4" /></button>
+                    <button onClick={() => setSelectedViewerImage(null)} className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 flex items-center justify-center cursor-pointer">✕</button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-auto flex items-center justify-center min-h-[340px] bg-black/50 rounded-2xl p-3">
+                  <img
+                    src={selectedViewerImage.imageUrl}
+                    alt={selectedViewerImage.name}
+                    style={{
+                      transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
+                      transition: 'transform 0.2s ease-out'
+                    }}
+                    className="max-h-[65vh] max-w-full object-contain rounded-xl"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -813,7 +1045,7 @@ export const DriveRequestsArchiveModule: React.FC = () => {
       </div>
 
       {/* Requests Grid / Cards */}
-      <div className="space-y-3">
+      <div ref={requestsTableRef} className="space-y-3">
         {filteredRequests.length === 0 ? (
           <div className="p-12 text-center bg-white rounded-xl border border-slate-200 text-slate-500 text-xs shadow-xs space-y-2">
             <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
@@ -1057,7 +1289,7 @@ export const DriveRequestsArchiveModule: React.FC = () => {
                     {/* Official Emblem */}
                     <div className="flex flex-col items-center">
                       <img
-                        src="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f6/Coat_of_arms_of_Iraq_%282008%E2%80%93present%29.svg/200px-Coat_of_arms_of_Iraq_%282008%E2%80%93present%29.svg.png"
+                        src={systemSettings.parliamentEmblemUrl || '/iraq-emblem.svg'}
                         alt="شعار جمهورية العراق"
                         className="w-16 h-16 object-contain"
                         referrerPolicy="no-referrer"

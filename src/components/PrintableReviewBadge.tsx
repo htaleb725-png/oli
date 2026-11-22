@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useApp } from '../context/AppContext';
 import { Printer, X, Award, CheckCircle } from 'lucide-react';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 
 export const PrintableReviewBadge: React.FC = () => {
   const { printableBadgeCitizen, setPrintableBadgeCitizen, systemSettings, addAuditLog, currentUser } = useApp();
+  const printRef = useRef<HTMLDivElement>(null);
 
   if (!printableBadgeCitizen) return null;
 
@@ -14,7 +16,11 @@ export const PrintableReviewBadge: React.FC = () => {
       'الاستعلامات',
       `طباعة وصل مراجعة وباج للمواطن ${printableBadgeCitizen.FullName} (${printableBadgeCitizen.Citizen_ID})`
     );
-    window.print();
+    if (printRef.current) {
+      printElementIsolated(printRef.current, { title: `وصل مراجعة - ${printableBadgeCitizen.FullName}` });
+    } else {
+      window.print();
+    }
   };
 
   return (
@@ -44,7 +50,7 @@ export const PrintableReviewBadge: React.FC = () => {
         </div>
 
         {/* Badge Card Layout */}
-        <div className="print-container p-6 space-y-4 text-center font-['Cairo',sans-serif]">
+        <div ref={printRef} className="print-container p-6 space-y-4 text-center font-['Cairo',sans-serif]">
           <div className="border-b-2 border-slate-800 pb-3 flex items-center justify-between">
             <div className="text-right">
               <div className="text-[11px] font-bold text-slate-900">جمهورية العراق</div>

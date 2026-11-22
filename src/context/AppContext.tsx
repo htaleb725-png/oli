@@ -38,6 +38,9 @@ import {
   fsSaveUser,
   fsDeleteUser,
   fsSaveSettings,
+  fsSaveDropdown,
+  fsDeleteDropdown,
+  buildSafeDropdownDocId,
   fsSaveCustomSection,
   fsDeleteCustomSection,
   fsSaveCustomRecord,
@@ -346,6 +349,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         description: 'متابعة معاملات شبكة الحماية الاجتماعية، إصدار الماستر كارد، راتب المعين المتفرغ، والمسح الميداني للباحث الاجتماعي',
         badgeColor: 'emerald',
         icon: 'HeartHandshake',
+        isStandaloneRestricted: true,
+        allowedRoles: ['developer', 'director', 'deputy', 'social_care', 'social_care_officer'],
         createdAt: '2026-03-01',
         createdBy: 'مطور النظام',
         fields: [
@@ -1047,6 +1052,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
         unsubs.push(unsubUsers);
 
+        const unsubDropdowns = fsWatchCollection<DropdownItem>(FS_COLLECTIONS.DROPDOWNS, (items) => {
+          if (Array.isArray(items) && items.length > 0) {
+            setDropdowns(prev => {
+              const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
+              const added = items.filter(d => d && d.Category && d.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
+              if (added.length === 0) return prev;
+              const merged = [...prev, ...added];
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubDropdowns);
+
+        const unsubSettings = fsWatchCollection<any>(FS_COLLECTIONS.SETTINGS, (docs) => {
+          const mainDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements));
+          if (mainDoc) {
+            setSystemSettings(prev => {
+              const merged = { ...prev, ...mainDoc };
+              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        });
+        unsubs.push(unsubSettings);
+
         // Check remote developer passcode
         fsGetDeveloperPasscode().then(code => {
           if (code) {
@@ -1232,6 +1263,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveSection('reception');
     } else if (user.Role === 'admin' || user.Role === 'admin_officer') {
       setActiveSection('admin');
+    } else if (user.Role === 'social_care' || user.Role === 'social_care_officer') {
+      setActiveSection('social_care');
     } else if (user.Role === 'director') {
       setActiveSection('director');
     } else if (user.Role === 'deputy') {
@@ -1419,6 +1452,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsSplashOpen(false);
     if (user.Role === 'reception' || user.Role === 'reception_officer') {
       setActiveSection('reception');
+    } else if (user.Role === 'social_care' || user.Role === 'social_care_officer') {
+      setActiveSection('social_care');
+    } else if (user.Role === 'admin' || user.Role === 'admin_officer') {
+      setActiveSection('admin');
     } else {
       setActiveSection('dashboard');
     }
@@ -1497,19 +1534,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const exists = dropdowns.some(d => d.Category.toLowerCase() === category.toLowerCase() && d.ItemValue.trim().toLowerCase() === trimmed.toLowerCase());
     if (!exists) {
       const newItem: DropdownItem = {
-        id: `DD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+        id: buildSafeDropdownDocId(category, trimmed),
         Category: category,
         ItemValue: trimmed
       };
-      setDropdowns(prev => [...prev, newItem]);
-      addAuditLog('إضافة عنصر تلقائي للقوائم', 'القوائم المنسدلة', `تمت إضافة [${trimmed}] تلقائياً إلى قائمة ${category}`);
-      pushToGoogleSheetsRealtime('dropdowns', { Category: category, Value: trimmed }, 'insert', systemSettings.appsScriptUrl);
+      setDropdowns(prev => {
+        const already = prev.some(d => d.Category.toLowerCase() === category.toLowerCase() && d.ItemValue.trim().toLowerCase() === trimmed.toLowerCase());
+        if (already) return prev;
+        const next = [...prev, newItem];
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', JSON.stringify(next));
+        return next;
+      });
+      fsSaveDropdown(newItem).catch(err => console.warn('Firestore dropdown save:', err));
+      addAuditLog('إضافة عنصر دائم للقوائم', 'القوائم المنسدلة', `تمت إضافة [${trimmed}] وحفظها دائماً في قائمة ${category}`);
+      pushToGoogleSheetsRealtime('dropdowns', { id: newItem.id, Category: category, ItemValue: trimmed, Value: trimmed }, 'upsert', systemSettings.appsScriptUrl);
+    }
+
+    // Keep systemSettings.receptionResidentialAreas synchronized automatically
+    if (category.toLowerCase() === 'residentialarea') {
+      const currentAreas = systemSettings.receptionResidentialAreas || [];
+      if (!currentAreas.some(a => a.trim().toLowerCase() === trimmed.toLowerCase())) {
+        updateSettings({ receptionResidentialAreas: [...currentAreas, trimmed] });
+      }
     }
   };
 
   const removeDropdownItem = (category: string, value: string) => {
     const trimmed = value.trim();
-    setDropdowns(prev => prev.filter(d => !(d.Category.toLowerCase() === category.toLowerCase() && d.ItemValue.trim().toLowerCase() === trimmed.toLowerCase())));
+    setDropdowns(prev => {
+      const next = prev.filter(d => !(d.Category.toLowerCase() === category.toLowerCase() && d.ItemValue.trim().toLowerCase() === trimmed.toLowerCase()));
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', JSON.stringify(next));
+      return next;
+    });
+    fsDeleteDropdown(category, trimmed).catch(err => console.warn('Firestore dropdown delete:', err));
+    pushToGoogleSheetsRealtime('dropdowns', { id: buildSafeDropdownDocId(category, trimmed), Category: category, ItemValue: trimmed }, 'delete', systemSettings.appsScriptUrl);
     addAuditLog('حذف عنصر من القوائم', 'القوائم المنسدلة', `تم حذف [${trimmed}] من قائمة ${category}`);
   };
 
@@ -2348,8 +2406,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateSettings = (newSettings: Partial<SystemSettings>) => {
     const merged = { ...systemSettings, ...newSettings };
     setSystemSettings(merged);
+    safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(merged));
     fsSaveSettings(merged).catch(err => console.warn('Firestore settings update:', err));
-    addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام');
+    pushToGoogleSheetsRealtime('settings', { id: 'main_settings', ...merged }, 'upsert', merged.appsScriptUrl);
+    addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام ومزامنتها سحابياً');
   };
 
   const setGoogleDriveFolderId = (rawFolderId: string) => {
@@ -2724,13 +2784,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     fsSaveCustomSection(newSection).catch(err => console.warn('Firestore section save:', err));
     pushToGoogleSheetsRealtime('custom_sections', newSection, 'insert', systemSettings.appsScriptUrl);
 
-    // Dynamic Google Sheet Tab Creation for the new department!
+    // Dynamic Google Sheet Tab Creation for the new department & any sub-sections!
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
       const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
       if (token && sheetId) {
         const headerCols = ['معرف_السجل_ID', 'عنوان_المعاملة', 'تاريخ_الإنشاء', 'المسؤول', ...(newSection.fields || []).map(f => f.label)];
         ensureSheetTabExists(token, sheetId, `قسم_${newSection.title}`, headerCols).catch(() => {});
+        if (newSection.isMultiSectionHub && Array.isArray(newSection.subSections)) {
+          for (const sub of newSection.subSections) {
+            if (!sub.targetBuiltInSection) {
+              const subHeaders = ['معرف_السجل_ID', 'عنوان_المعاملة', 'تاريخ_الإنشاء', 'المسؤول', ...(sub.fields || []).map(f => f.label)];
+              ensureSheetTabExists(token, sheetId, `قسم_${newSection.title}_${sub.title}`, subHeaders).catch(() => {});
+            }
+          }
+        }
       }
     } catch {}
 
@@ -3034,6 +3102,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setCustomRecords(prev => {
             const merged = mergeCustomRecords(prev, res.customRecords, deletedIds);
             safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(merged));
+            return merged;
+          });
+        }
+        if (res.dropdowns && res.dropdowns.length > 0) {
+          setDropdowns(prev => {
+            const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
+            const added = res.dropdowns.filter((d: DropdownItem) => d && d.Category && d.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
+            if (added.length === 0) return prev;
+            const merged = [...prev, ...added];
+            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', JSON.stringify(merged));
             return merged;
           });
         }

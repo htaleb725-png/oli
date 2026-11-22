@@ -20,15 +20,21 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCw,
-  FolderOpen
+  FolderOpen,
+  Printer,
+  Trash2
 } from 'lucide-react';
 import { 
   searchDriveFiles, 
   uploadImageToDrive, 
+  deleteDriveFile,
+  searchDriveFilesViaAppsScript,
+  deleteDriveFileViaAppsScript,
   DriveFileItem, 
   getAccessToken 
 } from '../services/googleSheetsService';
-import { saveImageToDB, getAllImagesFromDB, ImageRecord } from '../utils/imageDb';
+import { saveImageToDB, getAllImagesFromDB, deleteImageFromDB, ImageRecord } from '../utils/imageDb';
+import { printImageIsolated } from '../utils/printReceiptHelper';
 import { Citizen, OfficeRequest } from '../types';
 
 interface GoogleDriveArchiveModalProps {
@@ -74,10 +80,15 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
 
   // Preview Selected File
   const [previewFile, setPreviewFile] = useState<{
+    id?: string;
     name: string;
     url?: string;
+    printUrl?: string;
     isDrive: boolean;
     mimeType?: string;
+    citizenName?: string;
+    rawDriveFile?: DriveFileItem;
+    rawLocalImage?: ImageRecord;
   } | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [rotation, setRotation] = useState(0);
@@ -92,33 +103,109 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
     }
   }, [isOpen, currentFolderId]);
 
-  // Load Drive files + Local DB images
+  // Resolve high-res image URL for Google Drive files
+  const getDriveImageUrl = (file: DriveFileItem) => {
+    if (file.thumbnailLink) {
+      return file.thumbnailLink.replace(/=s\d+/, '=s1600');
+    }
+    return `https://drive.google.com/thumbnail?id=${file.id}&sz=w1600`;
+  };
+
+  // Resolve configured Apps Script URL
+  const getConfiguredScriptUrl = () => {
+    return (
+      systemSettings.appsScriptUrl ||
+      systemSettings.googleAppsScriptUrl ||
+      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '')
+    ).trim();
+  };
+
+  // Load Drive files + Local DB images (simultaneous search in System + Google Drive)
   const loadAllFiles = async (queryText?: string) => {
     setIsLoading(true);
     try {
+      const q = (queryText || '').trim().toLowerCase();
+
       // 1. Fetch Local Images from IndexedDB
       const dbImages = await getAllImagesFromDB();
-      const filteredLocal = (queryText && queryText.trim()) 
-        ? dbImages.filter(img => 
-            (img.citizenName && img.citizenName.toLowerCase().includes(queryText.toLowerCase())) ||
-            (img.fileName && img.fileName.toLowerCase().includes(queryText.toLowerCase())) ||
-            (img.extractedText && img.extractedText.toLowerCase().includes(queryText.toLowerCase()))
+      const filteredLocal = q
+        ? dbImages.filter(img =>
+            (img.citizenName && img.citizenName.toLowerCase().includes(q)) ||
+            (img.fileName && img.fileName.toLowerCase().includes(q)) ||
+            (img.extractedText && img.extractedText.toLowerCase().includes(q)) ||
+            (img.entity && img.entity.toLowerCase().includes(q)) ||
+            (img.details && img.details.toLowerCase().includes(q))
           )
         : dbImages;
       setLocalImages(filteredLocal);
 
-      // 2. Fetch Drive Files via Google Drive v3 API
+      // 2. Fetch Drive Files via Google Drive v3 API OR Apps Script Webhook
+      let fetchedDriveFiles: DriveFileItem[] = [];
       const token = await getAccessToken();
       if (token) {
-        const files = await searchDriveFiles(token, currentFolderId, queryText);
-        setDriveFiles(files);
-      } else {
-        setDriveFiles([]);
+        fetchedDriveFiles = await searchDriveFiles(token, currentFolderId, queryText);
       }
+
+      // Fallback / primary bridge via Apps Script if OAuth token not connected or returned empty
+      if (fetchedDriveFiles.length === 0) {
+        const scriptUrl = getConfiguredScriptUrl();
+        if (scriptUrl) {
+          fetchedDriveFiles = await searchDriveFilesViaAppsScript(scriptUrl, currentFolderId, queryText);
+        }
+      }
+
+      setDriveFiles(fetchedDriveFiles);
     } catch (err) {
       console.warn('Error loading drive archive files:', err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Delete a file directly from Google Drive (via OAuth API or Apps Script)
+  const handleDeleteDriveFile = async (file: DriveFileItem) => {
+    if (!window.confirm(`هل أنت متأكد من حذف الملف (${file.name}) نهائياً من Google Drive؟`)) return;
+    setUploadStatus(`جاري حذف الملف (${file.name}) من Google Drive...`);
+    try {
+      let deleted = false;
+      const token = await getAccessToken();
+      if (token) {
+        deleted = await deleteDriveFile(token, file.id);
+      }
+      if (!deleted) {
+        const scriptUrl = getConfiguredScriptUrl();
+        if (scriptUrl) {
+          deleted = await deleteDriveFileViaAppsScript(scriptUrl, file.id);
+        }
+      }
+
+      if (deleted) {
+        setDriveFiles(prev => prev.filter(f => f.id !== file.id));
+        if (previewFile?.id === file.id) setPreviewFile(null);
+        addAuditLog('حذف صورة من Google Drive', 'أرشيف البريد', `تم حذف الملف (${file.name}) من مجلد Google Drive بواسطة ${currentUser?.FullName || 'الموظف'}`);
+        setUploadStatus(`✓ تم حذف الملف (${file.name}) من Google Drive بنجاح.`);
+      } else {
+        setUploadStatus('⚠️ تعذر الحذف من Google Drive. يرجى التأكد من ربط حساب Google أو Apps Script.');
+      }
+    } catch (err) {
+      console.error('Delete Drive file error:', err);
+      setUploadStatus('⚠️ حدث خطأ أثناء محاولة حذف الملف من Google Drive.');
+    }
+    setTimeout(() => setUploadStatus(null), 4000);
+  };
+
+  // Delete a local archived image from IndexedDB
+  const handleDeleteLocalImage = async (img: ImageRecord) => {
+    if (!window.confirm(`هل أنت متأكد من حذف الصورة (${img.fileName}) من الأرشيف المحلي؟`)) return;
+    try {
+      await deleteImageFromDB(img.id);
+      setLocalImages(prev => prev.filter(item => item.id !== img.id));
+      if (previewFile?.id === img.id) setPreviewFile(null);
+      addAuditLog('حذف صورة من الأرشيف المحلي', 'أرشيف البريد', `تم حذف الصورة (${img.fileName}) بواسطة ${currentUser?.FullName || 'الموظف'}`);
+      setUploadStatus(`✓ تم حذف الصورة (${img.fileName}) بنجاح.`);
+      setTimeout(() => setUploadStatus(null), 3500);
+    } catch (err) {
+      console.error('Delete local image error:', err);
     }
   };
 
@@ -479,12 +566,21 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
 
                       {/* File Icon / Thumbnail */}
                       <div 
-                        onClick={() => setPreviewFile({ name: file.name, url: file.webViewLink, isDrive: true, mimeType: file.mimeType })}
+                        onClick={() => setPreviewFile({
+                          id: file.id,
+                          name: file.name,
+                          url: file.webViewLink || getDriveImageUrl(file),
+                          printUrl: getDriveImageUrl(file),
+                          isDrive: true,
+                          mimeType: file.mimeType,
+                          citizenName: targetCitizen?.FullName || file.name,
+                          rawDriveFile: file
+                        })}
                         className="h-28 rounded-xl bg-emerald-50/50 dark:bg-slate-700/50 border border-emerald-100 dark:border-slate-700 flex items-center justify-center cursor-pointer overflow-hidden relative group"
                       >
-                        {file.thumbnailLink ? (
-                          <img src={file.thumbnailLink} alt={file.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                        ) : file.mimeType.includes('pdf') ? (
+                        {file.thumbnailLink || file.mimeType?.startsWith('image/') ? (
+                          <img src={getDriveImageUrl(file)} alt={file.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                        ) : file.mimeType?.includes('pdf') ? (
                           <FileText className="w-10 h-10 text-rose-500" />
                         ) : (
                           <FileImage className="w-10 h-10 text-emerald-600" />
@@ -501,32 +597,54 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
                       </div>
                     </div>
 
-                    {/* Actions */}
-                    <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-700/60 flex items-center justify-between gap-1.5">
-                      {file.webViewLink && (
-                        <a
-                          href={file.webViewLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                    {/* Actions: معاينة + طباعة + حذف + ربط */}
+                    <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-700/60 flex items-center flex-wrap justify-between gap-1">
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => printImageIsolated(getDriveImageUrl(file), file.name, targetCitizen?.FullName || file.name)}
+                          className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/50 dark:hover:bg-amber-900 text-amber-900 dark:text-amber-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          title="طباعة الصورة فقط"
                         >
-                          <ExternalLink className="w-3 h-3" />
-                          <span>فتح</span>
-                        </a>
-                      )}
+                          <Printer className="w-3 h-3" />
+                          <span>طباعة</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDriveFile(file)}
+                          className="px-2 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/50 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          title="حذف الملف من Google Drive"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>حذف</span>
+                        </button>
+
+                        {file.webViewLink && (
+                          <a
+                            href={file.webViewLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 cursor-pointer"
+                            title="فتح في Google Drive"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                      </div>
 
                       {onAttachFileToRequest && (
                         <button
                           type="button"
                           onClick={() => {
-                            onAttachFileToRequest(file.webViewLink || file.id, file.name);
+                            onAttachFileToRequest(file.webViewLink || getDriveImageUrl(file), file.name);
                             setUploadStatus(`✓ تم ربط الملف (${file.name}) بالمعاملة بنجاح!`);
                             setTimeout(() => setUploadStatus(null), 3000);
                           }}
-                          className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
                         >
                           <Paperclip className="w-3 h-3" />
-                          <span>ربط بالمعاملة</span>
+                          <span>ربط</span>
                         </button>
                       )}
                     </div>
@@ -551,7 +669,16 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
 
                       {/* Image Preview Thumbnail */}
                       <div 
-                        onClick={() => setPreviewFile({ name: img.fileName, url: img.dataUrl, isDrive: false, mimeType: img.mimeType })}
+                        onClick={() => setPreviewFile({
+                          id: img.id,
+                          name: img.fileName,
+                          url: img.dataUrl,
+                          printUrl: img.dataUrl,
+                          isDrive: false,
+                          mimeType: img.mimeType,
+                          citizenName: img.citizenName,
+                          rawLocalImage: img
+                        })}
                         className="h-28 rounded-xl bg-slate-100 dark:bg-slate-700 flex items-center justify-center cursor-pointer overflow-hidden relative group"
                       >
                         <img src={img.dataUrl} alt={img.fileName} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
@@ -572,16 +699,29 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
                       )}
                     </div>
 
-                    {/* Actions */}
-                    <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-700/60 flex items-center justify-between gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setPreviewFile({ name: img.fileName, url: img.dataUrl, isDrive: false, mimeType: img.mimeType })}
-                        className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                      >
-                        <Eye className="w-3 h-3 text-blue-600" />
-                        <span>معاينة</span>
-                      </button>
+                    {/* Actions: طباعة + حذف + معاينة + ربط */}
+                    <div className="pt-2.5 mt-2 border-t border-slate-100 dark:border-slate-700/60 flex items-center flex-wrap justify-between gap-1">
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => printImageIsolated(img.dataUrl, img.fileName, img.citizenName)}
+                          className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/50 dark:hover:bg-amber-900 text-amber-900 dark:text-amber-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          title="طباعة الصورة فقط"
+                        >
+                          <Printer className="w-3 h-3" />
+                          <span>طباعة</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteLocalImage(img)}
+                          className="px-2 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/50 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          title="حذف الصورة"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>حذف</span>
+                        </button>
+                      </div>
 
                       {onAttachFileToRequest && (
                         <button
@@ -591,10 +731,10 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
                             setUploadStatus(`✓ تم ربط الصورة (${img.fileName}) بالمعاملة بنجاح!`);
                             setTimeout(() => setUploadStatus(null), 3000);
                           }}
-                          className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          className="px-2 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
                         >
                           <Paperclip className="w-3 h-3" />
-                          <span>ربط بالمعاملة</span>
+                          <span>ربط</span>
                         </button>
                       )}
                     </div>
@@ -609,7 +749,7 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
         {/* Modal Footer */}
         <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/80 flex items-center justify-between shrink-0">
           <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-            تكامل ثنائي الاتجاه: التعديل والرفع في النظام يظهر مباشرة في Google Drive والعكس صحيح ⚡
+            تكامل ثنائي الاتجاه: التعديل والرفع والبحث والحذف والطباعة مرتبطة مباشرة بـ Google Drive ⚡
           </div>
           <button
             onClick={onClose}
@@ -625,9 +765,39 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
       {previewFile && (
         <div className="fixed inset-0 z-60 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-slate-900 text-white rounded-3xl max-w-3xl w-full p-4 space-y-3 relative border border-slate-700 flex flex-col max-h-[90vh]">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <span className="text-xs font-bold truncate max-w-md">{previewFile.name}</span>
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2 gap-2 flex-wrap">
+              <span className="text-xs font-bold truncate max-w-sm">{previewFile.name}</span>
+              <div className="flex items-center gap-1.5">
+                {previewFile.printUrl && (
+                  <button
+                    onClick={() => printImageIsolated(previewFile.printUrl!, previewFile.name, previewFile.citizenName)}
+                    className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center gap-1 cursor-pointer"
+                    title="طباعة الصورة منفردة"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>طباعة الصورة</span>
+                  </button>
+                )}
+                {previewFile.rawDriveFile && (
+                  <button
+                    onClick={() => handleDeleteDriveFile(previewFile.rawDriveFile!)}
+                    className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1 cursor-pointer"
+                    title="حذف من Google Drive"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>حذف</span>
+                  </button>
+                )}
+                {previewFile.rawLocalImage && (
+                  <button
+                    onClick={() => handleDeleteLocalImage(previewFile.rawLocalImage!)}
+                    className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1 cursor-pointer"
+                    title="حذف من الأرشيف المحلي"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>حذف</span>
+                  </button>
+                )}
                 <button
                   onClick={() => setZoomLevel(z => Math.min(2.5, z + 0.25))}
                   className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white cursor-pointer"
@@ -659,7 +829,17 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
             </div>
 
             <div className="flex-1 overflow-auto flex items-center justify-center min-h-[300px] bg-black/40 rounded-2xl p-2">
-              {previewFile.url ? (
+              {previewFile.printUrl && (!previewFile.mimeType || previewFile.mimeType.startsWith('image/')) ? (
+                <img
+                  src={previewFile.printUrl}
+                  alt={previewFile.name}
+                  style={{
+                    transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
+                    transition: 'transform 0.2s ease-out'
+                  }}
+                  className="max-h-[520px] max-w-full object-contain rounded-xl"
+                />
+              ) : previewFile.url ? (
                 previewFile.isDrive ? (
                   <iframe
                     src={previewFile.url.replace('/view', '/preview')}

@@ -236,20 +236,34 @@
     height: auto !important;
     overflow: visible !important;
   }
-  .no-print, header, nav, aside, footer {
+  .no-print, header, nav, aside, footer, button, input[type="button"], input[type="submit"] {
     display: none !important;
   }
   .print-only {
     display: block !important;
   }
-  /* Remove dark overlays and modal backdrops on print */
-  .fixed, [class*="bg-black/"], [class*="bg-slate-950/"] {
-    position: static !important;
-    background: transparent !important;
+
+  /* Isolate print container and hide background components */
+  body:has(.print-container) > #root > *:not(:has(.print-container)),
+  body:has(.printable-receipt-card) > #root > *:not(:has(.printable-receipt-card)),
+  body:has(.printable-area) > #root > *:not(:has(.printable-area)) {
+    display: none !important;
+  }
+
+  .fixed:has(.print-container),
+  .fixed:has(.printable-receipt-card),
+  .fixed:has(.printable-area) {
+    position: absolute !important;
+    inset: 0 !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    z-index: 99999 !important;
     backdrop-filter: none !important;
     box-shadow: none !important;
   }
-  .print-container, .printable-receipt-card {
+
+  .print-container, .printable-receipt-card, .printable-area {
     display: block !important;
     width: 100% !important;
     max-width: 100% !important;

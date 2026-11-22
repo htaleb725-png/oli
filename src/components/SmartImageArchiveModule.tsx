@@ -51,6 +51,7 @@ import {
 } from '../utils/imageDb';
 import { autoUploadImageToDriveIfConnected } from '../services/googleSheetsService';
 import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
+import { printImageIsolated } from '../utils/printReceiptHelper';
 
 interface SmartImageArchiveModuleProps {
   onOpenCitizenHistory?: (citizenId: string) => void;
@@ -886,10 +887,10 @@ export const SmartImageArchiveModule: React.FC<SmartImageArchiveModuleProps> = (
     }
   };
 
-  // Print single image view
+  // Print single image view isolated
   const handlePrintPreview = () => {
     if (!previewImage) return;
-    window.print();
+    printImageIsolated(previewImage.record.dataUrl, previewImage.record.fileName, previewImage.record.citizenName);
   };
 
   // Download image
@@ -1774,8 +1775,7 @@ export const SmartImageArchiveModule: React.FC<SmartImageArchiveModuleProps> = (
 
                       <button
                         onClick={() => {
-                          setPreviewImage({ record, request: linkedReq, citizen: linkedCitizen });
-                          setTimeout(() => window.print(), 100);
+                          printImageIsolated(record.dataUrl, record.fileName, record.citizenName);
                         }}
                         className="p-1.5 rounded-lg text-slate-500 hover:text-purple-600 hover:bg-purple-50 transition-colors cursor-pointer"
                         title="طباعة المعاملة والصورة فورياً"

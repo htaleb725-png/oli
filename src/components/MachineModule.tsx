@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { OfficeRequest } from '../types';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 
 interface OfficialLetter {
   id: string;
@@ -114,8 +115,8 @@ export const MachineModule: React.FC = () => {
     );
     setSelectedLetterForPrint(letter);
     setTimeout(() => {
-      window.print();
-    }, 300);
+      printElementIsolated('machine-letter-print', { title: `كتاب رسمي - ${letter.letterNumber}` });
+    }, 250);
   };
 
   // Auto-receive logic requested by user:
@@ -148,8 +149,8 @@ export const MachineModule: React.FC = () => {
     if (actionType === 'طباعة') {
       setSelectedRequestForPrint(updatedReq);
       setTimeout(() => {
-        window.print();
-      }, 300);
+        printElementIsolated('machine-request-print', { title: `طلب مواطن - ${req.CitizenName}` });
+      }, 250);
     }
   };
 
@@ -438,7 +439,7 @@ export const MachineModule: React.FC = () => {
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => window.print()}
+                  onClick={() => printElementIsolated('machine-request-print', { title: `طلب مواطن - ${selectedRequestForPrint.CitizenName}` })}
                   className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
                 >
                   <Printer className="w-3.5 h-3.5" />
@@ -453,7 +454,7 @@ export const MachineModule: React.FC = () => {
               </div>
             </div>
 
-            <div className="print-container p-8 sm:p-12 space-y-6 text-right font-['Cairo',sans-serif] bg-white flex-1 overflow-y-auto">
+            <div id="machine-request-print" className="print-container p-8 sm:p-12 space-y-6 text-right font-['Cairo',sans-serif] bg-white flex-1 overflow-y-auto">
               <div className="border-b-2 border-slate-900 pb-4 flex items-center justify-between">
                 <div className="text-right space-y-0.5">
                   <div className="text-xs font-bold text-slate-900">جمهورية العراق</div>
@@ -632,7 +633,7 @@ export const MachineModule: React.FC = () => {
             </div>
 
             {/* Official Letter Body for A4 Print */}
-            <div className="print-container p-8 sm:p-12 space-y-6 text-right font-['Cairo',sans-serif] bg-white flex-1 overflow-y-auto">
+            <div id="machine-letter-print" className="print-container p-8 sm:p-12 space-y-6 text-right font-['Cairo',sans-serif] bg-white flex-1 overflow-y-auto">
               {/* Header with Parliament Emblem */}
               <div className="border-b-2 border-slate-900 pb-5 flex items-center justify-between">
                 <div className="text-right space-y-0.5">

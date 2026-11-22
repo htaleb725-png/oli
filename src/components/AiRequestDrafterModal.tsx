@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { printElementIsolated } from '../utils/printReceiptHelper';
 import { SearchableSelect } from './SearchableSelect';
 import { 
   Sparkles, 
@@ -103,7 +104,7 @@ export const AiRequestDrafterModal: React.FC<AiRequestDrafterModalProps> = ({
       'توليد الطلبات بالذكاء الاصطناعي',
       `طباعة طلب للمواطن ${applicantName} موجه إلى ${targetEntity}`
     );
-    window.print();
+    printElementIsolated('ai-printable-request', { title: `طلب رسمي - ${applicantName}` });
   };
 
   const handleSaveToSystem = () => {

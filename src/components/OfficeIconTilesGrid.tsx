@@ -49,7 +49,7 @@ export const OfficeIconTilesGrid: React.FC<OfficeIconTilesGridProps> = ({
           <div>
             {title && (
               <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 shadow-sm animate-pulse"></span>
+                <span className="w-1.5 h-5 rounded-full bg-gradient-to-b from-amber-500 to-blue-600 shrink-0" />
                 <span>{title}</span>
               </h3>
             )}
@@ -60,8 +60,8 @@ export const OfficeIconTilesGrid: React.FC<OfficeIconTilesGridProps> = ({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-2xs">
-              {items.length} أيقونة عمل مباشرة
+            <span className="text-[11px] font-mono tabular-nums font-bold text-slate-600 dark:text-slate-300 px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-2xs">
+              {items.length} قسم متاح
             </span>
           </div>
         </div>
