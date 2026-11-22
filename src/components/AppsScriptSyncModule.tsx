@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import * as XLSX from 'xlsx';
 import { APPS_SCRIPT_PRODUCTION_CODE } from '../services/appsScriptTemplate';
+import { extractDriveFolderId } from '../services/driveArchiveService';
+import { reorganizeGoogleSheetsNow } from '../services/realtimeGoogleSync';
 import { 
   FileSpreadsheet, 
   Copy, 
@@ -40,6 +42,8 @@ export const AppsScriptSyncModule: React.FC = () => {
     auditLogs, 
     systemSettings, 
     updateSystemSettings,
+    setGoogleDriveFolderId,
+    cheques,
     addAuditLog 
   } = useApp();
 
@@ -55,6 +59,8 @@ export const AppsScriptSyncModule: React.FC = () => {
 
   // Apps Script Legacy / Webhook
   const [copied, setCopied] = useState(false);
+  const [isReorganizingSheets, setIsReorganizingSheets] = useState(false);
+  const [reorganizeResult, setReorganizeResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Active Tab inside module
   const [activeSubTab, setActiveSubTab] = useState<'excel_link_config' | 'excel_import_export' | 'apps_script'>('excel_link_config');
@@ -91,21 +97,52 @@ export const AppsScriptSyncModule: React.FC = () => {
     }
 
     const calculatedUrl = `https://docs.google.com/spreadsheets/d/${cleanSheetId}/edit`;
+    const cleanDriveId = customDriveFolderId.trim() ? extractDriveFolderId(customDriveFolderId) : '';
 
     updateSystemSettings({
       googleSheetId: cleanSheetId,
       activeGoogleSheetId: cleanSheetId,
       activeGoogleSheetUrl: calculatedUrl,
-      googleDriveFolderId: customDriveFolderId.trim(),
+      ...(cleanDriveId ? { googleDriveFolderId: cleanDriveId } : {}),
       appsScriptUrl: customAppsScriptUrl.trim(),
       googleAppsScriptUrl: customAppsScriptUrl.trim()
     });
+    if (cleanDriveId) {
+      setCustomDriveFolderId(cleanDriveId);
+      setGoogleDriveFolderId(cleanDriveId);
+    }
 
     setSelectedSheetId(cleanSheetId);
     setSelectedSheetUrl(calculatedUrl);
-    setSaveSuccessMsg('تم حفظ وتحديث إعدادات ربط الإكسل و Google Sheets بنجاح!');
+    setSaveSuccessMsg('تم حفظ وتحديث إعدادات ربط الإكسل و Google Sheets و Google Drive بنجاح!');
     addAuditLog('تحديث إعدادات الربط', 'إعدادات الإكسل', `تحديث معرّف جدول الإكسل: ${cleanSheetId}`);
     setTimeout(() => setSaveSuccessMsg(''), 4000);
+  };
+
+  const handleReorganizeSheetsNow = async () => {
+    setIsReorganizingSheets(true);
+    setReorganizeResult(null);
+    try {
+      const res = await reorganizeGoogleSheetsNow({
+        appsScriptUrl: customAppsScriptUrl || systemSettings.appsScriptUrl,
+        sheetId: customSheetId || systemSettings.googleSheetId,
+        citizens,
+        requests,
+        interviews,
+        organizationRecords,
+        officialLetters,
+        cheques,
+        auditLogs
+      });
+      setReorganizeResult(res);
+      if (res.success) {
+        addAuditLog('تنظيف وترتيب أعمدة Google Sheets', 'إعدادات الإكسل', res.message);
+      }
+    } catch (err: any) {
+      setReorganizeResult({ success: false, message: err?.message || 'تعذر إعادة ترتيب الأعمدة حالياً.' });
+    } finally {
+      setIsReorganizingSheets(false);
+    }
   };
 
   // Direct Multi-Sheet Full Excel Export
@@ -591,6 +628,86 @@ export const AppsScriptSyncModule: React.FC = () => {
                 <p>الملف المصدر متوافق 100% مع كافة برامج Microsoft Excel و Google Sheets و LibreOffice.</p>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: Apps Script & One-Click Google Sheets Column Cleanup */}
+      {activeSubTab === 'apps_script' && (
+        <div className="space-y-4 text-right">
+          {/* One-Click Column Cleanup Banner */}
+          <div className="p-5 bg-white rounded-xl border-2 border-emerald-200 shadow-xs space-y-3">
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <TableProperties className="w-4 h-4 text-emerald-600" />
+                  <span>تنظيف وإعادة ترتيب أعمدة Google Sheets تلقائياً (كل معلومة في عمود مستقل)</span>
+                </h3>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  يعيد هذا الإجراء تنظيم الجداول المتداخلة إلى <strong>18 عمود عربي معزول للمراجعين</strong> و<strong>20 عمود عربي معزول للطلبات</strong> (الاسم، الهاتف، الوزارة، الموضوع، الصادر، التاريخ، حالة الإنجاز، حالة الاستلام، ...) دون حذف أي سجل.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isReorganizingSheets}
+                onClick={handleReorganizeSheetsNow}
+                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-2 cursor-pointer shadow-xs transition-all shrink-0 disabled:opacity-60"
+              >
+                <RefreshCw className={`w-4 h-4 ${isReorganizingSheets ? 'animate-spin' : ''}`} />
+                <span>{isReorganizingSheets ? 'جاري تنظيف وترتيب الأعمدة...' : 'تنظيف وإعادة ترتيب أعمدة Google Sheets الآن'}</span>
+              </button>
+            </div>
+
+            {reorganizeResult && (
+              <div
+                className={`p-3 rounded-xl text-xs font-bold flex items-center gap-2 ${
+                  reorganizeResult.success
+                    ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
+                    : 'bg-amber-50 border border-amber-200 text-amber-800'
+                }`}
+              >
+                {reorganizeResult.success ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                )}
+                <span>{reorganizeResult.message}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Apps Script Production Code Card */}
+          <div className="p-5 bg-white rounded-xl border border-slate-200 shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <FileCode className="w-4 h-4 text-sky-600" />
+                  <span>كود Google Apps Script المنظم (إصدار الأعمدة العربية المعزولة 2026)</span>
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  في Google Sheets: الإضافات (Extensions) ← Apps Script ← استبدل الكود القديم بالكود أدناه ← نشر (Deploy) ← إدارة عمليات النشر ← إصدار جديد.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(appsScriptCode);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 3000);
+                }}
+                className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+              >
+                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                <span>{copied ? 'تم نسخ الكود بنجاح ✓' : 'نسخ كود Apps Script الكامل'}</span>
+              </button>
+            </div>
+
+            <pre
+              dir="ltr"
+              className="p-4 rounded-xl bg-slate-950 text-emerald-300 text-[11px] font-mono overflow-x-auto max-h-96 leading-relaxed border border-slate-800"
+            >
+              {appsScriptCode}
+            </pre>
           </div>
         </div>
       )}

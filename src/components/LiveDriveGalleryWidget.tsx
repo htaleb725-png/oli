@@ -135,7 +135,8 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [rotation, setRotation] = useState<number>(0);
 
-  const isFetchingRef = useRef(false);
+  const requestSeqRef = useRef(0);
+  const lastLoadedFolderRef = useRef<string>('');
 
   const showBanner = (
     text: string,
@@ -146,26 +147,39 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
   };
 
   const loadArchiveData = useCallback(
-    async (opts?: { silent?: boolean; forceRefresh?: boolean }) => {
-      if (isFetchingRef.current) return;
-      isFetchingRef.current = true;
+    async (opts?: { silent?: boolean; forceRefresh?: boolean; folderOverride?: string }) => {
+      const targetFolder = extractDriveFolderId(opts?.folderOverride || resolvedFolderId);
+      const seq = ++requestSeqRef.current;
+      const folderChanged = lastLoadedFolderRef.current !== targetFolder;
+
+      if (folderChanged) {
+        setDriveFiles([]);
+        setTotalInFolder(0);
+        setDriveError(null);
+        setRemoteDriveHits([]);
+      }
+
       if (!opts?.silent) {
-        if (!hasLoadedOnceRef.current) setIsLoading(true);
+        if (!hasLoadedOnceRef.current || folderChanged) setIsLoading(true);
         else setIsRefreshing(true);
       }
 
       try {
         const [driveResult, dbImgs] = await Promise.all([
           fetchLiveDriveFolderFiles({
-            folderId: resolvedFolderId,
+            folderId: targetFolder,
             appsScriptUrl,
-            forceRefresh: opts?.forceRefresh,
+            forceRefresh: opts?.forceRefresh ?? folderChanged,
             limit: 5000
           }),
           getAllImagesFromDB().catch(() => [] as ImageRecord[])
         ]);
 
+        // Discard stale responses from an earlier folder or older poll
+        if (seq !== requestSeqRef.current) return;
+
         hasLoadedOnceRef.current = true;
+        lastLoadedFolderRef.current = targetFolder;
         setDriveFiles(driveResult.files);
         setTotalInFolder(driveResult.totalInFolder);
         setDriveSource(driveResult.source);
@@ -185,22 +199,24 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
           })
         );
       } catch (err: any) {
+        if (seq !== requestSeqRef.current) return;
         setDriveError(
           err?.message || 'تعذر الاتصال بمجلد Google Drive حالياً.'
         );
       } finally {
-        isFetchingRef.current = false;
-        setIsLoading(false);
-        setIsRefreshing(false);
+        if (seq === requestSeqRef.current) {
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
       }
     },
     [resolvedFolderId, appsScriptUrl]
   );
 
-  // Initial load & reload when Developer changes Drive Folder ID or Apps Script URL
+  // Initial load & immediate forced reload whenever Developer changes Drive Folder ID or Apps Script URL
   useEffect(() => {
     setFolderInput(resolvedFolderId);
-    loadArchiveData({ forceRefresh: false });
+    loadArchiveData({ forceRefresh: true, folderOverride: resolvedFolderId });
   }, [resolvedFolderId, appsScriptUrl, loadArchiveData]);
 
   // Gentle 45-second auto-poll so newly added photos/PDFs in Drive appear automatically without lag
@@ -421,9 +437,10 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
     setFolderInput(cleanId);
     setIsEditingFolder(false);
     showBanner(
-      `تم تحديث مجلد Google Drive إلى (${cleanId}) ومزامنته سحابياً للجميع.`,
+      `تم تحديث مجلد Google Drive إلى (${cleanId}) ومزامنته سحابياً — جاري جلب الصور والملفات...`,
       'success'
     );
+    loadArchiveData({ forceRefresh: true, folderOverride: cleanId });
   };
 
   const handleDeleteDrive = async (file: UnifiedDriveFile) => {

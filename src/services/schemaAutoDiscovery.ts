@@ -2,6 +2,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { syncSchemaToGoogleAppsScript } from './realtimeGoogleSync';
 import { CustomSection } from '../types';
+import { CITIZENS_SHEET_HEADERS, REQUESTS_SHEET_HEADERS } from './googleSheetsSchema';
 
 export interface SectionSchemaDefinition {
   id: string;
@@ -17,41 +18,13 @@ export const CORE_SYSTEM_SECTIONS: SectionSchemaDefinition[] = [
     id: 'citizens',
     name: 'سجل_المراجعين_Citizens',
     title: 'سجل المراجعين والمواطنين',
-    fields: [
-      { key: 'Citizen_ID', label: 'معرف المواطن' },
-      { key: 'FullName', label: 'الاسم الكامل' },
-      { key: 'Phone1', label: 'الهاتف الأول' },
-      { key: 'Phone2', label: 'الهاتف الثاني' },
-      { key: 'District', label: 'القضاء' },
-      { key: 'SubDistrict', label: 'الناحية' },
-      { key: 'Gender', label: 'الجنس' },
-      { key: 'Rating', label: 'التقييم' },
-      { key: 'Job', label: 'المهنة' },
-      { key: 'Education', label: 'التحصيل الدراسي' },
-      { key: 'ReferralSource', label: 'جهة الإحالة' },
-      { key: 'CreatedAt', label: 'تاريخ التسجيل' },
-      { key: 'PhotoUrl', label: 'رابط الصورة' },
-      { key: 'UpdatedAt', label: 'آخر تحديث' }
-    ]
+    fields: CITIZENS_SHEET_HEADERS.map(h => ({ key: h, label: h }))
   },
   {
     id: 'requests',
     name: 'طلبات_المواطنين_Requests',
     title: 'طلبات ومعاملات المواطنين',
-    fields: [
-      { key: 'Request_ID', label: 'رقم المعاملة' },
-      { key: 'Citizen_ID', label: 'معرف المواطن' },
-      { key: 'CitizenName', label: 'اسم المواطن' },
-      { key: 'Phone1', label: 'رقم الهاتف' },
-      { key: 'Entity', label: 'الجهة المعنية' },
-      { key: 'RequestStatus', label: 'حالة الطلب' },
-      { key: 'ProcessingStatus', label: 'موقف الإجراء' },
-      { key: 'Priority', label: 'الأسبقية' },
-      { key: 'Details', label: 'موضوع الطلب' },
-      { key: 'CreatedAt', label: 'تاريخ الإدخال' },
-      { key: 'CreatedBy', label: 'الموظف المدخل' },
-      { key: 'UpdatedAt', label: 'آخر تحديث' }
-    ]
+    fields: REQUESTS_SHEET_HEADERS.map(h => ({ key: h, label: h }))
   },
   {
     id: 'interviews',
@@ -196,9 +169,12 @@ export async function autoSyncAllSchemas(customSections: CustomSection[] = []): 
       console.warn('[Schema Auto-Discovery] Firestore schema registration note:', fsErr);
     }
 
-    // 3. Notify Google Apps Script Web App to verify or auto-create tabs and column headers
-    await syncSchemaToGoogleAppsScript(allSections);
-    console.log(`[Dual-Sync] Schema auto-discovery verified ${allSections.length} sections across Firebase & Google Sheets.`);
+    // 3. Only notify Google Apps Script for custom sections so core sheets stay strictly locked to their clean Arabic column schema
+    const customOnly = allSections.filter(s => s.isCustom);
+    if (customOnly.length > 0) {
+      await syncSchemaToGoogleAppsScript(customOnly);
+    }
+    console.log(`[Dual-Sync] Schema auto-discovery verified ${allSections.length} sections (${customOnly.length} custom synced to Sheets).`);
   } catch (err) {
     console.warn('[Schema Auto-Discovery] Sync note:', err);
   }

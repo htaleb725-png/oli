@@ -1,11 +1,12 @@
-import { getAccessToken, pushSingleRecordToSheetsRealtime, deleteRecordFromSheetsRealtime } from './googleSheetsService';
+import { getAccessToken, pushSingleRecordToSheetsRealtime, deleteRecordFromSheetsRealtime, syncAllDataToGoogleSheets } from './googleSheetsService';
 import {
-  CITIZENS_SHEET_APPEND_RANGE,
-  REQUESTS_SHEET_APPEND_RANGE,
+  CITIZENS_SHEET_NAME,
+  REQUESTS_SHEET_NAME,
   citizenToSheetRow,
   requestToSheetRow,
   toCleanSheetCitizenPayload,
-  toCleanSheetRequestPayload
+  toCleanSheetRequestPayload,
+  cleanSheetCell
 } from './googleSheetsSchema';
 import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord, User } from '../types';
 
@@ -200,6 +201,29 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
     // 2. Webhook / Apps Script Web App sync (if configured) — send strictly clean isolated scalar fields (zero JSON/base64 blobs)
     if (resolvedUrl && resolvedUrl.startsWith('http')) {
       try {
+        // Never dump huge base64 icons/settings objects into Google Sheets cells
+        if (item.entityType === 'settings') {
+          isProcessingQueue = false;
+          if (syncQueue.length > 0) {
+            setTimeout(() => processSyncQueue(customUrl, targetSheetId), 300);
+          }
+          return;
+        }
+
+        const sanitizeFlatPayload = (obj: any): Record<string, string> => {
+          if (!obj || typeof obj !== 'object') return {};
+          const out: Record<string, string> = {};
+          for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            if (v === null || v === undefined || typeof v === 'object') continue;
+            const cleaned = cleanSheetCell(v);
+            if (cleaned !== '' || k === 'id') {
+              out[k] = cleaned;
+            }
+          }
+          return out;
+        };
+
         const cleanWebhookData =
           item.action === 'delete'
             ? item.data
@@ -207,7 +231,7 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
             ? toCleanSheetCitizenPayload(item.data)
             : item.entityType === 'requests'
             ? toCleanSheetRequestPayload(item.data)
-            : item.data;
+            : sanitizeFlatPayload(item.data);
 
         await fetch(resolvedUrl, {
           method: 'POST',
@@ -296,14 +320,14 @@ export async function pushBulkDataToGoogleSheets(
     }
   }
 
-  // 2. Also append directly via Google Sheets REST API using the EXACT SAME unified 18-col Citizens & 20-col Requests schema
+  // 2. Also append directly via Google Sheets REST API anchored strictly to A1 (never drifting right!)
   if (resolvedSheetId && (citizensList.length > 0 || requestsList.length > 0)) {
     try {
       const token = await getAccessToken();
       if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
         if (citizensList.length > 0) {
           const citRows = citizensList.map(c => citizenToSheetRow(c));
-          const encCitRange = encodeURIComponent(CITIZENS_SHEET_APPEND_RANGE);
+          const encCitRange = encodeURIComponent(`${CITIZENS_SHEET_NAME}!A1`);
           const resCit = await fetch(
             `https://sheets.googleapis.com/v4/spreadsheets/${resolvedSheetId}/values/${encCitRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
             {
@@ -319,7 +343,7 @@ export async function pushBulkDataToGoogleSheets(
         }
         if (requestsList.length > 0) {
           const reqRows = requestsList.map(r => requestToSheetRow(r));
-          const encReqRange = encodeURIComponent(REQUESTS_SHEET_APPEND_RANGE);
+          const encReqRange = encodeURIComponent(`${REQUESTS_SHEET_NAME}!A1`);
           const resReq = await fetch(
             `https://sheets.googleapis.com/v4/spreadsheets/${resolvedSheetId}/values/${encReqRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
             {
@@ -340,6 +364,94 @@ export async function pushBulkDataToGoogleSheets(
   }
 
   return { appsScriptSent, directSheetsSent, chunksSent };
+}
+
+/**
+ * One-click Google Sheets column cleanup & reorganization (without losing any data!):
+ * 1) If Google OAuth token + Sheet ID exist, clears messy legacy columns (A1:AZ) and rewrites all non-empty tables cleanly with RTL + CLIP formatting.
+ * 2) If Apps Script URL is configured, triggers `reorganizeSheets` (GET + POST) and syncs clean Arabic-column data.
+ */
+export async function reorganizeGoogleSheetsNow(params: {
+  appsScriptUrl?: string;
+  sheetId?: string;
+  citizens: Citizen[];
+  requests: OfficeRequest[];
+  interviews?: Interview[];
+  organizationRecords?: OrganizationRecord[];
+  officialLetters?: OfficialLetter[];
+  cheques?: ChequeRecord[];
+  auditLogs?: any[];
+}): Promise<{ success: boolean; message: string }> {
+  const resolvedUrl = resolveAppsScriptUrl(params.appsScriptUrl);
+  const resolvedSheetId = resolveTargetSheetId(params.sheetId);
+  let directDone = false;
+  let scriptDone = false;
+
+  // 1. Direct Google Sheets API clean rewrite (clears scrambled A1:AZ columns then rewrites exact 18 & 20 Arabic columns + formatting)
+  if (resolvedSheetId) {
+    try {
+      const token = await getAccessToken();
+      if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
+        const res = await syncAllDataToGoogleSheets(token, resolvedSheetId, {
+          citizens: params.citizens || [],
+          requests: params.requests || [],
+          interviews: params.interviews || [],
+          organizationRecords: params.organizationRecords || [],
+          officialLetters: params.officialLetters || [],
+          auditLogs: params.auditLogs || [],
+          cheques: params.cheques || []
+        });
+        if (res.success) directDone = true;
+      }
+    } catch (err) {
+      console.warn('Direct Sheets reorganize warning:', err);
+    }
+  }
+
+  // 2. Apps Script clean column reorganization (GET + POST)
+  if (resolvedUrl && resolvedUrl.startsWith('http')) {
+    try {
+      const sep = resolvedUrl.includes('?') ? '&' : '?';
+      const getRes = await fetch(`${resolvedUrl}${sep}action=reorganizeSheets&t=${Date.now()}`, {
+        method: 'GET'
+      });
+      if (getRes.ok) scriptDone = true;
+    } catch {
+      // Fallback to POST no-cors
+      try {
+        await fetch(resolvedUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'reorganizeSheets', timestamp: new Date().toISOString() })
+        });
+        scriptDone = true;
+      } catch {}
+    }
+  }
+
+  if (directDone && scriptDone) {
+    return {
+      success: true,
+      message: '✓ تم تنظيف وإعادة ترتيب كافة أعمدة Google Sheets (18 عمود للمراجعين و 20 عمود للطلبات) وتنسيقها بنجاح عبر الربط المباشر و Apps Script دون فقدان أي سجل!'
+    };
+  }
+  if (directDone) {
+    return {
+      success: true,
+      message: '✓ تم تنظيف الأعمدة المختلطة وإعادة كتابة وتنسيق كافة جداول Google Sheets بأعمدة عربية معزولة بنجاح!'
+    };
+  }
+  if (scriptDone) {
+    return {
+      success: true,
+      message: '✓ تم إرسال أمر إعادة ترتيب وتنظيف كافة أعمدة Google Sheets عبر Apps Script بنجاح! افتح الجدول خلال ثوانٍ لمشاهدة الأعمدة المنظمة.'
+    };
+  }
+  return {
+    success: false,
+    message: '⚠️ يرجى التأكد من حفظ رابط Apps Script أو تسجيل الدخول بحساب Google المطور أولاً لتنفيذ تنظيف الأعمدة.'
+  };
 }
 
 /**
@@ -374,57 +486,61 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     const sourceData = json.data || json;
 
     const citizens: Citizen[] = (sourceData.citizens || []).map((c: any) => ({
-      Citizen_ID: String(c.Citizen_ID || c.id || '').trim(),
-      FirstName: String(c.FirstName || '').trim(),
-      FatherName: String(c.FatherName || '').trim(),
-      GrandFatherName: String(c.GrandFatherName || '').trim(),
+      Citizen_ID: String(c.Citizen_ID || c['الرقم التعريفي'] || c.id || '').trim(),
+      FirstName: String(c.FirstName || c['الاسم الأول'] || '').trim(),
+      FatherName: String(c.FatherName || c['اسم الأب'] || '').trim(),
+      GrandFatherName: String(c.GrandFatherName || c['اسم الجد'] || '').trim(),
       GreatGrandFatherName: String(c.GreatGrandFatherName || '').trim(),
-      Surname: String(c.Surname || '').trim(),
-      FullName: String(c.FullName || c.CitizenName || '').trim(),
-      Phone1: String(c.Phone1 || c.Phone || '').trim(),
-      Phone2: String(c.Phone2 || '').trim(),
-      Gender: c.Gender === 'أنثى' ? 'أنثى' : 'ذكر',
-      Job: String(c.Job || '').trim(),
-      Education: String(c.Education || '').trim(),
-      Rating: String(c.Rating || 'لائق'),
-      District: String(c.District || '').trim(),
-      SubDistrict: String(c.SubDistrict || '').trim(),
-      ReferralSource: String(c.ReferralSource || '').trim(),
-      CreatedAt: String(c.CreatedAt || new Date().toISOString().split('T')[0]).trim(),
-      CreatedBy: String(c.CreatedBy || 'Google Sheets').trim(),
+      Surname: String(c.Surname || c['اللقب / العشيرة'] || '').trim(),
+      FullName: String(c.FullName || c['الاسم الكامل'] || c.CitizenName || '').trim(),
+      Phone1: String(c.Phone1 || c['رقم الهاتف'] || c.Phone || '').trim(),
+      Phone2: String(c.Phone2 || c['الهاتف البديل'] || '').trim(),
+      Gender: (c.Gender || c['الجنس']) === 'أنثى' ? 'أنثى' : 'ذكر',
+      Job: String(c.Job || c['المهنة / العمل'] || '').trim(),
+      Education: String(c.Education || c['التحصيل الدراسي'] || '').trim(),
+      Rating: String(c.Rating || c['التقييم'] || 'لائق'),
+      District: String(c.District || c['القضاء'] || '').trim(),
+      SubDistrict: String(c.SubDistrict || c['الناحية / المنطقة'] || '').trim(),
+      ReferralSource: String(c.ReferralSource || c['المعرف / التزكية'] || '').trim(),
+      CreatedAt: String(c.CreatedAt || c['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
+      CreatedBy: String(c.CreatedBy || c['الموظف المسؤول'] || 'Google Sheets').trim(),
       PhotoUrl: c.PhotoUrl ? String(c.PhotoUrl).trim() : undefined
     }));
 
-    const requests: OfficeRequest[] = (sourceData.requests || []).map((r: any) => ({
-      Request_ID: String(r.Request_ID || r.id || '').trim(),
-      Citizen_ID: String(r.Citizen_ID || '').trim(),
-      CitizenName: String(r.CitizenName || r.FullName || '').trim(),
-      CitizenPhone: String(r.CitizenPhone || r.Phone1 || '').trim(),
-      Entity: String(r.Entity || '').trim(),
-      RequestStatus: (r.RequestStatus as any) || 'مستلم',
-      ProcessingStatus: (r.ProcessingStatus as any) || 'قيد التدقيق',
-      DeliveryStatus: r.DeliveryStatus === 'مستلم' ? 'مستلم' : r.DeliveryStatus === 'غير مستلم' ? 'غير مستلم' : undefined,
-      Priority: (r.Priority as any) || 'عام',
-      Details: String(r.Details || '').trim(),
-      OutgoingNumber: r.OutgoingNumber ? String(r.OutgoingNumber).trim() : undefined,
-      OutgoingDate: r.OutgoingDate ? String(r.OutgoingDate).trim() : undefined,
-      Address: r.Address ? String(r.Address).trim() : undefined,
-      ResidentialArea: r.ResidentialArea ? String(r.ResidentialArea).trim() : undefined,
-      ReferralSource: r.ReferralSource ? String(r.ReferralSource).trim() : undefined,
-      Margin: r.Margin ? String(r.Margin).trim() : undefined,
-      Education: r.Education ? String(r.Education).trim() : undefined,
-      Job: r.Job ? String(r.Job).trim() : undefined,
-      TargetDepartment: r.TargetDepartment ? String(r.TargetDepartment).trim() : undefined,
-      SerialNumber: r.SerialNumber ? String(r.SerialNumber).trim() : undefined,
-      OtherNotes: r.OtherNotes ? String(r.OtherNotes).trim() : undefined,
-      AttachmentRequest: r.AttachmentRequest || undefined,
-      AttachmentResponse: r.AttachmentResponse || undefined,
-      DeputyNotes: String(r.DeputyNotes || '').trim(),
-      IsHistoricalImported: r.IsHistoricalImported === true || r.IsHistoricalImported === 'true',
-      CreatedAt: String(r.CreatedAt || new Date().toISOString().split('T')[0]).trim(),
-      CreatedBy: String(r.CreatedBy || 'Google Sheets').trim(),
-      UpdatedAt: r.UpdatedAt ? String(r.UpdatedAt).trim() : undefined
-    }));
+    const requests: OfficeRequest[] = (sourceData.requests || []).map((r: any) => {
+      const rawDelivery = r.DeliveryStatus || r['حالة الاستلام'] || '';
+      const rawProc = r.ProcessingStatus || r['حالة الإنجاز'] || 'قيد التدقيق';
+      return {
+        Request_ID: String(r.Request_ID || r['رقم الطلب'] || r.id || '').trim(),
+        Citizen_ID: String(r.Citizen_ID || r['الرقم التعريفي للمواطن'] || '').trim(),
+        CitizenName: String(r.CitizenName || r['اسم صاحب الطلب'] || r.FullName || '').trim(),
+        CitizenPhone: String(r.CitizenPhone || r['رقم الهاتف'] || r.Phone1 || '').trim(),
+        Entity: String(r.Entity || r['الوزارة / الجهة'] || '').trim(),
+        RequestStatus: (r.RequestStatus || rawDelivery || 'غير مستلم') as any,
+        ProcessingStatus: (rawProc as any) || 'قيد التدقيق',
+        DeliveryStatus: rawDelivery === 'مستلم' ? 'مستلم' : rawDelivery === 'غير مستلم' ? 'غير مستلم' : undefined,
+        Priority: (r.Priority || r['الأسبقية'] || 'عام') as any,
+        Details: String(r.Details || r['الموضوع / تفاصيل الطلب'] || '').trim(),
+        OutgoingNumber: (r.OutgoingNumber || r['العدد / الصادر']) ? String(r.OutgoingNumber || r['العدد / الصادر']).trim() : undefined,
+        OutgoingDate: (r.OutgoingDate || r['تاريخ الصادر']) ? String(r.OutgoingDate || r['تاريخ الصادر']).trim() : undefined,
+        Address: (r.Address || r['العنوان / السكن']) ? String(r.Address || r['العنوان / السكن']).trim() : undefined,
+        ResidentialArea: r.ResidentialArea ? String(r.ResidentialArea).trim() : undefined,
+        ReferralSource: (r.ReferralSource || r['المعرف / التزكية']) ? String(r.ReferralSource || r['المعرف / التزكية']).trim() : undefined,
+        Margin: (r.Margin || r['الهامش / التوجيه']) ? String(r.Margin || r['الهامش / التوجيه']).trim() : undefined,
+        Education: (r.Education || r['التحصيل الدراسي']) ? String(r.Education || r['التحصيل الدراسي']).trim() : undefined,
+        Job: (r.Job || r['المهنة']) ? String(r.Job || r['المهنة']).trim() : undefined,
+        TargetDepartment: (r.TargetDepartment || r['القسم المختص']) ? String(r.TargetDepartment || r['القسم المختص']).trim() : undefined,
+        SerialNumber: r.SerialNumber ? String(r.SerialNumber).trim() : undefined,
+        OtherNotes: (r.OtherNotes || r['الملاحظات']) ? String(r.OtherNotes || r['الملاحظات']).trim() : undefined,
+        AttachmentRequest: r.AttachmentRequest || undefined,
+        AttachmentResponse: r.AttachmentResponse || undefined,
+        DeputyNotes: String(r.DeputyNotes || r['الهامش / التوجيه'] || '').trim(),
+        IsHistoricalImported: r.IsHistoricalImported === true || r.IsHistoricalImported === 'true',
+        CreatedAt: String(r.CreatedAt || r['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
+        CreatedBy: String(r.CreatedBy || r['الموظف المسؤول'] || 'Google Sheets').trim(),
+        UpdatedAt: r.UpdatedAt ? String(r.UpdatedAt).trim() : undefined
+      };
+    });
 
     const interviews: Interview[] = (sourceData.interviews || []).map((i: any) => ({
       Interview_ID: String(i.Interview_ID || i.id || '').trim(),

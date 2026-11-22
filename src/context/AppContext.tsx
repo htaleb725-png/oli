@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import * as XLSX from 'xlsx';
 import { scanMaxOutgoingSequences } from '../utils/outgoingNumberHelper';
 import { toCleanSheetCitizenPayload, toCleanSheetRequestPayload } from '../services/googleSheetsSchema';
+import { extractDriveFolderId } from '../services/driveArchiveService';
 import {
   User,
   Citizen,
@@ -619,6 +620,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return INITIAL_SETTINGS;
     }
   });
+  // Synchronous ref prevents stale-closure overwrites when consecutive updateSettings calls fire in the same tick
+  const systemSettingsRef = useRef<SystemSettings>(systemSettings);
+  systemSettingsRef.current = systemSettings;
 
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'users');
@@ -959,13 +963,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // straight into in-memory cloud config so Vercel & every browser uses Cloud DB (Firestore + Google Sheets + Drive)
   // rather than storing business data inside Chrome localStorage.
   useEffect(() => {
+    const cleanDriveId = systemSettings.googleDriveFolderId
+      ? extractDriveFolderId(systemSettings.googleDriveFolderId)
+      : '';
     setRuntimeCloudConfig({
       appsScriptUrl: systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl,
       googleSheetId: systemSettings.googleSheetId || systemSettings.activeGoogleSheetId,
-      googleDriveFolderId: systemSettings.googleDriveFolderId
+      googleDriveFolderId: cleanDriveId || undefined
     });
-    if (systemSettings.googleDriveFolderId && systemSettings.googleDriveFolderId !== driveFolderId) {
-      setDriveFolderId(systemSettings.googleDriveFolderId);
+    if (cleanDriveId && cleanDriveId !== driveFolderId) {
+      setDriveFolderId(cleanDriveId);
+      try {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('al_nashi_drive_folder_id', cleanDriveId);
+        }
+      } catch {}
     }
     if (systemSettings.googleSheetId && systemSettings.googleSheetId !== spreadsheetId) {
       setSpreadsheetId(systemSettings.googleSheetId);
@@ -3267,39 +3279,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateSettings = (newSettings: Partial<SystemSettings>) => {
+    const currentSettings = systemSettingsRef.current;
+    // Normalize Google Drive Folder ID if a full Drive URL or query string was provided
+    const normalizedPatch: Partial<SystemSettings> = { ...newSettings };
+    if (typeof normalizedPatch.googleDriveFolderId === 'string' && normalizedPatch.googleDriveFolderId.trim()) {
+      const cleanDriveId = extractDriveFolderId(normalizedPatch.googleDriveFolderId);
+      normalizedPatch.googleDriveFolderId = cleanDriveId;
+      setDriveFolderId(cleanDriveId);
+      try {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('al_nashi_drive_folder_id', cleanDriveId);
+        }
+      } catch {}
+      setRuntimeCloudConfig({ googleDriveFolderId: cleanDriveId });
+    }
+    if (typeof normalizedPatch.googleSheetId === 'string' && normalizedPatch.googleSheetId.trim()) {
+      let cleanSheetId = normalizedPatch.googleSheetId.trim();
+      const sMatch = cleanSheetId.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+      if (sMatch && sMatch[1]) cleanSheetId = sMatch[1];
+      normalizedPatch.googleSheetId = cleanSheetId;
+      normalizedPatch.activeGoogleSheetId = cleanSheetId;
+      setSpreadsheetId(cleanSheetId);
+      try {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('al_nashi_sheet_id', cleanSheetId);
+        }
+      } catch {}
+      setRuntimeCloudConfig({ googleSheetId: cleanSheetId });
+    }
+
     const isVisualOrIconBroadcast = Boolean(
-      newSettings.customTilesConfig !== undefined ||
-      newSettings.logoUrl !== undefined ||
-      newSettings.parliamentEmblemUrl !== undefined ||
-      newSettings.customImages !== undefined ||
-      newSettings.appName !== undefined ||
-      newSettings.deputyName !== undefined ||
-      newSettings.deputyTitle !== undefined ||
-      newSettings.hiddenBuiltInTiles !== undefined ||
-      newSettings.uiCustomizations !== undefined ||
-      newSettings.customTextOverrides !== undefined ||
-      newSettings.textReplacements !== undefined ||
-      newSettings.settingsVersion !== undefined
+      normalizedPatch.customTilesConfig !== undefined ||
+      normalizedPatch.logoUrl !== undefined ||
+      normalizedPatch.parliamentEmblemUrl !== undefined ||
+      normalizedPatch.customImages !== undefined ||
+      normalizedPatch.appName !== undefined ||
+      normalizedPatch.deputyName !== undefined ||
+      normalizedPatch.deputyTitle !== undefined ||
+      normalizedPatch.hiddenBuiltInTiles !== undefined ||
+      normalizedPatch.uiCustomizations !== undefined ||
+      normalizedPatch.customTextOverrides !== undefined ||
+      normalizedPatch.textReplacements !== undefined ||
+      normalizedPatch.settingsVersion !== undefined
     );
     const nextVersion = isVisualOrIconBroadcast
-      ? Math.max(Date.now(), (systemSettings.settingsVersion || 0) + 1)
-      : (systemSettings.settingsVersion || 0);
-    const updateSummary = newSettings.lastUpdateNote || (
-      newSettings.customTilesConfig !== undefined
+      ? Math.max(Date.now(), (currentSettings.settingsVersion || 0) + 1)
+      : (currentSettings.settingsVersion || 0);
+    const updateSummary = normalizedPatch.lastUpdateNote || (
+      normalizedPatch.customTilesConfig !== undefined
         ? 'تم تحديث أيقونات الأقسام وشكل النظام من قبل المطور'
-        : newSettings.logoUrl !== undefined || newSettings.customImages !== undefined
+        : normalizedPatch.logoUrl !== undefined || normalizedPatch.customImages !== undefined
         ? 'تم تحديث شعارات وهوية المنظومة من قبل المطور'
         : 'تم تحديث إعدادات وتصميم المنظومة'
     );
     const merged: SystemSettings = {
-      ...systemSettings,
-      ...newSettings,
+      ...currentSettings,
+      ...normalizedPatch,
       ...(isVisualOrIconBroadcast ? {
         settingsVersion: nextVersion,
         lastUpdateNote: updateSummary,
         lastUpdatedBy: currentUser?.FullName || 'المطور'
       } : {})
     };
+    systemSettingsRef.current = merged;
     setSystemSettings(merged);
     safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(merged));
 
@@ -3330,18 +3372,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const setGoogleDriveFolderId = (rawFolderId: string) => {
-    if (!rawFolderId) return;
-    let cleanId = rawFolderId.trim();
-    const match = cleanId.match(/folders\/([a-zA-Z0-9_-]+)/);
-    if (match && match[1]) {
-      cleanId = match[1];
-    } else {
-      cleanId = cleanId.split('?')[0].split('&')[0];
-    }
+    if (!rawFolderId || !rawFolderId.trim()) return;
+    const cleanId = extractDriveFolderId(rawFolderId);
     setDriveFolderId(cleanId);
     if (typeof window !== 'undefined') {
       localStorage.setItem('al_nashi_drive_folder_id', cleanId);
     }
+    setRuntimeCloudConfig({ googleDriveFolderId: cleanId });
     updateSettings({ googleDriveFolderId: cleanId });
     try {
       sheetsIntegration.refreshLocalConfig();

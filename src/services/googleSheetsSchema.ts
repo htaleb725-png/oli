@@ -157,57 +157,31 @@ export function requestToSheetRow(r: Partial<OfficeRequest>): string[] {
 }
 
 /**
- * Builds a strictly clean, flat object (ONLY isolated scalar fields, zero nested JSON/base64)
- * for Google Apps Script webhook payloads so Apps Script NEVER creates chaotic extra columns.
+ * Builds a strictly clean, flat object keyed by the EXACT Arabic headers from CITIZENS_SHEET_HEADERS
+ * so BOTH legacy and updated Google Apps Script deployments map every field into its own isolated column
+ * without EVER appending extra duplicate English columns to the right!
  */
 export function toCleanSheetCitizenPayload(c: Partial<Citizen>): Record<string, string> {
   const row = citizenToSheetRow(c);
-  return {
-    Citizen_ID: row[0],
-    FullName: row[1],
-    FirstName: row[2],
-    FatherName: row[3],
-    GrandFatherName: row[4],
-    Surname: row[5],
-    Phone1: row[6],
-    Phone2: row[7],
-    District: row[8],
-    SubDistrict: row[9],
-    Gender: row[10],
-    Job: row[11],
-    Education: row[12],
-    Rating: row[13],
-    ReferralSource: row[14],
-    RegisteredVia: row[15],
-    CreatedAt: row[16],
-    CreatedBy: row[17]
-  };
+  const payload: Record<string, string> = {};
+  for (let i = 0; i < CITIZENS_SHEET_HEADERS.length; i++) {
+    payload[CITIZENS_SHEET_HEADERS[i]] = row[i] ?? '';
+  }
+  return payload;
 }
 
+/**
+ * Builds a strictly clean, flat object keyed by the EXACT Arabic headers from REQUESTS_SHEET_HEADERS
+ * so EVERY field (الاسم، الهاتف، الوزارة، الموضوع، الصادر، التاريخ، حالة الإنجاز، حالة الاستلام، ...)
+ * lands in its OWN dedicated column identically on registration AND Excel filter uploads.
+ */
 export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<string, string> {
   const row = requestToSheetRow(r);
-  return {
-    Request_ID: row[0],
-    Citizen_ID: row[1],
-    CitizenName: row[2],
-    CitizenPhone: row[3],
-    Entity: row[4],
-    Details: row[5],
-    OutgoingNumber: row[6],
-    OutgoingDate: row[7],
-    ProcessingStatus: row[8],
-    DeliveryStatus: row[9],
-    Priority: row[10],
-    Address: row[11],
-    Education: row[12],
-    Job: row[13],
-    ReferralSource: row[14],
-    Margin: row[15],
-    TargetDepartment: row[16],
-    OtherNotes: row[17],
-    CreatedAt: row[18],
-    CreatedBy: row[19]
-  };
+  const payload: Record<string, string> = {};
+  for (let i = 0; i < REQUESTS_SHEET_HEADERS.length; i++) {
+    payload[REQUESTS_SHEET_HEADERS[i]] = row[i] ?? '';
+  }
+  return payload;
 }
 
 /**

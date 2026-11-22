@@ -1098,82 +1098,171 @@ async function startServer() {
       const query = String(req.query.q || '').trim();
       const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
 
-      // Extract folderId if a full Google Drive URL was passed
+      // Extract folderId & optional resourcekey if a full Google Drive URL was passed
       let folderId = rawFolder;
+      let resourceKey = String(req.query.resourcekey || '').trim();
       const urlMatch = rawFolder.match(/folders\/([a-zA-Z0-9_-]+)/);
       if (urlMatch && urlMatch[1]) {
         folderId = urlMatch[1];
+      } else {
+        const idParamMatch = rawFolder.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+        if (idParamMatch && idParamMatch[1]) folderId = idParamMatch[1];
       }
+      if (!resourceKey) {
+        const rkMatch = rawFolder.match(/[?&]resourcekey=([a-zA-Z0-9_-]+)/i);
+        if (rkMatch && rkMatch[1]) resourceKey = rkMatch[1];
+      }
+      folderId = folderId.split('?')[0].split('&')[0].trim();
 
       if (!DRIVE_ID_REGEX.test(folderId)) {
         res.status(400).json({ success: false, files: [], error: 'معرف مجلد Google Drive غير صالح' });
         return;
       }
 
-      const cached = driveFolderCache.get(folderId);
-      let allFiles = cached && !forceRefresh && Date.now() - cached.fetchedAt < 60_000 ? cached.files : null;
-
-      if (!allFiles) {
-        const embedUrl = `https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(folderId)}#grid`;
-        const driveRes = await fetch(embedUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8'
-          }
-        });
-
-        if (!driveRes.ok) {
-          res.json({
-            success: false,
-            files: [],
-            totalInFolder: 0,
-            isPrivate: driveRes.status === 401 || driveRes.status === 403,
-            error: 'تعذر الوصول إلى مجلد Google Drive. تأكد من أن مشاركة المجلد مضبوطة على (أي شخص لديه الرابط).'
-          });
-          return;
-        }
-
-        const html = await driveRes.text();
-        const isLoginGate = html.includes('accounts.google.com/ServiceLogin') || html.includes('ServiceLogin');
-        if (isLoginGate) {
-          res.json({
-            success: false,
-            files: [],
-            totalInFolder: 0,
-            isPrivate: true,
-            error: 'مجلد Google Drive مقيد (خاص). يرجى تغيير صلاحية المشاركة في Drive إلى "أي شخص لديه الرابط — عارض".'
-          });
-          return;
-        }
-
-        const seenIds = new Set<string>();
-        const parsed: Array<{
+      const fetchAndParseEmbeddedFolder = async (
+        targetId: string,
+        rk?: string
+      ): Promise<{
+        ok: boolean;
+        isPrivate?: boolean;
+        error?: string;
+        files: Array<{
           id: string;
           name: string;
           mimeType: string;
           webViewLink: string;
           webContentLink: string;
           thumbnailLink: string;
-        }> = [];
-        const entryRegex = /id="entry-([a-zA-Z0-9_-]{10,80})"[\s\S]{0,1800}?class="flip-entry-title">([^<]+)</g;
-        let m: RegExpExecArray | null;
-        while ((m = entryRegex.exec(html)) !== null) {
-          const fid = m[1];
-          const fname = decodeHtmlEntities(m[2].trim());
-          if (!fid || seenIds.has(fid)) continue;
-          seenIds.add(fid);
-          parsed.push({
-            id: fid,
-            name: fname,
-            mimeType: guessMimeFromName(fname),
-            webViewLink: `https://drive.google.com/file/d/${fid}/view`,
-            webContentLink: `https://drive.google.com/uc?export=download&id=${fid}`,
-            thumbnailLink: `https://drive.google.com/thumbnail?id=${fid}&sz=w1200`
+        }>;
+        subfolderIds: string[];
+      }> => {
+        const rkPart = rk ? `&resourcekey=${encodeURIComponent(rk)}` : '';
+        const candidateViews = [
+          `https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(targetId)}${rkPart}#grid`,
+          `https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(targetId)}${rkPart}#list`
+        ];
+
+        for (const embedUrl of candidateViews) {
+          const driveRes = await fetch(embedUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8'
+            },
+            redirect: 'follow'
           });
+
+          if (!driveRes.ok) {
+            return {
+              ok: false,
+              isPrivate: driveRes.status === 401 || driveRes.status === 403,
+              error: 'تعذر الوصول إلى مجلد Google Drive. تأكد من أن مشاركة المجلد مضبوطة على (أي شخص لديه الرابط — عارض).',
+              files: [],
+              subfolderIds: []
+            };
+          }
+
+          const html = await driveRes.text();
+          const isLoginGate =
+            html.includes('accounts.google.com/ServiceLogin') ||
+            html.includes('ServiceLogin') ||
+            html.includes('You need access') ||
+            html.includes('تحتاج إلى إذن وصول');
+          if (isLoginGate) {
+            return {
+              ok: false,
+              isPrivate: true,
+              error: 'مجلد Google Drive مقيد (خاص). يرجى فتح المجلد في Drive -> مشاركة -> تغيير الوصول العام إلى "أي شخص لديه الرابط (عارض)".',
+              files: [],
+              subfolderIds: []
+            };
+          }
+
+          const seen = new Set<string>();
+          const files: Array<{
+            id: string;
+            name: string;
+            mimeType: string;
+            webViewLink: string;
+            webContentLink: string;
+            thumbnailLink: string;
+          }> = [];
+          const subfolderIds: string[] = [];
+
+          // Parse entries in embeddedfolderview (both #grid and #list share id="entry-..." + flip-entry-title)
+          const entryBlockRegex = /id="entry-([a-zA-Z0-9_-]{10,80})"([\s\S]{0,2200}?)class="flip-entry-title">([^<]+)</g;
+          let m: RegExpExecArray | null;
+          while ((m = entryBlockRegex.exec(html)) !== null) {
+            const fid = m[1];
+            const block = m[2] || '';
+            const fname = decodeHtmlEntities(m[3].trim());
+            if (!fid || seen.has(fid) || fid === targetId) continue;
+            seen.add(fid);
+
+            // Detect nested subfolder links so we can inspect their files too!
+            if (block.includes('/drive/folders/') || block.includes('/folders/')) {
+              subfolderIds.push(fid);
+              continue;
+            }
+
+            files.push({
+              id: fid,
+              name: fname,
+              mimeType: guessMimeFromName(fname),
+              webViewLink: `https://drive.google.com/file/d/${fid}/view`,
+              webContentLink: `https://drive.google.com/uc?export=download&id=${fid}`,
+              thumbnailLink: `https://drive.google.com/thumbnail?id=${fid}&sz=w1200`
+            });
+          }
+
+          if (files.length > 0 || subfolderIds.length > 0) {
+            return { ok: true, files, subfolderIds };
+          }
         }
 
-        allFiles = parsed;
-        driveFolderCache.set(folderId, { fetchedAt: Date.now(), files: allFiles });
+        return { ok: true, files: [], subfolderIds: [] };
+      };
+
+      const cacheKey = resourceKey ? `${folderId}:${resourceKey}` : folderId;
+      const cached = driveFolderCache.get(cacheKey);
+      let allFiles = cached && !forceRefresh && Date.now() - cached.fetchedAt < 45_000 ? cached.files : null;
+
+      if (!allFiles) {
+        const rootParsed = await fetchAndParseEmbeddedFolder(folderId, resourceKey);
+        if (!rootParsed.ok) {
+          res.json({
+            success: false,
+            files: [],
+            totalInFolder: 0,
+            isPrivate: Boolean(rootParsed.isPrivate),
+            error: rootParsed.error
+          });
+          return;
+        }
+
+        const combined = [...rootParsed.files];
+        const seenAll = new Set(combined.map(f => f.id));
+
+        // If the folder contains subfolders, traverse 1 level deep (up to 15 subfolders in parallel batches)
+        if (rootParsed.subfolderIds.length > 0) {
+          const subIdsToScan = rootParsed.subfolderIds.slice(0, 15);
+          const subResults = await Promise.all(
+            subIdsToScan.map(subId =>
+              fetchAndParseEmbeddedFolder(subId).catch(() => ({ ok: false, files: [], subfolderIds: [] }))
+            )
+          );
+          for (const sub of subResults) {
+            if (!sub.ok) continue;
+            for (const f of sub.files) {
+              if (!seenAll.has(f.id)) {
+                seenAll.add(f.id);
+                combined.push(f);
+              }
+            }
+          }
+        }
+
+        allFiles = combined;
+        driveFolderCache.set(cacheKey, { fetchedAt: Date.now(), files: allFiles });
       }
 
       let filtered = allFiles;

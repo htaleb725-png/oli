@@ -34,6 +34,7 @@ import {
   getAccessToken 
 } from '../services/googleSheetsService';
 import { saveImageToDB, getAllImagesFromDB, deleteImageFromDB, ImageRecord } from '../utils/imageDb';
+import { extractDriveFolderId, fetchLiveDriveFolderFiles } from '../services/driveArchiveService';
 import { printImageIsolated } from '../utils/printReceiptHelper';
 import { Citizen, OfficeRequest } from '../types';
 
@@ -64,7 +65,7 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
   } = useApp();
 
   // Active folder ID (from context or fallback)
-  const currentFolderId = driveFolderId || systemSettings.googleDriveFolderId || '1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc';
+  const currentFolderId = extractDriveFolderId(driveFolderId || systemSettings.googleDriveFolderId);
   
   // State
   const [searchQuery, setSearchQuery] = useState(targetCitizen ? targetCitizen.FullName : '');
@@ -98,8 +99,9 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
 
   // Load files when modal opens or folder ID changes
   useEffect(() => {
+    setNewFolderInput(currentFolderId);
     if (isOpen) {
-      loadAllFiles(searchQuery);
+      loadAllFiles(searchQuery, currentFolderId);
     }
   }, [isOpen, currentFolderId]);
 
@@ -121,9 +123,10 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
   };
 
   // Load Drive files + Local DB images (simultaneous search in System + Google Drive)
-  const loadAllFiles = async (queryText?: string) => {
+  const loadAllFiles = async (queryText?: string, folderIdOverride?: string) => {
     setIsLoading(true);
     try {
+      const targetFolder = extractDriveFolderId(folderIdOverride || currentFolderId);
       const q = (queryText || '').trim().toLowerCase();
 
       // 1. Fetch Local Images from IndexedDB
@@ -139,22 +142,20 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
         : dbImages;
       setLocalImages(filteredLocal);
 
-      // 2. Fetch Drive Files via Google Drive v3 API OR Apps Script Webhook
-      let fetchedDriveFiles: DriveFileItem[] = [];
-      const token = await getAccessToken();
-      if (token) {
-        fetchedDriveFiles = await searchDriveFiles(token, currentFolderId, queryText);
-      }
+      // 2. Fetch ALL Drive files seamlessly via unified engine (Server Proxy + Apps Script + OAuth v3)
+      const scriptUrl = getConfiguredScriptUrl();
+      const liveResult = await fetchLiveDriveFolderFiles({
+        folderId: targetFolder,
+        appsScriptUrl: scriptUrl,
+        query: queryText,
+        forceRefresh: true,
+        limit: 5000
+      });
 
-      // Fallback / primary bridge via Apps Script if OAuth token not connected or returned empty
-      if (fetchedDriveFiles.length === 0) {
-        const scriptUrl = getConfiguredScriptUrl();
-        if (scriptUrl) {
-          fetchedDriveFiles = await searchDriveFilesViaAppsScript(scriptUrl, currentFolderId, queryText);
-        }
+      setDriveFiles(liveResult.files || []);
+      if (liveResult.files.length === 0 && liveResult.error) {
+        setUploadStatus(`⚠️ ${liveResult.error}`);
       }
-
-      setDriveFiles(fetchedDriveFiles);
     } catch (err) {
       console.warn('Error loading drive archive files:', err);
     } finally {
@@ -220,20 +221,12 @@ export const GoogleDriveArchiveModal: React.FC<GoogleDriveArchiveModalProps> = (
     const cleanId = newFolderInput.trim();
     if (!cleanId) return;
 
-    // Handle full Google Drive URL pasted by mistake
-    let extractedId = cleanId;
-    if (cleanId.includes('/folders/')) {
-      const match = cleanId.match(/\/folders\/([a-zA-Z0-9_-]+)/);
-      if (match && match[1]) {
-        extractedId = match[1];
-      }
-    }
-
+    const extractedId = extractDriveFolderId(cleanId);
     setGoogleDriveFolderId(extractedId);
     setIsEditingFolderId(false);
-    setUploadStatus(`✓ تم تحديث مجلد Google Drive بنجاح إلى: [${extractedId}]`);
+    setUploadStatus(`✓ تم تحديث مجلد Google Drive بنجاح إلى: [${extractedId}] — جاري جلب الصور والملفات...`);
     setTimeout(() => setUploadStatus(null), 4000);
-    loadAllFiles(searchQuery);
+    loadAllFiles(searchQuery, extractedId);
   };
 
   // File upload handler to Google Drive

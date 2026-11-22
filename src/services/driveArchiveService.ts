@@ -134,7 +134,10 @@ export async function fetchLiveDriveFolderFiles(options: {
   error?: string;
   isPrivate?: boolean;
 }> {
-  const folderId = extractDriveFolderId(options.folderId);
+  const rawInput = (options.folderId || '').trim();
+  const folderId = extractDriveFolderId(rawInput);
+  const rkMatch = rawInput.match(/[?&]resourcekey=([a-zA-Z0-9_-]+)/i);
+  const resourceKey = rkMatch && rkMatch[1] ? rkMatch[1] : '';
   const query = (options.query || '').trim();
   const limit = options.limit || 5000;
   const resolvedScriptUrl = resolveAppsScriptUrl(options.appsScriptUrl);
@@ -152,6 +155,7 @@ export async function fetchLiveDriveFolderFiles(options: {
         folderId,
         limit: String(limit)
       });
+      if (resourceKey) params.set('resourcekey', resourceKey);
       if (query) params.set('q', query);
       if (options.forceRefresh) params.set('refresh', '1');
       const res = await fetch(`/api/drive/folder-files?${params.toString()}`, {
@@ -163,7 +167,7 @@ export async function fetchLiveDriveFolderFiles(options: {
       } else if (res.ok) {
         _expressDriveProxyAvailable = true;
         const json = await res.json();
-        if (json?.success && Array.isArray(json.files)) {
+        if (json?.success && Array.isArray(json.files) && json.files.length > 0) {
           rawFiles = json.files;
           totalInFolder = Number(json.totalInFolder || json.files.length);
           source = 'server_proxy';

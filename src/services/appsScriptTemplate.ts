@@ -191,6 +191,14 @@ function reorganizeAllSheetsCleanly() {
     headerRange.setFontColor('#fbbf24');
     headerRange.setFontWeight('bold');
     headerRange.setHorizontalAlignment('center');
+    if (rows.length > 1) {
+      var bodyRange = sheet.getRange(2, 1, rows.length - 1, headers.length);
+      bodyRange.setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+      bodyRange.setVerticalAlignment('middle');
+    }
+    for (var colIdx = 1; colIdx <= headers.length; colIdx++) {
+      sheet.setColumnWidth(colIdx, 175);
+    }
     sheet.setFrozenRows(1);
   });
 }
@@ -277,11 +285,11 @@ function doGet(e) {
       return jsonResponse({ success: true, message: 'تم إعادة ترتيب وتنظيم كافة الأعمدة والبيانات بنجاح' });
     }
 
-    // استعراض والبحث المباشر في مجلد Google Drive عبر GET (حتى 2500 ملف)
+    // استعراض والبحث المباشر في مجلد Google Drive عبر GET (حتى 5000 ملف)
     if (action === 'listDriveFiles' || action === 'searchDriveFiles') {
       var targetFolderId = (e && e.parameter && e.parameter.folderId) ? e.parameter.folderId : '';
       var qText = (e && e.parameter && (e.parameter.query || e.parameter.q)) ? (e.parameter.query || e.parameter.q) : '';
-      var lim = (e && e.parameter && e.parameter.limit) ? Number(e.parameter.limit) : 2500;
+      var lim = (e && e.parameter && e.parameter.limit) ? Number(e.parameter.limit) : 5000;
       var driveFiles = handleDriveList(targetFolderId, qText, lim);
       return jsonResponse({
         success: true,

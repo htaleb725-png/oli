@@ -414,9 +414,22 @@ export const createOfficeGoogleSpreadsheet = async (
 export const applyProfessionalStylingToSheets = async (
   token: string,
   spreadsheetId: string,
-  sheets: any[]
+  sheets?: any[]
 ): Promise<void> => {
   try {
+    let targetSheets = Array.isArray(sheets) && sheets.length > 0 ? sheets : [];
+    if (targetSheets.length === 0) {
+      const metaRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties(sheetId,title)`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        targetSheets = Array.isArray(meta?.sheets) ? meta.sheets : [];
+      }
+    }
+    if (targetSheets.length === 0) return;
+
     const requests: any[] = [];
 
     // Distinct Theme Colors for each Tab
@@ -451,7 +464,7 @@ export const applyProfessionalStylingToSheets = async (
       return { red: 0.06, green: 0.09, blue: 0.16 }; // Slate Navy Default
     };
 
-    sheets.forEach((sheet) => {
+    targetSheets.forEach((sheet) => {
       const sheetId = sheet.properties?.sheetId ?? 0;
       const sheetTitle = sheet.properties?.title || '';
       const headerColor = getSheetHeaderColor(sheetTitle);
@@ -498,17 +511,50 @@ export const applyProfessionalStylingToSheets = async (
         }
       });
 
-      // 3. Set minimum column width for columns (180px) so text and Drive links are readable
+      // 3. Enforce RTL sheet direction & frozen header row so columns stay anchored from right-to-left
+      requests.push({
+        updateSheetProperties: {
+          properties: {
+            sheetId,
+            rightToLeft: true,
+            gridProperties: {
+              frozenRowCount: 1
+            }
+          },
+          fields: 'rightToLeft,gridProperties.frozenRowCount'
+        }
+      });
+
+      // 4. Enforce CLIP wrapStrategy on data rows so cells NEVER overflow into neighboring columns
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId,
+            startRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: 22
+          },
+          cell: {
+            userEnteredFormat: {
+              wrapStrategy: 'CLIP',
+              verticalAlignment: 'MIDDLE'
+            }
+          },
+          fields: 'userEnteredFormat(wrapStrategy,verticalAlignment)'
+        }
+      });
+
+      // 5. Set clean column width across all 22 columns (185px) so every Arabic field is crisp & readable
       requests.push({
         updateDimensionProperties: {
           range: {
             sheetId,
             dimension: 'COLUMNS',
             startIndex: 0,
-            endIndex: 20
+            endIndex: 22
           },
           properties: {
-            pixelSize: 180
+            pixelSize: 185
           },
           fields: 'pixelSize'
         }
@@ -669,33 +715,56 @@ export const syncAllDataToGoogleSheets = async (
     }] : [])
   ];
 
-  // Execute batch update of values
-  const valueRanges = sheetsPayload.map(sp => ({
+  // Only rewrite tabs that have actual data (NEVER wipe an existing Google Sheet tab when local state is empty)
+  const nonEmptyPayloads = sheetsPayload.filter(sp => sp.rows.length > 0);
+  const clearRanges = nonEmptyPayloads.map(sp => {
+    const tabName = sp.range.split('!')[0];
+    return `${tabName}!A1:AZ`;
+  });
+
+  // Execute clean batch update of values (clear old shifted/extra columns A1:AZ first, then write strictly aligned columns)
+  const valueRanges = nonEmptyPayloads.map(sp => ({
     range: sp.range,
     values: [sp.headers, ...sp.rows]
   }));
 
   try {
-    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        valueInputOption: 'USER_ENTERED',
-        data: valueRanges
-      })
-    });
+    if (clearRanges.length > 0) {
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ranges: clearRanges })
+      }).catch(() => {});
+    }
 
-    if (!response.ok) {
-      console.warn(`Google Sheets batch update note: ${response.status}`);
+    if (valueRanges.length > 0) {
+      const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          valueInputOption: 'USER_ENTERED',
+          data: valueRanges
+        })
+      });
+
+      if (!response.ok) {
+        console.warn(`Google Sheets batch update note: ${response.status}`);
+      } else {
+        // Re-apply crisp RTL + CLIP column styling so cells never overlap visually
+        await applyProfessionalStylingToSheets(token, spreadsheetId).catch(() => {});
+      }
     }
   } catch (err: any) {
     console.warn('Google Sheets sync note:', err?.message || err);
   }
 
-  return { success: true, updatedSheets: sheetsPayload.length };
+  return { success: true, updatedSheets: nonEmptyPayloads.length };
 };
 
 /**
@@ -798,7 +867,8 @@ export const appendRowToGoogleSheet = async (
   sheetTabName: string,
   rowValues: any[]
 ): Promise<boolean> => {
-  const encodedRange = encodeURIComponent(`${sheetTabName}!A:Z`);
+  // Anchor append strictly to A1 so Google Sheets NEVER shifts rows to columns O/U!
+  const encodedRange = encodeURIComponent(`${sheetTabName}!A1`);
   const response = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
     {

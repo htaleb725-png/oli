@@ -79,6 +79,8 @@ import { DeveloperPasscodeManager } from './developer/DeveloperPasscodeManager';
 import { GoogleDriveFolderManager } from './developer/GoogleDriveFolderManager';
 import { UsersAndPermissionsManager } from './developer/UsersAndPermissionsManager';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
+import { extractDriveFolderId } from '../services/driveArchiveService';
+import { reorganizeGoogleSheetsNow } from '../services/realtimeGoogleSync';
 
 export const MasterAdminModule: React.FC = () => {
   const { 
@@ -111,7 +113,8 @@ export const MasterAdminModule: React.FC = () => {
     addAuditLog,
     logout,
     syncAllToGoogleSheetsNow,
-    fetchAllFromGoogleSheetsNow
+    fetchAllFromGoogleSheetsNow,
+    setGoogleDriveFolderId: applyGlobalDriveFolderId
   } = useApp();
 
   // Navigation: 'grid' (لوحة الأيقونات المركزية للمطور) or individual tool workspace
@@ -306,6 +309,33 @@ export const MasterAdminModule: React.FC = () => {
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ❌ حدث خطأ أثناء المزامنة: ${err.message || 'خطأ غير متوقع'}`, ...prev]);
     } finally {
       setIsSyncingAll(false);
+    }
+  };
+
+  // One-click Google Sheets column cleanup & reorganization (without deleting records)
+  const [isReorganizingSheets, setIsReorganizingSheets] = useState(false);
+  const handleReorganizeSheetsColumns = async () => {
+    setIsReorganizingSheets(true);
+    try {
+      const res = await reorganizeGoogleSheetsNow({
+        appsScriptUrl: appsScriptUrl || systemSettings.appsScriptUrl,
+        sheetId: activeGoogleSheetId || googleSheetId || systemSettings.googleSheetId,
+        citizens,
+        requests,
+        interviews,
+        organizationRecords,
+        officialLetters,
+        cheques,
+        auditLogs
+      });
+      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ${res.message}`, ...prev]);
+      if (res.success) {
+        addAuditLog('تنظيف وترتيب أعمدة Google Sheets', 'لوحة تحكم المطور', res.message);
+      }
+    } catch (err: any) {
+      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ❌ خطأ أثناء ترتيب الأعمدة: ${err?.message || 'غير معروف'}`, ...prev]);
+    } finally {
+      setIsReorganizingSheets(false);
     }
   };
 
@@ -521,6 +551,10 @@ export const MasterAdminModule: React.FC = () => {
   const handleSaveAllSettings = (e: React.FormEvent) => {
     e.preventDefault();
     const newsArray = tickerNewsText.split('\n').map(s => s.trim()).filter(Boolean);
+    const cleanDriveId = googleDriveFolderId.trim() ? extractDriveFolderId(googleDriveFolderId) : '';
+    let cleanSheetId = googleSheetId.trim();
+    const sheetMatch = cleanSheetId.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+    if (sheetMatch && sheetMatch[1]) cleanSheetId = sheetMatch[1];
 
     updateSystemSettings({
       appName: appName.trim(),
@@ -530,14 +564,23 @@ export const MasterAdminModule: React.FC = () => {
       officeAddress: officeAddress.trim(),
       hotline: hotline.trim(),
       tickerNews: newsArray,
-      googleSheetId: googleSheetId.trim(),
-      googleDriveFolderId: googleDriveFolderId.trim(),
+      googleSheetId: cleanSheetId,
+      activeGoogleSheetId: cleanSheetId,
+      ...(cleanDriveId ? { googleDriveFolderId: cleanDriveId } : {}),
       appsScriptUrl: appsScriptUrl.trim(),
+      googleAppsScriptUrl: appsScriptUrl.trim(),
       maintenanceMode,
       allowAdminOpenDriveFolder
     });
 
-    setSuccessMessage('تم حفظ وتطبيق كافة إعدادات المنظومة والنصوص بنجاح.');
+    if (cleanDriveId) {
+      setGoogleDriveFolderId(cleanDriveId);
+      setActiveDriveFolderId(cleanDriveId);
+      setActiveDriveFolderUrl(`https://drive.google.com/drive/folders/${cleanDriveId}`);
+      applyGlobalDriveFolderId(cleanDriveId);
+    }
+
+    setSuccessMessage('تم حفظ وتطبيق كافة إعدادات المنظومة ومعرفات Google Drive و Google Sheets بنجاح.');
   };
 
   const handleResetData = () => {
@@ -1984,16 +2027,28 @@ export const MasterAdminModule: React.FC = () => {
                 </p>
               </div>
 
-              {/* Master Instant Sync Trigger */}
-              <button
-                type="button"
-                disabled={isSyncingAll}
-                onClick={handleForceInstantSync}
-                className="h-10 px-5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-xs flex items-center gap-2 shadow-md shadow-emerald-500/20 transition-all cursor-pointer active:scale-95 shrink-0"
-              >
-                <Zap className={`w-4 h-4 text-amber-300 ${isSyncingAll ? 'animate-bounce' : ''}`} />
-                <span>{isSyncingAll ? 'جاري حفظ ومزامنة السجلات...' : '⚡ حفظ ومزامنة كافة السجلات إلى Google Sheets الآن'}</span>
-              </button>
+              {/* Master Instant Sync & Clean Columns Triggers */}
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={isReorganizingSheets}
+                  onClick={handleReorganizeSheetsColumns}
+                  className="h-10 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isReorganizingSheets ? 'animate-spin' : ''}`} />
+                  <span>{isReorganizingSheets ? 'جاري تنظيف الأعمدة...' : 'تنظيف وإعادة ترتيب أعمدة Google Sheets الآن'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSyncingAll}
+                  onClick={handleForceInstantSync}
+                  className="h-10 px-5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-xs flex items-center gap-2 shadow-md shadow-emerald-500/20 transition-all cursor-pointer active:scale-95 shrink-0"
+                >
+                  <Zap className={`w-4 h-4 text-amber-300 ${isSyncingAll ? 'animate-bounce' : ''}`} />
+                  <span>{isSyncingAll ? 'جاري حفظ ومزامنة السجلات...' : '⚡ حفظ ومزامنة كافة السجلات إلى Google Sheets الآن'}</span>
+                </button>
+              </div>
             </div>
 
             {/* Sync Activity Live Console */}

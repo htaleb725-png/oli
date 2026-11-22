@@ -18,6 +18,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { uploadImageToDrive } from '../../services/googleSheetsService';
+import { extractDriveFolderId, fetchLiveDriveFolderFiles } from '../../services/driveArchiveService';
 
 interface GoogleDriveFolderManagerProps {
   onBackToGrid?: () => void;
@@ -33,6 +34,7 @@ export const GoogleDriveFolderManager: React.FC<GoogleDriveFolderManagerProps> =
   } = useApp();
 
   const currentFolderId = driveFolderId || systemSettings.googleDriveFolderId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_drive_folder_id') : '') || '';
+  const appsScriptUrl = systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl || '';
 
   const [inputFolderId, setInputFolderId] = useState(currentFolderId);
   const [copied, setCopied] = useState(false);
@@ -61,29 +63,20 @@ export const GoogleDriveFolderManager: React.FC<GoogleDriveFolderManagerProps> =
   });
 
   useEffect(() => {
-    if (currentFolderId && !inputFolderId) {
+    if (currentFolderId) {
       setInputFolderId(currentFolderId);
     }
   }, [currentFolderId]);
 
   // Extract pure ID if user pastes full Drive URL
   const extractCleanFolderId = (raw: string): string => {
-    if (!raw) return '';
-    const trimmed = raw.trim();
-    // Patterns:
-    // https://drive.google.com/drive/folders/1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc
-    // https://drive.google.com/drive/u/0/folders/1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc?usp=sharing
-    const match = trimmed.match(/folders\/([a-zA-Z0-9_-]+)/);
-    if (match && match[1]) {
-      return match[1];
-    }
-    // Remove query params if any
-    return trimmed.split('?')[0].split('&')[0];
+    if (!raw || !raw.trim()) return '';
+    return extractDriveFolderId(raw);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
-    const clean = extractCleanFolderId(val);
+    const clean = val.includes('drive.google.com') ? extractCleanFolderId(val) : val.trim();
     setInputFolderId(clean);
   };
 
@@ -99,31 +92,81 @@ export const GoogleDriveFolderManager: React.FC<GoogleDriveFolderManagerProps> =
     }
   };
 
-  const handleSave = () => {
+  const runLiveFolderCheck = async (targetId: string) => {
+    setIsVerifying(true);
+    setVerificationResult(null);
+    const folderUrl = `https://drive.google.com/drive/folders/${targetId}`;
+    try {
+      const liveRes = await fetchLiveDriveFolderFiles({
+        folderId: targetId,
+        appsScriptUrl,
+        forceRefresh: true,
+        limit: 5000
+      });
+      if (liveRes.files.length > 0) {
+        const imgCount = liveRes.files.filter(f => f.category === 'image').length;
+        const otherCount = liveRes.files.length - imgCount;
+        setVerificationResult({
+          success: true,
+          message: `✓ تم الاتصال الفعلي بالمجلد بنجاح! تم العثور على (${liveRes.totalInFolder}) ملف جاهز للعرض والبحث (${imgCount} صورة و ${otherCount} مستند/PDF).`,
+          folderUrl
+        });
+      } else if (liveRes.isPrivate) {
+        setVerificationResult({
+          success: false,
+          message: '⚠️ المجلد محفوظ بالنظام لكنه مضبوط حالياً كـ "مقيّد / خاص" في Google Drive! افتح المجلد -> مشاركة (Share) -> غيّر الوصول العام إلى "أي شخص لديه الرابط (عارض)" ثم أعد الفحص.',
+          folderUrl
+        });
+      } else if (liveRes.error) {
+        setVerificationResult({
+          success: false,
+          message: `⚠️ ${liveRes.error}`,
+          folderUrl
+        });
+      } else {
+        setVerificationResult({
+          success: true,
+          message: '✓ تم ربط المجلد بنجاح والمجلد متاح، لكنه فارغ حالياً (0 ملفات). أي صورة أو PDF ترفعها داخله ستظهر مباشرة في الأرشيف.',
+          folderUrl
+        });
+      }
+    } catch (err: any) {
+      setVerificationResult({
+        success: false,
+        message: err?.message || 'تعذر فحص المجلد حالياً، تأكد من الاتصال بالإنترنت ومن صلاحية مشاركة المجلد.'
+      });
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleSave = async () => {
     const cleanId = extractCleanFolderId(inputFolderId);
     if (!cleanId) {
-      alert('يرجى إدخال معرف مجلد Google Drive (Folder ID) بشكل صحيح.');
+      setVerificationResult({
+        success: false,
+        message: 'يرجى إدخال معرف مجلد Google Drive (Folder ID) أو لصق الرابط الكامل بشكل صحيح.'
+      });
       return;
     }
 
+    setInputFolderId(cleanId);
+    // Update both fields cleanly in one atomic settings update + context driveFolderId state
+    updateSystemSettings({
+      googleDriveFolderId: cleanId,
+      allowAdminOpenDriveFolder: allowAdmin
+    });
     if (setGoogleDriveFolderId) {
       setGoogleDriveFolderId(cleanId);
-    } else {
-      updateSystemSettings({ 
-        googleDriveFolderId: cleanId,
-        allowAdminOpenDriveFolder: allowAdmin 
-      });
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('al_nashi_drive_folder_id', cleanId);
-      }
     }
-
-    updateSystemSettings({ allowAdminOpenDriveFolder: allowAdmin });
 
     addAuditLog('تحديث مجلد Google Drive', 'لوحة المطور', `تم ربط وتثبيت معرف المجلد (${cleanId}) في المنظومة`);
 
     setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 4000);
+    setTimeout(() => setSaveSuccess(false), 5000);
+
+    // Immediately verify live files in the newly bound folder
+    await runLiveFolderCheck(cleanId);
   };
 
   const handleVerify = async () => {
@@ -135,62 +178,20 @@ export const GoogleDriveFolderManager: React.FC<GoogleDriveFolderManagerProps> =
       });
       return;
     }
-
-    setIsVerifying(true);
-    setVerificationResult(null);
-
-    // Simulate verification or test against Google API if token is present
-    setTimeout(async () => {
-      const token = typeof window !== 'undefined' ? (localStorage.getItem('al_nashi_google_token') || sessionStorage.getItem('al_nashi_google_token')) : null;
-      const folderUrl = `https://drive.google.com/drive/folders/${targetId}`;
-
-      if (token) {
-        try {
-          const res = await fetch(`https://www.googleapis.com/drive/v3/files/${targetId}?fields=id,name,mimeType,capabilities`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          if (res.ok) {
-            const data = await res.json();
-            setIsVerifying(false);
-            setVerificationResult({
-              success: true,
-              message: `✓ تم التحقق بنجاح! المجلد نشط ومتاح: "${data.name || 'مجلد الأرشيف'}"`,
-              folderUrl
-            });
-            return;
-          }
-        } catch (_) {}
-      }
-
-      // Format validation
-      const isValidFormat = /^[a-zA-Z0-9_-]{15,65}$/.test(targetId);
-      setIsVerifying(false);
-      if (isValidFormat) {
-        setVerificationResult({
-          success: true,
-          message: `✓ صيغة معرف المجلد مطابقة لمعايير Google Drive. تم تجهيز الرابط بنجاح.`,
-          folderUrl
-        });
-      } else {
-        setVerificationResult({
-          success: false,
-          message: 'تنبيه: صيغة المعرف المدخل قد لا تكون صحيحة، يرجى التأكد من نسخه من عنوان Google Drive.'
-        });
-      }
-    }, 800);
+    await runLiveFolderCheck(targetId);
   };
 
   const handleTestUpload = async () => {
     if (!testFile) return;
     const targetId = extractCleanFolderId(inputFolderId || currentFolderId);
     if (!targetId) {
-      alert('يرجى تحديد وحفظ معرف المجلد أولاً قبل تجربة الرفع.');
+      setTestUploadResult({ success: false, error: 'يرجى تحديد وحفظ معرف المجلد أولاً قبل تجربة الرفع.' });
       return;
     }
 
     const token = typeof window !== 'undefined' ? (localStorage.getItem('al_nashi_google_token') || sessionStorage.getItem('al_nashi_google_token')) : null;
     if (!token) {
-      alert('يرجى تسجيل دخول المطور بحساب Google في تبويب Google Sheets & Drive أولاً لتتمكن من تجربة الرفع الفعلي.');
+      setTestUploadResult({ success: false, error: 'يرجى تسجيل دخول المطور بحساب Google في تبويب Google Sheets & Drive أولاً لتتمكن من تجربة الرفع الفعلي.' });
       return;
     }
 
