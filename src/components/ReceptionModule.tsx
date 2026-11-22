@@ -238,6 +238,7 @@ export const ReceptionModule: React.FC = () => {
   const [newReqSubject, setNewReqSubject] = useState('');
   const [newReqPriority, setNewReqPriority] = useState<Priority>('عام');
   const [newReqNotes, setNewReqNotes] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Edit citizen sub-states
   const [editCitFirst, setEditCitFirst] = useState('');
@@ -326,7 +327,10 @@ export const ReceptionModule: React.FC = () => {
     if (!citizenForNewRequest || !newReqSubject.trim()) return;
 
     if (citizenForNewRequest.IsBlocked) {
-      alert(`⛔ تنبيه فوري: لا يمكن إتمام العملية!\n\nالمواطن "${citizenForNewRequest.FullName}" مدرج في «القائمة السوداء» (الأشخاص المحظورين).\nسبب الحظر: ${citizenForNewRequest.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${citizenForNewRequest.BlockedAt || 'سابقاً'}\nبواسطة: ${citizenForNewRequest.BlockedBy || 'الإدارة'}\n\nيمنع النظام تسجيل أو إضافة أي طلب جديد لهذا الشخص نهائياً.`);
+      setErrorMessage(
+        `⛔ تنبيه فوري: المواطن "${citizenForNewRequest.FullName}" مدرج في «القائمة السوداء» (سبب الحظر: ${citizenForNewRequest.BlockReason || 'غير محدد'}) — يمنع النظام تسجيل أي طلب جديد له.`
+      );
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
 
@@ -864,7 +868,10 @@ export const ReceptionModule: React.FC = () => {
     // التحقق الصارم من القائمة السوداء: إظهار تنبيه فوري يوضح سبب الحظر ومنع إتمام العملية نهائياً
     const targetBlocked = blockedCitizenMatch || (existingMatchedCitizen && existingMatchedCitizen.IsBlocked ? existingMatchedCitizen : null);
     if (targetBlocked) {
-      alert(`⛔ تنبيه فوري أمني ورقابي: لا يمكن إتمام عملية التسجيل!\n\nالمواطن "${targetBlocked.FullName}" مدرج في «القائمة السوداء» (الأشخاص المحظورين).\n\nسبب الحظر: ${targetBlocked.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${targetBlocked.BlockedAt || 'سابقاً'}\nجهة الحظر: ${targetBlocked.BlockedBy || 'الإدارة'}\n\nيمنع النظام تسجيل أو حفظ أي طلب جديد لهذا الشخص نهائياً حتى يتم رفع الحظر رسمياً من قسم الإدارة.`);
+      setErrorMessage(
+        `⛔ تنبيه فوري أمني ورقابي: المواطن "${targetBlocked.FullName}" مدرج في «القائمة السوداء» (سبب الحظر: ${targetBlocked.BlockReason || 'غير محدد'}) — يمنع النظام تسجيل أي طلب جديد لهذا الشخص نهائياً.`
+      );
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
 
@@ -874,10 +881,13 @@ export const ReceptionModule: React.FC = () => {
     if (surname.trim() && surname.trim() !== 'عام / بدون لقب') nameParts.push(surname.trim());
     const finalFullName = nameParts.join(' ');
 
-    // فحص إضافي للتأكد بالاسم النهائي الكامل
-    const finalCheck = checkIfCitizenBlocked(finalFullName);
+    // فحص إضافي للتأكد بالاسم النهائي الكامل أو رقم الهاتف
+    const finalCheck = checkIfCitizenBlocked(finalFullName, phone1.trim());
     if (finalCheck.isBlocked && finalCheck.citizen) {
-      alert(`⛔ تنبيه فوري أمني ورقابي: لا يمكن إتمام العملية!\n\nالاسم المدخل "${finalCheck.citizen.FullName}" مسجل في «القائمة السوداء» (الأشخاص المحظورين).\n\nسبب الحظر: ${finalCheck.citizen.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${finalCheck.citizen.BlockedAt || 'سابقاً'}\nجهة الحظر: ${finalCheck.citizen.BlockedBy || 'الإدارة'}\n\nيمنع النظام تسجيل أو حفظ أي طلب جديد لهذا الشخص نهائياً.`);
+      setErrorMessage(
+        `⛔ تنبيه فوري أمني ورقابي: الاسم المدخل "${finalCheck.citizen.FullName}" مسجل في «القائمة السوداء» (سبب الحظر: ${finalCheck.citizen.BlockReason || 'غير محدد'}) — يمنع النظام تسجيل أي طلب جديد لهذا الشخص نهائياً.`
+      );
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
 
@@ -1159,6 +1169,21 @@ export const ReceptionModule: React.FC = () => {
 
   return (
     <div className="space-y-4 text-right font-['Tajawal',sans-serif] select-none" dir="rtl">
+      {errorMessage && (
+        <div className="p-4 rounded-2xl bg-red-50 border-2 border-red-500 text-red-950 text-xs font-black flex items-center justify-between gap-3 shadow-md animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <span className="text-base">⛔</span>
+            <span>{errorMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setErrorMessage(null)}
+            className="px-2.5 py-1 rounded-lg bg-red-100 hover:bg-red-200 text-red-800 font-bold cursor-pointer shrink-0"
+          >
+            إغلاق ✕
+          </button>
+        </div>
+      )}
       
       {/* ---------------- TOP RECEPTION BAR: TITLE & BACK BUTTON ---------------- */}
       <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">

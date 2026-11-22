@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { OfficeRequest, Citizen } from '../types';
+import { OfficeRequest, Citizen, Priority } from '../types';
 import { 
   FolderKanban, 
   Search, 
@@ -134,7 +134,7 @@ export const SmartImageArchiveModule: React.FC<SmartImageArchiveModuleProps> = (
   const [manualHonorific, setManualHonorific] = useState('السيد');
   const [manualEntity, setManualEntity] = useState('وزارة العمل والشؤون الاجتماعية (شبكة الحماية)');
   const [manualDetails, setManualDetails] = useState('');
-  const [manualPriority, setManualPriority] = useState<'عاجل' | 'عام' | 'خاص جداً'>('عاجل');
+  const [manualPriority, setManualPriority] = useState<Priority>('عاجل');
   const [manualImageData, setManualImageData] = useState<string>('');
   const [manualImageName, setManualImageName] = useState('');
   const [isAnalyzingManualImage, setIsAnalyzingManualImage] = useState(false);
@@ -145,7 +145,7 @@ export const SmartImageArchiveModule: React.FC<SmartImageArchiveModuleProps> = (
   const [editCitizenName, setEditCitizenName] = useState('');
   const [editDetails, setEditDetails] = useState('');
   const [editEntity, setEditEntity] = useState('');
-  const [editPriority, setEditPriority] = useState<'عاجل' | 'عام' | 'خاص جداً'>('عاجل');
+  const [editPriority, setEditPriority] = useState<Priority>('عاجل');
 
   // Preview & Zoom Viewer Modal
   const [previewImage, setPreviewImage] = useState<{

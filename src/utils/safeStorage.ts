@@ -118,6 +118,39 @@ export function safeLocalStorageSet(key: string, value: string): boolean {
 }
 
 /**
+ * Debounced non-blocking localStorage writer so rapid or bulk mutations
+ * (e.g. Excel import of 5,000+ records) never freeze the main UI thread.
+ */
+const _pendingStorageTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function scheduleSafeLocalStorageSet(
+  key: string,
+  serialize: () => string,
+  delayMs: number = 350
+): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const existing = _pendingStorageTimers.get(key);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(() => {
+    _pendingStorageTimers.delete(key);
+    const run = () => {
+      try {
+        safeLocalStorageSet(key, serialize());
+      } catch {}
+    };
+    const w = window as any;
+    if (typeof w.requestIdleCallback === 'function') {
+      w.requestIdleCallback(run, { timeout: 1200 });
+    } else {
+      run();
+    }
+  }, delayMs);
+
+  _pendingStorageTimers.set(key, timer);
+}
+
+/**
  * One-time cleanup of existing bloated localStorage data on app startup
  */
 export function cleanBloatedLocalStorage(): void {

@@ -51,6 +51,7 @@ import { BlacklistModule } from './BlacklistModule';
 import { SYSTEM_PERMISSIONS } from '../types';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 import { SmartExcelImporterModal } from './SmartExcelImporterModal';
+import { SearchableSelect } from './SearchableSelect';
 import { PlusCircle, FileSpreadsheet, UploadCloud } from 'lucide-react';
 import { printImageIsolated } from '../utils/printReceiptHelper';
 
@@ -81,7 +82,8 @@ export const AdminModule: React.FC = () => {
     forwardCitizenWorkflow,
     forwardRequestWorkflow,
     exportToExcel,
-    canDownloadDatabase
+    canDownloadDatabase,
+    checkIfCitizenBlocked
   } = useApp();
 
   const handleExportComprehensiveExcel = () => {
@@ -131,7 +133,9 @@ export const AdminModule: React.FC = () => {
 
   // Attendance and Dependency form state
   const [attendanceType, setAttendanceType] = useState<string>('شخصياً');
-  const [dependencyStatus, setDependencyStatus] = useState<'مستقل' | 'غير مستقل'>('مستقل');
+  const [dependencyStatus, setDependencyStatus] = useState<string>('مستقل');
+  const [visibleRequestsLimit, setVisibleRequestsLimit] = useState<number>(50);
+  const [visibleReceptionLimit, setVisibleReceptionLimit] = useState<number>(50);
 
   // Referral Modal state
   const [referralTargetCitizen, setReferralTargetCitizen] = useState<Citizen | null>(null);
@@ -142,6 +146,10 @@ export const AdminModule: React.FC = () => {
 
   // Form states
   const [selectedCitizenId, setSelectedCitizenId] = useState('');
+  const [manualCitizenName, setManualCitizenName] = useState('');
+  const [manualCitizenPhone, setManualCitizenPhone] = useState('');
+  const [manualCitizenAddress, setManualCitizenAddress] = useState('');
+  const [createFormError, setCreateFormError] = useState<string | null>(null);
   const [entity, setEntity] = useState('وزارة العمل والشؤون الاجتماعية (شبكة الحماية)');
   const [customEntity, setCustomEntity] = useState('');
   const [requestStatus, setRequestStatus] = useState<RequestStatus>('مستلم');
@@ -155,6 +163,11 @@ export const AdminModule: React.FC = () => {
   const [editableCitizenPhone, setEditableCitizenPhone] = useState('');
 
   const entitiesList = getDropdownOptions('Entity');
+  const requestStatusOptions = ['مستلم', 'غير مستلم', 'معاد', 'غير مستوفي للشروط', 'خاص'];
+  const processingStatusOptions = ['قيد التدقيق', 'مرسل إلى الوزارة/الهيئة', 'منجز', 'تم الطباعة', 'بانتظار الموافقة', 'مرفوض'];
+  const priorityOptions = ['عام', 'عاجل', 'خاص جداً'];
+  const attendanceTypeOptions = ['شخصياً', 'عبر معتمد', 'وكيل'];
+  const dependencyStatusOptions = ['مستقل', 'غير مستقل'];
 
   const citizenMap = React.useMemo(() => {
     const map = new Map<string, Citizen>();
@@ -187,8 +200,9 @@ export const AdminModule: React.FC = () => {
       if (dep === 'مستقل') independent++;
       if (dep === 'غير مستقل') dependent++;
 
-      // Director decisions counts
-      if (!req.DirectorDecision) directorPending++;
+      // Director decisions counts (exclude historical Excel archive imports from pending queue)
+      const isHist = Boolean(req.IsHistoricalImported || req.IsArchived || req.DirectorDecision === 'مؤرشف');
+      if (!isHist && !req.DirectorDecision) directorPending++;
       else if (req.DirectorDecision === 'رفض') directorRejected++;
       else if (req.DirectorDecision === 'خاص') directorSpecial++;
       else if (req.DirectorDecision === 'عام') directorGeneral++;
@@ -208,50 +222,59 @@ export const AdminModule: React.FC = () => {
     };
   }, [requests, citizenMap]);
 
-  const filteredRequests = requests.filter(req => {
-    const matchesSearch = 
-      req.Request_ID.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      req.CitizenName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      req.Details.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      req.Entity.toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredRequests = React.useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return (requests || []).filter(req => {
+      if (!req) return false;
+      const matchesSearch = !q || (
+        (req.Request_ID && req.Request_ID.toLowerCase().includes(q)) ||
+        (req.CitizenName && req.CitizenName.toLowerCase().includes(q)) ||
+        (req.Details && req.Details.toLowerCase().includes(q)) ||
+        (req.Entity && req.Entity.toLowerCase().includes(q)) ||
+        (req.OutgoingNumber && req.OutgoingNumber.toLowerCase().includes(q))
+      );
 
-    const matchesEntity = selectedEntityFilter === 'all' || req.Entity === selectedEntityFilter;
-    const matchesStatus = selectedStatusFilter === 'all' || req.ProcessingStatus === selectedStatusFilter;
-    const matchesPriority = selectedPriorityFilter === 'all' || req.Priority === selectedPriorityFilter;
+      const matchesEntity = selectedEntityFilter === 'all' || req.Entity === selectedEntityFilter;
+      const matchesStatus = selectedStatusFilter === 'all' || req.ProcessingStatus === selectedStatusFilter;
+      const matchesPriority = selectedPriorityFilter === 'all' || req.Priority === selectedPriorityFilter;
 
-    // Filter Category Check (شخصياً / رجال فقط / امرأة فقط / مستقلين / غير مستقلين / الكل)
-    const cit = citizenMap.get(req.Citizen_ID);
-    const gender = cit?.Gender || 'ذكر';
-    const att = req.AttendanceType || cit?.AttendanceType || 'شخصياً';
-    const dep = req.DependencyStatus || cit?.DependencyStatus || 'مستقل';
+      const cit = citizenMap.get(req.Citizen_ID);
+      const gender = cit?.Gender || 'ذكر';
+      const att = req.AttendanceType || cit?.AttendanceType || 'شخصياً';
+      const dep = req.DependencyStatus || cit?.DependencyStatus || 'مستقل';
 
-    let matchesCategory = true;
-    if (filterCategory === 'personal') matchesCategory = att === 'شخصياً';
-    else if (filterCategory === 'men') matchesCategory = gender === 'ذكر';
-    else if (filterCategory === 'women') matchesCategory = gender === 'أنثى';
-    else if (filterCategory === 'independent') matchesCategory = dep === 'مستقل';
-    else if (filterCategory === 'dependent') matchesCategory = dep === 'غير مستقل';
+      let matchesCategory = true;
+      if (filterCategory === 'personal') matchesCategory = att === 'شخصياً';
+      else if (filterCategory === 'men') matchesCategory = gender === 'ذكر';
+      else if (filterCategory === 'women') matchesCategory = gender === 'أنثى';
+      else if (filterCategory === 'independent') matchesCategory = dep === 'مستقل';
+      else if (filterCategory === 'dependent') matchesCategory = dep === 'غير مستقل';
 
-    let matchesDirector = true;
-    if (directorDecisionFilter === 'pending') matchesDirector = !req.DirectorDecision;
-    else if (directorDecisionFilter === 'special') matchesDirector = req.DirectorDecision === 'خاص';
-    else if (directorDecisionFilter === 'general') matchesDirector = req.DirectorDecision === 'عام';
-    else if (directorDecisionFilter === 'rejected') matchesDirector = req.DirectorDecision === 'رفض';
+      const isHist = Boolean(req.IsHistoricalImported || req.IsArchived || req.DirectorDecision === 'مؤرشف');
+      let matchesDirector = true;
+      if (directorDecisionFilter === 'pending') matchesDirector = !isHist && !req.DirectorDecision;
+      else if (directorDecisionFilter === 'special') matchesDirector = req.DirectorDecision === 'خاص';
+      else if (directorDecisionFilter === 'general') matchesDirector = req.DirectorDecision === 'عام';
+      else if (directorDecisionFilter === 'rejected') matchesDirector = req.DirectorDecision === 'رفض';
 
-    return matchesSearch && matchesEntity && matchesStatus && matchesPriority && matchesCategory && matchesDirector;
-  });
+      return matchesSearch && matchesEntity && matchesStatus && matchesPriority && matchesCategory && matchesDirector;
+    });
+  }, [requests, searchQuery, selectedEntityFilter, selectedStatusFilter, selectedPriorityFilter, filterCategory, directorDecisionFilter, citizenMap]);
 
-  const filteredReceptionCitizens = citizens.filter(c => {
-    if (!receptionSearch.trim()) return true;
+  const filteredReceptionCitizens = React.useMemo(() => {
     const q = receptionSearch.toLowerCase().trim();
-    return (
-      (c.FullName && c.FullName.toLowerCase().includes(q)) ||
-      (c.Citizen_ID && c.Citizen_ID.toLowerCase().includes(q)) ||
-      (c.Phone1 && c.Phone1.includes(q)) ||
-      (c.District && c.District.toLowerCase().includes(q)) ||
-      (c.Surname && c.Surname.toLowerCase().includes(q))
-    );
-  });
+    return (citizens || []).filter(c => {
+      if (!c || c.IsHistoricalImported || c.IsArchived) return false;
+      if (!q) return true;
+      return (
+        (c.FullName && c.FullName.toLowerCase().includes(q)) ||
+        (c.Citizen_ID && c.Citizen_ID.toLowerCase().includes(q)) ||
+        (c.Phone1 && c.Phone1.includes(q)) ||
+        (c.District && c.District.toLowerCase().includes(q)) ||
+        (c.Surname && c.Surname.toLowerCase().includes(q))
+      );
+    });
+  }, [citizens, receptionSearch]);
 
   const openScannerForCitizen = (citId: string) => {
     setScannerCitizenId(citId);
@@ -336,23 +359,39 @@ export const AdminModule: React.FC = () => {
 
       setEditingRequest(null);
     } else {
-      const citizen = citizens.find(c => c.Citizen_ID === selectedCitizenId);
-      if (!citizen) {
-        alert('يرجى اختيار مراجع مسجل بالنظام أولاً.');
+      setCreateFormError(null);
+      const cleanName = manualCitizenName.trim();
+      const cleanPhone = manualCitizenPhone.trim();
+      if (!cleanName) {
+        setCreateFormError('يرجى كتابة اسم صاحب الطلب (المراجع) أولاً.');
         return;
       }
-      if (citizen.IsBlocked) {
-        alert(`⛔ تنبيه فوري: لا يمكن إتمام العملية!\n\nالمواطن "${citizen.FullName}" مدرج في «القائمة السوداء» (الأشخاص المحظورين).\nسبب الحظر: ${citizen.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${citizen.BlockedAt || 'سابقاً'}\nبواسطة: ${citizen.BlockedBy || 'الإدارة'}\n\nيمنع النظام تسجيل أي طلب جديد لهذا الشخص نهائياً.`);
+
+      // Live Blacklist Check by typed name or phone
+      const blockedCheck = checkIfCitizenBlocked(cleanName, cleanPhone);
+      if (blockedCheck.isBlocked && blockedCheck.citizen) {
+        setCreateFormError(
+          `⛔ تنبيه فوري: المواطن "${blockedCheck.citizen.FullName}" مدرج في القائمة السوداء (سبب الحظر: ${blockedCheck.citizen.BlockReason || 'غير محدد'}) ولا يمكن تسجيل طلب جديد له.`
+        );
         return;
       }
+
+      // Link to existing Citizen_ID only if exact normalized match exists, otherwise create a standalone Admin Citizen_ID (does NOT clutter Reception)
+      const normInput = cleanName.toLowerCase().replace(/[إأآا]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/\s+/g, ' ');
+      const existingMatch = citizens.find(c =>
+        c &&
+        (c.FullName || '').trim().toLowerCase().replace(/[إأآا]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/\s+/g, ' ') === normInput
+      );
+      const resolvedCitizenId = existingMatch?.Citizen_ID || `ADM-CIT-${Date.now().toString(36).toUpperCase()}`;
 
       const nowStamp = new Date().toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
       const currentUploader = currentUser?.FullName || 'موظف الإدارة';
 
       addRequest({
-        Citizen_ID: citizen.Citizen_ID,
-        CitizenName: citizen.FullName,
-        CitizenPhone: citizen.Phone1,
+        Citizen_ID: resolvedCitizenId,
+        CitizenName: cleanName,
+        CitizenPhone: cleanPhone || existingMatch?.Phone1 || '',
+        CitizenAddress: manualCitizenAddress.trim() || existingMatch?.District || undefined,
         Entity: finalEntity,
         RequestStatus: requestStatus,
         ProcessingStatus: processingStatus,
@@ -381,8 +420,8 @@ export const AdminModule: React.FC = () => {
       // If document attached, archive automatically
       if (attachmentReq) {
         addDocument({
-          Citizen_ID: citizen.Citizen_ID,
-          CitizenName: citizen.FullName,
+          Citizen_ID: resolvedCitizenId,
+          CitizenName: cleanName,
           Title: `مرفق طلب: ${details.slice(0, 30)}`,
           Category: 'طلب مقدم',
           FileUrl: 'https://images.unsplash.com/photo-1568667256549-094345857637?w=600&auto=format&fit=crop&q=80',
@@ -396,6 +435,11 @@ export const AdminModule: React.FC = () => {
     }
 
     // Reset
+    setManualCitizenName('');
+    setManualCitizenPhone('');
+    setManualCitizenAddress('');
+    setSelectedCitizenId('');
+    setCreateFormError(null);
     setDetails('');
     setCustomEntity('');
     setAttachmentReq('');
@@ -1023,8 +1067,9 @@ export const AdminModule: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredRequests.map((req, idx) => {
-                      const isPendingDirector = !req.DirectorDecision;
+                    filteredRequests.slice(0, visibleRequestsLimit).map((req, idx) => {
+                      const isHistImported = Boolean(req.IsHistoricalImported || req.IsArchived || req.DirectorDecision === 'مؤرشف');
+                      const isPendingDirector = !isHistImported && !req.DirectorDecision;
                       const isRejectedByDirector = req.DirectorDecision === 'رفض';
                       const isSpecialDirector = req.DirectorDecision === 'خاص';
                       const isGeneralDirector = req.DirectorDecision === 'عام';
@@ -1261,6 +1306,17 @@ export const AdminModule: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {filteredRequests.length > visibleRequestsLimit && (
+              <div className="p-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-center bg-slate-50/70 dark:bg-slate-900/50">
+                <button
+                  type="button"
+                  onClick={() => setVisibleRequestsLimit(prev => prev + 50)}
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer shadow-xs"
+                >
+                  عرض المزيد ({filteredRequests.length - visibleRequestsLimit} معاملة متبقية)
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -1290,7 +1346,7 @@ export const AdminModule: React.FC = () => {
                 لا توجد سجلات مطابقة للبحث في وارد الاستعلامات.
               </div>
             ) : (
-              filteredReceptionCitizens.map((cit) => {
+              filteredReceptionCitizens.slice(0, visibleReceptionLimit).map((cit) => {
                 const citRequests = requests.filter(r => r.Citizen_ID === cit.Citizen_ID);
 
                 return (
@@ -1525,6 +1581,17 @@ export const AdminModule: React.FC = () => {
                   </div>
                 );
               })
+            )}
+            {filteredReceptionCitizens.length > visibleReceptionLimit && (
+              <div className="pt-2 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleReceptionLimit(prev => prev + 50)}
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer shadow-xs"
+                >
+                  عرض المزيد ({filteredReceptionCitizens.length - visibleReceptionLimit} مراجع متبقي)
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -1838,33 +1905,76 @@ export const AdminModule: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveRequest} className="space-y-3.5 text-right">
-              {/* Select Citizen (if creating new) */}
+              {/* Free-Text Applicant Entry (if creating new — independent from Reception!) */}
               {!editingRequest ? (
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">اختر المراجع *</label>
-                  <select
-                    value={selectedCitizenId}
-                    onChange={(e) => setSelectedCitizenId(e.target.value)}
-                    className="w-full px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 text-xs text-right focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                    required
-                  >
-                    <option value="">-- اختر مراجع من المسجلين بالاستعلامات --</option>
-                    {citizens.map((c) => (
-                      <option key={c.Citizen_ID} value={c.Citizen_ID}>
-                        {c.FullName} ({c.Citizen_ID}) {c.IsBlocked ? '⛔ [محظور بالقائمة السوداء]' : ''} - {c.District}
-                      </option>
-                    ))}
-                  </select>
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-slate-800">بيانات صاحب الطلب (إدخال مباشر ومستقل عن الاستعلامات)</span>
+                    <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                      كتابة حرة
+                    </span>
+                  </div>
 
-                  {/* Immediate Blacklist Alert if selected citizen is blocked */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">اسم صاحب الطلب / المراجع *</label>
+                      <input
+                        type="text"
+                        value={manualCitizenName}
+                        onChange={(e) => {
+                          setManualCitizenName(e.target.value);
+                          setCreateFormError(null);
+                        }}
+                        placeholder="اكتب الاسم الكامل لصاحب الطلب..."
+                        className="w-full px-3 py-2 rounded-lg bg-white border border-slate-300 text-slate-900 text-xs font-bold text-right focus:ring-2 focus:ring-blue-500 outline-none"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">رقم الهاتف (اختياري)</label>
+                      <input
+                        type="tel"
+                        value={manualCitizenPhone}
+                        onChange={(e) => {
+                          setManualCitizenPhone(e.target.value);
+                          setCreateFormError(null);
+                        }}
+                        placeholder="07800000000"
+                        className="w-full px-3 py-2 rounded-lg bg-white border border-slate-300 text-slate-900 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">عنوان السكن / القضاء (اختياري)</label>
+                    <input
+                      type="text"
+                      value={manualCitizenAddress}
+                      onChange={(e) => setManualCitizenAddress(e.target.value)}
+                      placeholder="مثال: الناصرية - حي الشهداء..."
+                      className="w-full px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-900 text-xs text-right focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+
+                  {createFormError && (
+                    <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-300 text-rose-800 text-xs font-bold">
+                      {createFormError}
+                    </div>
+                  )}
+
+                  {/* Immediate Blacklist Alert while typing name or phone */}
                   {(() => {
-                    const selCit = citizens.find(c => c.Citizen_ID === selectedCitizenId);
-                    if (!selCit || !selCit.IsBlocked) return null;
+                    const liveBlock = checkIfCitizenBlocked(manualCitizenName, manualCitizenPhone);
+                    if (!liveBlock.isBlocked || !liveBlock.citizen) return null;
+                    const selCit = liveBlock.citizen;
                     return (
-                      <div className="mt-2.5 p-3 rounded-xl bg-red-50 border-2 border-red-500 text-red-950 space-y-1 shadow-sm animate-in fade-in">
+                      <div className="mt-2 p-3 rounded-xl bg-red-50 border-2 border-red-500 text-red-950 space-y-1 shadow-sm animate-in fade-in">
                         <div className="flex items-center gap-2">
                           <span className="text-base">⛔</span>
-                          <h4 className="font-black text-xs text-red-900">تنبيه فوري: هذا المواطن مدرج في «القائمة السوداء» (الأشخاص المحظورين)!</h4>
+                          <h4 className="font-black text-xs text-red-900">
+                            تنبيه فوري: المواطن «{selCit.FullName}» مدرج في «القائمة السوداء» (الأشخاص المحظورين)!
+                          </h4>
                         </div>
                         <p className="text-[11px] text-red-800 font-bold">
                           سبب الحظر: {selCit.BlockReason || 'غير محدد'}
@@ -1913,104 +2023,98 @@ export const AdminModule: React.FC = () => {
                 </div>
               )}
 
-              {/* Entity (Auto add) */}
+              {/* Entity (Searchable + Instant Add & Persist) */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">الجهة المعنية *</label>
-                <select
+                <label className="block text-xs font-bold text-slate-700 mb-1">الجهة المعنية / الوزارة *</label>
+                <SearchableSelect
+                  id="admin-req-entity"
+                  category="Entity"
+                  options={entitiesList}
                   value={entity}
-                  onChange={(e) => setEntity(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 text-xs text-right focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  onChange={(val) => {
+                    setEntity(val);
+                    setCustomEntity('');
+                  }}
+                  placeholder="اختر الوزارة أو اكتب مختصراً مثل: الداخلية..."
+                  searchPlaceholder="اكتب كلمة مختصرة (مثلاً: الداخلية، الصحة، التربية) أو أضف وزارة جديدة..."
+                  allowCustom={true}
                   required
-                >
-                  {entitiesList.map((ent, idx) => (
-                    <option key={idx} value={ent}>{ent}</option>
-                  ))}
-                  <option value="أخرى">+ أخرى (إضافة وزارة أو جهة جديدة)</option>
-                </select>
-                {entity === 'أخرى' && (
-                  <input
-                    type="text"
-                    value={customEntity}
-                    onChange={(e) => setCustomEntity(e.target.value)}
-                    placeholder="اكتب اسم الجهة أو المديرية..."
-                    className="w-full mt-1.5 px-3 py-1.5 rounded-lg bg-white border border-blue-400 text-slate-900 text-xs text-right"
-                    required
-                  />
-                )}
+                />
               </div>
 
-              {/* Statuses & Priority */}
+              {/* Statuses & Priority (ALL Searchable + Instant Add & Persist) */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">حالة الاستلام</label>
-                  <select
+                  <SearchableSelect
+                    id="admin-req-status"
+                    category="RequestStatus"
+                    options={requestStatusOptions}
                     value={requestStatus}
-                    onChange={(e) => setRequestStatus(e.target.value as RequestStatus)}
-                    className="w-full px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 text-xs text-right focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  >
-                    <option value="مستلم">مستلم</option>
-                    <option value="غير مستلم">غير مستلم</option>
-                    <option value="معاد">معاد</option>
-                    <option value="غير مستوفي للشروط">غير مستوفي للشروط</option>
-                    <option value="خاص">خاص</option>
-                  </select>
+                    onChange={(val) => setRequestStatus((val || 'مستلم') as RequestStatus)}
+                    placeholder="اختر أو ابحث عن حالة الاستلام..."
+                    searchPlaceholder="ابحث أو أضف حالة استلام جديدة..."
+                    allowCustom={true}
+                  />
                 </div>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">المسار الإداري</label>
-                  <select
+                  <SearchableSelect
+                    id="admin-req-processing"
+                    category="ProcessingStatus"
+                    options={processingStatusOptions}
                     value={processingStatus}
-                    onChange={(e) => setProcessingStatus(e.target.value as ProcessingStatus)}
-                    className="w-full px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 text-xs text-right focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-700"
-                  >
-                    <option value="قيد التدقيق">قيد التدقيق</option>
-                    <option value="مرسل إلى الوزارة/الهيئة">مرسل إلى الوزارة/الهيئة</option>
-                    <option value="منجز">منجز</option>
-                    <option value="تم الطباعة">تم الطباعة</option>
-                    <option value="بانتظار الموافقة">بانتظار الموافقة</option>
-                    <option value="مرفوض">مرفوض</option>
-                  </select>
+                    onChange={(val) => setProcessingStatus((val || 'قيد التدقيق') as ProcessingStatus)}
+                    placeholder="اختر أو ابحث عن المسار الإداري..."
+                    searchPlaceholder="ابحث أو أضف مساراً إدارياً جديداً..."
+                    allowCustom={true}
+                  />
                 </div>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">درجة الأولوية</label>
-                  <select
+                  <SearchableSelect
+                    id="admin-req-priority"
+                    category="Priority"
+                    options={priorityOptions}
                     value={priority}
-                    onChange={(e) => setPriority(e.target.value as Priority)}
-                    className="w-full px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 text-xs text-right focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none font-bold text-red-700"
-                  >
-                    <option value="عام">عام</option>
-                    <option value="عاجل">عاجل (إشعار فوري)</option>
-                    <option value="خاص جداً">خاص جداً (إشعار فوري)</option>
-                  </select>
+                    onChange={(val) => setPriority((val || 'عام') as Priority)}
+                    placeholder="اختر أو ابحث عن الأولوية..."
+                    searchPlaceholder="ابحث أو أضف درجة أولوية جديدة..."
+                    allowCustom={true}
+                  />
                 </div>
               </div>
 
-              {/* Attendance & Dependency classification */}
+              {/* Attendance & Dependency classification (Searchable + Instant Add & Persist) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-2.5 rounded-lg bg-slate-50 border border-slate-200">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">طريقة الحضور والتسجيل</label>
-                  <select
+                  <SearchableSelect
+                    id="admin-req-attendance"
+                    category="AttendanceType"
+                    options={attendanceTypeOptions}
                     value={attendanceType}
-                    onChange={(e) => setAttendanceType(e.target.value as 'شخصياً' | 'عبر معتمد' | 'وكيل')}
-                    className="w-full px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs text-right focus:ring-2 focus:ring-blue-500 outline-none"
-                  >
-                    <option value="شخصياً">شخصياً (المواطن حضر بنفسه)</option>
-                    <option value="عبر معتمد">عبر معتمد (عن طريق معتمد/منسق)</option>
-                    <option value="وكيل">وكيل (وكيل رسمي أو تفويض)</option>
-                  </select>
+                    onChange={(val) => setAttendanceType(val || 'شخصياً')}
+                    placeholder="اختر أو ابحث عن طريقة الحضور..."
+                    searchPlaceholder="ابحث أو أضف طريقة حضور جديدة..."
+                    allowCustom={true}
+                  />
                 </div>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">حالة التبعية والشمول</label>
-                  <select
+                  <SearchableSelect
+                    id="admin-req-dependency"
+                    category="DependencyStatus"
+                    options={dependencyStatusOptions}
                     value={dependencyStatus}
-                    onChange={(e) => setDependencyStatus(e.target.value as 'مستقل' | 'غير مستقل')}
-                    className="w-full px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs text-right focus:ring-2 focus:ring-blue-500 outline-none"
-                  >
-                    <option value="مستقل">مستقل (رب أسرة / معيل مستقل)</option>
-                    <option value="غير مستقل">غير مستقل (تابع لأسرته / معال)</option>
-                  </select>
+                    onChange={(val) => setDependencyStatus(val || 'مستقل')}
+                    placeholder="اختر أو ابحث عن حالة التبعية..."
+                    searchPlaceholder="ابحث أو أضف تصنيفاً جديداً..."
+                    allowCustom={true}
+                  />
                 </div>
               </div>
 
@@ -2172,8 +2276,8 @@ export const AdminModule: React.FC = () => {
                     إلغاء
                   </button>
                   {(() => {
-                    const selCit = !editingRequest ? citizens.find(c => c.Citizen_ID === selectedCitizenId) : null;
-                    const isBlocked = Boolean(selCit?.IsBlocked);
+                    const liveBlock = !editingRequest ? checkIfCitizenBlocked(manualCitizenName, manualCitizenPhone) : { isBlocked: false };
+                    const isBlocked = Boolean(liveBlock.isBlocked);
                     return (
                       <button
                         type="submit"

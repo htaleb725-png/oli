@@ -172,8 +172,8 @@ export const SystemIconsStudio: React.FC = () => {
 
       {savedSuccess && (
         <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs font-bold flex items-center gap-2 shadow-xs">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-          <span>تم حفظ وتطبيق كافة الأسماء والصور والأيقونات ومزامنتها سحابياً!</span>
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>تم حفظ وتعميم الأيقونات والتعديلات فوراً في جميع أنحاء التطبيق! سيظهر إشعار «تحديث جديد» لجميع المستخدمين الآخرين لتحديث الأيقونات وإعادة الدخول تلقائياً.</span>
         </div>
       )}
 

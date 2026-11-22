@@ -62,8 +62,11 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
     requests,
     interviews,
     organizationRecords,
+    customRecords,
+    customSections,
     blockCitizen,
     unblockCitizen,
+    checkIfCitizenBlocked,
     updateCitizen,
     currentUser,
     systemSettings,
@@ -76,12 +79,27 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
   const [results, setResults] = useState<CrossMatchResult[] | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // Inline UI notice & confirmation state (NO window.alert / window.confirm!)
+  const [noticeBanner, setNoticeBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [pendingUnblockId, setPendingUnblockId] = useState<string | null>(null);
+
+  const showNotice = (type: 'success' | 'error', text: string) => {
+    setNoticeBanner({ type, text });
+    setTimeout(() => setNoticeBanner(null), 5000);
+  };
+
   // Results Filter & Search
   const [statusFilter, setStatusFilter] = useState<'all' | 'found' | 'not_found' | 'blocked' | 'has_requests'>('all');
   const [tableSearch, setTableSearch] = useState('');
 
-  // Blocking Modal
-  const [blockingTarget, setBlockingTarget] = useState<Citizen | null>(null);
+  // Blocking Modal (supports existing citizen OR any pasted/request-only name!)
+  const [blockingTarget, setBlockingTarget] = useState<{
+    Citizen_ID: string;
+    FullName: string;
+    Phone1?: string;
+    District?: string;
+    isNewPlaceholder?: boolean;
+  } | null>(null);
   const [blockReasonInput, setBlockReasonInput] = useState('');
 
   // Editing Citizen Modal
@@ -92,23 +110,61 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
   const [editJob, setEditJob] = useState('');
   const [editEducation, setEditEducation] = useState('');
 
-  // Perform Cross-matching across entire system
+  // Upload Excel / CSV column of names into the cross-match box
+  const handleImportNamesFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = ev.target?.result;
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json<any[]>(firstSheet, { header: 1 });
+        const extracted: string[] = [];
+        for (const row of rows) {
+          if (!Array.isArray(row)) continue;
+          // Pick the longest Arabic/text cell in each row (typically the full name column)
+          const textCells = row
+            .map((cell) => String(cell ?? '').trim())
+            .filter((val) => val.length >= 4 && !/^\d+$/.test(val));
+          if (textCells.length > 0) {
+            const candidate = textCells.find((t) => t.includes(' ')) || textCells[0];
+            if (candidate && !['الاسم', 'الاسم الكامل', 'اسم المواطن', 'اسم صاحب الطلب'].includes(candidate)) {
+              extracted.push(candidate);
+            }
+          }
+        }
+        if (extracted.length > 0) {
+          setInputNamesText(extracted.slice(0, 1000).join('\n'));
+          showNotice('success', `تم استيراد (${Math.min(extracted.length, 1000)}) اسم من الملف بنجاح. اضغط «بدء مقاطعة البيانات» الآن.`);
+        } else {
+          showNotice('error', 'لم يتم العثور على أسماء صالحة داخل الملف.');
+        }
+      } catch {
+        showNotice('error', 'تعذر قراءة الملف. تأكد أنه بصيغة Excel (.xlsx / .xls) أو CSV.');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  // Perform Cross-matching across entire system (Citizens + Requests + Interviews + Orgs + Custom/Social Care + Blacklist)
   const handleRunCrossMatching = () => {
     if (!inputNamesText.trim()) {
-      alert('يرجى لصق أو كتابة قائمة بالأسماء أولاً.');
+      showNotice('error', 'يرجى لصق أو كتابة قائمة بالأسماء (أو أرقام الهواتف) أولاً.');
       return;
     }
 
     setIsProcessing(true);
+    setNoticeBanner(null);
 
     setTimeout(() => {
-      // Split by newlines, commas, or semicolons
       const rawLines = inputNamesText
         .split(/[\r\n,;]+/)
-        .map(l => l.trim())
-        .filter(l => l.length >= 3);
+        .map(l => l.replace(/^\d+[\.\-\)\s]+/, '').trim())
+        .filter(l => l.length >= 2);
 
-      // Deduplicate or preserve lines
       const output: CrossMatchResult[] = [];
 
       rawLines.forEach((name, idx) => {
@@ -121,28 +177,41 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
         };
 
         const normQuery = normalizeArabicText(name);
+        const queryDigits = normQuery.replace(/[^0-9]/g, '');
 
-        if (matchMode === 'exact') {
-          // Exact match
+        // 0. Phone number or Citizen_ID direct match
+        if (queryDigits.length >= 8) {
           bestCitizen = citizens.find(c => {
-            const normCit = normalizeArabicText(c.FullName);
-            return normCit === normQuery;
+            if (!c) return false;
+            const p1 = (c.Phone1 || '').replace(/[^0-9]/g, '');
+            const p2 = (c.Phone2 || '').replace(/[^0-9]/g, '');
+            return (p1 && (p1 === queryDigits || p1.endsWith(queryDigits.slice(-10)))) ||
+              (p2 && (p2 === queryDigits || p2.endsWith(queryDigits.slice(-10))));
           });
           if (bestCitizen) {
-            bestMatchInfo = {
-              isMatch: true,
-              matchType: 'exact_quad',
-              matchLabel: 'مطابقة تامة',
-              confidence: 100
-            };
+            bestMatchInfo = { isMatch: true, matchType: 'exact_quad', matchLabel: 'مطابقة برقم الهاتف', confidence: 100 };
           }
-        } else {
-          // Quad, triple, or smart matching using findBestArabicMatch
+        }
+
+        if (!bestCitizen) {
+          const byId = citizens.find(c => c && c.Citizen_ID && c.Citizen_ID.toLowerCase() === name.toLowerCase());
+          if (byId) {
+            bestCitizen = byId;
+            bestMatchInfo = { isMatch: true, matchType: 'exact_quad', matchLabel: 'مطابقة بالرقم المرجعي', confidence: 100 };
+          }
+        }
+
+        if (!bestCitizen && matchMode === 'exact') {
+          bestCitizen = citizens.find(c => c && normalizeArabicText(c.FullName) === normQuery);
+          if (bestCitizen) {
+            bestMatchInfo = { isMatch: true, matchType: 'exact_quad', matchLabel: 'مطابقة تامة', confidence: 100 };
+          }
+        } else if (!bestCitizen) {
           const { match, result } = findBestArabicMatch(
             name,
-            citizens,
+            citizens.filter(Boolean),
             c => c.Surname ? `${c.FullName} ${c.Surname}` : c.FullName,
-            { allowTwoPart: matchMode === 'triple' }
+            { allowTwoPart: matchMode === 'smart' || matchMode === 'triple' }
           );
           if (match && result.isMatch) {
             bestCitizen = match;
@@ -150,31 +219,98 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
           }
         }
 
-        // If matched a citizen, get their related records
+        // Also check direct blacklist status via checkIfCitizenBlocked (catches phone/name matches immediately)
+        const blockCheck = checkIfCitizenBlocked(name);
+        if (!bestCitizen && blockCheck.isBlocked && blockCheck.citizen) {
+          bestCitizen = blockCheck.citizen;
+          bestMatchInfo = { isMatch: true, matchType: 'exact_triple', matchLabel: 'مطابق في القائمة السوداء', confidence: 98 };
+        }
+
+        // Gather all related records across the ENTIRE system
         let citizenRequests: OfficeRequest[] = [];
         let citizenInterviews: Interview[] = [];
         let citizenOrgs: OrganizationRecord[] = [];
-        let isBlocked = false;
-        let blockReason: string | undefined;
+        let isBlocked = Boolean(blockCheck.isBlocked);
+        let blockReason: string | undefined = blockCheck.reason;
+
+        const targetNorm = bestCitizen ? normalizeArabicText(bestCitizen.FullName) : normQuery;
 
         if (bestCitizen) {
-          citizenRequests = requests.filter(r => r.Citizen_ID === bestCitizen?.Citizen_ID);
-          citizenInterviews = interviews.filter(i => i.Citizen_ID === bestCitizen?.Citizen_ID);
-          citizenOrgs = organizationRecords.filter(o => o.Citizen_ID === bestCitizen?.Citizen_ID);
-          isBlocked = Boolean(bestCitizen.IsBlocked);
-          blockReason = bestCitizen.BlockReason;
+          citizenRequests = requests.filter(r =>
+            r.Citizen_ID === bestCitizen?.Citizen_ID ||
+            (r.CitizenName && normalizeArabicText(r.CitizenName) === targetNorm)
+          );
+          citizenInterviews = interviews.filter(i =>
+            i.Citizen_ID === bestCitizen?.Citizen_ID ||
+            (i.CitizenName && normalizeArabicText(i.CitizenName) === targetNorm)
+          );
+          citizenOrgs = organizationRecords.filter(o =>
+            o.Citizen_ID === bestCitizen?.Citizen_ID ||
+            (o.FullName && normalizeArabicText(o.FullName) === targetNorm)
+          );
+          if (bestCitizen.IsBlocked) {
+            isBlocked = true;
+            blockReason = bestCitizen.BlockReason;
+          }
         } else {
-          // Also check direct requests by CitizenName in case citizen record was removed
-          citizenRequests = requests.filter(r => {
-            const normReqName = normalizeArabicText(r.CitizenName);
-            return normReqName.includes(normQuery) || normQuery.includes(normReqName);
+          // Search requests, interviews, organizationRecords, and custom/social-care records directly!
+          const queryTokens = extractNameTokens(name);
+          const matchesText = (candidate?: string) => {
+            if (!candidate) return false;
+            const normCand = normalizeArabicText(candidate);
+            if (!normCand) return false;
+            if (normCand === normQuery) return true;
+            if (normQuery.length >= 5 && (normCand.includes(normQuery) || normQuery.includes(normCand))) return true;
+            if (queryTokens.length >= 2) {
+              const candTokens = extractNameTokens(candidate);
+              if (candTokens.length >= 2 && queryTokens[0] === candTokens[0] && queryTokens[1] === candTokens[1]) {
+                if (queryTokens.length === 2 || (candTokens[2] && queryTokens[2] === candTokens[2])) return true;
+              }
+            }
+            return false;
+          };
+
+          citizenRequests = requests.filter(r => matchesText(r.CitizenName) || (queryDigits.length >= 8 && (r.CitizenPhone || '').replace(/[^0-9]/g, '') === queryDigits));
+          citizenInterviews = interviews.filter(i => matchesText(i.CitizenName));
+          citizenOrgs = organizationRecords.filter(o => matchesText(o.FullName));
+
+          // Also check custom sections (such as Social Care / الرعاية الاجتماعية)
+          const matchedCustom = (customRecords || []).filter(rec => {
+            return Object.values(rec.data || {}).some(v => typeof v === 'string' && matchesText(v));
           });
+          if (matchedCustom.length > 0 && citizenRequests.length === 0) {
+            citizenRequests = matchedCustom.map(rec => {
+              const secTitle = (customSections || []).find(s => s.id === rec.sectionId)?.title || 'قسم مخصص / الرعاية';
+              const firstTextVal = Object.values(rec.data || {}).find(v => typeof v === 'string' && v.trim()) as string | undefined;
+              return {
+                Request_ID: rec.id,
+                Citizen_ID: rec.id,
+                CitizenName: firstTextVal || name,
+                Entity: secTitle,
+                RequestStatus: 'مستلم',
+                ProcessingStatus: 'قيد التدقيق',
+                Priority: 'عام',
+                Details: Object.entries(rec.data || {}).slice(0, 3).map(([k, v]) => `${k}: ${v}`).join(' • ') || secTitle,
+                CreatedAt: rec.createdAt || '',
+                CreatedBy: rec.createdBy || 'الأقسام المخصصة'
+              };
+            });
+          }
+
+          if ((citizenRequests.length > 0 || citizenInterviews.length > 0 || citizenOrgs.length > 0) && !bestMatchInfo.isMatch) {
+            bestMatchInfo = {
+              isMatch: true,
+              matchType: 'exact_triple',
+              matchLabel: 'مطابق في سجلات المعاملات/الأقسام',
+              confidence: 90
+            };
+          }
         }
 
         output.push({
           index: idx + 1,
           inputName: name,
-          isFound: Boolean(bestCitizen) || citizenRequests.length > 0,
+          isFound: Boolean(bestCitizen) || citizenRequests.length > 0 || citizenInterviews.length > 0 || citizenOrgs.length > 0,
           matchType: bestMatchInfo.matchType,
           matchLabel: bestMatchInfo.matchLabel,
           confidence: bestMatchInfo.confidence,
@@ -189,7 +325,7 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
 
       setResults(output);
       setIsProcessing(false);
-    }, 100);
+    }, 60);
   };
 
   // Filtered Results
@@ -278,47 +414,86 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
     XLSX.writeFile(workbook, `تقرير_مقاطعة_البيانات_الموحد_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
-  // Block Citizen from Cross matching
-  const handleOpenBlock = (citizen: Citizen) => {
-    setBlockingTarget(citizen);
+  // Block Citizen (or any unmatched/request-only name) directly from Cross-matching
+  const handleOpenBlock = (target: { Citizen_ID: string; FullName: string; Phone1?: string; District?: string; isNewPlaceholder?: boolean }) => {
+    setBlockingTarget(target);
     setBlockReasonInput('');
   };
 
   const handleConfirmBlock = () => {
     if (!blockingTarget) return;
-    if (!blockReasonInput.trim()) {
-      alert('يرجى إدخال سبب الحظر بالتفصيل.');
+    const reason = blockReasonInput.trim();
+    if (!reason) {
+      showNotice('error', 'يرجى كتابة سبب الحظر بالتفصيل قبل التأكيد.');
       return;
     }
-    blockCitizen(blockingTarget.Citizen_ID, blockReasonInput.trim(), currentUser?.FullName || 'موظف الإدارة');
 
-    // Update in-memory results
+    blockCitizen(
+      blockingTarget.Citizen_ID,
+      reason,
+      currentUser?.FullName || 'موظف الإدارة',
+      {
+        FullName: blockingTarget.FullName,
+        Phone1: blockingTarget.Phone1,
+        District: blockingTarget.District
+      }
+    );
+
+    // Update in-memory results immediately
     if (results) {
       setResults(results.map(r => {
-        if (r.citizen?.Citizen_ID === blockingTarget.Citizen_ID) {
-          return { ...r, isBlocked: true, blockReason: blockReasonInput.trim() };
+        const matchesId = r.citizen?.Citizen_ID === blockingTarget.Citizen_ID;
+        const matchesName = normalizeArabicText(r.inputName) === normalizeArabicText(blockingTarget.FullName);
+        if (matchesId || matchesName) {
+          return {
+            ...r,
+            isFound: true,
+            isBlocked: true,
+            blockReason: reason,
+            citizen: r.citizen
+              ? { ...r.citizen, IsBlocked: true, BlockReason: reason }
+              : {
+                  Citizen_ID: blockingTarget.Citizen_ID,
+                  FullName: blockingTarget.FullName,
+                  Phone1: blockingTarget.Phone1 || '',
+                  Gender: 'ذكر',
+                  District: blockingTarget.District || 'الناصرية - المركز',
+                  SubDistrict: 'المركز',
+                  Job: 'كاسب',
+                  Education: 'إعدادية فما دون',
+                  Rating: 'محظور',
+                  CreatedAt: new Date().toISOString().split('T')[0],
+                  IsBlocked: true,
+                  BlockReason: reason
+                }
+          };
         }
         return r;
       }));
     }
 
+    showNotice('success', `تم حظر «${blockingTarget.FullName}» وإدراجه في القائمة السوداء بنجاح.`);
     setBlockingTarget(null);
     setBlockReasonInput('');
   };
 
-  // Unblock Citizen
-  const handleUnblock = (citizenId: string) => {
-    if (window.confirm('هل تريد إلغاء حظر هذا المراجع وإعادته للقائمة المسموح بها؟')) {
-      unblockCitizen(citizenId);
-      if (results) {
-        setResults(results.map(r => {
-          if (r.citizen?.Citizen_ID === citizenId) {
-            return { ...r, isBlocked: false, blockReason: undefined };
-          }
-          return r;
-        }));
-      }
+  // Unblock Citizen with inline 2-click confirmation (NO window.confirm!)
+  const handleUnblock = (citizenId: string, fullName?: string) => {
+    if (pendingUnblockId !== citizenId) {
+      setPendingUnblockId(citizenId);
+      return;
     }
+    setPendingUnblockId(null);
+    unblockCitizen(citizenId);
+    if (results) {
+      setResults(results.map(r => {
+        if (r.citizen?.Citizen_ID === citizenId) {
+          return { ...r, isBlocked: false, blockReason: undefined, citizen: { ...r.citizen, IsBlocked: false, BlockReason: undefined } };
+        }
+        return r;
+      }));
+    }
+    showNotice('success', `تم إلغاء الحظر عن «${fullName || citizenId}» بنجاح.`);
   };
 
   // Open Edit Modal
@@ -393,23 +568,43 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
         </div>
       </div>
 
+      {/* Inline Notification Banner */}
+      {noticeBanner && (
+        <div className={`p-3.5 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 border shadow-xs ${
+          noticeBanner.type === 'success'
+            ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+            : 'bg-rose-50 border-rose-300 text-rose-900'
+        }`}>
+          <div className="flex items-center gap-2">
+            {noticeBanner.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" /> : <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />}
+            <span>{noticeBanner.text}</span>
+          </div>
+          <button type="button" onClick={() => setNoticeBanner(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">✕</button>
+        </div>
+      )}
+
       {/* Main Input Card: Textarea & Options */}
       <div className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <label className="text-xs font-black text-slate-800 dark:text-slate-200 flex items-center gap-2">
             <FileText className="w-4 h-4 text-blue-600" />
-            <span>ضع أو الصق قائمة الأسماء هنا (ثلاثية أو رباعية - كل اسم في سطر أو مفصولة بفواصل):</span>
+            <span>ضع أو الصق قائمة الأسماء أو أرقام الهواتف هنا (أو ارفع ملف Excel):</span>
           </label>
 
-          {/* Mode Dropdown */}
-          <div className="flex items-center gap-2 text-xs">
+          {/* Mode Dropdown + Excel Import */}
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <label className="h-9 px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors">
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              <span>رفع قائمة Excel</span>
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={handleImportNamesFile} className="hidden" />
+            </label>
             <span className="text-slate-500 dark:text-slate-400 font-bold text-[11px]">نمط المطابقة:</span>
             <select
               value={matchMode}
               onChange={(e) => setMatchMode(e.target.value as MatchFilterMode)}
               className="h-9 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="smart">بحث ذكي شامل (ثلاثي، رباعي، وألقاب)</option>
+              <option value="smart">بحث ذكي شامل (ثنائي، ثلاثي، رباعي، وهاتف)</option>
               <option value="quad">البحث بالاسم الرباعي (Quadruple Name)</option>
               <option value="triple">البحث بالاسم الثلاثي (Triple Name)</option>
               <option value="exact">مطابقة تامة حرفياً (Exact Match)</option>
@@ -423,11 +618,11 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
             rows={5}
             value={inputNamesText}
             onChange={(e) => setInputNamesText(e.target.value)}
-            placeholder={`الصق قائمة الأسماء هنا، مثال:
+            placeholder={`الصق قائمة الأسماء أو أرقام الهواتف هنا، مثال:
 محمد علي حسن حسين
 علي خضير عباس الشمري
 فاطمة جاسم كاظم
-سجاد حيدر عبد الحسن
+07801234567
 ...`}
             className="w-full p-4 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs font-medium text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed"
           />
@@ -441,7 +636,7 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
         {/* Action Buttons Bar */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
           <p className="text-[11px] text-slate-500 dark:text-slate-400">
-            * يدعم النظام حتى 1000 اسم دفعة واحدة مع المقاطعة اللحظية في كافة الجداول وملفات الرعاية والمقابلات.
+            * يدعم النظام حتى 1000 اسم دفعة واحدة مع المقاطعة اللحظية في كافة الأقسام، الرعاية، المقابلات، والقائمة السوداء.
           </p>
 
           <div className="flex items-center gap-2">
@@ -774,27 +969,47 @@ export const DataCrossMatchingModule: React.FC<DataCrossMatchingModuleProps> = (
                                 </button>
                               )}
 
-                              {/* Block or Unblock Button */}
-                              {cit && (
-                                row.isBlocked ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleUnblock(cit.Citizen_ID)}
-                                    className="p-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 transition-colors cursor-pointer"
-                                    title="إلغاء الحظر وإعادته للمسموح بهم"
-                                  >
-                                    <UserCheck className="w-3.5 h-3.5" />
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenBlock(cit)}
-                                    className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 transition-colors cursor-pointer"
-                                    title="حظر هذا الشخص وإدراجه بالقائمة السوداء مع كتابة السبب"
-                                  >
-                                    <ShieldAlert className="w-3.5 h-3.5" />
-                                  </button>
-                                )
+                              {/* Block or Unblock Button (works for existing citizens AND any pasted/request-only name!) */}
+                              {row.isBlocked && cit ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUnblock(cit.Citizen_ID, cit.FullName)}
+                                  className={`px-2 py-1 rounded-lg font-bold text-[10px] flex items-center gap-1 transition-colors cursor-pointer ${
+                                    pendingUnblockId === cit.Citizen_ID
+                                      ? 'bg-emerald-600 text-white'
+                                      : 'bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                                  }`}
+                                  title="إلغاء الحظر وإعادته للمسموح بهم"
+                                >
+                                  <UserCheck className="w-3.5 h-3.5" />
+                                  {pendingUnblockId === cit.Citizen_ID && <span>تأكيد؟</span>}
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleOpenBlock(
+                                      cit
+                                        ? {
+                                            Citizen_ID: cit.Citizen_ID,
+                                            FullName: cit.FullName,
+                                            Phone1: cit.Phone1,
+                                            District: cit.District
+                                          }
+                                        : {
+                                            Citizen_ID: `BLK-${Date.now().toString(36).toUpperCase()}-${row.index}`,
+                                            FullName: row.inputName,
+                                            Phone1: row.requests[0]?.CitizenPhone || '',
+                                            District: 'الناصرية - المركز',
+                                            isNewPlaceholder: true
+                                          }
+                                    )
+                                  }
+                                  className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 transition-colors cursor-pointer"
+                                  title="حظر هذا الشخص وإدراجه بالقائمة السوداء مع كتابة السبب"
+                                >
+                                  <ShieldAlert className="w-3.5 h-3.5" />
+                                </button>
                               )}
 
                               {/* Archive button */}

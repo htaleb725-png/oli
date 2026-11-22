@@ -396,7 +396,12 @@ export const MasterAdminModule: React.FC = () => {
     SubDistrict: 'النواحي والأحياء',
     ResidentialArea: 'مناطق السكن والمحلات',
     ReferralSource: 'المعرّفون والمصرّحون',
-    Entity: 'الجهات والوزارات والدوائر'
+    Entity: 'الجهات والوزارات والدوائر',
+    RequestStatus: 'تصنيف حالة الطلب',
+    ProcessingStatus: 'حالة إنجاز الطلب',
+    Priority: 'درجة الأهمية والأولوية',
+    AttendanceType: 'طبيعة حضور المراجع',
+    DependencyStatus: 'صفة التبعية الإدارية'
   };
 
   const roleMap: Record<string, string> = {

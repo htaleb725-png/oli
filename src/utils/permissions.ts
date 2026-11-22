@@ -20,40 +20,55 @@ export function isSocialCareSectionKey(sectionKey: string): boolean {
 }
 
 export function getHomeSectionForRole(role?: string, user?: User | null): string {
-  switch (role) {
-    case 'reception':
-    case 'reception_officer':
-      return 'reception';
-    case 'admin':
-    case 'admin_officer':
-      return 'admin';
-    case 'social_care':
-    case 'social_care_officer':
-      return 'social_care';
-    case 'interviews_officer':
-      return 'interviews';
-    case 'organization':
-    case 'organization_officer':
-      return 'organization';
-    case 'machine':
-    case 'machine_officer':
-      return 'machine';
-    case 'audit':
-      return 'audit';
-    case 'archive':
-      return 'search_archive';
-    case 'director':
-      return 'director';
-    case 'deputy':
-      return 'interviews';
-    case 'developer':
-      return 'master_admin';
-    default:
-      if (user?.AllowedSections && user.AllowedSections.length > 0) {
-        return user.AllowedSections[0];
-      }
-      return 'dashboard';
+  const defaultByRole = ((): string => {
+    switch (role) {
+      case 'reception':
+      case 'reception_officer':
+        return 'reception';
+      case 'admin':
+      case 'admin_officer':
+        return 'admin';
+      case 'social_care':
+      case 'social_care_officer':
+        return 'social_care';
+      case 'interviews_officer':
+        return 'interviews';
+      case 'organization':
+      case 'organization_officer':
+        return 'organization';
+      case 'machine':
+      case 'machine_officer':
+        return 'machine';
+      case 'audit':
+        return 'audit';
+      case 'archive':
+        return 'search_archive';
+      case 'director':
+        return 'director';
+      case 'deputy':
+        return 'interviews';
+      case 'developer':
+        return 'master_admin';
+      default:
+        return 'dashboard';
+    }
+  })();
+
+  if (
+    user &&
+    role !== 'developer' &&
+    role !== 'director' &&
+    role !== 'deputy' &&
+    Array.isArray(user.AllowedSections) &&
+    user.AllowedSections.length > 0
+  ) {
+    if (user.AllowedSections.includes(defaultByRole)) {
+      return defaultByRole;
+    }
+    return user.AllowedSections[0];
   }
+
+  return defaultByRole;
 }
 
 export function canUserAccessSocialCare(user?: User | null): boolean {
@@ -103,12 +118,20 @@ export function canUserAccessSection(
   // Dashboard is always accessible to authenticated staff
   if (section === 'dashboard') return true;
 
-  // Explicit per-user section grant from Developer or Executive Director
-  if (user.AllowedSections && user.AllowedSections.includes(section)) {
-    return true;
+  // If the Developer or Director explicitly configured AllowedSections for this user, honor it directly
+  if (Array.isArray(user.AllowedSections) && user.AllowedSections.length > 0) {
+    if (user.AllowedSections.includes(section)) {
+      return true;
+    }
+    if (section.startsWith('custom_section_')) {
+      const secId = section.replace('custom_section_', '');
+      const targetSec = customSections.find(s => s.id === secId);
+      if (targetSec?.allowedUserIds?.includes(user.User_ID)) return true;
+    }
+    return false;
   }
 
-  // Custom dynamic sections created by the developer
+  // Custom dynamic sections created by the developer (when user has no explicit AllowedSections matrix)
   if (section.startsWith('custom_section_')) {
     const secId = section.replace('custom_section_', '');
     if (secId === SOCIAL_CARE_LEGACY_CUSTOM_ID) {
@@ -117,12 +140,10 @@ export function canUserAccessSection(
     const targetSec = customSections.find(s => s.id === secId);
     if (!targetSec) return false;
 
-    // Check explicit user ID grant on section
     if (targetSec.allowedUserIds && targetSec.allowedUserIds.includes(user.User_ID)) {
       return true;
     }
 
-    // If section is restricted or has explicit allowedRoles, enforce them strictly
     const hasRoleRestriction =
       targetSec.isStandaloneRestricted ||
       (Array.isArray(targetSec.allowedRoles) && targetSec.allowedRoles.length > 0);
@@ -131,11 +152,10 @@ export function canUserAccessSection(
       return Array.isArray(targetSec.allowedRoles) && targetSec.allowedRoles.includes(role);
     }
 
-    // Public custom section (not restricted)
     return true;
   }
 
-  // Role-based default built-in sections
+  // Role-based default built-in sections (fallback for legacy accounts without AllowedSections)
   switch (role) {
     case 'reception':
     case 'reception_officer':

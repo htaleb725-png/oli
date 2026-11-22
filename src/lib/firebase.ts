@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { initializeFirestore, getFirestore, doc, getDocFromServer, Firestore, setLogLevel } from 'firebase/firestore';
 import localFirebaseConfig from '../../firebase-applet-config.json';
 
@@ -32,15 +32,6 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(activeFirebas
 // Initialize Firebase Auth
 export const auth = getAuth(app);
 export const googleAuthProvider = new GoogleAuthProvider();
-
-// Auto sign-in anonymously for app session security if not signed in
-onAuthStateChanged(auth, (user) => {
-  if (!user) {
-    signInAnonymously(auth).catch(() => {
-      // Offline fallback
-    });
-  }
-});
 
 // Target database ID
 const dbId = activeFirebaseConfig.firestoreDatabaseId && activeFirebaseConfig.firestoreDatabaseId !== '(default)'

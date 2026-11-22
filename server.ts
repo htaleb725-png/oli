@@ -1,11 +1,410 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import { extractCitizenInfoFromFilename } from './src/utils/filenameNameExtractor';
 
+interface StoredUser {
+  User_ID: string;
+  Username: string;
+  Password?: string;
+  Phone?: string;
+  Role: string;
+  RoleArabic: string;
+  Status?: 'active' | 'frozen';
+  Active?: boolean;
+  FullName: string;
+  Department: string;
+  JobTitle?: string;
+  Avatar?: string;
+  CreatedAt?: string;
+  UpdatedAt?: string;
+  Permissions?: string[];
+  AllowedSections?: string[];
+}
+
+interface UsersStoreState {
+  users: StoredUser[];
+  deletedIds: string[];
+  developerPasscode?: string;
+  updatedAt: string;
+}
+
+interface SettingsStoreState {
+  systemSettings: Record<string, any>;
+  customSections: any[];
+  settingsVersion: number;
+  updateSummary: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+interface BlacklistRecord {
+  Citizen_ID: string;
+  FullName: string;
+  Phone1?: string;
+  District?: string;
+  BlockReason: string;
+  BlockedAt: string;
+  BlockedBy: string;
+  IsBlocked: boolean;
+}
+
+interface BlacklistStoreState {
+  items: BlacklistRecord[];
+  unblockedIds: string[];
+  updatedAt: string;
+}
+
+interface AppDataStoreState {
+  rev: number;
+  citizens: any[];
+  requests: any[];
+  interviews: any[];
+  officialLetters: any[];
+  cheques: any[];
+  organizationRecords: any[];
+  dropdowns: any[];
+  customRecords: any[];
+  documents: any[];
+  deletedIds: string[];
+  updatedAt: string;
+}
+
+type SyncEntityKey =
+  | 'citizens'
+  | 'requests'
+  | 'interviews'
+  | 'officialLetters'
+  | 'cheques'
+  | 'organizationRecords'
+  | 'dropdowns'
+  | 'customRecords'
+  | 'documents';
+
+const SYNC_ENTITY_ID_FIELD: Record<SyncEntityKey, string> = {
+  citizens: 'Citizen_ID',
+  requests: 'Request_ID',
+  interviews: 'Interview_ID',
+  officialLetters: 'Letter_ID',
+  cheques: 'id',
+  organizationRecords: 'Citizen_ID',
+  dropdowns: 'id',
+  customRecords: 'id',
+  documents: 'Doc_ID'
+};
+
+const ALLOWED_SYNC_ENTITIES = new Set<string>(Object.keys(SYNC_ENTITY_ID_FIELD));
+
+const DATA_DIR = path.join(process.cwd(), 'data');
+const USERS_STORE_PATH = path.join(DATA_DIR, 'users-store.json');
+const SETTINGS_STORE_PATH = path.join(DATA_DIR, 'settings-store.json');
+const BLACKLIST_STORE_PATH = path.join(DATA_DIR, 'blacklist-store.json');
+const APP_DATA_STORE_PATH = path.join(DATA_DIR, 'app-data-store.json');
+
+let memoryUsersStore: UsersStoreState = {
+  users: [],
+  deletedIds: [],
+  updatedAt: new Date().toISOString()
+};
+
+let memorySettingsStore: SettingsStoreState = {
+  systemSettings: {},
+  customSections: [],
+  settingsVersion: 0,
+  updateSummary: '',
+  updatedBy: '',
+  updatedAt: new Date().toISOString()
+};
+
+let memoryBlacklistStore: BlacklistStoreState = {
+  items: [],
+  unblockedIds: [],
+  updatedAt: new Date().toISOString()
+};
+
+let memoryAppDataStore: AppDataStoreState = {
+  rev: 0,
+  citizens: [],
+  requests: [],
+  interviews: [],
+  officialLetters: [],
+  cheques: [],
+  organizationRecords: [],
+  dropdowns: [],
+  customRecords: [],
+  documents: [],
+  deletedIds: [],
+  updatedAt: new Date().toISOString()
+};
+
+let appDataSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Active SSE real-time connected clients (browsers, shared links, Desktop PWAs)
+const sseClients = new Set<express.Response>();
+
+function broadcastSseEvent(eventName: string, payload: Record<string, any>): void {
+  if (sseClients.size === 0) return;
+  const serialized = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const clientRes of Array.from(sseClients)) {
+    try {
+      clientRes.write(serialized);
+    } catch {
+      sseClients.delete(clientRes);
+    }
+  }
+}
+
+function getRecordSyncId(entity: SyncEntityKey, item: any): string {
+  if (!item || typeof item !== 'object') return '';
+  if (entity === 'dropdowns') {
+    const rawId = item.id || `${String(item.Category || '').trim()}::${String(item.ItemValue || '').trim()}`;
+    return String(rawId).trim();
+  }
+  const idField = SYNC_ENTITY_ID_FIELD[entity];
+  return String(item[idField] || item.id || '').trim();
+}
+
+function loadAppDataStore(): AppDataStoreState {
+  try {
+    if (fs.existsSync(APP_DATA_STORE_PATH)) {
+      const raw = fs.readFileSync(APP_DATA_STORE_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        memoryAppDataStore = {
+          rev: Number(parsed.rev) || 0,
+          citizens: Array.isArray(parsed.citizens) ? parsed.citizens : [],
+          requests: Array.isArray(parsed.requests) ? parsed.requests : [],
+          interviews: Array.isArray(parsed.interviews) ? parsed.interviews : [],
+          officialLetters: Array.isArray(parsed.officialLetters) ? parsed.officialLetters : [],
+          cheques: Array.isArray(parsed.cheques) ? parsed.cheques : [],
+          organizationRecords: Array.isArray(parsed.organizationRecords) ? parsed.organizationRecords : [],
+          dropdowns: Array.isArray(parsed.dropdowns) ? parsed.dropdowns : [],
+          customRecords: Array.isArray(parsed.customRecords) ? parsed.customRecords : [],
+          documents: Array.isArray(parsed.documents) ? parsed.documents : [],
+          deletedIds: Array.isArray(parsed.deletedIds) ? parsed.deletedIds : [],
+          updatedAt: parsed.updatedAt || new Date().toISOString()
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('App data store load warning:', err);
+  }
+  return memoryAppDataStore;
+}
+
+function flushAppDataStoreNow(): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmpPath = `${APP_DATA_STORE_PATH}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(memoryAppDataStore), 'utf8');
+    fs.renameSync(tmpPath, APP_DATA_STORE_PATH);
+  } catch (err) {
+    console.warn('App data store write warning:', err);
+  }
+}
+
+function scheduleAppDataSave(): void {
+  memoryAppDataStore.updatedAt = new Date().toISOString();
+  if (appDataSaveTimer) clearTimeout(appDataSaveTimer);
+  appDataSaveTimer = setTimeout(() => {
+    appDataSaveTimer = null;
+    flushAppDataStoreNow();
+  }, 250);
+}
+
+function upsertSyncRecord(entity: SyncEntityKey, item: any): { record: any; id: string } | null {
+  const id = getRecordSyncId(entity, item);
+  if (!id) return null;
+  const record = entity === 'dropdowns' ? { ...item, id } : { ...item };
+  const list = memoryAppDataStore[entity] as any[];
+  const idx = list.findIndex((existing) => getRecordSyncId(entity, existing) === id);
+  if (idx === -1) {
+    list.unshift(record);
+  } else {
+    list[idx] = { ...list[idx], ...record };
+  }
+  // Remove from deletedIds if re-created
+  if (memoryAppDataStore.deletedIds.length > 0) {
+    memoryAppDataStore.deletedIds = memoryAppDataStore.deletedIds.filter((d) => d !== id);
+  }
+  return { record: idx === -1 ? record : list[idx], id };
+}
+
+function deleteSyncRecord(entity: SyncEntityKey, id: string): boolean {
+  const cleanId = String(id || '').trim();
+  if (!cleanId) return false;
+  const list = memoryAppDataStore[entity] as any[];
+  const before = list.length;
+  memoryAppDataStore[entity] = list.filter((existing) => getRecordSyncId(entity, existing) !== cleanId);
+  if (!memoryAppDataStore.deletedIds.includes(cleanId)) {
+    memoryAppDataStore.deletedIds.push(cleanId);
+    if (memoryAppDataStore.deletedIds.length > 5000) {
+      memoryAppDataStore.deletedIds = memoryAppDataStore.deletedIds.slice(-5000);
+    }
+  }
+  return memoryAppDataStore[entity].length !== before || true;
+}
+
+// In-memory cache for Google Drive public folder listings (60s TTL)
+const driveFolderCache = new Map<string, { fetchedAt: number; files: Array<{ id: string; name: string; mimeType: string; webViewLink: string; thumbnailLink: string }> }>();
+
+function loadSettingsStore(): SettingsStoreState {
+  try {
+    if (fs.existsSync(SETTINGS_STORE_PATH)) {
+      const raw = fs.readFileSync(SETTINGS_STORE_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        memorySettingsStore = {
+          systemSettings: parsed.systemSettings || {},
+          customSections: Array.isArray(parsed.customSections) ? parsed.customSections : [],
+          settingsVersion: Number(parsed.settingsVersion) || 0,
+          updateSummary: String(parsed.updateSummary || ''),
+          updatedBy: String(parsed.updatedBy || ''),
+          updatedAt: parsed.updatedAt || new Date().toISOString()
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Settings store load warning:', err);
+  }
+  return memorySettingsStore;
+}
+
+function saveSettingsStore(next: SettingsStoreState): void {
+  memorySettingsStore = { ...next, updatedAt: new Date().toISOString() };
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmpPath = `${SETTINGS_STORE_PATH}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(memorySettingsStore, null, 2), 'utf8');
+    fs.renameSync(tmpPath, SETTINGS_STORE_PATH);
+  } catch (err) {
+    console.warn('Settings store write warning:', err);
+  }
+}
+
+function loadBlacklistStore(): BlacklistStoreState {
+  try {
+    if (fs.existsSync(BLACKLIST_STORE_PATH)) {
+      const raw = fs.readFileSync(BLACKLIST_STORE_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.items)) {
+        memoryBlacklistStore = {
+          items: parsed.items,
+          unblockedIds: Array.isArray(parsed.unblockedIds) ? parsed.unblockedIds : [],
+          updatedAt: parsed.updatedAt || new Date().toISOString()
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Blacklist store load warning:', err);
+  }
+  return memoryBlacklistStore;
+}
+
+function saveBlacklistStore(next: BlacklistStoreState): void {
+  memoryBlacklistStore = { ...next, updatedAt: new Date().toISOString() };
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmpPath = `${BLACKLIST_STORE_PATH}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(memoryBlacklistStore, null, 2), 'utf8');
+    fs.renameSync(tmpPath, BLACKLIST_STORE_PATH);
+  } catch (err) {
+    console.warn('Blacklist store write warning:', err);
+  }
+}
+
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
+}
+
+function guessMimeFromName(name: string): string {
+  const lower = (name || '').toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.bmp')) return 'image/bmp';
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  return 'image/jpeg';
+}
+
+function loadUsersStore(): UsersStoreState {
+  try {
+    if (fs.existsSync(USERS_STORE_PATH)) {
+      const raw = fs.readFileSync(USERS_STORE_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.users)) {
+        memoryUsersStore = {
+          users: parsed.users,
+          deletedIds: Array.isArray(parsed.deletedIds) ? parsed.deletedIds : [],
+          developerPasscode: parsed.developerPasscode,
+          updatedAt: parsed.updatedAt || new Date().toISOString()
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Users store load warning (using memory fallback):', err);
+  }
+  return memoryUsersStore;
+}
+
+function saveUsersStore(next: UsersStoreState): void {
+  memoryUsersStore = { ...next, updatedAt: new Date().toISOString() };
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const tmpPath = `${USERS_STORE_PATH}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(memoryUsersStore, null, 2), 'utf8');
+    fs.renameSync(tmpPath, USERS_STORE_PATH);
+  } catch (err) {
+    console.warn('Users store file write warning (memory store remains active):', err);
+  }
+}
+
+function normalizeCredString(val: string): string {
+  return (val || '')
+    .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizePassString(val: string): string {
+  return (val || '')
+    .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+    .trim();
+}
+
+function mergeUserIntoList(list: StoredUser[], incoming: StoredUser): StoredUser[] {
+  const idx = list.findIndex((u) => u.User_ID === incoming.User_ID);
+  if (idx === -1) return [...list, incoming];
+  const existing = list[idx];
+  const existingTs = Date.parse(existing.UpdatedAt || existing.CreatedAt || '') || 0;
+  const incomingTs = Date.parse(incoming.UpdatedAt || incoming.CreatedAt || '') || 0;
+  const winner = incomingTs >= existingTs ? { ...existing, ...incoming } : { ...incoming, ...existing };
+  const next = [...list];
+  next[idx] = winner;
+  return next;
+}
+
 async function startServer() {
+  loadUsersStore();
+  loadSettingsStore();
+  loadBlacklistStore();
+  loadAppDataStore();
+
   const app = express();
   const PORT = 3000;
 
@@ -119,6 +518,635 @@ async function startServer() {
       developerEmail: 'htaleb725@gmail.com',
       timestamp: new Date().toISOString()
     });
+  });
+
+  // --- Shared Users & Permissions Persistence API ---
+  app.get('/api/users', (_req, res) => {
+    const store = loadUsersStore();
+    res.json({
+      success: true,
+      users: store.users,
+      deletedIds: store.deletedIds,
+      developerPasscode: store.developerPasscode,
+      updatedAt: store.updatedAt
+    });
+  });
+
+  app.post('/api/users', (req, res) => {
+    const incoming = req.body as StoredUser;
+    if (!incoming || typeof incoming !== 'object' || !incoming.User_ID || !incoming.Username || !incoming.FullName) {
+      res.status(400).json({ success: false, error: 'بيانات المستخدم غير مكتملة' });
+      return;
+    }
+    const cleanUser: StoredUser = {
+      ...incoming,
+      User_ID: String(incoming.User_ID).trim(),
+      Username: String(incoming.Username).trim(),
+      Password: incoming.Password !== undefined ? String(incoming.Password).trim() : '',
+      FullName: String(incoming.FullName).trim(),
+      Role: String(incoming.Role || 'reception').trim(),
+      RoleArabic: String(incoming.RoleArabic || incoming.Department || 'موظف').trim(),
+      Department: String(incoming.Department || '').trim(),
+      Status: incoming.Status === 'frozen' ? 'frozen' : 'active',
+      Permissions: Array.isArray(incoming.Permissions) ? incoming.Permissions : [],
+      AllowedSections: Array.isArray(incoming.AllowedSections) ? incoming.AllowedSections : [],
+      UpdatedAt: incoming.UpdatedAt || new Date().toISOString()
+    };
+
+    const store = loadUsersStore();
+    const deletedSet = new Set(store.deletedIds);
+    deletedSet.delete(cleanUser.User_ID);
+    const nextUsers = mergeUserIntoList(store.users, cleanUser);
+    saveUsersStore({
+      ...store,
+      users: nextUsers,
+      deletedIds: Array.from(deletedSet)
+    });
+    broadcastSseEvent('users_updated', { userId: cleanUser.User_ID, updatedAt: new Date().toISOString() });
+    res.json({ success: true, user: cleanUser, total: nextUsers.length });
+  });
+
+  app.post('/api/users/bulk-sync', (req, res) => {
+    const { users: incomingUsers, deletedIds: incomingDeleted, developerPasscode } = req.body || {};
+    if (!Array.isArray(incomingUsers)) {
+      res.status(400).json({ success: false, error: 'users array required' });
+      return;
+    }
+    const store = loadUsersStore();
+    const deletedSet = new Set<string>([...store.deletedIds, ...(Array.isArray(incomingDeleted) ? incomingDeleted : [])]);
+    let merged = store.users.filter((u) => !deletedSet.has(u.User_ID));
+    for (const raw of incomingUsers) {
+      if (!raw || !raw.User_ID || !raw.Username || deletedSet.has(String(raw.User_ID))) continue;
+      merged = mergeUserIntoList(merged, {
+        ...raw,
+        User_ID: String(raw.User_ID).trim(),
+        Username: String(raw.Username).trim(),
+        Password: raw.Password !== undefined ? String(raw.Password).trim() : '',
+        FullName: String(raw.FullName || raw.Username).trim(),
+        UpdatedAt: raw.UpdatedAt || new Date().toISOString()
+      });
+    }
+    saveUsersStore({
+      users: merged,
+      deletedIds: Array.from(deletedSet),
+      developerPasscode: developerPasscode || store.developerPasscode,
+      updatedAt: new Date().toISOString()
+    });
+    broadcastSseEvent('users_updated', { count: merged.length, updatedAt: new Date().toISOString() });
+    res.json({ success: true, users: merged, count: merged.length });
+  });
+
+  app.delete('/api/users/:userId', (req, res) => {
+    const userId = String(req.params.userId || '').trim();
+    if (!userId) {
+      res.status(400).json({ success: false, error: 'userId required' });
+      return;
+    }
+    const store = loadUsersStore();
+    const deletedSet = new Set(store.deletedIds);
+    deletedSet.add(userId);
+    const nextUsers = store.users.filter((u) => u.User_ID !== userId);
+    saveUsersStore({
+      ...store,
+      users: nextUsers,
+      deletedIds: Array.from(deletedSet)
+    });
+    broadcastSseEvent('users_updated', { deletedId: userId, updatedAt: new Date().toISOString() });
+    res.json({ success: true, deletedId: userId });
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    const { usernameOrCode, password } = req.body || {};
+    const store = loadUsersStore();
+    const cleanUser = normalizeCredString(String(usernameOrCode || '')).toLowerCase();
+    const cleanPass = normalizePassString(String(password || ''));
+    const rawCode = normalizePassString(String(password || usernameOrCode || ''));
+    const isDualMode = Boolean(cleanUser && cleanPass && cleanUser !== normalizeCredString(cleanPass).toLowerCase());
+
+    if (isDualMode) {
+      for (const u of store.users) {
+        if (!u) continue;
+        const uName = normalizeCredString(u.Username || '').toLowerCase();
+        const uId = normalizeCredString(u.User_ID || '').toLowerCase();
+        const uFull = normalizeCredString(u.FullName || '').toLowerCase();
+        const uPhone = normalizePassString(u.Phone || '');
+        const uPass = normalizePassString(u.Password || '');
+
+        const userMatched =
+          cleanUser === uName ||
+          cleanUser === uId ||
+          cleanUser === uFull ||
+          (uPhone && cleanUser === uPhone);
+        if (userMatched && uPass && cleanPass === uPass) {
+          if (u.Status === 'frozen') {
+            res.json({ success: false, frozen: true, error: 'تم تجميد هذا الحساب من قبل الإدارة.' });
+            return;
+          }
+          res.json({ success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'server_db' });
+          return;
+        }
+      }
+      res.json({ success: false });
+      return;
+    }
+
+    // Single passcode mode
+    const activeDevCode = store.developerPasscode ? normalizePassString(store.developerPasscode) : '';
+    if (activeDevCode && rawCode && rawCode === activeDevCode) {
+      const devAccount = store.users.find((u) => u.Role === 'developer');
+      res.json({ success: true, user: devAccount, isDeveloper: true, matchedSource: 'server_passcode' });
+      return;
+    }
+    for (const u of store.users) {
+      if (!u) continue;
+      const uPass = normalizePassString(u.Password || '');
+      const uId = normalizePassString(u.User_ID || '').toLowerCase();
+      if (rawCode && ((uPass && rawCode === uPass) || (uId && rawCode.toLowerCase() === uId))) {
+        if (u.Status === 'frozen') {
+          res.json({ success: false, frozen: true, error: 'تم تجميد هذا الحساب من قبل الإدارة.' });
+          return;
+        }
+        res.json({ success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'server_db' });
+        return;
+      }
+    }
+    res.json({ success: false });
+  });
+
+  // Update Developer Passcode & sync with developer user record
+  app.post('/api/auth/developer-passcode', (req, res) => {
+    const rawNewCode = String(req.body?.newCode || '').trim();
+    const cleanCode = normalizePassString(rawNewCode);
+    if (!cleanCode || cleanCode.length < 3 || cleanCode.length > 64) {
+      res.status(400).json({ success: false, error: 'يجب أن يتكون الرمز الجديد من 3 خانات على الأقل' });
+      return;
+    }
+    const store = loadUsersStore();
+    const nowIso = new Date().toISOString();
+    const updatedUsers = store.users.map((u) =>
+      u.Role === 'developer' ? { ...u, Password: cleanCode, UpdatedAt: nowIso } : u
+    );
+    saveUsersStore({
+      ...store,
+      users: updatedUsers,
+      developerPasscode: cleanCode
+    });
+
+    // Also reflect in settings version so all clients stay in sync
+    const settingsStore = loadSettingsStore();
+    const nextSettings = { ...(settingsStore.systemSettings || {}), developerPasscode: cleanCode };
+    saveSettingsStore({
+      ...settingsStore,
+      systemSettings: nextSettings,
+      updatedAt: nowIso
+    });
+
+    res.json({ success: true, updatedAt: nowIso });
+  });
+
+  // --- Shared Settings, Icons & Custom Sections Broadcast API ---
+  app.get('/api/settings', (_req, res) => {
+    const store = loadSettingsStore();
+    const usersStore = loadUsersStore();
+    const mergedSettings = {
+      ...(store.systemSettings || {}),
+      ...(usersStore.developerPasscode ? { developerPasscode: usersStore.developerPasscode } : {})
+    };
+    res.json({
+      success: true,
+      systemSettings: mergedSettings,
+      customSections: store.customSections || [],
+      settingsVersion: store.settingsVersion || 0,
+      updateSummary: store.updateSummary || '',
+      updatedBy: store.updatedBy || '',
+      updatedAt: store.updatedAt
+    });
+  });
+
+  app.post('/api/settings', (req, res) => {
+    const body = req.body || {};
+    const store = loadSettingsStore();
+    const incomingSettings = body.systemSettings && typeof body.systemSettings === 'object' ? body.systemSettings : null;
+    const incomingSections = Array.isArray(body.customSections) ? body.customSections : null;
+    const broadcastUpdate = Boolean(body.broadcastUpdate);
+    const nextVersion = broadcastUpdate
+      ? Math.max(Date.now(), (store.settingsVersion || 0) + 1)
+      : (Number(body.settingsVersion) || store.settingsVersion || 0);
+
+    const nextSettings = incomingSettings
+      ? { ...(store.systemSettings || {}), ...incomingSettings, settingsVersion: nextVersion }
+      : { ...(store.systemSettings || {}), settingsVersion: nextVersion };
+
+    const nextState: SettingsStoreState = {
+      systemSettings: nextSettings,
+      customSections: incomingSections !== null ? incomingSections : store.customSections,
+      settingsVersion: nextVersion,
+      updateSummary: typeof body.updateSummary === 'string' && body.updateSummary.trim()
+        ? body.updateSummary.trim()
+        : store.updateSummary,
+      updatedBy: typeof body.updatedBy === 'string' ? body.updatedBy.trim() : store.updatedBy,
+      updatedAt: new Date().toISOString()
+    };
+
+    saveSettingsStore(nextState);
+
+    // Sync developerPasscode to users-store if included
+    if (incomingSettings?.developerPasscode) {
+      const cleanDevCode = normalizePassString(String(incomingSettings.developerPasscode));
+      if (cleanDevCode.length >= 3) {
+        const uStore = loadUsersStore();
+        saveUsersStore({
+          ...uStore,
+          developerPasscode: cleanDevCode,
+          users: uStore.users.map((u) =>
+            u.Role === 'developer' ? { ...u, Password: cleanDevCode, UpdatedAt: new Date().toISOString() } : u
+          )
+        });
+      }
+    }
+
+    broadcastSseEvent('settings_updated', {
+      settingsVersion: nextState.settingsVersion,
+      updateSummary: nextState.updateSummary,
+      updatedBy: nextState.updatedBy,
+      broadcastUpdate,
+      updatedAt: nextState.updatedAt
+    });
+
+    res.json({
+      success: true,
+      settingsVersion: nextState.settingsVersion,
+      updateSummary: nextState.updateSummary,
+      updatedAt: nextState.updatedAt
+    });
+  });
+
+  // --- Shared Blacklist Persistence API ---
+  app.get('/api/blacklist', (_req, res) => {
+    const store = loadBlacklistStore();
+    res.json({
+      success: true,
+      items: store.items,
+      unblockedIds: store.unblockedIds,
+      updatedAt: store.updatedAt
+    });
+  });
+
+  app.post('/api/blacklist', (req, res) => {
+    const incoming = req.body as Partial<BlacklistRecord>;
+    if (!incoming || !incoming.Citizen_ID || !incoming.FullName) {
+      res.status(400).json({ success: false, error: 'بيانات المواطن المحظور غير مكتملة' });
+      return;
+    }
+    const cleanRecord: BlacklistRecord = {
+      Citizen_ID: String(incoming.Citizen_ID).trim(),
+      FullName: String(incoming.FullName).trim(),
+      Phone1: incoming.Phone1 ? String(incoming.Phone1).trim() : '',
+      District: incoming.District ? String(incoming.District).trim() : 'الناصرية - المركز',
+      BlockReason: String(incoming.BlockReason || 'محظور من قبل الإدارة').trim(),
+      BlockedAt: String(incoming.BlockedAt || new Date().toLocaleDateString('ar-IQ')),
+      BlockedBy: String(incoming.BlockedBy || 'الإدارة').trim(),
+      IsBlocked: true
+    };
+    const store = loadBlacklistStore();
+    const unblockedSet = new Set(store.unblockedIds);
+    unblockedSet.delete(cleanRecord.Citizen_ID);
+    const filtered = store.items.filter((i) => i.Citizen_ID !== cleanRecord.Citizen_ID);
+    saveBlacklistStore({
+      items: [cleanRecord, ...filtered],
+      unblockedIds: Array.from(unblockedSet),
+      updatedAt: new Date().toISOString()
+    });
+    broadcastSseEvent('blacklist_updated', { action: 'block', citizenId: cleanRecord.Citizen_ID });
+    res.json({ success: true, item: cleanRecord });
+  });
+
+  app.delete('/api/blacklist/:citizenId', (req, res) => {
+    const citizenId = String(req.params.citizenId || '').trim();
+    if (!citizenId) {
+      res.status(400).json({ success: false, error: 'citizenId required' });
+      return;
+    }
+    const store = loadBlacklistStore();
+    const unblockedSet = new Set(store.unblockedIds);
+    unblockedSet.add(citizenId);
+    const nextItems = store.items.filter((i) => i.Citizen_ID !== citizenId);
+    saveBlacklistStore({
+      items: nextItems,
+      unblockedIds: Array.from(unblockedSet),
+      updatedAt: new Date().toISOString()
+    });
+    broadcastSseEvent('blacklist_updated', { action: 'unblock', citizenId });
+    res.json({ success: true, unblockedId: citizenId });
+  });
+
+  // --- Real-Time Multi-User Live Sync API (SSE + Authoritative Store for Shared Links & Desktop PWA) ---
+  app.get('/api/sync/stream', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof (res as any).flushHeaders === 'function') {
+      (res as any).flushHeaders();
+    }
+
+    sseClients.add(res);
+    res.write(
+      `event: connected\ndata: ${JSON.stringify({
+        rev: memoryAppDataStore.rev,
+        settingsVersion: memorySettingsStore.settingsVersion || 0,
+        connectedClients: sseClients.size,
+        timestamp: new Date().toISOString()
+      })}\n\n`
+    );
+
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`: ping ${Date.now()}\n\n`);
+      } catch {
+        clearInterval(heartbeat);
+        sseClients.delete(res);
+      }
+    }, 20000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    });
+  });
+
+  app.get('/api/sync/state', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.json({
+      success: true,
+      rev: memoryAppDataStore.rev,
+      citizens: memoryAppDataStore.citizens,
+      requests: memoryAppDataStore.requests,
+      interviews: memoryAppDataStore.interviews,
+      officialLetters: memoryAppDataStore.officialLetters,
+      cheques: memoryAppDataStore.cheques,
+      organizationRecords: memoryAppDataStore.organizationRecords,
+      dropdowns: memoryAppDataStore.dropdowns,
+      customRecords: memoryAppDataStore.customRecords,
+      documents: memoryAppDataStore.documents,
+      deletedIds: memoryAppDataStore.deletedIds,
+      updatedAt: memoryAppDataStore.updatedAt
+    });
+  });
+
+  app.post('/api/sync/mutate', (req, res) => {
+    const { entity, op, item, id, clientId } = req.body || {};
+    if (!entity || !ALLOWED_SYNC_ENTITIES.has(String(entity))) {
+      res.status(400).json({ success: false, error: 'Invalid entity' });
+      return;
+    }
+    const entityKey = entity as SyncEntityKey;
+    if (op === 'upsert') {
+      if (!item || typeof item !== 'object') {
+        res.status(400).json({ success: false, error: 'item required' });
+        return;
+      }
+      const saved = upsertSyncRecord(entityKey, item);
+      if (!saved) {
+        res.status(400).json({ success: false, error: 'item missing identifier' });
+        return;
+      }
+      memoryAppDataStore.rev += 1;
+      scheduleAppDataSave();
+      broadcastSseEvent('mutation', {
+        rev: memoryAppDataStore.rev,
+        entity: entityKey,
+        op: 'upsert',
+        id: saved.id,
+        item: saved.record,
+        clientId: String(clientId || '')
+      });
+      res.json({ success: true, rev: memoryAppDataStore.rev, id: saved.id });
+      return;
+    }
+
+    if (op === 'delete') {
+      const targetId = String(id || '').trim();
+      if (!targetId) {
+        res.status(400).json({ success: false, error: 'id required' });
+        return;
+      }
+      deleteSyncRecord(entityKey, targetId);
+      memoryAppDataStore.rev += 1;
+      scheduleAppDataSave();
+      broadcastSseEvent('mutation', {
+        rev: memoryAppDataStore.rev,
+        entity: entityKey,
+        op: 'delete',
+        id: targetId,
+        clientId: String(clientId || '')
+      });
+      res.json({ success: true, rev: memoryAppDataStore.rev, id: targetId });
+      return;
+    }
+
+    res.status(400).json({ success: false, error: 'Invalid op (expected upsert or delete)' });
+  });
+
+  app.post('/api/sync/bulk', (req, res) => {
+    const body = req.body || {};
+    const clientId = String(body.clientId || '');
+    const changedEntities: string[] = [];
+    const deletedSet = new Set<string>([
+      ...memoryAppDataStore.deletedIds,
+      ...(Array.isArray(body.deletedIds) ? body.deletedIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
+    ]);
+
+    for (const key of Array.from(ALLOWED_SYNC_ENTITIES) as SyncEntityKey[]) {
+      const incoming = body[key];
+      if (!Array.isArray(incoming) || incoming.length === 0) continue;
+      const map = new Map<string, any>();
+      for (const existing of memoryAppDataStore[key]) {
+        const eid = getRecordSyncId(key, existing);
+        if (eid && !deletedSet.has(eid)) map.set(eid, existing);
+      }
+      let addedOrUpdated = 0;
+      for (const item of incoming) {
+        const iid = getRecordSyncId(key, item);
+        if (!iid || deletedSet.has(iid)) continue;
+        const normalizedItem = key === 'dropdowns' ? { ...item, id: iid } : item;
+        const prev = map.get(iid);
+        map.set(iid, prev ? { ...prev, ...normalizedItem } : normalizedItem);
+        addedOrUpdated++;
+      }
+      if (addedOrUpdated > 0) {
+        memoryAppDataStore[key] = Array.from(map.values());
+        changedEntities.push(key);
+      }
+    }
+
+    memoryAppDataStore.deletedIds = Array.from(deletedSet).slice(-5000);
+    if (changedEntities.length > 0) {
+      memoryAppDataStore.rev += 1;
+      scheduleAppDataSave();
+      broadcastSseEvent('bulk_refresh', {
+        rev: memoryAppDataStore.rev,
+        entities: changedEntities,
+        clientId,
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    res.json({
+      success: true,
+      rev: memoryAppDataStore.rev,
+      changedEntities
+    });
+  });
+
+  // --- Google Drive Shared Folder Listing & Image Proxy API ---
+  const DRIVE_ID_REGEX = /^[a-zA-Z0-9_-]{10,80}$/;
+
+  app.get('/api/drive/folder-files', async (req, res) => {
+    try {
+      const rawFolder = String(req.query.folderId || '').trim();
+      const query = String(req.query.q || '').trim();
+      const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+
+      // Extract folderId if a full Google Drive URL was passed
+      let folderId = rawFolder;
+      const urlMatch = rawFolder.match(/folders\/([a-zA-Z0-9_-]+)/);
+      if (urlMatch && urlMatch[1]) {
+        folderId = urlMatch[1];
+      }
+
+      if (!DRIVE_ID_REGEX.test(folderId)) {
+        res.status(400).json({ success: false, files: [], error: 'معرف مجلد Google Drive غير صالح' });
+        return;
+      }
+
+      const cached = driveFolderCache.get(folderId);
+      let allFiles = cached && !forceRefresh && Date.now() - cached.fetchedAt < 60_000 ? cached.files : null;
+
+      if (!allFiles) {
+        const embedUrl = `https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(folderId)}#grid`;
+        const driveRes = await fetch(embedUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8'
+          }
+        });
+
+        if (!driveRes.ok) {
+          res.json({
+            success: false,
+            files: [],
+            totalInFolder: 0,
+            isPrivate: driveRes.status === 401 || driveRes.status === 403,
+            error: 'تعذر الوصول إلى مجلد Google Drive. تأكد من أن مشاركة المجلد مضبوطة على (أي شخص لديه الرابط).'
+          });
+          return;
+        }
+
+        const html = await driveRes.text();
+        const isLoginGate = html.includes('accounts.google.com/ServiceLogin') || html.includes('ServiceLogin');
+        if (isLoginGate) {
+          res.json({
+            success: false,
+            files: [],
+            totalInFolder: 0,
+            isPrivate: true,
+            error: 'مجلد Google Drive مقيد (خاص). يرجى تغيير صلاحية المشاركة في Drive إلى "أي شخص لديه الرابط — عارض".'
+          });
+          return;
+        }
+
+        const seenIds = new Set<string>();
+        const parsed: Array<{ id: string; name: string; mimeType: string; webViewLink: string; thumbnailLink: string }> = [];
+        const entryRegex = /id="entry-([a-zA-Z0-9_-]{10,80})"[\s\S]{0,1800}?class="flip-entry-title">([^<]+)</g;
+        let m: RegExpExecArray | null;
+        while ((m = entryRegex.exec(html)) !== null) {
+          const fid = m[1];
+          const fname = decodeHtmlEntities(m[2].trim());
+          if (!fid || seenIds.has(fid)) continue;
+          seenIds.add(fid);
+          parsed.push({
+            id: fid,
+            name: fname,
+            mimeType: guessMimeFromName(fname),
+            webViewLink: `https://drive.google.com/file/d/${fid}/view`,
+            thumbnailLink: `/api/drive/image/${fid}`
+          });
+        }
+
+        allFiles = parsed;
+        driveFolderCache.set(folderId, { fetchedAt: Date.now(), files: allFiles });
+      }
+
+      let filtered = allFiles;
+      if (query) {
+        const normQ = normalizeCredString(query).toLowerCase();
+        const tokens = normQ.split(' ').filter(Boolean);
+        filtered = allFiles.filter((f) => {
+          const normName = normalizeCredString(f.name).toLowerCase();
+          return tokens.every((t) => normName.includes(t)) || f.id.toLowerCase().includes(normQ);
+        });
+      }
+
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit || '120'), 10) || 120, 1), 500);
+      const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
+
+      res.json({
+        success: true,
+        folderId,
+        totalInFolder: allFiles.length,
+        matchedCount: filtered.length,
+        files: filtered.slice(offset, offset + limit)
+      });
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        files: [],
+        error: err?.message || 'حدث خطأ أثناء الاتصال بمجلد Google Drive'
+      });
+    }
+  });
+
+  app.get('/api/drive/image/:fileId', async (req, res) => {
+    try {
+      const fileId = String(req.params.fileId || '').trim();
+      if (!DRIVE_ID_REGEX.test(fileId)) {
+        res.status(400).send('Invalid file ID');
+        return;
+      }
+
+      const sizeParam = String(req.query.sz || 'w1200');
+      const safeSize = /^w\d{3,4}$/.test(sizeParam) ? sizeParam : 'w1200';
+      const candidateUrls = [
+        `https://drive.google.com/thumbnail?id=${encodeURIComponent(fileId)}&sz=${safeSize}`,
+        `https://lh3.googleusercontent.com/d/${encodeURIComponent(fileId)}=${safeSize}`
+      ];
+
+      for (const targetUrl of candidateUrls) {
+        try {
+          const upstream = await fetch(targetUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            redirect: 'follow'
+          });
+          const ct = upstream.headers.get('content-type') || '';
+          if (upstream.ok && ct.startsWith('image/')) {
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            res.setHeader('Content-Type', ct);
+            res.setHeader('Cache-Control', 'public, max-age=3600');
+            res.send(buf);
+            return;
+          }
+        } catch {
+          // Try next fallback URL
+        }
+      }
+
+      res.status(404).send('Image not accessible');
+    } catch {
+      res.status(500).send('Image proxy error');
+    }
   });
 
   // OCR Document & Image Analysis Endpoint

@@ -14,6 +14,7 @@ export type RealtimeEntityType =
   | 'organization' 
   | 'letters' 
   | 'cheques' 
+  | 'users'
   | 'drive_archive' 
   | 'dropdowns'
   | 'custom_sections'
@@ -139,7 +140,7 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
     const resolvedSheetId = resolveTargetSheetId(targetSheetId);
     const resolvedUrl = resolveAppsScriptUrl(customUrl);
 
-    const targetId = item.data?.id || item.data?.Citizen_ID || item.data?.Request_ID || item.data?.Interview_ID || item.data?.Letter_ID || (typeof item.data === 'string' ? item.data : '');
+    const targetId = item.data?.id || item.data?.User_ID || item.data?.Citizen_ID || item.data?.Request_ID || item.data?.Interview_ID || item.data?.Letter_ID || (typeof item.data === 'string' ? item.data : '');
 
     // 1. Direct Google Sheets REST API sync via Developer Google OAuth token
     if (resolvedSheetId) {
@@ -206,6 +207,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     officialLetters: OfficialLetter[];
     organizationRecords: OrganizationRecord[];
     cheques: ChequeRecord[];
+    users?: User[];
   };
 } | null> {
   const cleanUrl = resolveAppsScriptUrl(appsScriptUrl);
@@ -325,6 +327,35 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       InfluenceType: (o.InfluenceType || 'شخصية مؤثرة') as any
     }));
 
+    const parseStringArray = (raw: any): string[] => {
+      if (Array.isArray(raw)) return raw.map(v => String(v).trim()).filter(Boolean);
+      if (typeof raw === 'string' && raw.trim()) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return parsed.map(v => String(v).trim()).filter(Boolean);
+        } catch {}
+        return raw.split(',').map(v => v.trim()).filter(Boolean);
+      }
+      return [];
+    };
+
+    const users: User[] = (sourceData.users || []).map((u: any) => ({
+      User_ID: String(u.User_ID || u.id || '').trim(),
+      Username: String(u.Username || '').trim(),
+      Password: String(u.Password || '').trim(),
+      Phone: String(u.Phone || '').trim(),
+      Role: (u.Role || 'reception') as any,
+      RoleArabic: String(u.RoleArabic || u.Department || 'موظف').trim(),
+      Status: u.Status === 'frozen' ? 'frozen' : 'active',
+      FullName: String(u.FullName || u.Username || '').trim(),
+      Department: String(u.Department || '').trim(),
+      JobTitle: String(u.JobTitle || '').trim(),
+      Permissions: parseStringArray(u.Permissions),
+      AllowedSections: parseStringArray(u.AllowedSections),
+      CreatedAt: String(u.CreatedAt || '').trim(),
+      UpdatedAt: String(u.UpdatedAt || '').trim()
+    })).filter((u: User) => Boolean(u.User_ID && u.Username));
+
     return {
       success: true,
       message: `تم بنجاح جلب (${citizens.length}) مراجع و (${requests.length}) معاملة عبر رابط Apps Script Webhook.`,
@@ -334,7 +365,8 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
         interviews,
         officialLetters,
         cheques,
-        organizationRecords
+        organizationRecords,
+        users
       }
     };
   } catch (err: any) {
@@ -351,12 +383,45 @@ export async function verifyLoginWithGoogleSheets(
   passwordOrPin?: string,
   customAppsScriptUrl?: string,
   customSheetId?: string
-): Promise<{ success: boolean; user?: User; isDeveloper?: boolean }> {
+): Promise<{ success: boolean; user?: User; isDeveloper?: boolean; frozen?: boolean }> {
   try {
-    const normalizeDigits = (val: string) => (val || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
+    const normalizeDigits = (val: string) =>
+      (val || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
+    const normalizeName = (val: string) =>
+      normalizeDigits(val)
+        .replace(/[أإآ]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+
     const rawCode = normalizeDigits(passwordOrPin || usernameOrCode || '');
-    const cleanUser = normalizeDigits(usernameOrCode || '').toLowerCase();
+    const cleanUser = normalizeName(usernameOrCode || '');
     const cleanPass = normalizeDigits(passwordOrPin || '');
+    const isDualMode = Boolean(cleanUser && cleanPass && cleanUser !== normalizeName(cleanPass));
+
+    const matchUserFromList = (list: User[]): { success: boolean; user?: User; isDeveloper?: boolean; frozen?: boolean } => {
+      for (const u of list) {
+        if (!u) continue;
+        const uName = normalizeName(u.Username || '');
+        const uId = normalizeName(u.User_ID || '');
+        const uFull = normalizeName(u.FullName || '');
+        const uPhone = normalizeDigits(u.Phone || '');
+        const uPass = normalizeDigits(u.Password || '');
+
+        if (isDualMode) {
+          const userMatched = cleanUser === uName || cleanUser === uId || cleanUser === uFull || (uPhone && cleanUser === uPhone);
+          if (userMatched && uPass && cleanPass === uPass) {
+            if (u.Status === 'frozen') return { success: false, frozen: true };
+            return { success: true, user: u, isDeveloper: u.Role === 'developer' };
+          }
+        } else if (rawCode && ((uPass && rawCode === uPass) || (uId && rawCode.toLowerCase() === uId))) {
+          if (u.Status === 'frozen') return { success: false, frozen: true };
+          return { success: true, user: u, isDeveloper: u.Role === 'developer' };
+        }
+      }
+      return { success: false };
+    };
 
     // 1. If Apps Script URL is provided or saved
     const scriptUrl = resolveAppsScriptUrl(customAppsScriptUrl);
@@ -369,6 +434,7 @@ export async function verifyLoginWithGoogleSheets(
         if (res.ok) {
           const json = await res.json();
           if (json && (json.success === true || json.matched === true)) {
+            if (json.user?.Status === 'frozen') return { success: false, frozen: true };
             return {
               success: true,
               user: json.user,
@@ -379,6 +445,15 @@ export async function verifyLoginWithGoogleSheets(
       } catch (e) {
         console.warn('Apps Script login verify error:', e);
       }
+
+      // Fallback: pull users from getAllData if Apps Script does not implement verifyLogin directly
+      try {
+        const pulled = await pullDataFromGoogleAppsScript(scriptUrl);
+        if (pulled?.success && pulled.data?.users && pulled.data.users.length > 0) {
+          const matched = matchUserFromList(pulled.data.users);
+          if (matched.success || matched.frozen) return matched;
+        }
+      } catch {}
     }
 
     // 2. If Google Sheets Access Token is cached
@@ -387,49 +462,25 @@ export async function verifyLoginWithGoogleSheets(
 
     if (token && sheetId) {
       try {
-        // Query users tab in spreadsheet
         const usersRes = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent('المستخدمين_Users')}!A2:H50`,
+          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent('المستخدمين_Users')}!A2:L200`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         if (usersRes.ok) {
           const data = await usersRes.json();
           const rows: string[][] = data.values || [];
-          for (const row of rows) {
-            const uId = (row[0] || '').trim();
-            const uName = (row[1] || '').trim().toLowerCase();
-            const uPass = (row[2] || '').trim();
-            const uRole = (row[3] || 'reception').trim();
-            const uFullName = (row[4] || '').trim();
-
-            if (rawCode && uPass && rawCode === uPass) {
-              const matchedUser: User = {
-                User_ID: uId || `USR-${Date.now()}`,
-                Username: uName || 'staff',
-                Password: uPass,
-                Role: (uRole as any) || 'developer',
-                RoleArabic: uRole === 'developer' ? 'مطور النظام' : 'موظف',
-                Status: 'active',
-                FullName: uFullName || 'موظف معتمد (Google Sheets)',
-                Department: 'إدارة المكتب'
-              };
-              return { success: true, user: matchedUser, isDeveloper: uRole === 'developer' };
-            }
-
-            if (cleanUser && (cleanUser === uName || cleanUser === uId.toLowerCase()) && (cleanPass === uPass || rawCode === uPass)) {
-              const matchedUser: User = {
-                User_ID: uId || `USR-${Date.now()}`,
-                Username: uName || cleanUser,
-                Password: uPass,
-                Role: (uRole as any) || 'admin',
-                RoleArabic: 'موظف معتمد',
-                Status: 'active',
-                FullName: uFullName || cleanUser,
-                Department: 'إدارة المكتب'
-              };
-              return { success: true, user: matchedUser, isDeveloper: uRole === 'developer' };
-            }
-          }
+          const sheetUsers: User[] = rows.map(row => ({
+            User_ID: (row[0] || '').trim() || `USR-${Date.now()}`,
+            Username: (row[1] || '').trim(),
+            Password: (row[2] || '').trim(),
+            Role: ((row[3] || 'reception').trim() as any),
+            FullName: (row[4] || row[1] || '').trim(),
+            RoleArabic: (row[5] || row[3] || 'موظف معتمد').trim(),
+            Department: (row[6] || 'إدارة المكتب').trim(),
+            Status: ((row[7] || '').trim() === 'frozen' ? 'frozen' : 'active') as 'active' | 'frozen'
+          })).filter(u => Boolean(u.Username));
+          const matched = matchUserFromList(sheetUsers);
+          if (matched.success || matched.frozen) return matched;
         }
       } catch (e) {
         console.warn('Google Sheets direct login check error:', e);

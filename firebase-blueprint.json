@@ -2,17 +2,23 @@
   "entities": {
     "User": {
       "title": "User",
-      "description": "System user account with role and department assignments",
+      "description": "System user account with role, department assignments, section access matrix, and granular permissions",
       "type": "object",
       "properties": {
         "User_ID": { "type": "string" },
         "Username": { "type": "string" },
+        "Password": { "type": "string" },
+        "Phone": { "type": "string" },
         "Role": { "type": "string" },
         "RoleArabic": { "type": "string" },
         "FullName": { "type": "string" },
         "Department": { "type": "string" },
+        "JobTitle": { "type": "string" },
         "Status": { "type": "string" },
-        "CreatedAt": { "type": "string" }
+        "Permissions": { "type": "array", "items": { "type": "string" } },
+        "AllowedSections": { "type": "array", "items": { "type": "string" } },
+        "CreatedAt": { "type": "string" },
+        "UpdatedAt": { "type": "string" }
       },
       "required": ["User_ID", "Username", "Role", "FullName"]
     },

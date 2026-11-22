@@ -34,6 +34,7 @@ export const SplashLanding: React.FC = () => {
   const { 
     systemSettings, 
     login, 
+    lastLoginError,
     isDesktopInstallModalOpen, 
     setIsDesktopInstallModalOpen,
     assignedWorkstationUser,
@@ -55,6 +56,12 @@ export const SplashLanding: React.FC = () => {
   const [currentDate, setCurrentDate] = useState('');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [gavelNotification, setGavelNotification] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (lastLoginError) {
+      setErrorMsg(lastLoginError);
+    }
+  }, [lastLoginError]);
 
   // Gavel Strike notification trigger
   const handleGavelStrikeEvent = () => {
@@ -96,25 +103,20 @@ export const SplashLanding: React.FC = () => {
       const cleanUser = username.trim();
       const cleanPass = password.trim();
 
-      if (!cleanUser && !cleanPass) {
-        setErrorMsg('يرجى إدخال اسم المستخدم أو كلمة المرور.');
+      if (!cleanUser) {
+        setErrorMsg('يرجى إدخال اسم المستخدم الخاص بحسابك.');
         return;
       }
-
-      if (cleanUser && !cleanPass) {
-        targetUserOrCode = cleanUser;
-        targetPass = cleanUser;
-      } else if (!cleanUser && cleanPass) {
-        targetUserOrCode = cleanPass;
-        targetPass = cleanPass;
-      } else {
-        targetUserOrCode = cleanUser;
-        targetPass = cleanPass;
+      if (!cleanPass) {
+        setErrorMsg('يرجى إدخال كلمة المرور أو الرمز السري.');
+        return;
       }
+      targetUserOrCode = cleanUser;
+      targetPass = cleanPass;
     }
 
     setIsSubmitting(true);
-    setMatchingStatus('جاري التحقق ومطابقة الرمز وفتح المنظومة...');
+    setMatchingStatus('جاري التحقق ومطابقة البيانات من قاعدة البيانات...');
 
     try {
       const success = await login(targetUserOrCode, targetPass);
@@ -123,7 +125,10 @@ export const SplashLanding: React.FC = () => {
         setMatchingStatus('✓ تمت المطابقة بنجاح! جاري فتح المنظومة...');
         playWelcomeChime();
       } else {
-        setErrorMsg('بيانات الدخول أو الرمز غير صحيح. يرجى التأكد من الرمز والمحاولة مجدداً.');
+        setErrorMsg(
+          lastLoginError ||
+            'اسم المستخدم أو الرمز السري غير صحيح. تأكد من كتابتهما بدقة ومزامنة الحساب في قاعدة البيانات.'
+        );
         setIsSubmitting(false);
         setMatchingStatus('');
       }

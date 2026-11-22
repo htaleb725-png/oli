@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { Citizen } from '../types';
+import { Citizen, OfficeRequest } from '../types';
 import { 
   Search, 
   Printer, 
@@ -23,15 +23,28 @@ import {
   Copy,
   Check,
   Building2,
-  Phone
+  Phone,
+  Edit3
 } from 'lucide-react';
 import { getAllImagesFromDB, ImageRecord } from '../utils/imageDb';
 import { printImageIsolated } from '../utils/printReceiptHelper';
+
+function normArabicStrict(val: string): string {
+  return (val || '')
+    .trim()
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    .replace(/[إأآا]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
 
 export const GlobalSearchArchiveModule: React.FC = () => {
   const { 
     citizens, 
     requests, 
+    updateRequest,
     interviews, 
     documents, 
     addDocument,
@@ -46,6 +59,12 @@ export const GlobalSearchArchiveModule: React.FC = () => {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCitizen, setSelectedCitizen] = useState<Citizen | null>(citizens[0] || null);
+  const [visibleCitizensLimit, setVisibleCitizensLimit] = useState(60);
+  const [noticeBanner, setNoticeBanner] = useState<string | null>(null);
+  const [editingArchivedReq, setEditingArchivedReq] = useState<OfficeRequest | null>(null);
+  const [blockModalOpen, setBlockModalOpen] = useState(false);
+  const [blockReasonInput, setBlockReasonInput] = useState('');
+  const [unblockConfirmOpen, setUnblockConfirmOpen] = useState(false);
 
   // Stored OCR images from IndexedDB
   const [storedImages, setStoredImages] = useState<ImageRecord[]>([]);
@@ -85,63 +104,77 @@ export const GlobalSearchArchiveModule: React.FC = () => {
   const isAdminOrDirector = ['admin', 'admin_officer', 'director', 'developer', 'deputy'].includes(currentUser?.Role || '');
   const isReception = ['reception', 'reception_officer'].includes(currentUser?.Role || '');
 
-  const filteredCitizens = (citizens || []).filter(c => {
-    if (!c) return false;
-    if (!searchQuery.trim()) return true;
+  const filteredCitizens = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
+    const normQ = normArabicStrict(searchQuery);
+    if (!q) return (citizens || []).filter(Boolean);
 
-    // Basic citizen profile matching (available to all authenticated roles)
-    const matchesCitizen = (
-      (c.FullName && c.FullName.toLowerCase().includes(q)) ||
-      (c.Citizen_ID && c.Citizen_ID.toLowerCase().includes(q)) ||
-      (c.Phone1 && c.Phone1.includes(q)) ||
-      (c.Phone2 && c.Phone2.includes(q)) ||
-      (c.Surname && c.Surname.toLowerCase().includes(q)) ||
-      (c.District && c.District.toLowerCase().includes(q)) ||
-      (c.Job && c.Job.toLowerCase().includes(q))
-    );
-
-    if (matchesCitizen) return true;
-
-    // Strict Role Isolation: ONLY Administration roles can search across administrative requests, subjects, and outgoing letters
+    // Pre-index citizenIds that have a matching request for O(n) fast search instead of O(n*m) nested loop!
+    const matchingReqCitizenIds = new Set<string>();
     if (isAdminOrDirector) {
-      const hasMatchingRequest = requests.some(r =>
-        r.Citizen_ID === c.Citizen_ID && (
-          (r.Details && r.Details.toLowerCase().includes(q)) ||
-          (r.Entity && r.Entity.toLowerCase().includes(q)) ||
+      for (const r of requests) {
+        if (!r || !r.Citizen_ID) continue;
+        if (
+          (r.Details && normArabicStrict(r.Details).includes(normQ)) ||
+          (r.Entity && normArabicStrict(r.Entity).includes(normQ)) ||
           (r.OutgoingNumber && r.OutgoingNumber.toLowerCase().includes(q)) ||
-          (r.DeputyNotes && r.DeputyNotes.toLowerCase().includes(q)) ||
-          (r.OtherNotes && r.OtherNotes.toLowerCase().includes(q))
-        )
-      );
-      if (hasMatchingRequest) return true;
+          (r.DeputyNotes && normArabicStrict(r.DeputyNotes).includes(normQ)) ||
+          (r.OtherNotes && normArabicStrict(r.OtherNotes).includes(normQ))
+        ) {
+          matchingReqCitizenIds.add(r.Citizen_ID);
+        }
+      }
     }
 
-    return false;
-  });
+    return (citizens || []).filter(c => {
+      if (!c) return false;
+      if (
+        (c.FullName && normArabicStrict(c.FullName).includes(normQ)) ||
+        (c.Citizen_ID && c.Citizen_ID.toLowerCase().includes(q)) ||
+        (c.Phone1 && c.Phone1.includes(q)) ||
+        (c.Phone2 && c.Phone2.includes(q)) ||
+        (c.Surname && normArabicStrict(c.Surname).includes(normQ)) ||
+        (c.District && normArabicStrict(c.District).includes(normQ)) ||
+        (c.Job && normArabicStrict(c.Job).includes(normQ))
+      ) {
+        return true;
+      }
+      return isAdminOrDirector && matchingReqCitizenIds.has(c.Citizen_ID);
+    });
+  }, [citizens, requests, searchQuery, isAdminOrDirector]);
 
-  // Find all requests matching the selected citizen by Citizen_ID or Name (ONLY visible to Administration)
+  // Strictly match ONLY this citizen's requests (by exact Citizen_ID or exact normalized full name — NEVER partial substring!)
   const citizenRequests = useMemo(() => {
     if (!selectedCitizen || !isAdminOrDirector) return [];
-    const normName = selectedCitizen.FullName.trim().toLowerCase();
-    return requests.filter(r => 
-      r.Citizen_ID === selectedCitizen.Citizen_ID || 
-      (r.CitizenName && r.CitizenName.trim().toLowerCase() === normName) ||
-      (r.CitizenName && (r.CitizenName.includes(normName) || normName.includes(r.CitizenName.trim().toLowerCase())))
-    );
+    const normName = normArabicStrict(selectedCitizen.FullName || '');
+    const seenIds = new Set<string>();
+    const matched: OfficeRequest[] = [];
+    for (const r of requests) {
+      if (!r || !r.Request_ID || seenIds.has(r.Request_ID)) continue;
+      const byId = r.Citizen_ID === selectedCitizen.Citizen_ID;
+      const byExactName = Boolean(
+        normName.length >= 4 &&
+        r.CitizenName &&
+        normArabicStrict(r.CitizenName) === normName
+      );
+      if (byId || byExactName) {
+        seenIds.add(r.Request_ID);
+        matched.push(r);
+      }
+    }
+    return matched;
   }, [selectedCitizen, isAdminOrDirector, requests]);
 
   // Find all OCR images matching the selected citizen
   const citizenOcrImages = useMemo(() => {
     if (!selectedCitizen) return [];
-    const normCitizenName = (selectedCitizen.FullName || '').trim().toLowerCase();
+    const normCitizenName = normArabicStrict(selectedCitizen.FullName || '');
 
-    // 1. From IndexedDB records matching citizenId or matching citizenName
+    // 1. From IndexedDB records matching citizenId or exact normalized citizenName
     const fromDB = storedImages.filter(img => {
       if (img.citizenId && img.citizenId === selectedCitizen.Citizen_ID) return true;
-      if (img.citizenName) {
-        const normImgName = img.citizenName.trim().toLowerCase();
-        return normImgName.includes(normCitizenName) || normCitizenName.includes(normImgName);
+      if (img.citizenName && normCitizenName.length >= 4) {
+        return normArabicStrict(img.citizenName) === normCitizenName;
       }
       return false;
     });
@@ -185,7 +218,8 @@ export const GlobalSearchArchiveModule: React.FC = () => {
 
   const handlePrintCard = (citizen: Citizen) => {
     if (!canPrintOfficialCard(currentUser)) {
-      alert('عذراً! ميزة طباعة بطاقة المعلومات الرسمية مقتصرة حصرياً على: [المطور، المدير، موظف الإدارة] وفق محددات الأمان الإداري.');
+      setNoticeBanner('عذراً! ميزة طباعة بطاقة المعلومات الرسمية مقتصرة حصرياً على: [المطور، المدير، موظف الإدارة] وفق محددات الأمان الإداري.');
+      setTimeout(() => setNoticeBanner(null), 4000);
       return;
     }
     setPrintableCitizenCard(citizen);
@@ -264,41 +298,58 @@ export const GlobalSearchArchiveModule: React.FC = () => {
             <span className="text-[10px] text-slate-500">اختر مراجع لعرض أرشيفه</span>
           </div>
 
+          {noticeBanner && (
+            <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs font-bold">
+              {noticeBanner}
+            </div>
+          )}
+
           <div className="space-y-1.5 max-h-[700px] overflow-y-auto pr-1">
             {filteredCitizens.length === 0 ? (
               <div className="p-6 text-center bg-white rounded-xl border border-slate-200 text-slate-500 text-xs shadow-xs">
                 لا يوجد مراجع يطابق معايير البحث الحالية.
               </div>
             ) : (
-              filteredCitizens.map((c) => {
-                const isSelected = selectedCitizen?.Citizen_ID === c.Citizen_ID;
+              <>
+                {filteredCitizens.slice(0, visibleCitizensLimit).map((c) => {
+                  const isSelected = selectedCitizen?.Citizen_ID === c.Citizen_ID;
 
-                return (
-                  <div
-                    key={c.Citizen_ID}
-                    onClick={() => setSelectedCitizen(c)}
-                    className={`p-3 rounded-xl border transition-all cursor-pointer text-right shadow-xs ${
-                      isSelected
-                        ? 'bg-purple-50 border-purple-400 ring-1 ring-purple-400'
-                        : 'bg-white hover:bg-slate-50 border-slate-200'
-                    }`}
+                  return (
+                    <div
+                      key={c.Citizen_ID}
+                      onClick={() => setSelectedCitizen(c)}
+                      className={`p-3 rounded-xl border transition-all cursor-pointer text-right shadow-xs ${
+                        isSelected
+                          ? 'bg-purple-50 border-purple-400 ring-1 ring-purple-400'
+                          : 'bg-white hover:bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-mono text-xs font-bold text-blue-700">{c.Citizen_ID}</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
+                          {c.District}
+                        </span>
+                      </div>
+
+                      <h4 className="font-bold text-xs text-slate-900">{c.FullName}</h4>
+                      
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1 font-mono">
+                        <span dir="ltr">{c.Phone1 || '—'}</span>
+                        <span className="text-purple-700 font-sans font-semibold">{c.Job}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+                {filteredCitizens.length > visibleCitizensLimit && (
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCitizensLimit(prev => prev + 60)}
+                    className="w-full py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold cursor-pointer shadow-xs"
                   >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="font-mono text-xs font-bold text-blue-700">{c.Citizen_ID}</span>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
-                        {c.District}
-                      </span>
-                    </div>
-
-                    <h4 className="font-bold text-xs text-slate-900">{c.FullName}</h4>
-                    
-                    <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1 font-mono">
-                      <span dir="ltr">{c.Phone1}</span>
-                      <span className="text-purple-700 font-sans font-semibold">{c.Job}</span>
-                    </div>
-                  </div>
-                );
-              })
+                    عرض المزيد ({filteredCitizens.length - visibleCitizensLimit} سجل متبقي)
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -327,11 +378,8 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                     </div>
                     {['admin', 'admin_officer', 'director', 'developer', 'deputy', 'audit'].includes(currentUser?.Role || '') && (
                       <button
-                        onClick={() => {
-                          if (window.confirm(`هل أنت متأكد من إلغاء الحظر عن المواطن (${selectedCitizen.FullName}) وإعادته للوضع الطبيعي؟`)) {
-                            unblockCitizen(selectedCitizen.Citizen_ID);
-                          }
-                        }}
+                        type="button"
+                        onClick={() => setUnblockConfirmOpen(true)}
                         className="px-3.5 py-1.5 rounded-xl bg-white text-red-700 hover:bg-red-50 font-black text-xs cursor-pointer shadow-xs active:scale-95 transition-transform"
                       >
                         ✓ إلغاء الحظر فوراً
@@ -408,11 +456,10 @@ export const GlobalSearchArchiveModule: React.FC = () => {
 
                     {!selectedCitizen.IsBlocked && ['admin', 'admin_officer', 'director', 'developer', 'deputy', 'audit'].includes(currentUser?.Role || '') && (
                       <button
+                        type="button"
                         onClick={() => {
-                          const reason = window.prompt(`أدخل سبب إدراج (${selectedCitizen.FullName}) في القائمة السوداء:`);
-                          if (reason && reason.trim()) {
-                            blockCitizen(selectedCitizen.Citizen_ID, reason.trim());
-                          }
+                          setBlockReasonInput('');
+                          setBlockModalOpen(true);
                         }}
                         className="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer shadow-xs"
                         title="حظر هذا المراجع وإدراجه بالقائمة السوداء"
@@ -474,11 +521,21 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                               </span>
                             )}
                           </div>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                            req.ProcessingStatus === 'منجز' ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-amber-50 text-amber-700 border-amber-200'
-                          }`}>
-                            {req.ProcessingStatus}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                              req.ProcessingStatus === 'منجز' ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-amber-50 text-amber-700 border-amber-200'
+                            }`}>
+                              {req.ProcessingStatus}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingArchivedReq({ ...req })}
+                              className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 flex items-center gap-1 cursor-pointer"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>تعديل</span>
+                            </button>
+                          </div>
                         </div>
                         <p className="text-xs text-slate-700 font-medium">{req.Details}</p>
                         {req.AttachedRequestImage && (
@@ -492,7 +549,7 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                             توجيه النائب: {req.DeputyNotes}
                           </div>
                         )}
-                        {req.DirectorDecision && (
+                        {req.DirectorDecision && req.DirectorDecision !== 'مؤرشف' && (
                           <div className="text-[11px] text-blue-800 bg-blue-50 p-2 rounded-lg border border-blue-200 font-semibold">
                             قرار المدير: {req.DirectorDecision}
                           </div>
@@ -950,6 +1007,164 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Inline Edit Archived / Completed Request Modal */}
+      {editingArchivedReq && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-lg p-5 space-y-4 text-right">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-blue-600" />
+                <span>تعديل بيانات الطلب ({editingArchivedReq.Request_ID})</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingArchivedReq(null)}
+                className="p-1 rounded-lg hover:bg-slate-100 text-slate-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">الجهة / الوزارة</label>
+                <input
+                  type="text"
+                  value={editingArchivedReq.Entity || ''}
+                  onChange={e => setEditingArchivedReq({ ...editingArchivedReq, Entity: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-900"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">رقم الكتاب / الصادر</label>
+                  <input
+                    type="text"
+                    value={editingArchivedReq.OutgoingNumber || ''}
+                    onChange={e => setEditingArchivedReq({ ...editingArchivedReq, OutgoingNumber: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">حالة الإنجاز</label>
+                  <input
+                    type="text"
+                    value={editingArchivedReq.ProcessingStatus || ''}
+                    onChange={e => setEditingArchivedReq({ ...editingArchivedReq, ProcessingStatus: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-900"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">الموضوع والتفاصيل</label>
+                <textarea
+                  rows={3}
+                  value={editingArchivedReq.Details || ''}
+                  onChange={e => setEditingArchivedReq({ ...editingArchivedReq, Details: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-900"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">ملاحظات / هامش</label>
+                <input
+                  type="text"
+                  value={editingArchivedReq.OtherNotes || ''}
+                  onChange={e => setEditingArchivedReq({ ...editingArchivedReq, OtherNotes: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-900"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditingArchivedReq(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  updateRequest(editingArchivedReq);
+                  setEditingArchivedReq(null);
+                  setNoticeBanner('تم حفظ تعديل الطلب وتعميمه فوراً على جميع الأجهزة.');
+                  setTimeout(() => setNoticeBanner(null), 3500);
+                }}
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer"
+              >
+                حفظ التعديلات
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Block Citizen Modal */}
+      {blockModalOpen && selectedCitizen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
+          <div className="bg-white rounded-2xl border border-red-200 shadow-2xl w-full max-w-md p-5 space-y-4 text-right">
+            <h3 className="font-black text-sm text-red-700">إدراج «{selectedCitizen.FullName}» في القائمة السوداء</h3>
+            <textarea
+              rows={3}
+              value={blockReasonInput}
+              onChange={e => setBlockReasonInput(e.target.value)}
+              placeholder="اكتب سبب الحظر هنا..."
+              className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs text-slate-900"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setBlockModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={!blockReasonInput.trim()}
+                onClick={() => {
+                  blockCitizen(selectedCitizen.Citizen_ID, blockReasonInput.trim());
+                  setBlockModalOpen(false);
+                }}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold cursor-pointer"
+              >
+                تأكيد الحظر
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unblock Confirmation Modal */}
+      {unblockConfirmOpen && selectedCitizen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md p-5 space-y-4 text-right">
+            <h3 className="font-black text-sm text-slate-900">تأكيد إلغاء الحظر</h3>
+            <p className="text-xs text-slate-600">
+              هل أنت متأكد من إلغاء الحظر عن المواطن ({selectedCitizen.FullName}) وإعادته للوضع الطبيعي؟
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setUnblockConfirmOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  unblockCitizen(selectedCitizen.Citizen_ID);
+                  setUnblockConfirmOpen(false);
+                }}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+              >
+                تأكيد إلغاء الحظر
+              </button>
             </div>
           </div>
         </div>

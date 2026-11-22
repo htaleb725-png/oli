@@ -77,6 +77,7 @@ export interface User {
   JobTitle?: string;
   Avatar?: string;
   CreatedAt?: string;
+  UpdatedAt?: string;
   Permissions?: string[]; // الصلاحيات الممنوحة للموظف
   AllowedSections?: string[]; // الأقسام المسموح للموظف برؤيتها والدخول إليها (يحددها المطور أو المدير التنفيذي)
 }
@@ -149,9 +150,9 @@ export interface Citizen {
   UpdatedAt?: string;
 }
 
-export type RequestStatus = 'مستلم' | 'غير مستلم' | 'معاد' | 'غير مستوفي للشروط' | 'خاص';
-export type ProcessingStatus = 'منجز' | 'قيد الإجراء' | 'قيد التدقيق' | 'مرفوض' | 'تم الطباعة' | 'مرسل إلى الوزارة/الهيئة' | 'بانتظار الموافقة' | 'مسودة';
-export type Priority = 'عاجل' | 'عام' | 'خاص جداً';
+export type RequestStatus = 'مستلم' | 'غير مستلم' | 'معاد' | 'غير مستوفي للشروط' | 'خاص' | (string & {});
+export type ProcessingStatus = 'منجز' | 'قيد الإجراء' | 'قيد التدقيق' | 'مرفوض' | 'تم الطباعة' | 'مرسل إلى الوزارة/الهيئة' | 'بانتظار الموافقة' | 'مسودة' | (string & {});
+export type Priority = 'عاجل' | 'عام' | 'خاص جداً' | (string & {});
 
 export interface RequestScanAttachment {
   id: string;
@@ -167,6 +168,7 @@ export interface OfficeRequest {
   Citizen_ID: string;
   CitizenName: string;
   CitizenPhone?: string;
+  CitizenAddress?: string;
   Entity: string; // الجهة المعنية
   RequestStatus: RequestStatus;
   ProcessingStatus: ProcessingStatus;
@@ -194,7 +196,7 @@ export interface OfficeRequest {
   ProxyPhone?: string;
   ProxyAddress?: string;
   ProxyRelation?: string;
-  DependencyStatus?: 'مستقل' | 'غير مستقل';
+  DependencyStatus?: 'مستقل' | 'غير مستقل' | (string & {});
   GeneratedAiDraft?: string; // الطلب المولد بالذكاء الاصطناعي
   CustomFields?: Record<string, string | number | boolean>;
   DirectorDecision?: 'خاص' | 'عام' | 'رفض' | string; // قرار المدير: خاص، عام، أو رفض
@@ -385,7 +387,12 @@ export type DropdownCategory =
   | 'District' 
   | 'SubDistrict' 
   | 'ResidentialArea'
-  | 'ReferralSource';
+  | 'ReferralSource'
+  | 'RequestStatus'
+  | 'ProcessingStatus'
+  | 'Priority'
+  | 'AttendanceType'
+  | 'DependencyStatus';
 
 export interface DropdownItem {
   id?: string;
@@ -513,6 +520,9 @@ export interface SystemSettings {
   lastOutgoingNumberSuq?: number; // آخر عدد صادر مسجل لمكتب سوق الشيوخ
   receptionCustomFields?: CustomFieldDefinition[]; // الحقول المخصصة التي يضيفها المطور للاستعلامات
   receptionHiddenDefaultFields?: string[]; // الحقول الافتراضية التي يقرر المطور إخفاءها من الاستعلامات
+  settingsVersion?: number; // إصدار التحديث الفوري للأيقونات والإعدادات لجميع المستخدمين
+  lastUpdateNote?: string; // وصف آخر تحديث قام به المطور
+  lastUpdatedBy?: string; // اسم المطور الذي أطلق التحديث
 }
 
 export type CustomFieldType = 'text' | 'number' | 'dropdown' | 'image' | 'date' | 'textarea' | 'status' | 'checkbox';

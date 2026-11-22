@@ -10,6 +10,7 @@ const STORE_NAME = 'request_images';
 
 import { autoUploadImageToDriveIfConnected } from '../services/googleSheetsService';
 import { pushToGoogleSheetsRealtime } from '../services/realtimeGoogleSync';
+import type { Priority } from '../types';
 
 export interface ImageRecord {
   id: string; // usually request_id or custom image id
@@ -24,7 +25,7 @@ export interface ImageRecord {
   entity?: string;
   details?: string;
   phone?: string;
-  priority?: 'عاجل' | 'عام' | 'خاص جداً';
+  priority?: Priority;
   requestType?: string;
   confidence?: number;
   ocrProcessed?: boolean;

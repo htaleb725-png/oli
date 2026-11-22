@@ -284,8 +284,31 @@ export const Sidebar: React.FC = () => {
     }
   };
 
-  const filteredMainNavItems = mainNavItems.filter(item => canAccessSection(item.id));
-  const filteredToolsNavItems = toolsNavItems.filter(item => canAccessSection(item.id));
+  const filteredMainNavItems = mainNavItems
+    .filter(item => canAccessSection(item.id))
+    .map(item => {
+      const tileConf = systemSettings?.customTilesConfig?.[`tile_${item.id}`];
+      return {
+        ...item,
+        label: tileConf?.title?.trim() || item.label,
+        customIconUrl: tileConf?.iconUrl?.trim() || '',
+        isHidden: Boolean(tileConf?.hidden)
+      };
+    })
+    .filter(item => !item.isHidden || role === 'developer');
+
+  const filteredToolsNavItems = toolsNavItems
+    .filter(item => canAccessSection(item.id))
+    .map(item => {
+      const tileConf = systemSettings?.customTilesConfig?.[`tile_${item.id}`];
+      return {
+        ...item,
+        label: tileConf?.title?.trim() || item.label,
+        customIconUrl: tileConf?.iconUrl?.trim() || '',
+        isHidden: Boolean(tileConf?.hidden)
+      };
+    })
+    .filter(item => !item.isHidden || role === 'developer');
 
   return (
     <aside 
@@ -399,18 +422,34 @@ export const Sidebar: React.FC = () => {
                           {item.badge}
                         </span>
                       )}
-                      <Icon className={`w-4 h-4 shrink-0 transition-all duration-200 group-hover:scale-120 ${
-                        isActive ? 'text-white' : 'text-slate-400 ' + item.color
-                      }`} />
+                      {item.customIconUrl ? (
+                        <img
+                          src={item.customIconUrl}
+                          alt={item.label}
+                          className="w-5 h-5 rounded-md object-cover shrink-0 border border-white/20 shadow-xs"
+                        />
+                      ) : (
+                        <Icon className={`w-4 h-4 shrink-0 transition-all duration-200 group-hover:scale-120 ${
+                          isActive ? 'text-white' : 'text-slate-400 ' + item.color
+                        }`} />
+                      )}
                     </div>
                   </>
                 )}
 
                 {isCollapsed && (
                   <div className="relative">
-                    <Icon className={`w-5 h-5 transition-transform duration-200 group-hover:scale-125 ${
-                      isActive ? 'text-white' : 'text-slate-400 ' + item.color
-                    }`} />
+                    {item.customIconUrl ? (
+                      <img
+                        src={item.customIconUrl}
+                        alt={item.label}
+                        className="w-6 h-6 rounded-md object-cover border border-white/20"
+                      />
+                    ) : (
+                      <Icon className={`w-5 h-5 transition-transform duration-200 group-hover:scale-125 ${
+                        isActive ? 'text-white' : 'text-slate-400 ' + item.color
+                      }`} />
+                    )}
                     {item.badge && (
                       <span className="absolute -top-1 -right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-slate-900 animate-pulse" />
                     )}
@@ -474,15 +513,31 @@ export const Sidebar: React.FC = () => {
                               {item.badge}
                             </span>
                           )}
-                          <Icon className={`w-4 h-4 shrink-0 transition-transform group-hover:scale-120 ${
-                            isActive ? 'text-white' : 'text-slate-400 ' + item.color
-                          }`} />
+                          {item.customIconUrl ? (
+                            <img
+                              src={item.customIconUrl}
+                              alt={item.label}
+                              className="w-5 h-5 rounded-md object-cover shrink-0 border border-white/20"
+                            />
+                          ) : (
+                            <Icon className={`w-4 h-4 shrink-0 transition-transform group-hover:scale-120 ${
+                              isActive ? 'text-white' : 'text-slate-400 ' + item.color
+                            }`} />
+                          )}
                         </div>
                       </>
                     ) : (
-                      <Icon className={`w-5 h-5 transition-transform group-hover:scale-125 ${
-                        isActive ? 'text-white' : 'text-slate-400 ' + item.color
-                      }`} />
+                      item.customIconUrl ? (
+                        <img
+                          src={item.customIconUrl}
+                          alt={item.label}
+                          className="w-6 h-6 rounded-md object-cover border border-white/20"
+                        />
+                      ) : (
+                        <Icon className={`w-5 h-5 transition-transform group-hover:scale-125 ${
+                          isActive ? 'text-white' : 'text-slate-400 ' + item.color
+                        }`} />
+                      )
                     )}
                   </button>
 
@@ -536,12 +591,27 @@ export const Sidebar: React.FC = () => {
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-bold border bg-indigo-950/80 text-indigo-300 border-indigo-700/50">
                             {secRecCount}
                           </span>
+                          {sec.iconUrl && (
+                            <img
+                              src={sec.iconUrl}
+                              alt={sec.title}
+                              className="w-5 h-5 rounded-md object-cover border border-white/20 shrink-0"
+                            />
+                          )}
                         </div>
                       </>
                     ) : (
-                      <span className="text-xs font-bold text-indigo-400">
-                        {sec.title.slice(0, 1)}
-                      </span>
+                      sec.iconUrl ? (
+                        <img
+                          src={sec.iconUrl}
+                          alt={sec.title}
+                          className="w-6 h-6 rounded-md object-cover border border-white/20"
+                        />
+                      ) : (
+                        <span className="text-xs font-bold text-indigo-400">
+                          {sec.title.slice(0, 1)}
+                        </span>
+                      )
                     )}
                   </button>
 

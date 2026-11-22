@@ -18,6 +18,8 @@ interface SearchableSelectProps {
   onAddOption?: (newValue: string) => void;
   /** Optional localStorage key fallback when category is not specified */
   persistKey?: string;
+  /** Optional custom placeholder inside the dropdown search box */
+  searchPlaceholder?: string;
 }
 
 const LOCAL_CUSTOM_OPT_PREFIX = 'al_nashi_custom_select_opts_';
@@ -34,6 +36,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
   category,
   onAddOption,
   persistKey,
+  searchPlaceholder,
 }) => {
   const { addDropdownItem, getDropdownOptions } = useApp();
   const [isOpen, setIsOpen] = useState(false);
@@ -239,7 +242,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
       )}
 
       {isOpen && !disabled && (
-        <div className="absolute z-50 right-0 left-0 mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+        <div className="absolute z-[80] right-0 left-0 mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-100">
           <div className="p-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex items-center gap-2">
             <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
             <input
@@ -252,12 +255,14 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
                   e.preventDefault();
                   if (filteredOptions.length === 1 && normalizeArabic(filteredOptions[0]) === normalizeArabic(searchTerm)) {
                     handleSelect(filteredOptions[0]);
+                  } else if (filteredOptions.length === 1) {
+                    handleSelect(filteredOptions[0]);
                   } else if (allowCustom) {
                     persistAndSelectNewOption(searchTerm);
                   }
                 }
               }}
-              placeholder="ابحث أو اكتب اسماً جديداً لإضافته..."
+              placeholder={searchPlaceholder || 'ابحث أو اكتب اسماً جديداً لإضافته...'}
               className="w-full bg-transparent border-none text-xs text-slate-800 dark:text-slate-100 focus:outline-none placeholder:text-slate-400"
               dir="rtl"
             />

@@ -4,7 +4,9 @@ import {
   setDoc, 
   deleteDoc, 
   getDocs, 
+  getDocsFromServer,
   getDoc,
+  getDocFromServer,
   onSnapshot, 
   writeBatch,
   query,
@@ -53,7 +55,33 @@ export interface FirestoreErrorInfo {
   };
 }
 
+// Session circuit-breaker: prevents flooding 1,000+ failing Firestore requests during bulk imports
+// when the Firestore backend rejects writes with PERMISSION_DENIED / CONSUMER_INVALID.
+let _firestoreBlockedUntil = 0;
+
+export function isFirestoreTemporarilyBlocked(): boolean {
+  return Date.now() < _firestoreBlockedUntil;
+}
+
+export function resetFirestoreCircuitBreaker(): void {
+  _firestoreBlockedUntil = 0;
+}
+
+function noteFirestoreFailure(error: unknown): void {
+  const msg = error instanceof Error ? error.message : String(error || '');
+  if (
+    msg.includes('permission-denied') ||
+    msg.includes('PERMISSION_DENIED') ||
+    msg.includes('CONSUMER_INVALID') ||
+    msg.includes('unauthenticated') ||
+    msg.includes('Failed to get document because the client is offline')
+  ) {
+    _firestoreBlockedUntil = Date.now() + 5 * 60 * 1000; // 5 minutes cooldown
+  }
+}
+
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  noteFirestoreFailure(error);
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -70,7 +98,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.warn('Firestore Notice:', errInfo.error, path);
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -130,7 +158,7 @@ export function getFSCol(baseName: string): string {
 
 // Registry of Permanently Deleted Records (لمنع استرجاع أو انبعاث السجلات المحذوفة)
 export async function fsRegisterDeletedRecord(id: string, entityType: string): Promise<void> {
-  if (!id) return;
+  if (!id || isFirestoreTemporarilyBlocked()) return;
   const col = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
   try {
     await setDoc(doc(db, col, id), {
@@ -139,22 +167,25 @@ export async function fsRegisterDeletedRecord(id: string, entityType: string): P
       deletedAt: new Date().toISOString()
     });
   } catch (e) {
-    console.warn('fsRegisterDeletedRecord warning:', e);
+    noteFirestoreFailure(e);
   }
 }
 
 export async function fsGetDeletedRecordIds(): Promise<string[]> {
+  if (isFirestoreTemporarilyBlocked()) return [];
   try {
     const col = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
     const snap = await getDocs(collection(db, col));
     return snap.docs.map(d => d.id);
-  } catch {
+  } catch (e) {
+    noteFirestoreFailure(e);
     return [];
   }
 }
 
 // 1. Citizen Operations
 export async function fsSaveCitizen(citizen: Citizen): Promise<void> {
+  if (isFirestoreTemporarilyBlocked()) return;
   const col = getFSCol(FS_COLLECTIONS.CITIZENS);
   const path = `${col}/${citizen.Citizen_ID}`;
   try {
@@ -168,6 +199,7 @@ export async function fsSaveCitizen(citizen: Citizen): Promise<void> {
 }
 
 export async function fsDeleteCitizen(citizenId: string): Promise<void> {
+  if (isFirestoreTemporarilyBlocked()) return;
   const col = getFSCol(FS_COLLECTIONS.CITIZENS);
   const path = `${col}/${citizenId}`;
   try {
@@ -180,6 +212,7 @@ export async function fsDeleteCitizen(citizenId: string): Promise<void> {
 
 // 2. Request Operations
 export async function fsSaveRequest(req: OfficeRequest): Promise<void> {
+  if (isFirestoreTemporarilyBlocked()) return;
   const col = getFSCol(FS_COLLECTIONS.REQUESTS);
   const path = `${col}/${req.Request_ID}`;
   try {
@@ -193,6 +226,7 @@ export async function fsSaveRequest(req: OfficeRequest): Promise<void> {
 }
 
 export async function fsDeleteRequest(requestId: string): Promise<void> {
+  if (isFirestoreTemporarilyBlocked()) return;
   const col = getFSCol(FS_COLLECTIONS.REQUESTS);
   const path = `${col}/${requestId}`;
   try {
@@ -292,14 +326,85 @@ export async function fsSaveOrgRecord(record: OrganizationRecord): Promise<void>
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms))
+  ]);
+}
+
+function sanitizeUserPayload(user: User): User {
+  const safeId = /^[a-zA-Z0-9_.-]+$/.test(String(user.User_ID || '').trim())
+    ? String(user.User_ID).trim()
+    : `USR-${Date.now().toString(36).toUpperCase()}`;
+  return {
+    ...user,
+    User_ID: safeId,
+    Username: String(user.Username || safeId).trim(),
+    Password: user.Password !== undefined ? String(user.Password).trim() : '',
+    FullName: String(user.FullName || user.Username || 'موظف').trim(),
+    Role: (user.Role || 'reception') as User['Role'],
+    RoleArabic: String(user.RoleArabic || user.Department || 'موظف').trim(),
+    Department: String(user.Department || '').trim(),
+    JobTitle: String(user.JobTitle || '').trim(),
+    Status: user.Status === 'frozen' ? 'frozen' : 'active',
+    Permissions: Array.isArray(user.Permissions) ? user.Permissions.map(p => String(p).trim()).filter(Boolean) : [],
+    AllowedSections: Array.isArray(user.AllowedSections) ? user.AllowedSections.map(s => String(s).trim()).filter(Boolean) : [],
+    CreatedAt: user.CreatedAt || new Date().toISOString().split('T')[0],
+    UpdatedAt: user.UpdatedAt || new Date().toISOString()
+  };
+}
+
 // 7. Users / Staff Operations
 export async function fsSaveUser(user: User): Promise<void> {
+  const cleanUser = sanitizeUserPayload(user);
   const col = getFSCol(FS_COLLECTIONS.USERS);
-  const path = `${col}/${user.User_ID}`;
+  const path = `${col}/${cleanUser.User_ID}`;
   try {
-    await setDoc(doc(db, col, user.User_ID), user, { merge: true });
+    await withTimeout(
+      setDoc(doc(db, col, cleanUser.User_ID), cleanUser, { merge: true }),
+      6000,
+      'Firestore user save'
+    );
+    // Also mirror to root 'users' collection if partitioned so shared links always resolve the account
+    if (col !== 'users') {
+      await withTimeout(
+        setDoc(doc(db, 'users', cleanUser.User_ID), cleanUser, { merge: true }),
+        4000,
+        'Firestore root user mirror'
+      ).catch(() => {});
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function fsSyncAllUsers(usersList: User[]): Promise<{ success: boolean; count: number; error?: string }> {
+  try {
+    const col = getFSCol(FS_COLLECTIONS.USERS);
+    const validUsers = (usersList || []).filter(u => u && u.User_ID && u.Username).map(sanitizeUserPayload);
+    if (validUsers.length === 0) return { success: true, count: 0 };
+    const batch = writeBatch(db);
+    validUsers.forEach(u => {
+      batch.set(doc(db, col, u.User_ID), u, { merge: true });
+      if (col !== 'users') {
+        batch.set(doc(db, 'users', u.User_ID), u, { merge: true });
+      }
+    });
+    await withTimeout(batch.commit(), 8000, 'Firestore users batch sync');
+    return { success: true, count: validUsers.length };
+  } catch (err: any) {
+    return { success: false, count: 0, error: err?.message || String(err) };
+  }
+}
+
+export async function fsCheckConnection(): Promise<{ connected: boolean; error?: string }> {
+  try {
+    await withTimeout(getDocFromServer(doc(db, 'test', 'connection')), 4000, 'Firestore connection test');
+    return { connected: true };
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    return { connected: false, error: msg };
   }
 }
 
@@ -307,7 +412,11 @@ export async function fsDeleteUser(userId: string): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.USERS);
   const path = `${col}/${userId}`;
   try {
-    await deleteDoc(doc(db, col, userId));
+    await withTimeout(deleteDoc(doc(db, col, userId)), 6000, 'Firestore user delete');
+    if (col !== 'users') {
+      await deleteDoc(doc(db, 'users', userId)).catch(() => {});
+    }
+    await fsRegisterDeletedRecord(userId, 'users');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -368,92 +477,117 @@ export async function fsGetDeveloperPasscode(): Promise<string | null> {
 }
 
 /**
- * Realtime verification of login credentials against Firebase Firestore
- * Checks developer passcode (in settings/developer_auth and settings/general)
- * and employee/staff accounts in the users collection.
+ * Realtime verification of login credentials against Firebase Firestore.
+ * Uses server-first reads (getDocsFromServer) with cache fallback, supports Arabic normalization,
+ * strictly distinguishes dual credentials (username + password) from single passcode mode,
+ * and enforces frozen account status.
  */
 export async function fsVerifyLogin(
   usernameOrCode: string,
   passwordOrPin?: string
-): Promise<{ success: boolean; user?: User; isDeveloper?: boolean; matchedSource?: 'firebase_passcode' | 'firebase_user' }> {
+): Promise<{ success: boolean; user?: User; isDeveloper?: boolean; frozen?: boolean; matchedSource?: 'firebase_passcode' | 'firebase_user' }> {
   try {
-    const normalizeDigits = (val: string) => (val || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
+    const normalizeDigits = (val: string) =>
+      (val || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
+    const normalizeName = (val: string) =>
+      normalizeDigits(val)
+        .replace(/[أإآ]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+
     const rawCode = normalizeDigits(passwordOrPin || usernameOrCode || '');
-    const cleanUser = normalizeDigits(usernameOrCode || '').toLowerCase();
+    const cleanUser = normalizeName(usernameOrCode || '');
     const cleanPass = normalizeDigits(passwordOrPin || '');
+    const isDualMode = Boolean(cleanUser && cleanPass && cleanUser !== normalizeName(cleanPass));
 
-    // 1. Check Developer Passcode in Firestore (settings/developer_auth)
-    const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
-    try {
-      const authSnap = await getDoc(doc(db, colSettings, 'developer_auth'));
-      if (authSnap.exists()) {
-        const storedCode = normalizeDigits(String(authSnap.data()?.developerPasscode || ''));
-        if (storedCode && (rawCode === storedCode || cleanPass === storedCode || cleanUser === storedCode.toLowerCase())) {
-          return { success: true, isDeveloper: true, matchedSource: 'firebase_passcode' };
+    const fetchUsersCollectionFresh = async (colName: string): Promise<User[]> => {
+      try {
+        const snap = await withTimeout(getDocsFromServer(collection(db, colName)), 4500, `getDocsFromServer(${colName})`);
+        return snap.docs.map(d => d.data() as User);
+      } catch {
+        try {
+          const snap = await withTimeout(getDocs(collection(db, colName)), 3000, `getDocs(${colName})`);
+          return snap.docs.map(d => d.data() as User);
+        } catch {
+          return [];
         }
       }
-    } catch (e) {
-      console.warn('fsVerifyLogin developer_auth check error:', e);
-    }
+    };
 
-    // Also check general settings doc
-    try {
-      const genSnap = await getDoc(doc(db, colSettings, 'general'));
-      if (genSnap.exists()) {
-        const data = genSnap.data();
-        const storedPass = normalizeDigits(String(data?.developerPasscode || data?.passcode || ''));
-        if (storedPass && (rawCode === storedPass || cleanPass === storedPass || cleanUser === storedPass.toLowerCase())) {
-          return { success: true, isDeveloper: true, matchedSource: 'firebase_passcode' };
-        }
-      }
-    } catch (e) {
-      console.warn('fsVerifyLogin general settings check error:', e);
-    }
-
-    // 2. Check Firestore users collection
-    const colUsers = getFSCol(FS_COLLECTIONS.USERS);
-    try {
-      const usersSnap = await getDocs(collection(db, colUsers));
-      const firestoreUsers: User[] = usersSnap.docs.map(d => d.data() as User);
-      
-      for (const u of firestoreUsers) {
+    const matchInUserList = (list: User[]): { success: boolean; user?: User; isDeveloper?: boolean; frozen?: boolean; matchedSource?: 'firebase_user' } => {
+      for (const u of list) {
         if (!u) continue;
-        const uName = normalizeDigits(u.Username || '').toLowerCase();
-        const uId = normalizeDigits(u.User_ID || '').toLowerCase();
-        const uFull = (u.FullName || '').trim().toLowerCase();
+        const uName = normalizeName(u.Username || '');
+        const uId = normalizeName(u.User_ID || '');
+        const uFull = normalizeName(u.FullName || '');
         const uPhone = normalizeDigits(u.Phone || '');
         const uPass = normalizeDigits(u.Password || '');
 
-        // Check if single passcode matches user's password or ID
-        if (rawCode && ((uPass && rawCode === uPass) || (uId && rawCode === uId))) {
-          return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
-        }
-
-        // Check dual username + password
-        const userMatched = (cleanUser && (cleanUser === uName || cleanUser === uId || uFull.includes(cleanUser) || (uPhone && uPhone.includes(cleanUser))));
-        const passMatched = (cleanPass && cleanPass === uPass) || (rawCode && rawCode === uPass);
-
-        if (userMatched && passMatched) {
-          return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
-        }
-      }
-    } catch (e) {
-      console.warn('fsVerifyLogin users collection check error:', e);
-    }
-
-    // 3. Fallback: check base 'users' collection without partition
-    if (colUsers !== 'users') {
-      try {
-        const baseUsersSnap = await getDocs(collection(db, 'users'));
-        for (const docItem of baseUsersSnap.docs) {
-          const u = docItem.data() as User;
-          if (!u) continue;
-          const uPass = (u.Password || '').trim();
-          if (rawCode && uPass && rawCode === uPass) {
+        if (isDualMode) {
+          const userMatched =
+            cleanUser === uName ||
+            cleanUser === uId ||
+            cleanUser === uFull ||
+            (uPhone && cleanUser === uPhone);
+          const passMatched = Boolean(cleanPass && uPass && cleanPass === uPass);
+          if (userMatched && passMatched) {
+            if (u.Status === 'frozen') return { success: false, frozen: true };
+            return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
+          }
+        } else {
+          if (rawCode && ((uPass && rawCode === uPass) || (uId && rawCode.toLowerCase() === uId))) {
+            if (u.Status === 'frozen') return { success: false, frozen: true };
             return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
           }
         }
-      } catch {}
+      }
+      return { success: false };
+    };
+
+    // 1. Check Firestore users collection FIRST (so employee username+password always resolves accurately)
+    const colUsers = getFSCol(FS_COLLECTIONS.USERS);
+    const primaryUsers = await fetchUsersCollectionFresh(colUsers);
+    const primaryMatch = matchInUserList(primaryUsers);
+    if (primaryMatch.success || primaryMatch.frozen) return primaryMatch;
+
+    // Also check root 'users' collection if partitioned
+    if (colUsers !== 'users') {
+      const baseUsers = await fetchUsersCollectionFresh('users');
+      const baseMatch = matchInUserList(baseUsers);
+      if (baseMatch.success || baseMatch.frozen) return baseMatch;
+    }
+
+    // 2. In single-passcode mode (or developer username), check developer passcode in settings
+    if (!isDualMode || cleanUser === 'developer' || cleanUser === 'admin') {
+      const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
+      try {
+        const authSnap = await withTimeout(getDocFromServer(doc(db, colSettings, 'developer_auth')), 3500, 'developer_auth')
+          .catch(() => getDoc(doc(db, colSettings, 'developer_auth')));
+        if (authSnap.exists()) {
+          const storedCode = normalizeDigits(String(authSnap.data()?.developerPasscode || ''));
+          if (storedCode && (rawCode === storedCode || cleanPass === storedCode)) {
+            return { success: true, isDeveloper: true, matchedSource: 'firebase_passcode' };
+          }
+        }
+      } catch (e) {
+        console.warn('fsVerifyLogin developer_auth check error:', e);
+      }
+
+      try {
+        const genSnap = await withTimeout(getDocFromServer(doc(db, colSettings, 'general')), 3500, 'settings/general')
+          .catch(() => getDoc(doc(db, colSettings, 'general')));
+        if (genSnap.exists()) {
+          const data = genSnap.data();
+          const storedPass = normalizeDigits(String(data?.developerPasscode || data?.passcode || ''));
+          if (storedPass && (rawCode === storedPass || cleanPass === storedPass)) {
+            return { success: true, isDeveloper: true, matchedSource: 'firebase_passcode' };
+          }
+        }
+      } catch (e) {
+        console.warn('fsVerifyLogin general settings check error:', e);
+      }
     }
 
     return { success: false };
@@ -669,9 +803,19 @@ export async function fsBulkPullAll(): Promise<{
   error?: string;
 }> {
   try {
-    const fetchCol = async <T>(colName: string): Promise<T[]> => {
-      const snap = await getDocs(collection(db, colName));
-      return snap.docs.map(d => d.data() as T);
+    const fetchCol = async <T>(colName: string, preferServer = false): Promise<T[]> => {
+      try {
+        if (preferServer) {
+          try {
+            const snap = await withTimeout(getDocsFromServer(collection(db, colName)), 5000, `pull(${colName})`);
+            return snap.docs.map(d => d.data() as T);
+          } catch {}
+        }
+        const snap = await withTimeout(getDocs(collection(db, colName)), 4000, `getDocs(${colName})`);
+        return snap.docs.map(d => d.data() as T);
+      } catch {
+        return [];
+      }
     };
 
     const colCitizens = getFSCol(FS_COLLECTIONS.CITIZENS);
@@ -694,7 +838,7 @@ export async function fsBulkPullAll(): Promise<{
       rawOfficialLetters,
       rawCheques,
       rawOrganizationRecords,
-      users,
+      rawUsers,
       rawCustomSections,
       rawCustomRecords,
       dropdowns,
@@ -708,10 +852,10 @@ export async function fsBulkPullAll(): Promise<{
       fetchCol<OfficialLetter>(colLetters),
       fetchCol<ChequeRecord>(colCheques),
       fetchCol<OrganizationRecord>(colOrgs),
-      fetchCol<User>(colUsers),
+      fetchCol<User>(colUsers, true),
       fetchCol<CustomSection>(colSections),
       fetchCol<CustomSectionRecord>(colRecords),
-      fetchCol<DropdownItem>(colDropdowns).catch(() => []),
+      fetchCol<DropdownItem>(colDropdowns),
       getDocs(collection(db, colDeleted)).catch(() => null),
       getDoc(doc(db, colSettings, 'general')).catch(() => null),
       getDoc(doc(db, colSettings, 'developer_auth')).catch(() => null)
@@ -733,6 +877,7 @@ export async function fsBulkPullAll(): Promise<{
     const officialLetters = rawOfficialLetters.filter(l => l && l.Letter_ID && !deletedIds.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIds.has(l.Citizen_ID)));
     const cheques = rawCheques.filter(ch => ch && ch.id && !deletedIds.has(ch.id) && !deletedIds.has(ch.Citizen_ID));
     const organizationRecords = rawOrganizationRecords.filter(o => o && o.Org_ID && !deletedIds.has(o.Org_ID) && !deletedIds.has(o.Citizen_ID));
+    const users = rawUsers.filter(u => u && u.User_ID && !deletedIds.has(u.User_ID));
     const customSections = rawCustomSections.filter(s => s && s.id && !deletedIds.has(s.id));
     const customRecords = rawCustomRecords.filter(cr => cr && cr.id && !deletedIds.has(cr.id) && !deletedIds.has(cr.sectionId));
 

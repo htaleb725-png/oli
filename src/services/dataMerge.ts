@@ -228,11 +228,12 @@ export function mergeCustomRecords(
 }
 
 /**
- * Specialized Users merger.
+ * Specialized Users merger (respects tombstones and UpdatedAt timestamps).
  */
 export function mergeUsers(
   currentList: User[],
-  incomingList: User[]
+  incomingList: User[],
+  deletedIds?: Set<string>
 ): User[] {
-  return mergeEntityRecords(currentList, incomingList, 'User_ID', new Set());
+  return mergeEntityRecords(currentList, incomingList, 'User_ID', deletedIds || new Set());
 }

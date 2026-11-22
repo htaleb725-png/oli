@@ -113,6 +113,9 @@ export const DirectorExecutiveModule: React.FC = () => {
     'مكرر لنفس المواطن وتم اتخاذ الإجراء فيه سابقاً'
   ];
 
+  // Pagination limit so Director view stays blazing fast even with thousands of requests
+  const [visibleLimit, setVisibleLimit] = useState(40);
+
   // Map of citizens for fast lookup
   const citizenMap = useMemo(() => {
     const map = new Map<string, Citizen>();
@@ -120,9 +123,16 @@ export const DirectorExecutiveModule: React.FC = () => {
     return map;
   }, [citizens]);
 
+  // Strictly exclude Excel-imported / filtered archive records from Director's daily queue
+  const activeDirectorRequests = useMemo(() => {
+    return (requests || []).filter(r =>
+      r && !r.IsHistoricalImported && !r.IsArchived && r.DirectorDecision !== 'مؤرشف'
+    );
+  }, [requests]);
+
   // Reception requests list (sorted with newest on top)
   const receptionRequests = useMemo(() => {
-    return requests
+    return activeDirectorRequests
       .filter(r => {
         // Match search query
         if (!searchQuery.trim()) return true;
@@ -145,24 +155,24 @@ export const DirectorExecutiveModule: React.FC = () => {
         if (statusFilter === 'all') return true;
         return !r.DirectorDecision;
       });
-  }, [requests, searchQuery, statusFilter, citizenMap]);
+  }, [activeDirectorRequests, searchQuery, statusFilter, citizenMap]);
 
-  // Statistics counters
+  // Statistics counters (daily live workflow only, never inflated by Excel historical archive imports)
   const stats = useMemo(() => {
     let pending = 0;
     let special = 0;
     let general = 0;
     let rejected = 0;
 
-    requests.forEach(r => {
+    activeDirectorRequests.forEach(r => {
       if (!r.DirectorDecision) pending++;
       else if (r.DirectorDecision === 'خاص') special++;
       else if (r.DirectorDecision === 'عام') general++;
       else if (r.DirectorDecision === 'رفض') rejected++;
     });
 
-    return { total: requests.length, pending, special, general, rejected };
-  }, [requests]);
+    return { total: activeDirectorRequests.length, pending, special, general, rejected };
+  }, [activeDirectorRequests]);
 
   // Handle Director Decision action: 'خاص' | 'عام' | 'رفض'
   const handleDirectorDecision = (request: OfficeRequest, decision: 'خاص' | 'عام' | 'رفض', explicitRejectionReason?: string) => {
@@ -584,7 +594,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 )}
               </div>
             ) : (
-              receptionRequests.map((req) => {
+              receptionRequests.slice(0, visibleLimit).map((req) => {
                 const cit = citizenMap.get(req.Citizen_ID);
                 const currentDecision = req.DirectorDecision;
                 const isPending = !currentDecision;
@@ -837,6 +847,17 @@ export const DirectorExecutiveModule: React.FC = () => {
                   </div>
                 );
               })
+            )}
+            {receptionRequests.length > visibleLimit && (
+              <div className="pt-2 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleLimit(prev => prev + 40)}
+                  className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer shadow-xs transition-all"
+                >
+                  عرض المزيد ({receptionRequests.length - visibleLimit} معاملة متبقية)
+                </button>
+              </div>
             )}
           </div>
 

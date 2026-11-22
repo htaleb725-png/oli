@@ -21,7 +21,10 @@ import {
   LogIn,
   Search,
   Layers,
-  AlertCircle
+  AlertCircle,
+  RefreshCw,
+  Loader2,
+  CloudUpload
 } from 'lucide-react';
 import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../../utils/permissions';
 
@@ -54,7 +57,8 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
     deleteUser,
     switchUser,
     currentUser,
-    customSections
+    customSections,
+    syncUsersToAllDatabasesNow
   } = useApp();
 
   const isDeveloper = mode === 'developer' && currentUser?.Role === 'developer';
@@ -75,11 +79,38 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
   const [searchTerm, setSearchTerm] = useState('');
   const [feedback, setFeedback] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
 
   const showNotice = (msg: string) => {
     setFeedback(msg);
     setErrorMsg(null);
-    setTimeout(() => setFeedback(null), 4000);
+    setTimeout(() => setFeedback(null), 6500);
+  };
+
+  const formatSyncSummary = (res: { serverOk: boolean; firebaseOk: boolean; sheetsOk: boolean }): string => {
+    const targets: string[] = [];
+    if (res.serverOk) targets.push('قاعدة بيانات الخادم');
+    if (res.firebaseOk) targets.push('Firebase السحابي');
+    if (res.sheetsOk) targets.push('Google Sheets');
+    if (targets.length === 0) {
+      return 'تم الحفظ محلياً فقط (تعذر الوصول إلى Firebase السحابي حالياً — يرجى إعادة ربط مشروع Firebase الفعّال).';
+    }
+    const suffix = !res.firebaseOk ? ' (ملاحظة: مشروع Firebase الحالي غير متصل)' : '';
+    return `تم الحفظ والمزامنة في: ${targets.join(' + ')}${suffix}`;
+  };
+
+  const handleSyncAllUsersNow = async () => {
+    setIsSyncingAll(true);
+    setErrorMsg(null);
+    try {
+      const res = await syncUsersToAllDatabasesNow();
+      showNotice(`تمت مزامنة (${res.count}) حسابات — ${formatSyncSummary(res)}`);
+    } catch (err: any) {
+      setErrorMsg(`تعذر إتمام المزامنة: ${err?.message || 'خطأ غير متوقع'}`);
+    } finally {
+      setIsSyncingAll(false);
+    }
   };
 
   // All selectable sections: built-in registry + dynamic custom sections (excluding sec_social_welfare since it is standalone 'social_care')
@@ -172,7 +203,7 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
     setErrorMsg(null);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!fullName.trim() || !username.trim() || !password.trim()) {
       setErrorMsg('يرجى إدخال اسم الموظف، اسم المستخدم، وكلمة المرور.');
@@ -192,62 +223,71 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
       }
     }
 
-    if (editingUserId) {
-      const existing = users.find(u => u.User_ID === editingUserId);
-      if (!existing) return;
-      if (existing.Role === 'developer' && !isDeveloper) {
-        setErrorMsg('حساب مطور النظام محمي ولا يمكن تعديله.');
-        return;
+    setIsSaving(true);
+    setErrorMsg(null);
+    try {
+      if (editingUserId) {
+        const existing = users.find(u => u.User_ID === editingUserId);
+        if (!existing) return;
+        if (existing.Role === 'developer' && !isDeveloper) {
+          setErrorMsg('حساب مطور النظام محمي ولا يمكن تعديله.');
+          return;
+        }
+        const res = await updateUser({
+          ...existing,
+          FullName: fullName.trim(),
+          Username: username.trim(),
+          Password: password.trim(),
+          Role: role,
+          RoleArabic: roleArabic,
+          Department: department.trim() || roleArabic,
+          JobTitle: jobTitle.trim() || roleArabic,
+          Permissions: finalPermissions,
+          AllowedSections: finalSections,
+          Status: status
+        });
+        showNotice(`تم تحديث حساب "${fullName.trim()}" — ${formatSyncSummary(res)}`);
+        resetForm();
+      } else {
+        const duplicate = users.some(u => (u.Username || '').toLowerCase() === username.trim().toLowerCase());
+        if (duplicate) {
+          setErrorMsg('اسم المستخدم موجود مسبقاً لموظف آخر، يرجى اختيار اسم مختلف.');
+          return;
+        }
+        const res = await addUser({
+          FullName: fullName.trim(),
+          Username: username.trim(),
+          Password: password.trim(),
+          Role: role,
+          RoleArabic: roleArabic,
+          Department: department.trim() || roleArabic,
+          JobTitle: jobTitle.trim() || roleArabic,
+          Permissions: finalPermissions,
+          AllowedSections: finalSections,
+          Status: status
+        });
+        showNotice(`تم إنشاء حساب "${fullName.trim()}" — ${formatSyncSummary(res)}`);
+        resetForm();
       }
-      updateUser({
-        ...existing,
-        FullName: fullName.trim(),
-        Username: username.trim(),
-        Password: password.trim(),
-        Role: role,
-        RoleArabic: roleArabic,
-        Department: department.trim() || roleArabic,
-        JobTitle: jobTitle.trim() || roleArabic,
-        Permissions: finalPermissions,
-        AllowedSections: finalSections,
-        Status: status
-      });
-      showNotice(`تم حفظ التعديلات والصلاحيات للموظف "${fullName.trim()}" ومزامنتها فوراً.`);
-      resetForm();
-    } else {
-      const duplicate = users.some(u => (u.Username || '').toLowerCase() === username.trim().toLowerCase());
-      if (duplicate) {
-        setErrorMsg('اسم المستخدم موجود مسبقاً لموظف آخر، يرجى اختيار اسم مختلف.');
-        return;
-      }
-      addUser({
-        FullName: fullName.trim(),
-        Username: username.trim(),
-        Password: password.trim(),
-        Role: role,
-        RoleArabic: roleArabic,
-        Department: department.trim() || roleArabic,
-        JobTitle: jobTitle.trim() || roleArabic,
-        Permissions: finalPermissions,
-        AllowedSections: finalSections,
-        Status: status
-      });
-      showNotice(`تم إنشاء حساب الموظف "${fullName.trim()}" وتفعيل صلاحيات الأقسام المختارة.`);
-      resetForm();
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const handleToggleFreeze = (u: User) => {
+  const handleToggleFreeze = async (u: User) => {
     if (u.Role === 'developer' && !isDeveloper) {
       setErrorMsg('لا يمكن تجميد حساب مطور النظام.');
       return;
     }
     const nextStatus = u.Status === 'frozen' ? 'active' : 'frozen';
-    updateUser({ ...u, Status: nextStatus });
-    showNotice(nextStatus === 'frozen' ? `تم تجميد حساب ${u.FullName}` : `تم إعادة تفعيل حساب ${u.FullName}`);
+    const res = await updateUser({ ...u, Status: nextStatus });
+    showNotice(
+      (nextStatus === 'frozen' ? `تم تجميد حساب ${u.FullName}` : `تم إعادة تفعيل حساب ${u.FullName}`) +
+        ` — ${formatSyncSummary(res)}`
+    );
   };
 
-  const handleDeleteUser = (u: User) => {
+  const handleDeleteUser = async (u: User) => {
     if (u.Role === 'developer') {
       setErrorMsg('حساب مطور النظام محمي ولا يمكن حذفه.');
       return;
@@ -256,9 +296,9 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
       setErrorMsg('لا يمكنك حذف حسابك النشط حالياً.');
       return;
     }
-    deleteUser(u.User_ID);
+    await deleteUser(u.User_ID);
     if (editingUserId === u.User_ID) resetForm();
-    showNotice(`تم حذف حساب الموظف ${u.FullName}`);
+    showNotice(`تم حذف حساب الموظف ${u.FullName} ومزامنة الحذف.`);
   };
 
   const handleQuickToggleSocialCare = (u: User) => {
@@ -588,10 +628,23 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
 
             <button
               type="submit"
-              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer"
+              disabled={isSaving}
+              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-black text-xs flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer"
             >
-              {editingUserId ? <CheckCircle2 className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-              <span>{editingUserId ? 'حفظ وتحديث صلاحيات الموظف' : 'إنشاء الحساب وتفعيل الصلاحيات'}</span>
+              {isSaving ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : editingUserId ? (
+                <CheckCircle2 className="w-4 h-4" />
+              ) : (
+                <Plus className="w-4 h-4" />
+              )}
+              <span>
+                {isSaving
+                  ? 'جاري الحفظ والمزامنة مع قاعدة البيانات...'
+                  : editingUserId
+                  ? 'حفظ وتحديث صلاحيات الموظف'
+                  : 'إنشاء الحساب وتفعيل الصلاحيات'}
+              </span>
             </button>
           </form>
         </div>
@@ -603,15 +656,27 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
               <Users className="w-4 h-4 text-blue-600" />
               <span>كادر وموظفي المكتب المسجلين ({users.length})</span>
             </h3>
-            <div className="relative w-full sm:w-56">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="بحث بالاسم أو القسم..."
-                className="w-full pr-8 pl-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
-              />
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <button
+                type="button"
+                onClick={handleSyncAllUsersNow}
+                disabled={isSyncingAll}
+                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-[11px] font-bold flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs transition-colors"
+                title="رفع ومزامنة كافة حسابات الموظفين وصلاحياتهم إلى قاعدة البيانات ليتمكنوا من الدخول من الرابط المشترك"
+              >
+                {isSyncingAll ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CloudUpload className="w-3.5 h-3.5" />}
+                <span>{isSyncingAll ? 'جاري المزامنة...' : 'مزامنة الحسابات الآن'}</span>
+              </button>
+              <div className="relative flex-1 sm:w-48">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="بحث بالاسم أو القسم..."
+                  className="w-full pr-8 pl-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
             </div>
           </div>
 

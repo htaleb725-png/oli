@@ -72,15 +72,19 @@ export const DriveRequestsArchiveModule: React.FC = () => {
   const [isEditingFolder, setIsEditingFolder] = useState(false);
   const [folderInputVal, setFolderInputVal] = useState(driveFolderId);
 
-  // Main Tab: Hub vs Smart Images vs Live Drive Gallery & Search vs standard request list
-  const [activeMainTab, setActiveMainTab] = useState<'hub' | 'smart_images' | 'image_viewer' | 'requests_list'>('hub');
+  // Main Tab: default directly to Live Drive Gallery so Google Drive images display immediately!
+  const [activeMainTab, setActiveMainTab] = useState<'hub' | 'smart_images' | 'image_viewer' | 'requests_list'>('image_viewer');
 
   // Live Google Drive + Local System Search & Gallery State
   const [driveImageSearchName, setDriveImageSearchName] = useState('');
   const [liveDriveFiles, setLiveDriveFiles] = useState<DriveFileItem[]>([]);
+  const [totalDriveCount, setTotalDriveCount] = useState<number>(0);
+  const [driveLimit, setDriveLimit] = useState<number>(60);
   const [liveLocalImages, setLiveLocalImages] = useState<ImageRecord[]>([]);
   const [isLoadingDriveGallery, setIsLoadingDriveGallery] = useState(false);
   const [driveStatusMsg, setDriveStatusMsg] = useState<string | null>(null);
+  const [pendingDeleteDriveId, setPendingDeleteDriveId] = useState<string | null>(null);
+  const [pendingDeleteLocalId, setPendingDeleteLocalId] = useState<string | null>(null);
   const [selectedViewerImage, setSelectedViewerImage] = useState<{
     id: string;
     name: string;
@@ -94,8 +98,11 @@ export const DriveRequestsArchiveModule: React.FC = () => {
   const [zoomLevel, setZoomLevel] = useState(1);
   const [rotation, setRotation] = useState(0);
 
-  // Helpers for Drive image URL and Apps Script URL
+  // Helpers for Drive image URL (uses our server-side proxy so Drive images ALWAYS load inside iframes & print cleanly!)
   const getDriveHighResUrl = (file: DriveFileItem) => {
+    if (file.id && /^[a-zA-Z0-9_-]{10,80}$/.test(file.id)) {
+      return `/api/drive/image/${encodeURIComponent(file.id)}?sz=w1200`;
+    }
     if (file.thumbnailLink) {
       return file.thumbnailLink.replace(/=s\d+/, '=s1600');
     }
@@ -111,11 +118,13 @@ export const DriveRequestsArchiveModule: React.FC = () => {
   };
 
   // REAL Live Load & Search across BOTH System + Google Drive folder
-  const loadLiveDriveAndSystemImages = async (queryText?: string) => {
+  const loadLiveDriveAndSystemImages = async (queryText?: string, customLimit?: number, forceRefresh = false) => {
     setIsLoadingDriveGallery(true);
     setDriveStatusMsg(null);
+    const activeLimit = customLimit ?? driveLimit;
     try {
-      const q = (queryText ?? driveImageSearchName).trim().toLowerCase();
+      const rawQ = (queryText ?? driveImageSearchName).trim();
+      const q = rawQ.toLowerCase();
 
       // 1. Fetch Local IndexedDB Archive Images
       const allLocal = await getAllImagesFromDB();
@@ -130,21 +139,51 @@ export const DriveRequestsArchiveModule: React.FC = () => {
         : allLocal;
       setLiveLocalImages(filteredLocal);
 
-      // 2. Fetch Real Google Drive Folder Files (via OAuth API or Apps Script webhook)
+      // 2. Fetch Real Google Drive Folder Files via Server Proxy (works reliably for shared Drive folders with 0 OAuth popups!)
       let driveResults: DriveFileItem[] = [];
-      const token = await getAccessToken();
-      if (token) {
-        driveResults = await searchDriveFiles(token, driveFolderId, queryText ?? driveImageSearchName);
+      let totalInFolder = 0;
+
+      try {
+        const params = new URLSearchParams({
+          folderId: driveFolderId,
+          q: rawQ,
+          limit: String(activeLimit),
+          offset: '0',
+          ...(forceRefresh ? { refresh: '1' } : {})
+        });
+        const serverRes = await fetch(`/api/drive/folder-files?${params.toString()}`);
+        if (serverRes.ok) {
+          const data = await serverRes.json();
+          if (data?.success && Array.isArray(data.files)) {
+            driveResults = data.files;
+            totalInFolder = Number(data.matchedCount ?? data.totalInFolder ?? data.files.length);
+          } else if (data?.error && data?.isPrivate) {
+            setDriveStatusMsg(`⚠️ ${data.error}`);
+          }
+        }
+      } catch (proxyErr) {
+        console.warn('Server Drive proxy fallback notice:', proxyErr);
+      }
+
+      // 3. Fallback to Google OAuth API or Apps Script for private Drive folders
+      if (driveResults.length === 0) {
+        const token = await getAccessToken();
+        if (token) {
+          driveResults = await searchDriveFiles(token, driveFolderId, rawQ);
+          totalInFolder = driveResults.length;
+        }
       }
 
       if (driveResults.length === 0) {
         const scriptUrl = getConfiguredScriptUrl();
         if (scriptUrl) {
-          driveResults = await searchDriveFilesViaAppsScript(scriptUrl, driveFolderId, queryText ?? driveImageSearchName);
+          driveResults = await searchDriveFilesViaAppsScript(scriptUrl, driveFolderId, rawQ);
+          totalInFolder = driveResults.length;
         }
       }
 
       setLiveDriveFiles(driveResults);
+      setTotalDriveCount(totalInFolder || driveResults.length);
     } catch (err) {
       console.warn('Error loading Drive gallery:', err);
       setDriveStatusMsg('تعذر جلب بعض الملفات من Google Drive حالياً.');
@@ -176,7 +215,11 @@ export const DriveRequestsArchiveModule: React.FC = () => {
   };
 
   const handleDeleteDriveItem = async (file: DriveFileItem) => {
-    if (!window.confirm(`هل أنت متأكد من حذف الصورة/الملف (${file.name}) نهائياً من Google Drive؟`)) return;
+    if (pendingDeleteDriveId !== file.id) {
+      setPendingDeleteDriveId(file.id);
+      return;
+    }
+    setPendingDeleteDriveId(null);
     try {
       let ok = false;
       const token = await getAccessToken();
@@ -187,20 +230,25 @@ export const DriveRequestsArchiveModule: React.FC = () => {
       }
       if (ok) {
         setLiveDriveFiles(prev => prev.filter(f => f.id !== file.id));
+        setTotalDriveCount(prev => Math.max(0, prev - 1));
         if (selectedViewerImage?.id === file.id) setSelectedViewerImage(null);
         addAuditLog('حذف صورة من Google Drive', 'أرشيف البريد', `تم حذف الملف (${file.name}) من Google Drive`);
         setDriveStatusMsg(`✓ تم حذف (${file.name}) من Google Drive بنجاح.`);
       } else {
-        setDriveStatusMsg('⚠️ تعذر الحذف من Google Drive. يرجى التأكد من تفعيل Apps Script أو ربط حساب Google.');
+        setDriveStatusMsg('⚠️ للحذف الدائم من Google Drive يرجى ربط حساب Google أو Apps Script بصلاحية التعديل. (العرض والطباعة يعملان مباشرة)');
       }
     } catch (err) {
       console.error('Delete Drive error:', err);
     }
-    setTimeout(() => setDriveStatusMsg(null), 4000);
+    setTimeout(() => setDriveStatusMsg(null), 5000);
   };
 
   const handleDeleteLocalItem = async (img: ImageRecord) => {
-    if (!window.confirm(`هل أنت متأكد من حذف الصورة (${img.fileName}) من أرشيف النظام؟`)) return;
+    if (pendingDeleteLocalId !== img.id) {
+      setPendingDeleteLocalId(img.id);
+      return;
+    }
+    setPendingDeleteLocalId(null);
     try {
       await deleteImageFromDB(img.id);
       setLiveLocalImages(prev => prev.filter(i => i.id !== img.id));
@@ -698,11 +746,33 @@ export const DriveRequestsArchiveModule: React.FC = () => {
 
             return (
               <div className="space-y-3">
-                <div className="flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-300 px-1">
-                  <span>إجمالي الصور والمستندات المستخرجة: {totalFound}</span>
-                  <span className="text-emerald-700 dark:text-emerald-400">
-                    Google Drive: {liveDriveFiles.length} | أرشيف النظام: {liveLocalImages.length + requestImages.length}
+                <div className="flex items-center justify-between flex-wrap gap-2 text-xs font-bold text-slate-600 dark:text-slate-300 px-1">
+                  <span>
+                    إجمالي الصور والمستندات المعروضة: {totalFound}
+                    {totalDriveCount > liveDriveFiles.length && (
+                      <span className="text-emerald-700 dark:text-emerald-400 mr-1">
+                        (من أصل {totalDriveCount} صورة في مجلد Drive)
+                      </span>
+                    )}
                   </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-700 dark:text-emerald-400">
+                      Google Drive: {liveDriveFiles.length}{totalDriveCount > liveDriveFiles.length ? ` / ${totalDriveCount}` : ''} | أرشيف النظام: {liveLocalImages.length + requestImages.length}
+                    </span>
+                    {totalDriveCount > liveDriveFiles.length && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextLim = Math.min(totalDriveCount, driveLimit + 80);
+                          setDriveLimit(nextLim);
+                          loadLiveDriveAndSystemImages(driveImageSearchName, nextLim);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black cursor-pointer"
+                      >
+                        + تحميل المزيد ({Math.min(80, totalDriveCount - liveDriveFiles.length)})
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
@@ -736,9 +806,21 @@ export const DriveRequestsArchiveModule: React.FC = () => {
                                 rawDriveFile: file
                               });
                             }}
-                            className="h-36 rounded-xl bg-slate-100 dark:bg-slate-800 overflow-hidden cursor-pointer relative group flex items-center justify-center"
+                            className="h-44 rounded-xl bg-slate-100 dark:bg-slate-800 overflow-hidden cursor-pointer relative group flex items-center justify-center"
                           >
-                            <img src={imgUrl} alt={file.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                            <img
+                              src={imgUrl}
+                              alt={file.name}
+                              loading="lazy"
+                              onError={(e) => {
+                                const imgEl = e.currentTarget;
+                                if (!imgEl.dataset.fallbackUsed) {
+                                  imgEl.dataset.fallbackUsed = '1';
+                                  imgEl.src = `https://drive.google.com/thumbnail?id=${file.id}&sz=w1000`;
+                                }
+                              }}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            />
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-bold transition-opacity">
                               <Eye className="w-4 h-4 ml-1" />
                               <span>معاينة وتكبير</span>
@@ -761,10 +843,14 @@ export const DriveRequestsArchiveModule: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => handleDeleteDriveItem(file)}
-                            className="flex-1 py-1.5 px-2 rounded-lg bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/40 text-rose-700 dark:text-rose-200 font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                            className={`flex-1 py-1.5 px-2 rounded-lg font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer ${
+                              pendingDeleteDriveId === file.id
+                                ? 'bg-rose-600 text-white'
+                                : 'bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/40 text-rose-700 dark:text-rose-200'
+                            }`}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
-                            <span>حذف</span>
+                            <span>{pendingDeleteDriveId === file.id ? 'تأكيد الحذف؟' : 'حذف'}</span>
                           </button>
                           {file.webViewLink && (
                             <a

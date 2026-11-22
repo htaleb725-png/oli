@@ -1,5 +1,5 @@
 // Service Worker for Office Desktop App PWA
-const CACHE_NAME = 'ola-alnashi-office-v3';
+const CACHE_NAME = 'ola-alnashi-office-v4';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -36,7 +36,13 @@ self.addEventListener('fetch', (event) => {
   // Never intercept external services (Firebase, Google APIs, ping endpoints)
   if (!url.startsWith(self.location.origin)) return;
 
-  // NEVER cache version.json so live update detector always gets the fresh build info
+  // NEVER cache or intercept /api/* endpoints (real-time SSE sync, users, settings, blacklist, Drive) or version.json
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname.startsWith('/api/')) return;
+  } catch {
+    if (url.includes('/api/')) return;
+  }
   if (url.includes('version.json') || url.includes('sw-bypass')) return;
 
   event.respondWith(

@@ -984,7 +984,7 @@ export const uploadImageToDrive = async (
 export const pushSingleRecordToSheetsRealtime = async (
   token: string,
   spreadsheetId: string,
-  entityType: 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'drive_archive' | 'dropdowns' | 'custom_sections' | 'custom_records' | 'settings',
+  entityType: 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'users' | 'drive_archive' | 'dropdowns' | 'custom_sections' | 'custom_records' | 'settings',
   record: any
 ): Promise<boolean> => {
   try {
@@ -1080,6 +1080,22 @@ export const pushSingleRecordToSheetsRealtime = async (
           new Date().toLocaleDateString('ar-IQ')
         ];
         break;
+      case 'users':
+        sheetName = 'المستخدمين_Users';
+        rowValues = [
+          record.User_ID || '',
+          record.Username || '',
+          record.Password || '',
+          record.Role || 'reception',
+          record.FullName || '',
+          record.RoleArabic || '',
+          record.Department || '',
+          record.Status || 'active',
+          typeof record.Permissions === 'string' ? record.Permissions : JSON.stringify(record.Permissions || []),
+          typeof record.AllowedSections === 'string' ? record.AllowedSections : JSON.stringify(record.AllowedSections || []),
+          record.UpdatedAt || new Date().toISOString()
+        ];
+        break;
       case 'settings':
         sheetName = 'إعدادات_النظام_Settings';
         rowValues = [
@@ -1120,6 +1136,7 @@ export const deleteRecordFromSheetsRealtime = async (
       case 'letters': sheetName = 'الكتب_الرسمية_OfficialLetters'; break;
       case 'cheques': sheetName = 'صكوك_المساعدات_المالية_Cheques'; break;
       case 'organization': sheetName = 'الموقف_الجماهيري_Organization'; break;
+      case 'users': sheetName = 'المستخدمين_Users'; break;
       case 'custom_sections': sheetName = 'الأقسام_المخصصة_Sections'; break;
       case 'custom_records': sheetName = 'سجلات_الأقسام_Records'; break;
       default: return false;
