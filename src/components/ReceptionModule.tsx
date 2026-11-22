@@ -46,6 +46,7 @@ import {
 import { UnifiedCitizenCardModal } from './UnifiedCitizenCardModal';
 import { SearchableSelect } from './SearchableSelect';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { RequiredFieldsManager } from './developer/RequiredFieldsManager';
 import { printElementIsolated } from '../utils/printReceiptHelper';
 
@@ -1343,6 +1344,9 @@ export const ReceptionModule: React.FC = () => {
               }
             ]}
           />
+
+          {/* Embedded Professional Analytics Dashboard for Reception */}
+          <DepartmentAnalyticsDashboard department="reception" compact />
         </div>
       )}
 

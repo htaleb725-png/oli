@@ -104,6 +104,22 @@ service cloud.firestore {
         && (!('Details' in data) || (data.Details is string && data.Details.size() <= 5000));
     }
 
+    function isValidNotification(data) {
+      return data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 300
+        && data.message is string && data.message.size() <= 2000
+        && data['read'] is bool
+        && (!('type' in data) || (data.type is string && data.type.size() <= 60))
+        && (!('category' in data) || (data.category is string && data.category.size() <= 60))
+        && (!('priority' in data) || (data.priority is string && data.priority.size() <= 30))
+        && (!('linkSection' in data) || (data.linkSection is string && data.linkSection.size() <= 100))
+        && (!('entityId' in data) || (data.entityId is string && data.entityId.size() <= 128))
+        && (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 200))
+        && (!('createdAtIso' in data) || (data.createdAtIso is string && data.createdAtIso.size() <= 60))
+        && (!('timestamp' in data) || (data.timestamp is string && data.timestamp.size() <= 100))
+        && (!('targetRoles' in data) || (data.targetRoles is list && data.targetRoles.size() <= 30));
+    }
+
     match /citizens/{citizenId} {
       allow get: if isValidId(citizenId);
       allow list: if true;
@@ -205,6 +221,13 @@ service cloud.firestore {
       allow get: if isValidId(schemaId);
       allow list: if true;
       allow write: if isValidId(schemaId);
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId);
+      allow list: if true;
+      allow create, update: if isValidId(notificationId) && isValidNotification(incoming());
+      allow delete: if isValidId(notificationId);
     }
 
     match /test/{docId} {

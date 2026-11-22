@@ -170,6 +170,26 @@
         "createdAt": { "type": "string" }
       },
       "required": ["id", "sectionId", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Real-time role-aware office alert and workflow notification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "category": { "type": "string" },
+        "priority": { "type": "string" },
+        "linkSection": { "type": "string" },
+        "entityId": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAtIso": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["id", "title", "message", "read"]
     }
   },
   "firestore": {
@@ -220,6 +240,10 @@
     "/custom_records/{recordId}": {
       "schema": "CustomSectionRecord",
       "description": "Records belonging to dynamic custom departments"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Real-time workflow notifications synchronized across all office devices"
     }
   }
 }

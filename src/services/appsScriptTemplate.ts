@@ -25,7 +25,7 @@ function setupSpreadsheet() {
     },
     { 
       name: 'طلبات_المواطنين_Requests', 
-      headers: ['Request_ID', 'Citizen_ID', 'CitizenName', 'Phone1', 'Entity', 'RequestStatus', 'ProcessingStatus', 'Priority', 'Details', 'CreatedAt', 'CreatedBy', 'UpdatedAt'] 
+      headers: ['Request_ID', 'Citizen_ID', 'CitizenName', 'CitizenPhone', 'Entity', 'Details', 'OutgoingNumber', 'OutgoingDate', 'Address', 'ReferralSource', 'Margin', 'ProcessingStatus', 'DeliveryStatus', 'Education', 'Job', 'TargetDepartment', 'CreatedAt', 'CreatedBy', 'OtherNotes', 'UpdatedAt'] 
     },
     { 
       name: 'مقابلات_النائب_Interviews', 
@@ -184,6 +184,19 @@ function doGet(e) {
     if (action === 'getCitizens') return jsonResponse({ success: true, data: getSheetRecords(ss, 'سجل_المراجعين_Citizens') });
     if (action === 'getRequests') return jsonResponse({ success: true, data: getSheetRecords(ss, 'طلبات_المواطنين_Requests') });
     if (action === 'getInterviews') return jsonResponse({ success: true, data: getSheetRecords(ss, 'مقابلات_النائب_Interviews') });
+
+    // استعراض والبحث المباشر في مجلد Google Drive عبر GET (سريع ومتوافق مع Vercel)
+    if (action === 'listDriveFiles' || action === 'searchDriveFiles') {
+      var targetFolderId = (e && e.parameter && e.parameter.folderId) ? e.parameter.folderId : '';
+      var qText = (e && e.parameter && (e.parameter.query || e.parameter.q)) ? (e.parameter.query || e.parameter.q) : '';
+      var driveFiles = handleDriveList(targetFolderId, qText);
+      return jsonResponse({
+        success: true,
+        folderId: targetFolderId,
+        totalInFolder: driveFiles.length,
+        files: driveFiles
+      });
+    }
 
     return jsonResponse({
       status: 'online',
@@ -482,34 +495,70 @@ function handleDriveUpload(contents) {
   };
 }
 
+function normalizeArabicForDrive(str) {
+  return String(str || '')
+    .replace(/[\\u064B-\\u065F\\u0670]/g, '')
+    .replace(/[إأآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[٠-٩]/g, function(d) { return String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)); })
+    .replace(/\\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 function handleDriveList(folderId, query) {
   var results = [];
   try {
     var folder;
     if (folderId) {
-      try { folder = DriveApp.getFolderById(folderId); } catch(e) { folder = DriveApp.getRootFolder(); }
+      var cleanFolderId = String(folderId).trim();
+      var m = cleanFolderId.match(/folders\\/([a-zA-Z0-9_-]+)/);
+      if (m && m[1]) cleanFolderId = m[1];
+      try { folder = DriveApp.getFolderById(cleanFolderId); } catch(e) { folder = DriveApp.getRootFolder(); }
     } else {
       folder = DriveApp.getRootFolder();
     }
+    var normQ = normalizeArabicForDrive(query || '');
+    var qTokens = normQ ? normQ.split(' ').filter(function(t) { return t.length > 0; }) : [];
     var files = folder.getFiles();
     var count = 0;
-    while (files.hasNext() && count < 80) {
+    while (files.hasNext() && count < 250) {
       var f = files.next();
+      if (f.isTrashed()) continue;
       var name = f.getName();
       var mime = f.getMimeType();
-      if (!query || name.toLowerCase().indexOf(query.toLowerCase()) !== -1) {
+      var normName = normalizeArabicForDrive(name);
+      var matched = true;
+      if (qTokens.length > 0) {
+        for (var i = 0; i < qTokens.length; i++) {
+          if (normName.indexOf(qTokens[i]) === -1) {
+            matched = false;
+            break;
+          }
+        }
+      }
+      if (matched) {
+        var fid = f.getId();
         results.push({
-          id: f.getId(),
+          id: fid,
           name: name,
           mimeType: mime,
-          size: f.getSize(),
-          url: 'https://drive.google.com/uc?export=view&id=' + f.getId(),
+          size: String(f.getSize()),
+          thumbnailLink: 'https://drive.google.com/thumbnail?id=' + fid + '&sz=w1200',
+          webViewLink: 'https://drive.google.com/file/d/' + fid + '/view',
+          webContentLink: 'https://drive.google.com/uc?export=download&id=' + fid,
+          url: 'https://drive.google.com/thumbnail?id=' + fid + '&sz=w1600',
           viewUrl: f.getUrl(),
-          createdTime: f.getDateCreated().toISOString()
+          createdTime: f.getDateCreated().toISOString(),
+          modifiedTime: f.getLastUpdated().toISOString()
         });
         count++;
       }
     }
+    results.sort(function(a, b) {
+      return new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime();
+    });
   } catch (err) {}
   return results;
 }

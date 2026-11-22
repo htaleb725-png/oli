@@ -23,6 +23,15 @@
     <!-- Google Identity Services for direct robust OAuth without Firebase Auth unauthorized-domain issues -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script>
+      // Pre-paint Day/Night theme hydration (eliminates white/dark flash on load)
+      (function() {
+        try {
+          var saved = localStorage.getItem('ola_theme_mode');
+          var isDark = saved === 'dark';
+          document.documentElement.classList.toggle('dark', isDark);
+          document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+        } catch (e) {}
+      })();
       // GitHub Pages relative routing & trailing slash safeguard
       (function() {
         if (location.hostname.endsWith('github.io')) {
@@ -45,7 +54,7 @@
       })();
     </script>
   </head>
-  <body class="bg-slate-900 text-slate-100 font-['Cairo',sans-serif] antialiased selection:bg-amber-500 selection:text-slate-900 min-h-screen">
+  <body class="bg-slate-50 dark:bg-[#070C18] text-slate-900 dark:text-slate-100 font-['Cairo',sans-serif] antialiased selection:bg-amber-500 selection:text-slate-950 min-h-screen transition-colors duration-200">
     <div id="root"></div>
     <script type="module" src="./src/main.tsx"></script>
     <script>

@@ -329,12 +329,22 @@ function decodeHtmlEntities(str: string): string {
 
 function guessMimeFromName(name: string): string {
   const lower = (name || '').toLowerCase();
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
   if (lower.endsWith('.png')) return 'image/png';
   if (lower.endsWith('.webp')) return 'image/webp';
   if (lower.endsWith('.gif')) return 'image/gif';
   if (lower.endsWith('.bmp')) return 'image/bmp';
+  if (lower.endsWith('.heic')) return 'image/heic';
   if (lower.endsWith('.pdf')) return 'application/pdf';
-  return 'image/jpeg';
+  if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (lower.endsWith('.doc')) return 'application/msword';
+  if (lower.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (lower.endsWith('.xls')) return 'application/vnd.ms-excel';
+  if (lower.endsWith('.csv')) return 'text/csv';
+  if (lower.endsWith('.pptx') || lower.endsWith('.ppt')) return 'application/vnd.ms-powerpoint';
+  if (lower.endsWith('.txt')) return 'text/plain';
+  if (lower.endsWith('.zip') || lower.endsWith('.rar')) return 'application/zip';
+  return 'application/octet-stream';
 }
 
 function loadUsersStore(): UsersStoreState {
@@ -350,6 +360,31 @@ function loadUsersStore(): UsersStoreState {
           updatedAt: parsed.updatedAt || new Date().toISOString()
         };
       }
+    } else if (memoryUsersStore.users.length === 0) {
+      // Safe first-boot seed only when no users-store.json exists yet (never overwrites existing users)
+      memoryUsersStore = {
+        users: [
+          {
+            User_ID: 'USR-001',
+            Username: 'developer',
+            Password: '123',
+            Role: 'developer',
+            RoleArabic: 'مطور النظام (صلاحية مطلقة)',
+            Status: 'active',
+            FullName: 'مطور المنظومة البرمجي',
+            Department: 'قسم تكنولوجيا المعلومات والبرمجة',
+            CreatedAt: '2026-01-01',
+            Permissions: [
+              'scan_upload', 'requests_create', 'requests_edit', 'requests_delete',
+              'workflow_referral', 'citizens_register', 'print_cards', 'org_evaluation',
+              'official_letters', 'export_reports', 'view_archive'
+            ]
+          }
+        ],
+        deletedIds: [],
+        developerPasscode: '2026',
+        updatedAt: new Date().toISOString()
+      };
     }
   } catch (err) {
     console.warn('Users store load warning (using memory fallback):', err);
@@ -374,6 +409,8 @@ function saveUsersStore(next: UsersStoreState): void {
 function normalizeCredString(val: string): string {
   return (val || '')
     .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+    .replace(/[۰-۹]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString())
+    .replace(/[\u064B-\u065F\u0670]/g, '')
     .replace(/[أإآ]/g, 'ا')
     .replace(/ة/g, 'ه')
     .replace(/ى/g, 'ي')
@@ -384,6 +421,7 @@ function normalizeCredString(val: string): string {
 function normalizePassString(val: string): string {
   return (val || '')
     .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+    .replace(/[۰-۹]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString())
     .trim();
 }
 
@@ -616,14 +654,27 @@ async function startServer() {
   });
 
   app.post('/api/auth/login', (req, res) => {
-    const { usernameOrCode, password } = req.body || {};
+    const { usernameOrCode, password, mode } = req.body || {};
     const store = loadUsersStore();
+    const settingsStore = loadSettingsStore();
     const cleanUser = normalizeCredString(String(usernameOrCode || '')).toLowerCase();
     const cleanPass = normalizePassString(String(password || ''));
     const rawCode = normalizePassString(String(password || usernameOrCode || ''));
-    const isDualMode = Boolean(cleanUser && cleanPass && cleanUser !== normalizeCredString(cleanPass).toLowerCase());
+
+    // Explicit mode support prevents false failures when username === password
+    const isDualMode =
+      mode === 'credentials'
+        ? true
+        : mode === 'passcode'
+          ? false
+          : Boolean(cleanUser && cleanPass && cleanUser !== normalizeCredString(cleanPass).toLowerCase());
+
+    const activeDevCode = normalizePassString(
+      String(store.developerPasscode || settingsStore.systemSettings?.developerPasscode || '2026')
+    );
 
     if (isDualMode) {
+      let usernameFoundButWrongPass = false;
       for (const u of store.users) {
         if (!u) continue;
         const uName = normalizeCredString(u.Username || '').toLowerCase();
@@ -633,25 +684,50 @@ async function startServer() {
         const uPass = normalizePassString(u.Password || '');
 
         const userMatched =
-          cleanUser === uName ||
-          cleanUser === uId ||
-          cleanUser === uFull ||
+          (uName && cleanUser === uName) ||
+          (uId && cleanUser === uId) ||
+          (uFull && cleanUser === uFull) ||
           (uPhone && cleanUser === uPhone);
-        if (userMatched && uPass && cleanPass === uPass) {
-          if (u.Status === 'frozen') {
-            res.json({ success: false, frozen: true, error: 'تم تجميد هذا الحساب من قبل الإدارة.' });
+
+        if (userMatched) {
+          const passMatched =
+            (uPass && (cleanPass === uPass || cleanPass.toLowerCase() === uPass.toLowerCase())) ||
+            (u.Role === 'developer' && activeDevCode && cleanPass === activeDevCode);
+
+          if (passMatched) {
+            if (u.Status === 'frozen') {
+              res.json({ success: false, frozen: true, error: 'تم تجميد هذا الحساب من قبل الإدارة.' });
+              return;
+            }
+            res.json({ success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'server_db' });
             return;
           }
-          res.json({ success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'server_db' });
-          return;
+          usernameFoundButWrongPass = true;
         }
       }
-      res.json({ success: false });
+
+      // Allow developer username + developerPasscode even if user record isn't synced yet
+      if (
+        (cleanUser === 'developer' || cleanUser === 'المطور' || cleanUser === 'usr-001') &&
+        activeDevCode &&
+        cleanPass === activeDevCode
+      ) {
+        const devAccount = store.users.find((u) => u.Role === 'developer');
+        res.json({ success: true, user: devAccount, isDeveloper: true, matchedSource: 'server_passcode' });
+        return;
+      }
+
+      res.json({
+        success: false,
+        reason: usernameFoundButWrongPass ? 'wrong_password' : 'not_found',
+        error: usernameFoundButWrongPass
+          ? 'كلمة المرور غير صحيحة لهذا الحساب. يرجى التأكد وإعادة المحاولة.'
+          : undefined
+      });
       return;
     }
 
     // Single passcode mode
-    const activeDevCode = store.developerPasscode ? normalizePassString(store.developerPasscode) : '';
     if (activeDevCode && rawCode && rawCode === activeDevCode) {
       const devAccount = store.users.find((u) => u.Role === 'developer');
       res.json({ success: true, user: devAccount, isDeveloper: true, matchedSource: 'server_passcode' });
@@ -661,7 +737,11 @@ async function startServer() {
       if (!u) continue;
       const uPass = normalizePassString(u.Password || '');
       const uId = normalizePassString(u.User_ID || '').toLowerCase();
-      if (rawCode && ((uPass && rawCode === uPass) || (uId && rawCode.toLowerCase() === uId))) {
+      if (
+        rawCode &&
+        ((uPass && (rawCode === uPass || rawCode.toLowerCase() === uPass.toLowerCase())) ||
+          (uId && rawCode.toLowerCase() === uId))
+      ) {
         if (u.Status === 'frozen') {
           res.json({ success: false, frozen: true, error: 'تم تجميد هذا الحساب من قبل الإدارة.' });
           return;
@@ -670,7 +750,7 @@ async function startServer() {
         return;
       }
     }
-    res.json({ success: false });
+    res.json({ success: false, reason: 'not_found' });
   });
 
   // Update Developer Passcode & sync with developer user record
@@ -1067,7 +1147,14 @@ async function startServer() {
         }
 
         const seenIds = new Set<string>();
-        const parsed: Array<{ id: string; name: string; mimeType: string; webViewLink: string; thumbnailLink: string }> = [];
+        const parsed: Array<{
+          id: string;
+          name: string;
+          mimeType: string;
+          webViewLink: string;
+          webContentLink: string;
+          thumbnailLink: string;
+        }> = [];
         const entryRegex = /id="entry-([a-zA-Z0-9_-]{10,80})"[\s\S]{0,1800}?class="flip-entry-title">([^<]+)</g;
         let m: RegExpExecArray | null;
         while ((m = entryRegex.exec(html)) !== null) {
@@ -1080,7 +1167,8 @@ async function startServer() {
             name: fname,
             mimeType: guessMimeFromName(fname),
             webViewLink: `https://drive.google.com/file/d/${fid}/view`,
-            thumbnailLink: `/api/drive/image/${fid}`
+            webContentLink: `https://drive.google.com/uc?export=download&id=${fid}`,
+            thumbnailLink: `https://drive.google.com/thumbnail?id=${fid}&sz=w1200`
           });
         }
 
@@ -1420,6 +1508,109 @@ async function startServer() {
     } catch (err: any) {
       res.json({ success: false, results: [] });
     }
+  });
+
+  // --- Dynamic Desktop PWA App Icon & Web App Manifest (Reflects Custom Replaced Icon Immediately) ---
+  function getDynamicIconMeta(): { logoUrl: string; mimeType: string; versionTag: string } {
+    const store = loadSettingsStore();
+    const logoUrl = String(store.systemSettings?.logoUrl || '').trim();
+    const versionTag = String(store.settingsVersion || Date.parse(store.updatedAt || '') || 1);
+    let mimeType = 'image/svg+xml';
+    if (logoUrl.startsWith('data:image/')) {
+      const m = logoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
+      if (m && m[1]) mimeType = m[1];
+    } else if (/\.png(\?|$)/i.test(logoUrl)) {
+      mimeType = 'image/png';
+    } else if (/\.(jpe?g)(\?|$)/i.test(logoUrl)) {
+      mimeType = 'image/jpeg';
+    } else if (/\.webp(\?|$)/i.test(logoUrl)) {
+      mimeType = 'image/webp';
+    } else if (logoUrl.startsWith('http://') || logoUrl.startsWith('https://')) {
+      mimeType = 'image/png';
+    }
+    return { logoUrl, mimeType, versionTag };
+  }
+
+  app.get('/api/pwa-icon/:size', async (_req, res) => {
+    try {
+      const { logoUrl } = getDynamicIconMeta();
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+
+      // 1. Custom uploaded Data URL icon saved by Developer
+      if (logoUrl.startsWith('data:image/')) {
+        const match = logoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        if (match) {
+          const buf = Buffer.from(match[2], 'base64');
+          res.setHeader('Content-Type', match[1]);
+          res.send(buf);
+          return;
+        }
+      }
+
+      // 2. Custom external HTTP/HTTPS icon URL (proxy cleanly so Desktop PWA installer never hits CORS)
+      if (logoUrl.startsWith('http://') || logoUrl.startsWith('https://')) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 4000);
+          const upstream = await fetch(logoUrl, { signal: controller.signal, redirect: 'follow' });
+          clearTimeout(timer);
+          const ct = upstream.headers.get('content-type') || 'image/png';
+          if (upstream.ok && ct.startsWith('image/')) {
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            res.setHeader('Content-Type', ct);
+            res.send(buf);
+            return;
+          }
+        } catch {
+          // Fall through to bundled SVG icon
+        }
+      }
+
+      // 3. Fallback to bundled office emblem SVG
+      const svgPath = path.join(process.cwd(), 'public', 'icon.svg');
+      if (fs.existsSync(svgPath)) {
+        res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+        res.sendFile(svgPath);
+        return;
+      }
+
+      res.status(404).send('Icon not found');
+    } catch {
+      res.status(500).send('Icon error');
+    }
+  });
+
+  app.get('/manifest.json', (_req, res) => {
+    const store = loadSettingsStore();
+    const { mimeType, versionTag } = getDynamicIconMeta();
+    const appName = String(store.systemSettings?.appName || 'نظام مكتب النائب علا الناشي').trim();
+    const shortName = appName.length > 24 ? appName.slice(0, 24) : appName;
+    const icon192 = `/api/pwa-icon/192?v=${encodeURIComponent(versionTag)}`;
+    const icon512 = `/api/pwa-icon/512?v=${encodeURIComponent(versionTag)}`;
+    const iconSizes192 = mimeType === 'image/svg+xml' ? 'any' : '192x192';
+    const iconSizes512 = mimeType === 'image/svg+xml' ? 'any' : '512x512';
+
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.json({
+      name: appName,
+      short_name: shortName,
+      description: 'النظام الإداري والمكتبي المتكامل لمكتب النائب علا الناشي لإدارة المراجعين، الطلبات، مقابلات النائب، الأرشيف، وبطاقات المعلومات الرسمية',
+      start_url: '/',
+      scope: '/',
+      display: 'standalone',
+      background_color: '#0f172a',
+      theme_color: '#0f172a',
+      orientation: 'any',
+      dir: 'rtl',
+      lang: 'ar',
+      icons: [
+        { src: icon192, sizes: iconSizes192, type: mimeType, purpose: 'any' },
+        { src: icon192, sizes: iconSizes192, type: mimeType, purpose: 'maskable' },
+        { src: icon512, sizes: iconSizes512, type: mimeType, purpose: 'any' },
+        { src: icon512, sizes: iconSizes512, type: mimeType, purpose: 'maskable' }
+      ]
+    });
   });
 
   // --- Vite & Static Handling ---

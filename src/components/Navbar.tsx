@@ -25,14 +25,13 @@ import {
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 import { AdminLogoutExportModal } from './AdminLogoutExportModal';
 import { UniversalStatisticsModal } from './UniversalStatisticsModal';
+import { NotificationBellPanel } from './NotificationBellPanel';
 
 export const Navbar: React.FC = () => {
   const { 
     systemSettings, 
     currentUser, 
     logout, 
-    notifications, 
-    markAllNotificationsAsRead,
     activeSection,
     setActiveSection,
     setIsDesktopInstallModalOpen,
@@ -51,7 +50,6 @@ export const Navbar: React.FC = () => {
   } = useApp();
 
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
-  const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const [navSearch, setNavSearch] = useState('');
   const [lang, setLang] = useState<'AR' | 'EN'>('EN');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
@@ -116,8 +114,6 @@ export const Navbar: React.FC = () => {
     setLang(nextLang);
     showNavbarToast(nextLang === 'AR' ? 'اللغة الحالية: العربية (العراق)' : 'Display Language: English');
   };
-
-  const unreadCount = notifications.filter(n => !n.read).length;
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -313,141 +309,60 @@ export const Navbar: React.FC = () => {
             {isFullscreen ? <Minimize className="w-4 h-4 text-blue-600 dark:text-blue-400" /> : <Maximize className="w-4 h-4 text-slate-600 dark:text-slate-300" />}
           </button>
 
-          {/* Modern Tailwind CSS Dark Mode Toggle Switch */}
-          <div className="flex items-center gap-1.5 bg-slate-100/90 dark:bg-slate-800/90 p-1 rounded-2xl border border-slate-200 dark:border-slate-700">
+          {/* Sleek Executive Day / Night Mode Switcher */}
+          <div
+            className="inline-flex items-center p-0.5 rounded-xl bg-slate-100 dark:bg-slate-800/95 border border-slate-200 dark:border-slate-700/90 shadow-2xs"
+            role="group"
+            aria-label="تبديل الوضع النهاري والليلي"
+          >
             <button
               type="button"
-              role="switch"
-              aria-checked={isDarkMode}
-              onClick={toggleTheme}
-              className={`group relative inline-flex h-8 w-15 sm:w-16 items-center rounded-full p-0.5 transition-all duration-300 cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-400/50 shadow-inner select-none ${
-                isDarkMode 
-                  ? 'bg-slate-950 border border-amber-500/50' 
-                  : 'bg-slate-200 border border-slate-300'
+              onClick={() => { if (isDarkMode) toggleTheme(); }}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer ${
+                !isDarkMode
+                  ? 'bg-white text-amber-600 shadow-xs border border-amber-200/80'
+                  : 'text-slate-400 hover:text-slate-200'
               }`}
-              title={isDarkMode ? "الوضع الليلي مفعّل (انقر للتبديل للوضع النهاري)" : "الوضع النهاري مفعّل (انقر للتبديل للوضع الليلي)"}
+              title="الوضع النهاري"
             >
-              {/* Stationary Background Icons */}
-              <span className="absolute left-1.5 pointer-events-none transition-opacity duration-200">
-                <Moon className={`w-3.5 h-3.5 ${isDarkMode ? 'text-amber-400 opacity-90' : 'text-slate-400 opacity-30'}`} />
-              </span>
-              <span className="absolute right-1.5 pointer-events-none transition-opacity duration-200">
-                <Sun className={`w-3.5 h-3.5 ${!isDarkMode ? 'text-amber-600 opacity-90' : 'text-slate-500 opacity-30'}`} />
-              </span>
-
-              {/* Smooth Animated Sliding Thumb */}
-              <span
-                className={`inline-flex items-center justify-center h-6.5 w-6.5 rounded-full shadow-md transform transition-all duration-300 ease-in-out z-10 ${
-                  isDarkMode
-                    ? 'translate-x-0 bg-slate-900 text-amber-400 border border-amber-400/60 shadow-amber-500/20'
-                    : 'translate-x-7.5 sm:translate-x-8.5 bg-white text-amber-500 border border-amber-200 shadow-slate-300'
-                }`}
-              >
-                {isDarkMode ? (
-                  <Moon className="w-3.5 h-3.5 text-amber-400 fill-amber-400/20" />
-                ) : (
-                  <Sun className="w-3.5 h-3.5 text-amber-500 fill-amber-500/20" />
-                )}
-              </span>
+              <Sun className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline">نهاري</span>
             </button>
-
-            {/* Quick Text Label for Clarity */}
-            <span
-              onClick={toggleTheme}
-              className="hidden xl:inline-block text-[10px] font-black px-1 text-slate-600 dark:text-amber-300 cursor-pointer select-none transition-colors"
+            <button
+              type="button"
+              onClick={() => { if (!isDarkMode) toggleTheme(); }}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer ${
+                isDarkMode
+                  ? 'bg-slate-950 text-amber-400 shadow-xs border border-amber-500/40'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+              title="الوضع الليلي"
             >
-              {isDarkMode ? 'ليلي' : 'نهاري'}
-            </span>
+              <Moon className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline">ليلي</span>
+            </button>
           </div>
 
-          {/* Language Switcher Pill */}
+          {/* Language Switcher */}
           <button 
             onClick={handleToggleLang}
-            className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 border border-slate-200/70 text-slate-700 text-xs font-black transition-colors cursor-pointer active:scale-95"
+            className="px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/80 dark:hover:bg-slate-700 border border-slate-200/70 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-black transition-colors cursor-pointer active:scale-95"
             title="تغيير لغة العرض"
           >
             {lang}
           </button>
 
-          {/* Notifications Dropdown with Red Counter - Hidden for Reception Staff */}
-          {currentUser?.Role !== 'reception' && currentUser?.Role !== 'reception_officer' && (
-            <div className="relative">
-              <button
-                onClick={() => {
-                  setShowNotifDropdown(!showNotifDropdown);
-                  setShowRoleDropdown(false);
-                }}
-                className="relative p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/80 dark:hover:bg-slate-700 border border-slate-200/70 dark:border-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer active:scale-95"
-                title="الإشعارات والتنبيهات العاجلة"
-              >
-                <Bell className="w-4 h-4 text-red-500" />
-                {unreadCount > 0 ? (
-                  <span className="absolute -top-1 -right-1 w-4.5 h-4.5 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center animate-pulse border-2 border-white dark:border-slate-900">
-                    {unreadCount}
-                  </span>
-                ) : (
-                  <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500"></span>
-                )}
-              </button>
-
-              {showNotifDropdown && (
-              <div className="absolute left-0 mt-2 w-80 sm:w-96 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl p-4 space-y-3 z-50 text-slate-800 dark:text-slate-100">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <Bell className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                    <h4 className="text-xs font-bold text-slate-900 dark:text-white">التنبيهات الإدارية العاجلة</h4>
-                  </div>
-                  {unreadCount > 0 && (
-                    <button
-                      onClick={() => {
-                        markAllNotificationsAsRead();
-                        showNavbarToast('تم تحديد جميع الإشعارات كمقروءة');
-                      }}
-                      className="text-[11px] text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-semibold cursor-pointer flex items-center gap-1"
-                    >
-                      <CheckCheck className="w-3.5 h-3.5" />
-                      <span>تحديد الكل كمقروء</span>
-                    </button>
-                  )}
-                </div>
-
-                <div className="max-h-72 overflow-y-auto space-y-2">
-                  {notifications.length === 0 ? (
-                    <p className="text-xs text-slate-500 dark:text-slate-400 text-center py-4">لا توجد إشعارات جديدة حالياً.</p>
-                  ) : (
-                    notifications.map((n, idx) => (
-                      <div
-                        key={`${n.id || 'notif'}-${idx}`}
-                        onClick={() => {
-                          if (n.linkSection) setActiveSection(n.linkSection);
-                          setShowNotifDropdown(false);
-                        }}
-                        className={`p-2.5 rounded-xl border text-right transition-colors cursor-pointer ${
-                          n.read 
-                            ? 'bg-slate-50 dark:bg-slate-800/60 border-slate-100 dark:border-slate-800 text-slate-600 dark:text-slate-300' 
-                            : 'bg-blue-50/70 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800/60 text-slate-800 dark:text-slate-100'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between text-xs font-bold mb-1">
-                          <span className="text-slate-900 dark:text-white">{n.title}</span>
-                          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">{n.timestamp}</span>
-                        </div>
-                        <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{n.message}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-          )}
+          {/* Active Professional Notification Bell Center (Role-Aware for ALL logged-in users) */}
+          <NotificationBellPanel
+            onToast={showNavbarToast}
+            onOpen={() => setShowRoleDropdown(false)}
+          />
 
           {/* User Profile Badge (Avatar initials + Name & Role) */}
           <div className="relative">
             <button
               onClick={() => {
                 setShowRoleDropdown(!showRoleDropdown);
-                setShowNotifDropdown(false);
               }}
               className="flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700/70 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer text-right"
             >

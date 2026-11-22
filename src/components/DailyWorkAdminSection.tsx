@@ -42,14 +42,13 @@ import { SearchableSelect } from './SearchableSelect';
 import { DHI_QAR_DISTRICTS, IRAQI_MINISTRIES, DEFAULT_CLANS } from './ReceptionModule';
 import { printSingleOutgoingReceipt, printCollectiveOutgoingReceipt } from '../utils/printReceiptHelper';
 import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
+import { computeNextOutgoingNumber, extractOutgoingSequence } from '../utils/outgoingNumberHelper';
 
 interface DailyWorkAdminSectionProps {
-  onOpenScanner?: (citizenId: string) => void;
   onOpenSmartArchive?: () => void;
 }
 
 export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
-  onOpenScanner,
   onOpenSmartArchive
 }) => {
   const {
@@ -111,6 +110,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     job: string;
     referrer: string;
     status: string;
+    deliveryStatus?: 'مستلم' | 'غير مستلم';
     requestId: string;
     notes?: string;
     attachedImage?: string;
@@ -126,51 +126,28 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [formReferrer, setFormReferrer] = useState('');
   const [formAddress, setFormAddress] = useState('');
   const [formRequestStatus, setFormRequestStatus] = useState<ProcessingStatus>('منجز');
+  const [formDeliveryStatus, setFormDeliveryStatus] = useState<'مستلم' | 'غير مستلم'>('غير مستلم');
   const [formEducation, setFormEducation] = useState('');
   const [formJob, setFormJob] = useState('');
   const [formOtherNotes, setFormOtherNotes] = useState('');
   const [formAttachedImage, setFormAttachedImage] = useState<string>('');
 
-  // Generate auto sequential outgoing number starting from 1 if no outgoings exist, or max + 1
-  // Generate auto sequential outgoing number according to office branch and year:
-  // Nasiriyah: ن / <السنة> / <العدد> (e.g. ن / 26 / 15)
-  // Suq Al-Shuyoukh: س / <السنة> / <العدد> (e.g. س / 26 / 14)
+  // Unified sequential outgoing number helper:
+  // Nasiriyah: ن / 12 / <next>, Suq Al-Shuyoukh: س / 14 / <next>
+  // Automatically reflects all archived/imported Excel files and manual outgoings
   const generateOutgoingNumber = () => {
-    const yearFull = new Date().getFullYear();
-    const yearShort = String(yearFull).slice(-2); // e.g. "26"
+    return computeNextOutgoingNumber(requests, systemSettings).nextNumber;
+  };
 
+  const advanceOutgoingBaseline = (outgoingNumberStr: string) => {
+    const seq = extractOutgoingSequence(outgoingNumberStr).seq;
+    if (seq <= 0) return;
     const isSuq = systemSettings?.officeBranch === 'suq_al_shuyoukh';
-    const branchPrefix = isSuq ? 'س' : 'ن';
-    const baseline = isSuq 
-      ? (systemSettings?.lastOutgoingNumberSuq || 0)
-      : (systemSettings?.lastOutgoingNumberNasiriyah || 0);
-
-    const existingOutgoings = requests
-      .map(r => r.OutgoingNumber)
-      .filter((n): n is string => Boolean(n && n.trim()));
-
-    let maxNum = baseline;
-
-    for (const outg of existingOutgoings) {
-      const matches = String(outg).match(/\d+/g);
-      if (matches) {
-        for (const m of matches) {
-          const val = parseInt(m, 10);
-          if (val >= 2020 && val <= 2040 && matches.length > 1) {
-            continue;
-          }
-          if (val === parseInt(yearShort, 10) && matches.length > 1) {
-            continue;
-          }
-          if (val > maxNum) {
-            maxNum = val;
-          }
-        }
-      }
+    if (isSuq && seq > (systemSettings?.lastOutgoingNumberSuq || 0)) {
+      updateSystemSettings({ lastOutgoingNumberSuq: seq });
+    } else if (!isSuq && seq > (systemSettings?.lastOutgoingNumberNasiriyah || 0)) {
+      updateSystemSettings({ lastOutgoingNumberNasiriyah: seq });
     }
-
-    const nextSeq = maxNum === 0 ? 1 : maxNum + 1;
-    return `${branchPrefix} / ${yearShort} / ${nextSeq}`;
   };
 
   // Real-time detection of last completed request citizen in administration (strictly completed/outgoing requests)
@@ -206,30 +183,17 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return null;
   }, [requests, citizens]);
 
-  // Real-time detection of last outgoing number and date recorded in requests
+  // Real-time detection of last outgoing number and date recorded in requests (supports Arabic digits & archived Excel files)
   const lastOutgoingRecord = useMemo(() => {
     const outgoings = requests
       .filter(r => r.OutgoingNumber && r.OutgoingNumber.trim())
-      .map(r => {
-        const matches = (r.OutgoingNumber || '').match(/\d+/g) || [];
-        let seq = 0;
-        if (matches.length > 0) {
-          for (const m of matches) {
-            const val = parseInt(m, 10);
-            if (!(val >= 2020 && val <= 2040 && matches.length > 1)) {
-              if (val > seq) seq = val;
-            }
-          }
-          if (seq === 0) seq = parseInt(matches[matches.length - 1], 10);
-        }
-        return {
-          request: r,
-          seq,
-          outgoingNumber: r.OutgoingNumber || '',
-          outgoingDate: r.OutgoingDate || r.CreatedAt?.split('T')[0] || '',
-          citizenName: r.CitizenName || citizens.find(c => c.Citizen_ID === r.Citizen_ID)?.FullName || 'غير محدد'
-        };
-      });
+      .map(r => ({
+        request: r,
+        seq: extractOutgoingSequence(r.OutgoingNumber).seq,
+        outgoingNumber: r.OutgoingNumber || '',
+        outgoingDate: r.OutgoingDate || r.CreatedAt?.split('T')[0] || '',
+        citizenName: r.CitizenName || citizens.find(c => c.Citizen_ID === r.Citizen_ID)?.FullName || 'غير محدد'
+      }));
 
     if (outgoings.length === 0) return null;
     outgoings.sort((a, b) => b.seq - a.seq);
@@ -237,7 +201,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   }, [requests, citizens]);
 
   const nextAutoOutgoingNumber = useMemo(() => {
-    return generateOutgoingNumber();
+    return computeNextOutgoingNumber(requests, systemSettings).nextNumber;
   }, [requests, systemSettings?.officeBranch, systemSettings?.lastOutgoingNumberNasiriyah, systemSettings?.lastOutgoingNumberSuq]);
 
   // Collective Outgoing (صادر موحد لمجموعة مراجعين)
@@ -368,7 +332,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         Details: `${finalSubject}${cleanNotes ? ` - [${cleanNotes}]` : ''}`,
         OutgoingNumber: finalOutgoingNumber,
         OutgoingDate: finalOutgoingDate,
-        RequestStatus: 'مستلم',
+        RequestStatus: 'غير مستلم',
+        DeliveryStatus: 'غير مستلم',
         ProcessingStatus: 'منجز',
         Priority: 'عام',
         RegisteredVia: 'إدارة',
@@ -385,6 +350,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       });
     }
 
+    advanceOutgoingBaseline(finalOutgoingNumber);
+
     printCollectiveOutgoingReceipt({
       outgoingNumber: finalOutgoingNumber,
       outgoingDate: finalOutgoingDate,
@@ -392,11 +359,11 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       subject: finalSubject,
       citizens: createdCitizensList,
       officeName: systemSettings.officeName || systemSettings.appName,
-      deputyName: systemSettings.deputyName
+      deputyName: systemSettings.deputyName,
+      emblemUrl: systemSettings.parliamentEmblemUrl || systemSettings.logoUrl
     });
 
     setIsBulkOutgoingModalOpen(false);
-    alert(`✓ تم بنجاح إصدار الكتاب الصادر الموحد برقم (${finalOutgoingNumber}) وتوثيق كافة المراجعين وفتح وصل الطباعة الرسمي.`);
   };
 
   // Open "إكمال الطلب"
@@ -412,8 +379,9 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     setFormOutgoingDate(req?.OutgoingDate || todayStr);
     setFormPhone(citizen.Phone1 || req?.CitizenPhone || '');
     setFormReferrer(citizen.ReferralSource || req?.ReferralSource || 'مباشر - قسم الاستعلامات');
-    setFormAddress(citizen.District ? `${citizen.District} ${citizen.SubDistrict || ''}`.trim() : (req?.Address || 'بغداد'));
+    setFormAddress(citizen.District ? `${citizen.District} ${citizen.SubDistrict || ''}`.trim() : (req?.Address || 'ذي قار'));
     setFormRequestStatus((req?.ProcessingStatus as ProcessingStatus) || 'منجز');
+    setFormDeliveryStatus(req?.DeliveryStatus || (req?.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم'));
     setFormEducation(citizen.Education || req?.Education || 'إعدادية');
     setFormJob(citizen.Job || req?.Job || 'كاسب');
     setFormOtherNotes(req?.OtherNotes || req?.DeputyNotes || req?.ReceptionNotes || '');
@@ -460,6 +428,10 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         OutgoingNumber: finalOutgoingNumber,
         OutgoingDate: finalOutgoingDate,
         ProcessingStatus: formRequestStatus,
+        DeliveryStatus: formDeliveryStatus,
+        RequestStatus: formDeliveryStatus,
+        DeliveredAt: formDeliveryStatus === 'مستلم' ? new Date().toISOString().split('T')[0] : undefined,
+        DeliveredBy: formDeliveryStatus === 'مستلم' ? (currentUser?.FullName || 'موظف الإدارة') : undefined,
         Education: formEducation.trim(),
         Job: formJob.trim(),
         ReferralSource: formReferrer.trim(),
@@ -477,7 +449,10 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         Details: formSubject.trim() || 'طلب مراجعة ومتابعة رسمية مكتمل',
         OutgoingNumber: finalOutgoingNumber,
         OutgoingDate: finalOutgoingDate,
-        RequestStatus: 'مستلم',
+        RequestStatus: formDeliveryStatus,
+        DeliveryStatus: formDeliveryStatus,
+        DeliveredAt: formDeliveryStatus === 'مستلم' ? new Date().toISOString().split('T')[0] : undefined,
+        DeliveredBy: formDeliveryStatus === 'مستلم' ? (currentUser?.FullName || 'موظف الإدارة') : undefined,
         ProcessingStatus: formRequestStatus,
         Priority: 'عام',
         RegisteredVia: 'إدارة',
@@ -492,6 +467,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       savedReqId = newReq.Request_ID;
     }
 
+    advanceOutgoingBaseline(finalOutgoingNumber);
+
     // 3. Show Official Outgoing Certificate / Confirmation Card as popup modal
     setSavedOfficialCard({
       outgoingNumber: finalOutgoingNumber,
@@ -505,6 +482,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       job: formJob.trim(),
       referrer: formReferrer.trim(),
       status: formRequestStatus,
+      deliveryStatus: formDeliveryStatus,
       requestId: savedReqId,
       notes: formOtherNotes.trim(),
       attachedImage: formAttachedImage || undefined
@@ -1113,8 +1091,13 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                       education: savedOfficialCard.education,
                       job: savedOfficialCard.job,
                       referrer: savedOfficialCard.referrer,
+                      processingStatus: savedOfficialCard.status,
+                      deliveryStatus: savedOfficialCard.deliveryStatus,
+                      notes: savedOfficialCard.notes,
+                      attachedImage: savedOfficialCard.attachedImage,
                       officeName: systemSettings.officeName || systemSettings.appName,
-                      deputyName: systemSettings.deputyName
+                      deputyName: systemSettings.deputyName,
+                      emblemUrl: systemSettings.parliamentEmblemUrl || systemSettings.logoUrl
                     });
                   }}
                   className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 transition-transform"
@@ -1500,6 +1483,33 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     </button>
                   )}
 
+                  {/* Delivery Status Toggle (مستلم / غير مستلم) */}
+                  {primaryReq && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const isDelivered = primaryReq.DeliveryStatus === 'مستلم' || primaryReq.RequestStatus === 'مستلم';
+                        const nextDelivery: 'مستلم' | 'غير مستلم' = isDelivered ? 'غير مستلم' : 'مستلم';
+                        updateRequest({
+                          ...primaryReq,
+                          DeliveryStatus: nextDelivery,
+                          RequestStatus: nextDelivery,
+                          DeliveredAt: nextDelivery === 'مستلم' ? new Date().toISOString().split('T')[0] : undefined,
+                          DeliveredBy: nextDelivery === 'مستلم' ? (currentUser?.FullName || 'موظف الإدارة') : undefined
+                        });
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer border transition-colors ${
+                        (primaryReq.DeliveryStatus === 'مستلم' || primaryReq.RequestStatus === 'مستلم')
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                          : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300'
+                      }`}
+                      title="تبديل حالة استلام المواطن للكتاب بعد الإنجاز (مستلم / غير مستلم)"
+                    >
+                      <CheckCheck className="w-3.5 h-3.5" />
+                      <span>{(primaryReq.DeliveryStatus === 'مستلم' || primaryReq.RequestStatus === 'مستلم') ? 'مستلم ✓' : 'غير مستلم'}</span>
+                    </button>
+                  )}
+
                   {/* Print Outgoing Receipt button if outgoing exists */}
                   {primaryReq?.OutgoingNumber && (
                     <button
@@ -1516,8 +1526,11 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                           education: cit.Education || '',
                           job: cit.Job || '',
                           referrer: cit.ReferralSource || '',
+                          processingStatus: primaryReq.ProcessingStatus,
+                          deliveryStatus: primaryReq.DeliveryStatus || (primaryReq.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم'),
                           officeName: systemSettings.officeName || systemSettings.appName,
                           deputyName: systemSettings.deputyName,
+                          emblemUrl: systemSettings.parliamentEmblemUrl || systemSettings.logoUrl,
                           notes: primaryReq.OtherNotes,
                           attachedImage: primaryReq.AttachedRequestImage
                         });
@@ -1774,7 +1787,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                 {/* 9. حالة الطلب */}
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    حالة الطلب:
+                    حالة الإنجاز:
                   </label>
                   <select
                     value={formRequestStatus}
@@ -1786,6 +1799,21 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     <option value="تم الطباعة">تمت الطباعة وتثبيت الكتاب</option>
                     <option value="مرسل إلى الوزارة/الهيئة">مرسل إلى الوزارة/الهيئة</option>
                     <option value="بانتظار الموافقة">بانتظار الموافقة الوزارية</option>
+                  </select>
+                </div>
+
+                {/* 9b. حالة استلام المواطن بعد الإنجاز */}
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    حالة الاستلام (بعد الإنجاز):
+                  </label>
+                  <select
+                    value={formDeliveryStatus}
+                    onChange={(e) => setFormDeliveryStatus(e.target.value as 'مستلم' | 'غير مستلم')}
+                    className="w-full h-9 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    <option value="غير مستلم">غير مستلم (بانتظار مراجعة المواطن للاستلام)</option>
+                    <option value="مستلم">مستلم ✓ (تم التسليم للمواطن)</option>
                   </select>
                 </div>
 

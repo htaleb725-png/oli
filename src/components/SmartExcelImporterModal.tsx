@@ -1,31 +1,202 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { useApp } from '../context/AppContext';
 import { Citizen, OfficeRequest } from '../types';
-import { 
-  FileSpreadsheet, 
-  Upload, 
-  CheckCircle2, 
-  AlertCircle, 
-  X, 
-  Sparkles, 
-  Building2, 
-  User, 
-  Phone, 
-  Layers, 
+import {
+  FileSpreadsheet,
+  Upload,
+  CheckCircle2,
+  X,
+  Sparkles,
+  Layers,
   ArrowRight,
-  Database,
   RefreshCw,
-  Search,
-  Check,
-  CheckCheck,
-  FileText,
-  ShieldCheck
+  FolderKanban,
+  Table2,
+  Check
 } from 'lucide-react';
+import {
+  extractOutgoingSequence,
+  parseExcelDateValue,
+  parseDeliveryStatus,
+  toWesternDigits
+} from '../utils/outgoingNumberHelper';
+import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../utils/permissions';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+}
+
+type CanonicalFieldKey =
+  | 'seq'
+  | 'name'
+  | 'entity'
+  | 'subject'
+  | 'outgoingNumber'
+  | 'outgoingDate'
+  | 'phone'
+  | 'referrer'
+  | 'address'
+  | 'margin'
+  | 'status'
+  | 'deliveryStatus'
+  | 'education'
+  | 'job'
+  | 'notes';
+
+interface FieldSpec {
+  key: CanonicalFieldKey;
+  label: string;
+  exactPatterns: RegExp[];
+  strongPatterns: RegExp[];
+  fallbackPatterns: RegExp[];
+}
+
+const CANONICAL_FIELDS: FieldSpec[] = [
+  {
+    key: 'seq',
+    label: 'ت (التسلسل)',
+    exactPatterns: [/^ت$/i, /^ت\.?$/i, /^التسلسل$/i, /^تسلسل$/i, /^م$/i, /^#$/],
+    strongPatterns: [/^رقم التسلسل$/i, /^seq$/i, /^no\.?$/i, /^serial$/i],
+    fallbackPatterns: []
+  },
+  {
+    key: 'name',
+    label: 'اسم صاحب الطلب',
+    exactPatterns: [/^اسم صاحب الطلب$/i, /^الاسم الكامل$/i, /^الاسم الثلاثي$/i, /^الاسم$/i, /^اسم المواطن$/i, /^اسم المراجع$/i, /^اسم المستفيد$/i],
+    strongPatterns: [/صاحب الطلب/i, /اسم المواطن/i, /اسم المراجع/i, /اسم المستفيد/i, /الاسم الرباعي/i, /^full\s*name$/i, /^name$/i],
+    fallbackPatterns: [/^الاسم/i]
+  },
+  {
+    key: 'entity',
+    label: 'اسم الدائرة / الوزارة',
+    exactPatterns: [/^اسم الدائرة\s*\/?\s*او الوزارة$/i, /^اسم الدائرة أو الوزارة$/i, /^اسم الدائرة$/i, /^الدائرة أو الوزارة$/i, /^الوزارة$/i, /^الجهة المعنية$/i, /^الجهة$/i],
+    strongPatterns: [/اسم الدائر/i, /الدائرة.*الوزارة/i, /الوزارة.*الدائرة/i, /الجهة المعنية/i, /الجهة المستفيدة/i, /^ministry$/i, /^entity$/i],
+    fallbackPatterns: [/وزار/i, /دائر/i, /مؤسس/i]
+  },
+  {
+    key: 'outgoingNumber',
+    label: 'رقم الكتاب / العدد',
+    exactPatterns: [/^رقم الكتاب\s*\/?\s*العدد$/i, /^رقم الكتاب$/i, /^العدد$/i, /^رقم الصادر$/i, /^الصادر$/i, /^العدد الصادر$/i],
+    strongPatterns: [/رقم الكتاب/i, /رقم الصادر/i, /العدد الصادر/i, /عدد الكتاب/i, /^outgoing\s*number$/i, /^outgoing$/i],
+    fallbackPatterns: [/صادر/i]
+  },
+  {
+    key: 'outgoingDate',
+    label: 'تاريخ الكتاب',
+    exactPatterns: [/^تاريخ الكتاب$/i, /^تاريخ الصادر$/i, /^التاريخ$/i, /^تاريخ الطلب$/i],
+    strongPatterns: [/تاريخ الكتاب/i, /تاريخ الصادر/i, /تاريخ التسجيل/i, /^outgoing\s*date$/i, /^date$/i],
+    fallbackPatterns: [/تاريخ/i]
+  },
+  {
+    key: 'deliveryStatus',
+    label: 'حالة الاستلام (مستلم / غير مستلم)',
+    exactPatterns: [/^حالة الاستلام$/i, /^الاستلام$/i, /^مستلم\s*\/?\s*غير مستلم$/i, /^هل تم الاستلام$/i, /^التسليم$/i],
+    strongPatterns: [/حالة الاستلام/i, /استلام الطلب/i, /تم الاستلام/i, /مستلم.*غير/i, /^delivery/i],
+    fallbackPatterns: [/استلام/i, /تسليم/i]
+  },
+  {
+    key: 'status',
+    label: 'حالة الطلب',
+    exactPatterns: [/^حالة الطلب$/i, /^حالة المعاملة$/i, /^الحالة$/i, /^الإنجاز$/i, /^الاجراء$/i],
+    strongPatterns: [/حالة الطلب/i, /حالة المعامل/i, /حالة الإنجاز/i, /^status$/i, /^processing/i],
+    fallbackPatterns: [/حالة/i]
+  },
+  {
+    key: 'subject',
+    label: 'الموضوع',
+    exactPatterns: [/^الموضوع$/i, /^موضوع الطلب$/i, /^موضوع المعاملة$/i, /^التفاصيل$/i, /^تفاصيل الطلب$/i, /^نوع الطلب$/i],
+    strongPatterns: [/الموضوع/i, /موضوع/i, /تفاصيل/i, /الغرض/i, /^subject$/i, /^details$/i],
+    fallbackPatterns: []
+  },
+  {
+    key: 'phone',
+    label: 'رقم الهاتف',
+    exactPatterns: [/^رقم الهاتف$/i, /^الهاتف$/i, /^الموبايل$/i, /^رقم الموبايل$/i, /^رقم الجوال$/i, /^التلفون$/i],
+    strongPatterns: [/رقم الهاتف/i, /هاتف/i, /موبايل/i, /جوال/i, /تلفون/i, /^phone$/i, /^mobile$/i],
+    fallbackPatterns: []
+  },
+  {
+    key: 'referrer',
+    label: 'المعرف',
+    exactPatterns: [/^المعرف$/i, /^المعرّف$/i, /^معرف$/i, /^جهة التزكية$/i, /^التزكية$/i, /^الوسيط$/i],
+    strongPatterns: [/المعرف/i, /معرف/i, /تزكي/i, /منسق/i, /^referrer$/i],
+    fallbackPatterns: []
+  },
+  {
+    key: 'address',
+    label: 'عنوان السكن',
+    exactPatterns: [/^عنوان السكن$/i, /^العنوان$/i, /^السكن$/i, /^محل السكن$/i, /^القضاء$/i, /^المنطقة$/i],
+    strongPatterns: [/عنوان السكن/i, /عنوان/i, /سكن/i, /قضاء/i, /منطق/i, /حي/i, /^address$/i, /^district$/i],
+    fallbackPatterns: []
+  },
+  {
+    key: 'margin',
+    label: 'الهامش',
+    exactPatterns: [/^الهامش$/i, /^هامش$/i, /^هامش النائب$/i, /^التوجيه$/i, /^توجيه النائب$/i],
+    strongPatterns: [/الهامش/i, /هامش/i, /توجيه/i, /^margin$/i, /^directive$/i],
+    fallbackPatterns: []
+  },
+  {
+    key: 'education',
+    label: 'التحصيل الدراسي',
+    exactPatterns: [/^التحصيل الدراسي$/i, /^التحصيل$/i, /^الشهادة$/i, /^المؤهل العلمي$/i],
+    strongPatterns: [/التحصيل/i, /تحصيل/i, /شهادة/i, /مؤهل/i, /^education$/i],
+    fallbackPatterns: []
+  },
+  {
+    key: 'job',
+    label: 'نوع العمل',
+    exactPatterns: [/^نوع العمل$/i, /^العمل$/i, /^المهنة$/i, /^نوع المهنة$/i, /^الوظيفة$/i],
+    strongPatterns: [/نوع العمل/i, /نوع المهن/i, /المهنة/i, /مهن/i, /وظيف/i, /^job$/i],
+    fallbackPatterns: []
+  },
+  {
+    key: 'notes',
+    label: 'ملاحظات أخرى',
+    exactPatterns: [/^ملاحظات اخرى$/i, /^ملاحظات أخرى$/i, /^الملاحظات$/i, /^ملاحظات$/i, /^ملاحظة$/i],
+    strongPatterns: [/ملاحظات/i, /ملاحظة/i, /^notes?$/i, /^remarks?$/i],
+    fallbackPatterns: []
+  }
+];
+
+/**
+ * Exclusive priority column mapper: guarantees every Excel column header maps to AT MOST ONE field
+ * (eliminates collisions like "تاريخ الكتاب" matching "رقم الكتاب" or "اسم صاحب الطلب" matching "الموضوع").
+ */
+function detectExclusiveColumnMapping(headers: string[]): Record<CanonicalFieldKey, string> {
+  const result = {} as Record<CanonicalFieldKey, string>;
+  const claimedHeaders = new Set<string>();
+  const cleanHeaders = headers.map((h) => ({
+    raw: h,
+    norm: String(h || '')
+      .trim()
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/[أإآ]/g, 'ا')
+      .replace(/\s+/g, ' ')
+  }));
+
+  const runPass = (tier: 'exactPatterns' | 'strongPatterns' | 'fallbackPatterns') => {
+    for (const spec of CANONICAL_FIELDS) {
+      if (result[spec.key]) continue;
+      const patterns = spec[tier];
+      if (!patterns.length) continue;
+      const matched = cleanHeaders.find(
+        (h) => !claimedHeaders.has(h.raw) && patterns.some((p) => p.test(h.norm) || p.test(h.raw.trim()))
+      );
+      if (matched) {
+        result[spec.key] = matched.raw;
+        claimedHeaders.add(matched.raw);
+      }
+    }
+  };
+
+  runPass('exactPatterns');
+  runPass('strongPatterns');
+  runPass('fallbackPatterns');
+
+  return result;
 }
 
 // القاموس الذكي المعتمد لتوحيد وتصحيح أسماء الوزارات والمؤسسات الرسمية
@@ -64,9 +235,7 @@ export function normalizeEntityName(raw: string): string {
 
 export function cleanPhoneNumber(raw: any): string {
   if (!raw) return '';
-  const digits = String(raw)
-    .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
-    .replace(/\D/g, '');
+  const digits = toWesternDigits(raw).replace(/\D/g, '');
   if (digits.startsWith('9647')) return '0' + digits.slice(3);
   if (digits.startsWith('7') && digits.length === 10) return '0' + digits;
   return digits;
@@ -94,12 +263,11 @@ export function isValidRealPhone(phone: string): boolean {
   return true;
 }
 
-// تطبيع وتنظيف الأسماء العربية لمطابقة الذكاء الاصطناعي بدقة عالية
 export function normalizeArabicName(name: string): string {
   if (!name) return '';
   return name
     .trim()
-    .replace(/[\u064B-\u065F\u0670]/g, '') // إزالة التشكيل والحركات
+    .replace(/[\u064B-\u065F\u0670]/g, '')
     .replace(/[إأآا]/g, 'ا')
     .replace(/ى/g, 'ي')
     .replace(/ة/g, 'ه')
@@ -109,12 +277,25 @@ export function normalizeArabicName(name: string): string {
     .toLowerCase();
 }
 
+function guessDepartmentFromText(text: string): string {
+  const clean = (text || '').toLowerCase();
+  if (/رعاي|حماي|اجتماع|شؤون/.test(clean)) return 'social_care';
+  if (/مقابل/.test(clean)) return 'interviews';
+  if (/تنظيم|انتخاب/.test(clean)) return 'organization';
+  if (/استعلام|مراجع/.test(clean)) return 'reception';
+  return 'admin';
+}
+
 export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) => {
-  const { 
-    citizens, 
+  const {
+    citizens,
     requests,
-    currentUser, 
+    customSections,
+    currentUser,
     batchImportRecords,
+    addCustomRecord,
+    addInterview,
+    upsertOrgRecord,
     addAuditLog,
     systemSettings,
     updateSystemSettings
@@ -127,24 +308,62 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
   const [totalRows, setTotalRows] = useState(0);
   const [currentStepText, setCurrentStepText] = useState('');
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
-  
-  // Multi-sheet State
-  const [availableSheets, setAvailableSheets] = useState<Array<{ name: string; rowCount: number; selected: boolean }>>([]);
+
+  // Target department selector (routes imported data directly into its designated department!)
+  const [targetDepartment, setTargetDepartment] = useState<string>('admin');
+
+  // Multi-sheet State & detected column headers/mapping
+  const [availableSheets, setAvailableSheets] = useState<
+    Array<{ name: string; rowCount: number; selected: boolean; headers: string[] }>
+  >([]);
   const [loadedWorkbook, setLoadedWorkbook] = useState<XLSX.WorkBook | null>(null);
+  const [columnMapping, setColumnMapping] = useState<Record<CanonicalFieldKey, string>>(
+    {} as Record<CanonicalFieldKey, string>
+  );
+  const [showColumnMapper, setShowColumnMapper] = useState(false);
 
   const [previewRows, setPreviewRows] = useState<any[]>([]);
   const [importSummary, setImportSummary] = useState<{
     newCitizens: number;
     newRequests: number;
+    departmentRecordsAdded: number;
+    targetDepartmentLabel: string;
     existingMatched: number;
     deduplicatedWithinFile: number;
     skippedDuplicateRequests?: number;
     normalizedEntitiesCount: number;
     sheetsProcessed: number;
+    deliveredCount: number;
+    undeliveredCount: number;
     detectedMaxOutgoing?: number;
+    nextOutgoingPreview?: string;
     firestoreSaved?: boolean;
     sheetsDispatched?: boolean;
   } | null>(null);
+
+  const departmentOptions = useMemo(() => {
+    const base = [
+      { id: 'admin', label: 'قسم الإدارة — أرشيف المعاملات والصادر' },
+      { id: 'social_care', label: 'قسم الرعاية الاجتماعية (شبكة الحماية)' },
+      { id: 'reception', label: 'قسم الاستعلامات (سجل المواطنين)' },
+      { id: 'interviews', label: 'قسم المقابلات' },
+      { id: 'organization', label: 'قسم التنظيم' }
+    ];
+    const extras = (customSections || [])
+      .filter((s) => s.id !== SOCIAL_CARE_LEGACY_CUSTOM_ID)
+      .map((s) => ({ id: `custom:${s.id}`, label: `قسم مخصص: ${s.title}` }));
+    return [...base, ...extras];
+  }, [customSections]);
+
+  const allDetectedHeaders = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of availableSheets) {
+      if (s.selected) {
+        s.headers.forEach((h) => set.add(h));
+      }
+    }
+    return Array.from(set);
+  }, [availableSheets]);
 
   if (!isOpen) return null;
 
@@ -156,7 +375,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     setImportSummary(null);
     setPreviewRows([]);
     setIsProcessing(true);
-    setCurrentStepText('جاري قراءة أوراق العمل وملف الإكسل بالكامل...');
+    setCurrentStepText('جاري قراءة أوراق العمل واكتشاف الأعمدة بدقة...');
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -165,23 +384,48 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         const workbook = XLSX.read(data, { type: 'array' });
         setLoadedWorkbook(workbook);
 
-        // Analyze all sheets
-        const sheetDetails: Array<{ name: string; rowCount: number; selected: boolean }> = [];
+        const sheetDetails: Array<{ name: string; rowCount: number; selected: boolean; headers: string[] }> = [];
         let totalRecordsFound = 0;
+        const firstHeaders: string[] = [];
 
         for (const sheetName of workbook.SheetNames) {
           const sheet = workbook.Sheets[sheetName];
           if (!sheet) continue;
-          // Fast estimation of row count
           const raw = XLSX.utils.sheet_to_json(sheet, { defval: '', header: 1 }) as any[][];
-          const validRowEst = Math.max(0, raw.length - 1);
+          // Find the real header row (first non-empty row with >= 2 cells)
+          let headerRowIdx = 0;
+          for (let r = 0; r < Math.min(raw.length, 6); r++) {
+            const nonEmpty = (raw[r] || []).filter((c) => String(c || '').trim() !== '');
+            if (nonEmpty.length >= 2) {
+              headerRowIdx = r;
+              break;
+            }
+          }
+          const headers = (raw[headerRowIdx] || [])
+            .map((h) => String(h || '').trim())
+            .filter(Boolean);
+          if (firstHeaders.length === 0 && headers.length > 0) {
+            firstHeaders.push(...headers);
+          }
+          const validRowEst = Math.max(0, raw.length - headerRowIdx - 1);
           sheetDetails.push({
             name: sheetName,
             rowCount: validRowEst,
-            selected: true // By default, all sheets are selected
+            selected: true,
+            headers
           });
           totalRecordsFound += validRowEst;
         }
+
+        // Auto-detect department from file name or first sheet name
+        const autoDept = guessDepartmentFromText(`${file.name} ${workbook.SheetNames.join(' ')}`);
+        setTargetDepartment(autoDept);
+
+        // Compute exclusive column mapping across all headers
+        const mergedHeaders = Array.from(new Set(sheetDetails.flatMap((s) => s.headers)));
+        const detected = detectExclusiveColumnMapping(mergedHeaders);
+        setColumnMapping(detected);
+        setShowColumnMapper(true);
 
         setAvailableSheets(sheetDetails);
         setTotalRows(totalRecordsFound);
@@ -203,17 +447,17 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
   };
 
   const toggleSheetSelection = (index: number) => {
-    setAvailableSheets(prev => {
-      const next = prev.map((s, i) => i === index ? { ...s, selected: !s.selected } : s);
-      const newTotal = next.filter(s => s.selected).reduce((acc, s) => acc + s.rowCount, 0);
+    setAvailableSheets((prev) => {
+      const next = prev.map((s, i) => (i === index ? { ...s, selected: !s.selected } : s));
+      const newTotal = next.filter((s) => s.selected).reduce((acc, s) => acc + s.rowCount, 0);
       setTotalRows(newTotal);
       return next;
     });
   };
 
   const selectAllSheets = (selected: boolean) => {
-    setAvailableSheets(prev => {
-      const next = prev.map(s => ({ ...s, selected }));
+    setAvailableSheets((prev) => {
+      const next = prev.map((s) => ({ ...s, selected }));
       const newTotal = selected ? next.reduce((acc, s) => acc + s.rowCount, 0) : 0;
       setTotalRows(newTotal);
       return next;
@@ -224,7 +468,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     if (!loadedWorkbook) return;
     setErrorBanner(null);
 
-    const selectedSheets = availableSheets.filter(s => s.selected);
+    const selectedSheets = availableSheets.filter((s) => s.selected);
     if (selectedSheets.length === 0) {
       setErrorBanner('يرجى تحديد ورقة عمل (شيت) واحدة على الأقل للاستيراد.');
       return;
@@ -232,29 +476,58 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
     setIsProcessing(true);
     setProcessedCount(0);
-    setCurrentStepText('جاري استخراج السجلات وتصفيتها بدقة دون تكرار...');
+    setCurrentStepText('جاري استخراج السجلات وترتيب الأعمدة بدقة وتوجيهها إلى القسم المختار...');
 
-    // 1. Gather all rows from all selected sheets
+    // 1. Gather all rows from all selected sheets with per-sheet header detection
     const allExtractedRows: Array<{
       sheetName: string;
-      row: any;
+      row: Record<string, any>;
+      sheetMap: Record<CanonicalFieldKey, string>;
     }> = [];
 
     for (const s of selectedSheets) {
       const worksheet = loadedWorkbook.Sheets[s.name];
       if (!worksheet) continue;
-      const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+      // Detect header offset if sheet has title banner above column headers
+      const matrix = XLSX.utils.sheet_to_json(worksheet, { defval: '', header: 1 }) as any[][];
+      let headerRowIdx = 0;
+      for (let r = 0; r < Math.min(matrix.length, 6); r++) {
+        const nonEmpty = (matrix[r] || []).filter((c) => String(c || '').trim() !== '');
+        if (nonEmpty.length >= 2) {
+          headerRowIdx = r;
+          break;
+        }
+      }
+      const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet, {
+        defval: '',
+        range: headerRowIdx
+      });
+
+      const sheetHeaders = Object.keys(jsonRows[0] || {});
+      const autoSheetMap = detectExclusiveColumnMapping(sheetHeaders);
+      // Respect user overrides from columnMapping when that column exists in this sheet
+      const effectiveMap: Record<CanonicalFieldKey, string> = { ...autoSheetMap };
+      for (const spec of CANONICAL_FIELDS) {
+        const userChoice = columnMapping[spec.key];
+        if (userChoice === '__NONE__') {
+          effectiveMap[spec.key] = '';
+        } else if (userChoice && sheetHeaders.includes(userChoice)) {
+          effectiveMap[spec.key] = userChoice;
+        }
+      }
+
       for (const row of jsonRows) {
         allExtractedRows.push({
           sheetName: s.name,
-          row
+          row,
+          sheetMap: effectiveMap
         });
       }
     }
 
     setTotalRows(allExtractedRows.length);
 
-    // 2. Pre-index existing citizens by normalized name and ONLY real non-dummy phones
+    // 2. Pre-index existing citizens
     const citizenNormMap = new Map<string, Citizen>();
     const citizenPhoneMap = new Map<string, Citizen>();
     const existingCitizenIds = new Set<string>();
@@ -278,11 +551,11 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
       }
     }
 
-    // Pre-index existing requests by ID and normalized fingerprint to prevent duplicates on re-import
+    // Pre-index existing requests
     const existingRequestIds = new Set<string>();
     const seenRequestFingerprints = new Set<string>();
     const makeReqFingerprint = (citizenId: string, entity: string, subject: string, outgoing: string) =>
-      `${citizenId}|${normalizeArabicName(entity)}|${normalizeArabicName(subject)}|${normalizeArabicName(outgoing)}`;
+      `${citizenId}|${normalizeArabicName(entity)}|${normalizeArabicName(subject)}|${normalizeArabicName(toWesternDigits(outgoing))}`;
 
     for (const r of requests) {
       if (!r) continue;
@@ -294,25 +567,31 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
       }
     }
 
-    // Temporary working maps for intra-file deduplication (keyed strictly by normName, plus safe phone index)
     const workingNewCitizensByName = new Map<string, Citizen>();
     const workingNewCitizensByPhone = new Map<string, Citizen>();
     const createdRequests: OfficeRequest[] = [];
+    const departmentMirrorTasks: Array<{ citizen: Citizen; request: OfficeRequest }> = [];
     const samplePreviews: any[] = [];
 
-    let newCitizensCount = 0;
     let existingMatchedCount = 0;
     let deduplicatedCount = 0;
     let skippedDuplicateRequestsCount = 0;
     let normalizedEntitiesCount = 0;
-    let maxOutgoingInFile = 0;
+    let deliveredCount = 0;
+    let undeliveredCount = 0;
+    let maxNasiriyahOutgoing = 0;
+    let maxSuqOutgoing = 0;
+    let maxAnyOutgoing = 0;
     let reqSeqCounter = 1;
 
     const nowStamp = new Date().toISOString().split('T')[0];
     const year = new Date().getFullYear();
     const batchStamp = Date.now().toString(36).toUpperCase().slice(-5);
 
-    // Batch process in micro-chunks of 400 rows to prevent any browser freezing
+    const targetDeptObj = departmentOptions.find((d) => d.id === targetDepartment);
+    const targetDeptLabel = targetDeptObj?.label || 'قسم الإدارة';
+    const isReceptionTarget = targetDepartment === 'reception';
+
     const chunkSize = 400;
     let currentIndex = 0;
 
@@ -322,48 +601,37 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
       for (; currentIndex < limit; currentIndex++) {
         const item = allExtractedRows[currentIndex];
         const row = item.row;
-        const keys = Object.keys(row);
+        const map = item.sheetMap;
 
-        const findVal = (patterns: RegExp[]) => {
-          const matchKey = keys.find(k => patterns.some(p => p.test(k.trim())));
-          return matchKey ? String(row[matchKey]).trim() : '';
+        const getField = (key: CanonicalFieldKey): string => {
+          const header = map[key];
+          if (!header) return '';
+          const v = row[header];
+          return v === null || v === undefined ? '' : String(v).trim();
         };
 
-        // Specific 14 columns matching exactly what the user requested:
-        // 1. ت (الرقم التسلسلي)
-        const rawSeq = findVal([/^ت$/i, /^تسلسل$/i, /^م$/i, /^seq$/i, /^no$/i, /^id$/i]);
-        // 2. اسم صاحب الطلب
-        const rawName = findVal([/صاحب الطلب/i, /^الاسم$/i, /اسم المواطن/i, /اسم المراجع/i, /اسم/i, /name/i, /المستفيد/i]);
-        // 3. اسم الدائرة / او الوزارة
-        const rawEntity = findVal([/اسم الدائرة/i, /الدائرة/i, /الوزارة/i, /وزار/i, /جه/i, /دائر/i, /مؤسس/i, /ministry/i, /entity/i, /الجهة/i]);
-        // 4. الموضوع
-        const rawSubject = findVal([/الموضوع/i, /موضوع/i, /طلب/i, /تفاصيل/i, /معامل/i, /subject/i, /details/i, /الغرض/i]);
-        // 5. رقم الكتاب / العدد
-        const rawOutgoing = findVal([/رقم الكتاب/i, /^العدد$/i, /رقم الصادر/i, /صادر/i, /outgoing/i, /كتاب/i]);
-        // 6. تاريخ الكتاب
-        const rawOutgoingDate = findVal([/تاريخ الكتاب/i, /تاريخ الصادر/i, /تاريخ/i, /date/i]);
-        // 7. رقم الهاتف
-        const rawPhone = cleanPhoneNumber(findVal([/رقم الهاتف/i, /هاتف/i, /موبايل/i, /جوال/i, /phone/i, /mobile/i]));
-        // 8. المعرف
-        const rawReferrer = findVal([/المعرف/i, /معرف/i, /تزكية/i, /منسق/i, /referrer/i]);
-        // 9. عنوان السكن
-        const rawAddress = findVal([/عنوان السكن/i, /عنوان/i, /سكن/i, /قضاء/i, /منطق/i, /حي/i, /district/i, /address/i]);
-        // 10. الهامش
-        const rawMargin = findVal([/الهامش/i, /هامش/i, /توجيه/i, /margin/i, /directive/i]);
-        // 11. حالة الطلب
-        const rawStatus = findVal([/حالة الطلب/i, /الحالة/i, /status/i]);
-        // 12. التحصيل الدراسي
-        const rawEducation = findVal([/التحصيل الدراسي/i, /تحصيل/i, /شهادة/i, /education/i]);
-        // 13. نوع العمل
-        const rawJob = findVal([/نوع العمل/i, /نوع المهنة/i, /عمل/i, /مهن/i, /وظيفة/i, /job/i]);
-        // 14. ملاحظات اخرى
-        const rawNotes = findVal([/ملاحظات اخرى/i, /ملاحظات/i, /ملاحظة/i, /notes/i]);
+        const rawSeq = toWesternDigits(getField('seq'));
+        const rawName = getField('name');
+        const rawEntity = getField('entity');
+        const rawSubject = getField('subject');
+        const rawOutgoing = toWesternDigits(getField('outgoingNumber'));
+        const rawOutgoingDateRaw = map.outgoingDate ? row[map.outgoingDate] : '';
+        const rawOutgoingDate = parseExcelDateValue(rawOutgoingDateRaw);
+        const rawPhone = cleanPhoneNumber(getField('phone'));
+        const rawReferrer = getField('referrer');
+        const rawAddress = getField('address');
+        const rawMargin = getField('margin');
+        const rawStatus = getField('status');
+        const rawDelivery = getField('deliveryStatus');
+        const rawEducation = getField('education');
+        const rawJob = getField('job');
+        const rawNotes = getField('notes');
 
-        // STRICT GHOST-FILTER: Reject empty rows, header rows, or meaningless names
+        // STRICT GHOST-FILTER
         if (
-          !rawName || 
-          rawName.length < 2 || 
-          rawName.toLowerCase() === 'undefined' || 
+          !rawName ||
+          rawName.length < 2 ||
+          rawName.toLowerCase() === 'undefined' ||
           rawName.toLowerCase() === 'null' ||
           rawName === 'الاسم' ||
           rawName === 'اسم صاحب الطلب' ||
@@ -376,22 +644,28 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           continue;
         }
 
-        // Track maximum outgoing number found in file for subsequent auto-numbering
+        // Accurate Iraqi outgoing sequence extraction (supports ن / 12 / 450, س / 14 / 320, Arabic digits, etc.)
         if (rawOutgoing) {
-          const numMatches = rawOutgoing.match(/\d+/g);
-          if (numMatches) {
-            for (const m of numMatches) {
-              const val = parseInt(m, 10);
-              // Avoid year numbers (2020-2035) when evaluating sequence
-              if (val > 0 && (val < 2020 || val > 2035)) {
-                if (val > maxOutgoingInFile) maxOutgoingInFile = val;
-              }
+          const parsedOut = extractOutgoingSequence(rawOutgoing);
+          if (parsedOut.seq > 0) {
+            if (parsedOut.seq > maxAnyOutgoing) maxAnyOutgoing = parsedOut.seq;
+            if (parsedOut.branch === 'suq_al_shuyoukh') {
+              if (parsedOut.seq > maxSuqOutgoing) maxSuqOutgoing = parsedOut.seq;
+            } else if (parsedOut.branch === 'nasiriyah') {
+              if (parsedOut.seq > maxNasiriyahOutgoing) maxNasiriyahOutgoing = parsedOut.seq;
+            } else {
+              if (parsedOut.seq > maxNasiriyahOutgoing) maxNasiriyahOutgoing = parsedOut.seq;
+              if (parsedOut.seq > maxSuqOutgoing) maxSuqOutgoing = parsedOut.seq;
             }
           }
         }
 
         const normName = normalizeArabicName(rawName);
-        const standardizedEntity = normalizeEntityName(rawEntity);
+        const standardizedEntity = rawEntity
+          ? normalizeEntityName(rawEntity)
+          : targetDepartment === 'social_care'
+            ? 'وزارة العمل والشؤون الاجتماعية'
+            : 'جهة حكومية غير محددة';
 
         if (rawEntity && standardizedEntity !== rawEntity) {
           normalizedEntitiesCount++;
@@ -400,12 +674,8 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         const validPhone = isValidRealPhone(rawPhone) ? rawPhone : '';
         const incomingFirstWord = normName.split(' ')[0] || '';
 
-        // Safe citizen lookup:
-        // 1. Exact normalized full name match in DB or current file
-        // 2. Real non-dummy phone match ONLY IF first name matches (prevents unrelated people or family members sharing a phone from colliding!)
         let targetCitizen: Citizen | undefined =
-          citizenNormMap.get(normName) ||
-          workingNewCitizensByName.get(normName);
+          citizenNormMap.get(normName) || workingNewCitizensByName.get(normName);
 
         if (!targetCitizen && validPhone) {
           const phoneCandidate = citizenPhoneMap.get(validPhone) || workingNewCitizensByPhone.get(validPhone);
@@ -418,7 +688,6 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         }
 
         if (!targetCitizen) {
-          // Create new guaranteed-unique citizen with monotonic collision-free ONA identifier
           maxOnaNumeric += 1;
           let newOnaId = `ONA-${maxOnaNumeric}`;
           while (existingCitizenIds.has(newOnaId)) {
@@ -448,15 +717,14 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             ReferralSource: rawReferrer || `استيراد إكسل (${item.sheetName})`,
             CreatedAt: rawOutgoingDate || nowStamp,
             CreatedBy: currentUser?.FullName || 'موظف الإدارة',
-            RegisteredVia: 'إدارة',
-            // Flag as historical so it is preserved in search/archive but does not clutter daily active queue
-            IsHistoricalImported: true,
-            IsArchived: true
+            RegisteredVia: isReceptionTarget ? 'استعلامات' : 'إدارة',
+            // Keep historical flag for archive imports unless explicitly routed to Reception
+            IsHistoricalImported: !isReceptionTarget,
+            IsArchived: !isReceptionTarget
           };
 
           workingNewCitizensByName.set(normName, targetCitizen);
           if (validPhone) workingNewCitizensByPhone.set(validPhone, targetCitizen);
-          newCitizensCount++;
         } else {
           if (citizenNormMap.has(normName) || (validPhone && citizenPhoneMap.has(validPhone))) {
             existingMatchedCount++;
@@ -465,29 +733,24 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           }
         }
 
-        // Strict Request Deduplication: prevent identical requests from duplicating on re-import or across sheets
-        const sheetTag = item.sheetName.includes('مقابل') ? '[مقابلة رسمية]' : (item.sheetName.includes('رعاي') ? '[شبكة الحماية]' : '');
-        const resolvedDetails = `${sheetTag ? `${sheetTag} ` : ''}${rawSubject || `طلب مسجل ضمن ورقة (${item.sheetName})`}`;
+        const resolvedDetails = rawSubject || `طلب مسجل ضمن (${item.sheetName})`;
         const reqFp = makeReqFingerprint(targetCitizen.Citizen_ID, standardizedEntity, resolvedDetails, rawOutgoing || '');
-        const reqFpRaw = makeReqFingerprint(targetCitizen.Citizen_ID, standardizedEntity, rawSubject || resolvedDetails, rawOutgoing || '');
-
-        if (seenRequestFingerprints.has(reqFp) || seenRequestFingerprints.has(reqFpRaw)) {
+        if (seenRequestFingerprints.has(reqFp)) {
           skippedDuplicateRequestsCount++;
           continue;
         }
         seenRequestFingerprints.add(reqFp);
-        seenRequestFingerprints.add(reqFpRaw);
 
-        // Guaranteed collision-free deterministic Request_ID
         let requestId = `REQ-${year}-IMP-${batchStamp}-${String(reqSeqCounter++).padStart(4, '0')}`;
         while (existingRequestIds.has(requestId)) {
           requestId = `REQ-${year}-IMP-${batchStamp}-${String(reqSeqCounter++).padStart(4, '0')}`;
         }
         existingRequestIds.add(requestId);
 
-        // Always store imported/filtered records strictly as completed, archived database records
-        // so they NEVER appear in the Director's inbox or daily working queues, while remaining 100% searchable & editable!
         const finalStatus = rawStatus?.includes('رفض') ? 'مرفوض' : 'منجز';
+        const deliveryStatus = parseDeliveryStatus(rawDelivery, rawStatus);
+        if (deliveryStatus === 'مستلم') deliveredCount++;
+        else undeliveredCount++;
 
         const newRequest: OfficeRequest = {
           Request_ID: requestId,
@@ -495,13 +758,17 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           CitizenName: targetCitizen.FullName,
           CitizenPhone: validPhone || targetCitizen.Phone1 || '',
           Entity: standardizedEntity,
-          RequestStatus: 'مستلم',
+          RequestStatus: deliveryStatus,
           ProcessingStatus: finalStatus,
+          DeliveryStatus: deliveryStatus,
+          DeliveredAt: deliveryStatus === 'مستلم' ? (rawOutgoingDate || nowStamp) : undefined,
           Priority: 'عام',
           Details: resolvedDetails,
           OutgoingNumber: rawOutgoing || undefined,
           OutgoingDate: rawOutgoingDate || (rawOutgoing ? nowStamp : undefined),
-          RegisteredVia: 'أرشيف التصفية المستورد',
+          RegisteredVia: targetDeptLabel,
+          TargetDepartment: targetDepartment,
+          SerialNumber: rawSeq || undefined,
           CurrentStage: 'مكتمل',
           DirectorDecision: 'مؤرشف',
           Address: rawAddress || targetCitizen.District || 'الناصرية',
@@ -512,27 +779,27 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           ReferralSource: rawReferrer || targetCitizen.ReferralSource,
           CreatedAt: rawOutgoingDate || nowStamp,
           CreatedBy: `استيراد وتصفية (${currentUser?.FullName || 'الإدارة'})`,
-          OtherNotes: [
-            rawNotes,
-            rawMargin ? `الهامش: ${rawMargin}` : '',
-            rawSeq ? `تسلسل بالملف: ${rawSeq}` : '',
-            `ملف: ${fileName} [${item.sheetName}]`
-          ].filter(Boolean).join(' | '),
+          OtherNotes: rawNotes || `ملف: ${fileName} [${item.sheetName}]`,
           IsHistoricalImported: true,
           IsArchived: true
         };
 
         createdRequests.push(newRequest);
 
+        if (targetDepartment !== 'admin' && targetDepartment !== 'reception') {
+          departmentMirrorTasks.push({ citizen: targetCitizen, request: newRequest });
+        }
+
         if (samplePreviews.length < 6) {
           samplePreviews.push({
             ona: targetCitizen.Citizen_ID,
             name: targetCitizen.FullName,
             phone: targetCitizen.Phone1 || 'غير مسجل',
-            sheetName: item.sheetName,
-            rawEntity: rawEntity || 'غير محدد',
+            outgoingNumber: rawOutgoing || '—',
+            outgoingDate: rawOutgoingDate || '—',
+            deliveryStatus,
             normalizedEntity: standardizedEntity,
-            details: newRequest.Details
+            details: resolvedDetails
           });
         }
       }
@@ -542,27 +809,96 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
       if (currentIndex < allExtractedRows.length) {
         setTimeout(processChunk, 0);
       } else {
-        // FINISHED PROCESSING: Atomically commit all records into AppContext
-        setCurrentStepText('جاري حفظ البيانات المصفاة كسجلات أرشيفية مكتملة في المنظومة...');
-        
+        setCurrentStepText('جاري تثبيت البيانات في القسم المختار وتحديث عداد الصادر...');
+
         const finalNewCitizensList = Array.from(workingNewCitizensByName.values());
 
-        // Update system outgoing baselines if max outgoing was detected in file
-        if (maxOutgoingInFile > 0) {
-          const currentNas = systemSettings.lastOutgoingNumberNasiriyah || 0;
-          const currentSuq = systemSettings.lastOutgoingNumberSuq || 0;
-          const settingsUpdates: any = {};
-          if (maxOutgoingInFile > currentNas) {
-            settingsUpdates.lastOutgoingNumberNasiriyah = maxOutgoingInFile;
-          }
-          if (maxOutgoingInFile > currentSuq) {
-            settingsUpdates.lastOutgoingNumberSuq = maxOutgoingInFile;
-          }
-          if (Object.keys(settingsUpdates).length > 0) {
-            updateSystemSettings(settingsUpdates);
+        // 1. Immediately advance office outgoing baselines (Nasiriyah & Suq Al-Shuyoukh)
+        const currentNas = Number(systemSettings.lastOutgoingNumberNasiriyah) || 0;
+        const currentSuq = Number(systemSettings.lastOutgoingNumberSuq) || 0;
+        const settingsUpdates: Record<string, any> = {};
+
+        if (maxNasiriyahOutgoing > currentNas) {
+          settingsUpdates.lastOutgoingNumberNasiriyah = maxNasiriyahOutgoing;
+        }
+        if (maxSuqOutgoing > currentSuq) {
+          settingsUpdates.lastOutgoingNumberSuq = maxSuqOutgoing;
+        }
+        if (Object.keys(settingsUpdates).length > 0) {
+          updateSystemSettings(settingsUpdates);
+        }
+
+        const isSuqBranch = systemSettings.officeBranch === 'suq_al_shuyoukh';
+        const effectiveMaxForBranch = isSuqBranch
+          ? Math.max(currentSuq, maxSuqOutgoing)
+          : Math.max(currentNas, maxNasiriyahOutgoing);
+        const nextOutgoingPreview =
+          effectiveMaxForBranch > 0
+            ? `${isSuqBranch ? 'س / 14 / ' : 'ن / 12 / '}${effectiveMaxForBranch + 1}`
+            : undefined;
+
+        // 2. Mirror records into designated target department (Social Care, Interviews, Organization, or Custom Section)
+        let deptMirroredCount = 0;
+        if (departmentMirrorTasks.length > 0) {
+          const cap = Math.min(departmentMirrorTasks.length, 500);
+          for (let i = 0; i < cap; i++) {
+            const { citizen, request } = departmentMirrorTasks[i];
+            if (targetDepartment === 'social_care' || targetDepartment.startsWith('custom:')) {
+              const secId =
+                targetDepartment === 'social_care'
+                  ? SOCIAL_CARE_LEGACY_CUSTOM_ID
+                  : targetDepartment.replace('custom:', '');
+              addCustomRecord({
+                sectionId: secId,
+                createdBy: currentUser?.FullName || 'استيراد وتصفية Excel',
+                data: {
+                  citizenName: citizen.FullName,
+                  fullName: citizen.FullName,
+                  phone: citizen.Phone1 || request.CitizenPhone || '',
+                  entity: request.Entity,
+                  subject: request.Details,
+                  outgoingNumber: request.OutgoingNumber || '',
+                  outgoingDate: request.OutgoingDate || '',
+                  address: request.Address || citizen.District || '',
+                  referrer: request.ReferralSource || '',
+                  margin: request.Margin || '',
+                  status: request.ProcessingStatus || 'منجز',
+                  deliveryStatus: request.DeliveryStatus || 'غير مستلم',
+                  education: request.Education || '',
+                  job: request.Job || '',
+                  notes: request.OtherNotes || ''
+                }
+              });
+              deptMirroredCount++;
+            } else if (targetDepartment === 'interviews') {
+              addInterview({
+                Citizen_ID: citizen.Citizen_ID,
+                FullName: citizen.FullName,
+                Phone1: citizen.Phone1 || request.CitizenPhone || '',
+                Address: request.Address || citizen.District || 'الناصرية',
+                Referrer: request.ReferralSource || '',
+                Subject: request.Details,
+                InterviewDate: request.OutgoingDate || nowStamp,
+                Priority: 'عادي',
+                Status: 'تمت المقابلة',
+                DeputyNotes: request.Margin || request.OtherNotes || ''
+              });
+              deptMirroredCount++;
+            } else if (targetDepartment === 'organization') {
+              upsertOrgRecord({
+                Citizen_ID: citizen.Citizen_ID,
+                FullName: citizen.FullName,
+                Phone1: citizen.Phone1 || request.CitizenPhone || '',
+                District: request.Address || citizen.District || 'الناصرية',
+                OrgRating: 'فعال',
+                Notes: [request.Details, request.OtherNotes].filter(Boolean).join(' - ')
+              });
+              deptMirroredCount++;
+            }
           }
         }
 
+        // 3. Commit batch citizens & requests atomically to Server + Firebase + Google Sheets
         batchImportRecords(finalNewCitizensList, createdRequests)
           .then((syncRes) => {
             setIsProcessing(false);
@@ -571,20 +907,25 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             setImportSummary({
               newCitizens: finalNewCitizensList.length,
               newRequests: createdRequests.length,
+              departmentRecordsAdded: deptMirroredCount || createdRequests.length,
+              targetDepartmentLabel: targetDeptLabel,
               existingMatched: existingMatchedCount,
               deduplicatedWithinFile: deduplicatedCount,
               skippedDuplicateRequests: skippedDuplicateRequestsCount,
-              normalizedEntitiesCount: normalizedEntitiesCount,
+              normalizedEntitiesCount,
               sheetsProcessed: selectedSheets.length,
-              detectedMaxOutgoing: maxOutgoingInFile > 0 ? maxOutgoingInFile : undefined,
+              deliveredCount,
+              undeliveredCount,
+              detectedMaxOutgoing: maxAnyOutgoing > 0 ? maxAnyOutgoing : undefined,
+              nextOutgoingPreview,
               firestoreSaved: syncRes?.firestoreSaved,
               sheetsDispatched: syncRes?.sheetsDispatched
             });
 
             addAuditLog(
-              'استيراد إكسل ذكي شامل',
-              'قسم الإدارة',
-              `تم استيراد ${createdRequests.length} معاملة من ${selectedSheets.length} أوراق عمل وتوليد/توحيد ${finalNewCitizensList.length} مواطن برمز ONA${maxOutgoingInFile > 0 ? ` وضبط آخر صادر على (${maxOutgoingInFile})` : ''} بواسطة ${currentUser?.FullName}`
+              'استيراد وتصفية ملف إكسل',
+              targetDeptLabel,
+              `تم استيراد ${createdRequests.length} معاملة (مستلم: ${deliveredCount} | غير مستلم: ${undeliveredCount}) إلى ${targetDeptLabel}${maxAnyOutgoing > 0 ? ` وتحديث عداد الصادر بعد العدد (${maxAnyOutgoing})` : ''}`
             );
           })
           .catch((err) => {
@@ -600,30 +941,26 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-md font-['Tajawal',sans-serif]" dir="rtl">
-      <div className="w-full max-w-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-7 shadow-2xl space-y-4 text-right max-h-[92vh] overflow-y-auto">
-        
+      <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-2xl space-y-4 text-right max-h-[92vh] overflow-y-auto">
         {/* Modal Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-teal-50 dark:bg-teal-950/60 border border-teal-200 dark:border-teal-800 text-teal-600 dark:text-teal-400 flex items-center justify-center shadow-xs shrink-0">
+            <div className="w-11 h-11 rounded-xl bg-teal-50 dark:bg-teal-950/60 border border-teal-200 dark:border-teal-800 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0">
               <FileSpreadsheet className="w-6 h-6" />
             </div>
             <div>
-              <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white flex items-center gap-2">
-                <span>استيراد وتصفية إكسل متعدد الشيتات بالذكاء الاصطناعي</span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-300 border border-teal-300 dark:border-teal-800">
-                  حتى 20,000 قيد ⚡
-                </span>
+              <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+                استيراد وتصفية ملفات البيانات وترتيب الأعمدة حسب القسم
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                قراءة كافة أوراق العمل (المقابلات، الطلبات)، توحيد المراجعين المكررين، وتوليد كود ONA فوري
+                فرز دقيق لكل عمود في مكانه المخصص • دعم خاصية (مستلم / غير مستلم) • تحديث تلقائي لعداد الصادر بعد الأرشفة
               </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-400 flex items-center justify-center cursor-pointer"
+            className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-500 flex items-center justify-center cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -643,28 +980,6 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           </div>
         )}
 
-        {/* Feature Highlights */}
-        <div className="p-3.5 rounded-2xl bg-gradient-to-r from-teal-50/80 via-emerald-50/50 to-blue-50/50 dark:from-teal-950/40 dark:via-emerald-950/20 dark:to-slate-900 border border-teal-200 dark:border-teal-800 text-xs space-y-1.5">
-          <div className="flex items-center gap-2 text-teal-950 dark:text-teal-200 font-bold">
-            <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>خوارزمية الذكاء الاصطناعي لمعالجة ملفات الإكسل الضخمة:</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-slate-700 dark:text-slate-300 pt-1">
-            <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-900/60 border border-teal-100 dark:border-teal-900">
-              <strong className="block text-teal-900 dark:text-teal-300 font-black">1. دمج وتصفية الشيتات:</strong>
-              <span>يقرأ المقابلات والطلبات وسجلات الرعاية دفعة واحدة في ملف واحد.</span>
-            </div>
-            <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-900/60 border border-teal-100 dark:border-teal-900">
-              <strong className="block text-emerald-900 dark:text-emerald-300 font-black">2. توحيد المراجع المكرر:</strong>
-              <span>إذا قدم الشخص أكثر من طلب، يُجمع كل تاريخه تحت كود ONA موحد.</span>
-            </div>
-            <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-900/60 border border-teal-100 dark:border-teal-900">
-              <strong className="block text-blue-900 dark:text-blue-300 font-black">3. منع القيود الوهمية:</strong>
-              <span>تصفية فورية تحذف الأسطر الفارغة، العناوين، والصفوف المجهولة.</span>
-            </div>
-          </div>
-        </div>
-
         {/* Upload Box */}
         <div className="space-y-3">
           <input
@@ -677,21 +992,21 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
           <div
             onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-teal-400 dark:border-teal-700 hover:border-teal-500 rounded-3xl p-5 sm:p-7 text-center cursor-pointer bg-slate-50 dark:bg-slate-850 hover:bg-teal-50/30 transition-all group"
+            className="border-2 border-dashed border-teal-400 dark:border-teal-700 hover:border-teal-500 rounded-2xl p-5 text-center cursor-pointer bg-slate-50 dark:bg-slate-800/40 hover:bg-teal-50/40 transition-all group"
           >
-            <div className="w-12 h-12 mx-auto rounded-2xl bg-teal-100 dark:bg-teal-950/70 border border-teal-300 dark:border-teal-700 flex items-center justify-center text-teal-600 dark:text-teal-400 mb-2.5 group-hover:scale-110 transition-transform shadow-xs">
-              <Upload className="w-6 h-6" />
+            <div className="w-11 h-11 mx-auto rounded-xl bg-teal-100 dark:bg-teal-950/70 border border-teal-300 dark:border-teal-700 flex items-center justify-center text-teal-600 dark:text-teal-400 mb-2">
+              <Upload className="w-5 h-5" />
             </div>
 
             <h4 className="text-sm font-black text-slate-800 dark:text-slate-100">
-              اضغط هنا لاختيار ملف Excel يحتوي على المقابلات أو الطلبات أو الشيتات المتعددة
+              اضغط لاختيار ملف Excel (.xlsx / .xls) لتصفيته وإنزاله في قسمه المخصص
             </h4>
-            <p className="text-xs text-slate-400 mt-1">
-              يدعم ملفات (.xlsx, .xls) حتى 20,000 صف بدون توقف أو تهنيج في المتصفح
+            <p className="text-xs text-slate-500 mt-1">
+              يقرأ كافة الأعمدة (ت، اسم صاحب الطلب، الدائرة/الوزارة، الموضوع، العدد، التاريخ، الهاتف، المعرف، السكن، الهامش، الحالة، مستلم/غير مستلم، التحصيل، العمل، الملاحظات)
             </p>
 
             {fileName && (
-              <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-teal-600 text-white font-bold text-xs shadow-xs">
+              <div className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-teal-600 text-white font-bold text-xs">
                 <FileSpreadsheet className="w-3.5 h-3.5" />
                 <span>الملف المحدد: {fileName}</span>
               </div>
@@ -699,67 +1014,146 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           </div>
         </div>
 
-        {/* Multi-sheet Selector */}
+        {/* Target Department + Sheets + Column Mapping Panel */}
         {availableSheets.length > 0 && !importSummary && (
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 font-black text-slate-900 dark:text-white">
-                <Layers className="w-4 h-4 text-teal-600" />
-                <span>أوراق العمل الموجودة في الملف ({availableSheets.length} شيت):</span>
+          <div className="space-y-3">
+            {/* Step 1: Target Department Selector */}
+            <div className="p-3.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 space-y-2">
+              <div className="flex items-center gap-2 text-xs font-black text-amber-950 dark:text-amber-200">
+                <FolderKanban className="w-4 h-4 text-amber-600" />
+                <span>1. اختر القسم الذي ستنزل فيه بيانات هذا الملف:</span>
               </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => selectAllSheets(true)}
-                  className="px-2 py-0.5 rounded-md bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-200 font-bold text-[11px]"
-                >
-                  تحديد الكل
-                </button>
-                <button
-                  type="button"
-                  onClick={() => selectAllSheets(false)}
-                  className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-[11px]"
-                >
-                  إلغاء التحديد
-                </button>
-              </div>
+              <select
+                value={targetDepartment}
+                onChange={(e) => setTargetDepartment(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-slate-900 dark:text-white text-xs font-bold outline-none focus:ring-2 focus:ring-amber-500"
+              >
+                {departmentOptions.map((dept) => (
+                  <option key={dept.id} value={dept.id}>
+                    {dept.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
-              {availableSheets.map((sheet, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => toggleSheetSelection(idx)}
-                  className={`p-2.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
-                    sheet.selected
-                      ? 'bg-teal-50 dark:bg-teal-950/60 border-teal-400 dark:border-teal-700 text-teal-950 dark:text-teal-100'
-                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 opacity-60'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    <span className={`w-4 h-4 rounded-md flex items-center justify-center text-[10px] font-bold ${sheet.selected ? 'bg-teal-600 text-white' : 'border border-slate-400'}`}>
-                      {sheet.selected ? '✓' : ''}
-                    </span>
-                    <span className="font-bold truncate">{sheet.name}</span>
-                  </div>
-                  <span className="font-mono text-[10px] font-bold bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-600 dark:text-slate-300">
-                    ~{sheet.rowCount}
-                  </span>
+            {/* Step 2: Sheet Selection */}
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-black text-slate-900 dark:text-white">
+                  <Layers className="w-4 h-4 text-teal-600" />
+                  <span>2. أوراق العمل في الملف ({availableSheets.length} شيت — إجمالي ~{totalRows.toLocaleString()} صف):</span>
                 </div>
-              ))}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => selectAllSheets(true)}
+                    className="px-2 py-0.5 rounded bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-200 font-bold text-[11px] cursor-pointer"
+                  >
+                    تحديد الكل
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => selectAllSheets(false)}
+                    className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-[11px] cursor-pointer"
+                  >
+                    إلغاء التحديد
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
+                {availableSheets.map((sheet, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => toggleSheetSelection(idx)}
+                    className={`p-2 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${
+                      sheet.selected
+                        ? 'bg-teal-50 dark:bg-teal-950/60 border-teal-400 dark:border-teal-700 text-teal-950 dark:text-teal-100'
+                        : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 opacity-60'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <span
+                        className={`w-4 h-4 rounded flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                          sheet.selected ? 'bg-teal-600 text-white' : 'border border-slate-400'
+                        }`}
+                      >
+                        {sheet.selected ? <Check className="w-3 h-3" /> : ''}
+                      </span>
+                      <span className="font-bold truncate">{sheet.name}</span>
+                    </div>
+                    <span className="font-mono tabular-nums text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                      {sheet.rowCount}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
+
+            {/* Step 3: Strict Column Mapping Verification & Override */}
+            {allDetectedHeaders.length > 0 && (
+              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 font-black text-slate-900 dark:text-white">
+                    <Table2 className="w-4 h-4 text-blue-600" />
+                    <span>3. مطابقة وترتيب الأعمدة (كل حقل في عموده المخصص):</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowColumnMapper((v) => !v)}
+                    className="text-[11px] font-bold text-blue-600 hover:underline cursor-pointer"
+                  >
+                    {showColumnMapper ? 'إخفاء التفاصيل' : 'تعديل مطابقة الأعمدة'}
+                  </button>
+                </div>
+
+                {showColumnMapper && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-1">
+                    {CANONICAL_FIELDS.map((spec) => (
+                      <div
+                        key={spec.key}
+                        className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex flex-col gap-1"
+                      >
+                        <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                          <span>{spec.label}</span>
+                          {columnMapping[spec.key] && columnMapping[spec.key] !== '__NONE__' ? (
+                            <span className="text-[10px] text-emerald-600 font-bold">مربوط</span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400">غير موجود</span>
+                          )}
+                        </label>
+                        <select
+                          value={columnMapping[spec.key] || '__NONE__'}
+                          onChange={(e) =>
+                            setColumnMapping((prev) => ({ ...prev, [spec.key]: e.target.value }))
+                          }
+                          className="w-full px-2 py-1 rounded bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] text-slate-900 dark:text-slate-100 outline-none"
+                        >
+                          <option value="__NONE__">— غير مربوط —</option>
+                          {allDetectedHeaders.map((hdr) => (
+                            <option key={hdr} value={hdr}>
+                              {hdr}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Launch Action Button */}
             {!isProcessing && (
-              <div className="pt-2 flex justify-end">
+              <div className="pt-1 flex justify-end">
                 <button
                   type="button"
                   onClick={startSmartImport}
-                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white text-xs font-black flex items-center gap-2 cursor-pointer shadow-lg shadow-teal-600/30 active:scale-95 transition-transform"
+                  className="px-6 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-black flex items-center gap-2 cursor-pointer shadow-md active:scale-95 transition-all"
                 >
                   <Sparkles className="w-4 h-4 text-amber-300" />
-                  <span>بدء التصفية الذكية والاستيراد بالكامل ⚡</span>
+                  <span>تصفية وإنزال البيانات في القسم وتحديث الصادر</span>
                 </button>
               </div>
             )}
@@ -768,79 +1162,91 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
         {/* Live Processing Progress Bar */}
         {isProcessing && (
-          <div className="p-4 rounded-2xl bg-teal-50/50 dark:bg-teal-950/30 border border-teal-300 dark:border-teal-800 space-y-2">
+          <div className="p-4 rounded-xl bg-teal-50/50 dark:bg-teal-950/30 border border-teal-300 dark:border-teal-800 space-y-2">
             <div className="flex items-center justify-between text-xs font-bold text-teal-950 dark:text-teal-200">
               <span className="flex items-center gap-2">
                 <RefreshCw className="w-4 h-4 text-teal-600 animate-spin" />
-                <span>{currentStepText || 'جاري معالجة وتصفية قيود الإكسل وتوليد الأكواد...'}</span>
+                <span>{currentStepText || 'جاري معالجة الملف...'}</span>
               </span>
-              <span className="font-mono text-teal-700 dark:text-teal-300 font-black">
+              <span className="font-mono tabular-nums text-teal-700 dark:text-teal-300 font-black">
                 {processedCount.toLocaleString()} / {totalRows.toLocaleString()}
               </span>
             </div>
-            <div className="w-full h-2.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+            <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-teal-500 via-emerald-500 to-blue-500 transition-all duration-150"
+                className="h-full bg-teal-600 transition-all duration-150"
                 style={{ width: `${totalRows > 0 ? Math.min(100, Math.round((processedCount / totalRows) * 100)) : 0}%` }}
               />
-            </div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium text-left font-mono" dir="ltr">
-              {totalRows > 0 ? Math.min(100, Math.round((processedCount / totalRows) * 100)) : 0}% Completed
             </div>
           </div>
         )}
 
         {/* Summary Card */}
         {importSummary && (
-          <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 space-y-3">
+          <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 space-y-3">
             <div className="flex items-center gap-2 text-emerald-900 dark:text-emerald-200 font-black text-sm">
               <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-              <span>اكتملت عملية الاستيراد والتصفية الذكية بنجاح تام!</span>
+              <span>اكتملت عملية التصفية والإنزال بنجاح في: {importSummary.targetDepartmentLabel}</span>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
-              <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
-                <span className="text-[10px] text-slate-400 block">مراجعين جدد (ONA)</span>
-                <strong className="text-emerald-700 dark:text-emerald-300 text-sm font-mono">{importSummary.newCitizens.toLocaleString()}</strong>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs">
+              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-slate-500 block">مراجعين جدد</span>
+                <strong className="text-emerald-700 dark:text-emerald-300 text-sm font-mono tabular-nums">
+                  {importSummary.newCitizens.toLocaleString()}
+                </strong>
               </div>
-              <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
-                <span className="text-[10px] text-slate-400 block">إجمالي المعاملات المضافة</span>
-                <strong className="text-blue-700 dark:text-blue-300 text-sm font-mono">{importSummary.newRequests.toLocaleString()}</strong>
+              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-slate-500 block">المعاملات المضافة</span>
+                <strong className="text-blue-700 dark:text-blue-300 text-sm font-mono tabular-nums">
+                  {importSummary.newRequests.toLocaleString()}
+                </strong>
               </div>
-              <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
-                <span className="text-[10px] text-slate-400 block">توحيد طلبات مكررة</span>
-                <strong className="text-amber-700 dark:text-amber-300 text-sm font-mono">{importSummary.deduplicatedWithinFile.toLocaleString()}</strong>
+              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-slate-500 block">مستلم من المراجع</span>
+                <strong className="text-emerald-700 dark:text-emerald-300 text-sm font-mono tabular-nums">
+                  {importSummary.deliveredCount.toLocaleString()}
+                </strong>
               </div>
-              <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
-                <span className="text-[10px] text-slate-400 block">شيتات تمت معالجتها</span>
-                <strong className="text-purple-700 dark:text-purple-300 text-sm font-mono">{importSummary.sheetsProcessed}</strong>
+              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-slate-500 block">غير مستلم بعد</span>
+                <strong className="text-amber-700 dark:text-amber-300 text-sm font-mono tabular-nums">
+                  {importSummary.undeliveredCount.toLocaleString()}
+                </strong>
+              </div>
+              <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-slate-500 block">توحيد مكررات</span>
+                <strong className="text-slate-700 dark:text-slate-300 text-sm font-mono tabular-nums">
+                  {(importSummary.deduplicatedWithinFile + (importSummary.skippedDuplicateRequests || 0)).toLocaleString()}
+                </strong>
               </div>
             </div>
 
             {importSummary.detectedMaxOutgoing && (
-              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 text-xs font-bold flex items-center justify-between flex-wrap gap-2">
-                <span>📌 تم رصد أعلى عدد صادر في الملف المستورد:</span>
-                <span className="font-mono text-sm font-black bg-amber-500 text-slate-950 px-2.5 py-0.5 rounded-md">
-                  {importSummary.detectedMaxOutgoing}
-                </span>
-                <span className="text-[11px] text-amber-800 dark:text-amber-300">
-                  (ستبدأ الكتب الإدارية الصادرة الجديدة تلقائياً من: {importSummary.detectedMaxOutgoing + 1})
-                </span>
+              <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200 text-xs font-bold flex items-center justify-between flex-wrap gap-2">
+                <span>تم رصد أعلى عدد صادر في الملف وتحديث تسلسل المكتب تلقائياً:</span>
+                <div className="flex items-center gap-2 font-mono tabular-nums">
+                  <span className="px-2 py-0.5 rounded bg-amber-200/80 text-slate-950 font-black">
+                    آخر صادر بالملف: {importSummary.detectedMaxOutgoing}
+                  </span>
+                  {importSummary.nextOutgoingPreview && (
+                    <span className="px-2 py-0.5 rounded bg-slate-900 text-amber-300 font-black">
+                      الصادر القادم: {importSummary.nextOutgoingPreview}
+                    </span>
+                  )}
+                </div>
               </div>
             )}
 
-            <div className="space-y-1 text-[11px] font-bold">
-              <p className="text-emerald-800 dark:text-emerald-300">
-                ✓ تم حفظ السجلات كأرشيف مكتمل في قاعدة بيانات النظام (معزول عن مهام المدير اليومية وقابل للبحث والتعديل في السجل الشامل).
-              </p>
-              <p className="text-teal-800 dark:text-teal-300">
+            <div className="text-[11px] font-bold text-emerald-800 dark:text-emerald-300 space-y-1">
+              <p>
                 {importSummary.firestoreSaved
-                  ? '✓ تم تثبيت البيانات سحابياً في قاعدة بيانات Firebase بنجاح.'
-                  : '⏳ جاري إكمال التزامن السحابي مع قاعدة البيانات تلقائياً في الخلفية.'}
-                {' • '}
+                  ? '✓ تم تثبيت السجلات سحابياً في قاعدة البيانات المركزية بنجاح.'
+                  : '✓ تم الحفظ المحلي والمزامنة مع الخادم وتجري المزامنة السحابية في الخلفية.'}
+                {' · '}
                 {importSummary.sheetsDispatched
-                  ? '✓ تم إرسال البيانات تلقائياً إلى جداول Google Sheets بنجاح.'
-                  : 'ملاحظة: لترحيلها إلى Google Sheets تلقائياً تأكد من ربط رابط Apps Script أو حساب Google في الإعدادات.'}
+                  ? 'تم إرسال الأعمدة المرتبة إلى Google Sheets.'
+                  : 'يمكنك ترحيلها إلى Google Sheets في أي وقت من لوحة المزامنة.'}
               </p>
             </div>
           </div>
@@ -850,42 +1256,50 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         {previewRows.length > 0 && (
           <div className="space-y-2">
             <h4 className="text-xs font-black text-slate-800 dark:text-slate-200">
-              معاينة عينة من السجلات بعد التصفية والدمج الذكي وتوليد كود ONA:
+              معاينة عينة من السجلات المرتبة في أعمدتها:
             </h4>
-            <div className="space-y-1.5 text-xs">
-              {previewRows.map((item, idx) => (
-                <div key={idx} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-bold text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-900 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">
-                      {item.ona}
-                    </span>
-                    <strong className="text-slate-900 dark:text-white">{item.name}</strong>
-                    <span className="text-slate-400 font-mono text-[11px]" dir="ltr">({item.phone})</span>
-                    <span className="text-[10px] bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded text-slate-600 dark:text-slate-300 font-bold">
-                      شيت: {item.sheetName}
-                    </span>
-                  </div>
-                  <div className="text-[11px] flex items-center gap-1.5">
-                    <span className="line-through text-slate-400">{item.rawEntity}</span>
-                    <ArrowRight className="w-3 h-3 text-teal-600 rotate-180" />
-                    <span className="font-bold text-teal-700 dark:text-teal-300">{item.normalizedEntity}</span>
-                  </div>
-                </div>
-              ))}
+            <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-xl">
+              <table className="w-full text-right text-[11px]">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold">
+                  <tr>
+                    <th className="p-2">ONA</th>
+                    <th className="p-2">صاحب الطلب</th>
+                    <th className="p-2">الدائرة / الوزارة</th>
+                    <th className="p-2">العدد الصادر</th>
+                    <th className="p-2">التاريخ</th>
+                    <th className="p-2">الاستلام</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                  {previewRows.map((item, idx) => (
+                    <tr key={idx} className="bg-white dark:bg-slate-900">
+                      <td className="p-2 font-mono text-blue-600 dark:text-blue-400 font-bold">{item.ona}</td>
+                      <td className="p-2 font-bold text-slate-900 dark:text-white">{item.name}</td>
+                      <td className="p-2 text-teal-700 dark:text-teal-300">{item.normalizedEntity}</td>
+                      <td className="p-2 font-mono tabular-nums">{item.outgoingNumber}</td>
+                      <td className="p-2 font-mono tabular-nums">{item.outgoingDate}</td>
+                      <td className="p-2 font-bold">
+                        <span className={item.deliveryStatus === 'مستلم' ? 'text-emerald-700' : 'text-amber-700'}>
+                          {item.deliveryStatus}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
 
         {/* Footer Actions */}
-        <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100 dark:border-slate-800">
+        <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200 dark:border-slate-800">
           <button
             onClick={onClose}
-            className="px-6 py-2.5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white font-bold text-xs cursor-pointer shadow-xs"
+            className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs cursor-pointer"
           >
             إغلاق النافذة
           </button>
         </div>
-
       </div>
     </div>
   );

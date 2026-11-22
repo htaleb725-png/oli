@@ -28,6 +28,7 @@ import { OrgStatisticsAndReports } from './OrgStatisticsAndReports';
 import { OrgTeamMembersManager } from './OrgTeamMembersManager';
 import { OrgTeamMemberCardModal } from './OrgTeamMemberCardModal';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 
 const INITIAL_TEAM_MEMBERS: OrgTeamMember[] = [
   {
@@ -514,6 +515,10 @@ export const OrganizationModule: React.FC = () => {
             }
           ]}
         />
+      )}
+
+      {activeTab === 'hub' && (
+        <DepartmentAnalyticsDashboard department="organization" compact />
       )}
 
       {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}

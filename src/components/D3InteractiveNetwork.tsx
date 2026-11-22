@@ -30,7 +30,7 @@ const INITIAL_NODES: D3Node[] = [
   { id: 'reception', name: 'الاستعلامات وخدمة المواطنين', category: 'service', val: 19, color: '#3b82f6', glowColor: '#60a5fa', desc: 'استقبال المراجعين وتوثيق الطلبات' },
   { id: 'health', name: 'العلاج والحالات الصحية', category: 'service', val: 14, color: '#ec4899', glowColor: '#f472b6', desc: 'العمليات والتنسيق الطبي' },
   { id: 'tribal', name: 'شؤون العشائر والوجهاء', category: 'service', val: 16, color: '#d97706', glowColor: '#f59e0b', desc: 'التنسيق المجتمعي والعشائري' },
-  { id: 'archive', name: 'الأرشيف والسكنر الذكي', category: 'satellite', val: 13, color: '#6366f1', glowColor: '#818cf8', desc: 'أرشفة الوثائق والصور' },
+  { id: 'archive', name: 'الأرشيف الرقمي الذكي', category: 'satellite', val: 13, color: '#6366f1', glowColor: '#818cf8', desc: 'أرشفة الوثائق والصور' },
   { id: 'cloud_sync', name: 'السحابة وقاعدة البيانات', category: 'satellite', val: 15, color: '#22c55e', glowColor: '#4ade80', desc: 'المزامنة الحية المشفرة' },
   { id: 'director', name: 'الإدارة والمتابعة التنفيذية', category: 'core', val: 18, color: '#e11d48', glowColor: '#fb7185', desc: 'التوجيه والإحالات الرسمية' }
 ];

@@ -69,49 +69,35 @@ const MainAppLayout: React.FC = () => {
     }
   };
 
-  // Dynamic Browser Tab Title, Favicon & Web App Manifest Sync with Developer Customizations
+  // Dynamic Browser Tab Title, Favicon & Server-Served Web App Manifest Sync with Developer Customizations
   React.useEffect(() => {
     if (systemSettings?.appName) {
       document.title = systemSettings.appName;
     }
-    if (systemSettings?.logoUrl) {
-      const favicon = document.querySelector("link[rel='icon']") as HTMLLinkElement;
-      if (favicon) {
-        favicon.href = systemSettings.logoUrl;
-      }
-      const touchIcon = document.querySelector("link[rel='apple-touch-icon']") as HTMLLinkElement;
-      if (touchIcon) {
-        touchIcon.href = systemSettings.logoUrl;
-      }
 
-      // Update Web App Manifest so home screen shortcut icon on mobile & desktop reflects immediately
-      try {
-        const manifestData = {
-          name: systemSettings.appName || 'مكتب النائب علا الناشي',
-          short_name: systemSettings.appName || 'مكتب النائب',
-          start_url: './',
-          display: 'standalone',
-          background_color: '#0f172a',
-          theme_color: '#0f172a',
-          icons: [
-            {
-              src: systemSettings.logoUrl,
-              sizes: '192x192 512x512',
-              type: 'image/png'
-            }
-          ]
-        };
-        const blob = new Blob([JSON.stringify(manifestData)], { type: 'application/json' });
-        const manifestURL = URL.createObjectURL(blob);
-        const manifestLink = document.querySelector("link[rel='manifest']") as HTMLLinkElement;
-        if (manifestLink) {
-          manifestLink.setAttribute('href', manifestURL);
-        }
-      } catch (e) {
-        console.warn('Dynamic manifest sync note:', e);
-      }
+    const versionTag = String(
+      systemSettings?.settingsVersion ||
+        (systemSettings?.logoUrl ? systemSettings.logoUrl.length : 1)
+    );
+    const customLogo = systemSettings?.logoUrl?.trim() || '';
+    const iconHref = customLogo ? `/api/pwa-icon/192?v=${encodeURIComponent(versionTag)}` : './icon.svg';
+
+    const favicon = document.querySelector("link[rel='icon']") as HTMLLinkElement | null;
+    if (favicon) {
+      favicon.href = customLogo.startsWith('data:image/') ? customLogo : iconHref;
     }
-  }, [systemSettings?.appName, systemSettings?.logoUrl]);
+    const touchIcon = document.querySelector("link[rel='apple-touch-icon']") as HTMLLinkElement | null;
+    if (touchIcon) {
+      touchIcon.href = customLogo.startsWith('data:image/') ? customLogo : iconHref;
+    }
+
+    // Point manifest to live server-generated /manifest.json with cache-busting version
+    // (Chromium/Edge Desktop PWA installer requires an HTTP manifest URL, NOT a blob: URL!)
+    const manifestLink = document.querySelector("link[rel='manifest']") as HTMLLinkElement | null;
+    if (manifestLink) {
+      manifestLink.setAttribute('href', `/manifest.json?v=${encodeURIComponent(versionTag)}`);
+    }
+  }, [systemSettings?.appName, systemSettings?.logoUrl, systemSettings?.settingsVersion]);
 
   const handleManualCloudSync = async () => {
     setIsCloudSyncing(true);

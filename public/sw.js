@@ -1,5 +1,5 @@
 // Service Worker for Office Desktop App PWA
-const CACHE_NAME = 'ola-alnashi-office-v4';
+const CACHE_NAME = 'ola-alnashi-office-v5';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -36,12 +36,20 @@ self.addEventListener('fetch', (event) => {
   // Never intercept external services (Firebase, Google APIs, ping endpoints)
   if (!url.startsWith(self.location.origin)) return;
 
-  // NEVER cache or intercept /api/* endpoints (real-time SSE sync, users, settings, blacklist, Drive) or version.json
+  // NEVER cache or intercept /api/* endpoints, dynamic manifest.json, or PWA app icons
   try {
     const parsed = new URL(url);
-    if (parsed.pathname.startsWith('/api/')) return;
+    if (
+      parsed.pathname.startsWith('/api/') ||
+      parsed.pathname === '/manifest.json' ||
+      parsed.pathname.endsWith('/manifest.json') ||
+      parsed.pathname.includes('pwa-icon') ||
+      parsed.pathname.endsWith('/icon.svg')
+    ) {
+      return;
+    }
   } catch {
-    if (url.includes('/api/')) return;
+    if (url.includes('/api/') || url.includes('manifest.json') || url.includes('pwa-icon')) return;
   }
   if (url.includes('version.json') || url.includes('sw-bypass')) return;
 
@@ -62,7 +70,11 @@ self.addEventListener('fetch', (event) => {
           return cachedResponse;
         }
         if (event.request.headers.get('accept')?.includes('text/html')) {
-          return (await caches.match('./index.html')) || (await caches.match('./')) || new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+          return (
+            (await caches.match('./index.html')) ||
+            (await caches.match('./')) ||
+            new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+          );
         }
         return new Response('Network error', { status: 503, headers: { 'Content-Type': 'text/plain' } });
       })

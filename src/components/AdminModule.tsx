@@ -40,7 +40,6 @@ import {
   Briefcase
 } from 'lucide-react';
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
-import { DirectScannerPrinter } from './DirectScannerPrinter';
 import { AiRequestDrafterModal } from './AiRequestDrafterModal';
 import { SmartImageArchiveModule } from './SmartImageArchiveModule';
 import { ReferrersStats } from './ReferrersStats';
@@ -48,12 +47,14 @@ import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
 import { DailyWorkAdminSection } from './DailyWorkAdminSection';
 import { DataCrossMatchingModule } from './DataCrossMatchingModule';
 import { BlacklistModule } from './BlacklistModule';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { SYSTEM_PERMISSIONS } from '../types';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 import { SmartExcelImporterModal } from './SmartExcelImporterModal';
 import { SearchableSelect } from './SearchableSelect';
 import { PlusCircle, FileSpreadsheet, UploadCloud } from 'lucide-react';
 import { printImageIsolated } from '../utils/printReceiptHelper';
+import { computeNextOutgoingNumber, extractOutgoingSequence } from '../utils/outgoingNumberHelper';
 
 export const AdminModule: React.FC = () => {
   const { 
@@ -71,6 +72,7 @@ export const AdminModule: React.FC = () => {
     customSections,
     customRecords,
     systemSettings,
+    updateSystemSettings,
     getDropdownOptions, 
     addDocument,
     currentUser,
@@ -101,13 +103,14 @@ export const AdminModule: React.FC = () => {
     });
   };
 
-  const [activeTab, setActiveTab] = useState<'hub' | 'daily_work' | 'requests_list' | 'reception_citizens' | 'direct_scanner' | 'smart_images' | 'data_cross' | 'blacklist' | 'referrers' | 'department_staff' | 'manage_departments'>('hub');
+  const [activeTab, setActiveTab] = useState<'hub' | 'daily_work' | 'requests_list' | 'reception_citizens' | 'smart_images' | 'data_cross' | 'blacklist' | 'referrers' | 'department_staff' | 'manage_departments'>('hub');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [receptionSearch, setReceptionSearch] = useState('');
   const [selectedEntityFilter, setSelectedEntityFilter] = useState('all');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('all');
   const [selectedPriorityFilter, setSelectedPriorityFilter] = useState('all');
+  const [deliveryFilter, setDeliveryFilter] = useState<'all' | 'مستلم' | 'غير مستلم'>('all');
   const [filterCategory, setFilterCategory] = useState<'all' | 'personal' | 'men' | 'women' | 'independent' | 'dependent'>('all');
   const [directorDecisionFilter, setDirectorDecisionFilter] = useState<'all' | 'pending' | 'special' | 'general' | 'rejected'>('all');
 
@@ -117,9 +120,8 @@ export const AdminModule: React.FC = () => {
   const [editingRequest, setEditingRequest] = useState<OfficeRequest | null>(null);
   const [requestToDelete, setRequestToDelete] = useState<OfficeRequest | null>(null);
   const [citizenToDelete, setCitizenToDelete] = useState<Citizen | null>(null);
-  const [scannerCitizenId, setScannerCitizenId] = useState<string>('');
 
-  // Scanner image in Request state (حفظ صورة الاسكنر كما هي مع توثيق اسم الموظف والتاريخ)
+  // Attached document image in Request state (حفظ صورة الوثيقة كما هي مع توثيق اسم الموظف والتاريخ)
   const [attachedScanImage, setAttachedScanImage] = useState<string | null>(null);
   const [scanUploadedBy, setScanUploadedBy] = useState<string>('');
   const [scanUploadedAt, setScanUploadedAt] = useState<string>('');
@@ -266,9 +268,15 @@ export const AdminModule: React.FC = () => {
       else if (directorDecisionFilter === 'general') matchesDirector = req.DirectorDecision === 'عام';
       else if (directorDecisionFilter === 'rejected') matchesDirector = req.DirectorDecision === 'رفض';
 
-      return matchesSearch && matchesEntity && matchesStatus && matchesPriority && matchesCategory && matchesDirector;
+      const isDelivered = req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم';
+      const matchesDelivery =
+        deliveryFilter === 'all' ||
+        (deliveryFilter === 'مستلم' && isDelivered) ||
+        (deliveryFilter === 'غير مستلم' && !isDelivered);
+
+      return matchesSearch && matchesEntity && matchesStatus && matchesPriority && matchesCategory && matchesDirector && matchesDelivery;
     }).sort((a, b) => parseTs(b) - parseTs(a));
-  }, [requests, searchQuery, selectedEntityFilter, selectedStatusFilter, selectedPriorityFilter, filterCategory, directorDecisionFilter, citizenMap]);
+  }, [requests, searchQuery, selectedEntityFilter, selectedStatusFilter, selectedPriorityFilter, filterCategory, directorDecisionFilter, deliveryFilter, citizenMap]);
 
   const filteredReceptionCitizens = React.useMemo(() => {
     const q = receptionSearch.toLowerCase().trim();
@@ -293,11 +301,6 @@ export const AdminModule: React.FC = () => {
       );
     }).sort((a, b) => parseTs(b) - parseTs(a));
   }, [citizens, receptionSearch]);
-
-  const openScannerForCitizen = (citId: string) => {
-    setScannerCitizenId(citId);
-    setActiveTab('direct_scanner');
-  };
 
   const openReferralForCitizen = (cit: Citizen) => {
     setReferralTargetCitizen(cit);
@@ -404,6 +407,9 @@ export const AdminModule: React.FC = () => {
 
       const nowStamp = new Date().toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
       const currentUploader = currentUser?.FullName || 'موظف الإدارة';
+      const nextOutgoing = computeNextOutgoingNumber(requests, systemSettings);
+      const todayIso = new Date().toISOString().split('T')[0];
+      const deliveryVal: 'مستلم' | 'غير مستلم' = requestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم';
 
       addRequest({
         Citizen_ID: resolvedCitizenId,
@@ -411,7 +417,12 @@ export const AdminModule: React.FC = () => {
         CitizenPhone: cleanPhone || existingMatch?.Phone1 || '',
         CitizenAddress: manualCitizenAddress.trim() || existingMatch?.District || undefined,
         Entity: finalEntity,
+        OutgoingNumber: nextOutgoing.nextNumber,
+        OutgoingDate: todayIso,
         RequestStatus: requestStatus,
+        DeliveryStatus: deliveryVal,
+        DeliveredAt: deliveryVal === 'مستلم' ? todayIso : undefined,
+        DeliveredBy: deliveryVal === 'مستلم' ? currentUploader : undefined,
         ProcessingStatus: processingStatus,
         Priority: priority,
         Details: details,
@@ -426,14 +437,27 @@ export const AdminModule: React.FC = () => {
         ScanUploadedAt: attachedScanImage ? nowStamp : undefined,
         ScanAttachments: attachedScanImage ? [
           {
-            id: `SCAN-${Date.now()}`,
+            id: `DOC-${Date.now()}`,
             url: attachedScanImage,
-            fileName: `مسح ضوئي: ${details.slice(0, 30)}`,
+            fileName: `وثيقة مرفقة: ${details.slice(0, 30)}`,
             uploadedBy: currentUploader,
             uploadedAt: nowStamp
           }
         ] : []
       });
+
+      const nextSeq = extractOutgoingSequence(nextOutgoing.nextNumber).seq;
+      if (nextSeq > 0) {
+        if (systemSettings?.officeBranch === 'suq_al_shuyoukh') {
+          if (nextSeq > (systemSettings?.lastOutgoingNumberSuq || 0)) {
+            updateSystemSettings({ lastOutgoingNumberSuq: nextSeq });
+          }
+        } else {
+          if (nextSeq > (systemSettings?.lastOutgoingNumberNasiriyah || 0)) {
+            updateSystemSettings({ lastOutgoingNumberNasiriyah: nextSeq });
+          }
+        }
+      }
 
       // If document attached, archive automatically
       if (attachmentReq) {
@@ -536,7 +560,7 @@ export const AdminModule: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                سلسلة الإحالات المتكاملة: الاستعلامات ← مدير المكتب ← مدير الإدارة ← مدير التنظيم مع ماسح ضوئي وطباعة مباشرة.
+                سلسلة الإحالات المتكاملة: الاستعلامات ← مدير المكتب ← مدير الإدارة ← مدير التنظيم مع أرشفة رقمية وإحصائيات مباشرة.
               </p>
             </div>
 
@@ -671,18 +695,6 @@ export const AdminModule: React.FC = () => {
               onClick: () => setActiveTab('reception_citizens')
             },
             {
-              id: 'adm_scanner',
-              title: 'ماسح Scanner إلى الطابعة',
-              subtitle: 'سحب المستمسكات والكتب فورياً من الماسح للطابعة',
-              icon: Scan,
-              iconColor: 'text-purple-600 dark:text-purple-400',
-              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
-              onClick: () => {
-                setScannerCitizenId(citizens[0]?.Citizen_ID || '');
-                setActiveTab('direct_scanner');
-              }
-            },
-            {
               id: 'adm_referrers',
               title: 'إحصائيات التزكيات والمعرفين',
               subtitle: 'المصادر والجهات المحيلة وتزكيات المراجعين',
@@ -735,6 +747,9 @@ export const AdminModule: React.FC = () => {
             }
           ]}
         />
+
+        {/* Embedded Professional Department Analytics Dashboard for Admin */}
+        <DepartmentAnalyticsDashboard department="admin" compact />
         </div>
       )}
 
@@ -760,7 +775,6 @@ export const AdminModule: React.FC = () => {
                 {activeTab === 'blacklist' && '🚫 القائمة السوداء (الأشخاص المحظورين)'}
                 {activeTab === 'requests_list' && '📁 جدول المعاملات والطلبات الحكومية'}
                 {activeTab === 'reception_citizens' && '👥 وارد مراجعي الاستعلامات والإحالات'}
-                {activeTab === 'direct_scanner' && '🖨️ سكنر مباشر إلى الطابعة'}
                 {activeTab === 'referrers' && '👥 قسم المعرفين وتزكيات المراجعين'}
                 {activeTab === 'department_staff' && '👥 كادر قسم الإدارة والصلاحيات'}
                 {activeTab === 'manage_departments' && '⚡ إدارة وتطوير أقسام المكتب'}
@@ -817,7 +831,6 @@ export const AdminModule: React.FC = () => {
       {/* Tab: Daily Work (العمل اليومي) */}
       {activeTab === 'daily_work' && (
         <DailyWorkAdminSection
-          onOpenScanner={openScannerForCitizen}
           onOpenSmartArchive={() => setActiveTab('smart_images')}
         />
       )}
@@ -837,14 +850,14 @@ export const AdminModule: React.FC = () => {
         <>
           {/* Filter Bar */}
           <div className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-xs space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
               <div className="relative">
                 <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="بحث برقم الطلب، اسم المواطن..."
+                  placeholder="بحث برقم الطلب، الصادر، الاسم..."
                   className="w-full pr-8 pl-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-xs text-right focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
               </div>
@@ -875,6 +888,18 @@ export const AdminModule: React.FC = () => {
                   <option value="تم الطباعة">تم الطباعة</option>
                   <option value="بانتظار الموافقة">بانتظار الموافقة</option>
                   <option value="مرفوض">مرفوض</option>
+                </select>
+              </div>
+
+              <div>
+                <select
+                  value={deliveryFilter}
+                  onChange={(e) => setDeliveryFilter(e.target.value as 'all' | 'مستلم' | 'غير مستلم')}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold text-right focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-none"
+                >
+                  <option value="all">-- حالة الاستلام (الكل) --</option>
+                  <option value="مستلم">مستلم ✓ (تم التسليم)</option>
+                  <option value="غير مستلم">غير مستلم (بانتظار المواطن)</option>
                 </select>
               </div>
 
@@ -1071,16 +1096,17 @@ export const AdminModule: React.FC = () => {
                     <th className="p-3">موقف وتوجيه مدير المكتب</th>
                     <th className="p-3">تفاصيل وملاحظات الاستعلامات</th>
                     <th className="p-3">المسار الإداري</th>
+                    <th className="p-3">حالة الاستلام</th>
                     <th className="p-3">المرحلة</th>
                     <th className="p-3">الأسبقية</th>
-                    <th className="p-3">المرفقات والاسكنر</th>
+                    <th className="p-3">المرفقات</th>
                     <th className="p-3 text-center">الإجراءات</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
                   {filteredRequests.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="p-8 text-center text-slate-500">
+                      <td colSpan={11} className="p-8 text-center text-slate-500">
                         لا توجد طلبات إدارية مطابقة لخيارات البحث والتصفية.
                       </td>
                     </tr>
@@ -1229,6 +1255,34 @@ export const AdminModule: React.FC = () => {
                           </span>
                         </td>
                         <td className="p-3 whitespace-nowrap">
+                          {(() => {
+                            const isDelivered = req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم';
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const next: 'مستلم' | 'غير مستلم' = isDelivered ? 'غير مستلم' : 'مستلم';
+                                  updateRequest({
+                                    ...req,
+                                    DeliveryStatus: next,
+                                    RequestStatus: next,
+                                    DeliveredAt: next === 'مستلم' ? new Date().toISOString().split('T')[0] : undefined,
+                                    DeliveredBy: next === 'مستلم' ? (currentUser?.FullName || 'موظف الإدارة') : undefined
+                                  });
+                                }}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-black border transition-colors cursor-pointer ${
+                                  isDelivered
+                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                                    : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300'
+                                }`}
+                                title="انقر لتحديث حالة استلام المواطن بعد الإنجاز (مستلم / غير مستلم)"
+                              >
+                                {isDelivered ? 'مستلم ✓' : 'غير مستلم'}
+                              </button>
+                            );
+                          })()}
+                        </td>
+                        <td className="p-3 whitespace-nowrap">
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
                             {req.CurrentStage || 'مدير الإدارة'}
                           </span>
@@ -1253,11 +1307,11 @@ export const AdminModule: React.FC = () => {
                                 citizenName: req.CitizenName
                               })}
                               className="p-1 rounded bg-blue-50/80 border border-blue-200 hover:bg-blue-100/90 transition-all flex items-center gap-1.5 cursor-pointer max-w-[170px]"
-                              title="انقر لمعاينة صورة الاسكنر المحفوظة كما هي مع اسم الموظف والتاريخ"
+                              title="انقر لمعاينة صورة المعاملة المرفقة مع اسم الموظف والتاريخ"
                             >
                               <img 
                                 src={req.AttachedRequestImage} 
-                                alt="اسكنر" 
+                                alt="مرفق" 
                                 className="w-7 h-9 object-cover rounded shadow-2xs border border-slate-200 shrink-0" 
                               />
                               <div className="text-[10px] text-right leading-tight min-w-0">
@@ -1280,14 +1334,6 @@ export const AdminModule: React.FC = () => {
                         </td>
                         <td className="p-3">
                           <div className="flex items-center justify-center gap-1">
-                            <button
-                              onClick={() => openScannerForCitizen(req.Citizen_ID)}
-                              className="px-2 py-1 rounded bg-blue-900 hover:bg-blue-800 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer shadow-2xs"
-                              title="سكنر مباشر للمستندات وطباعة فورية"
-                            >
-                              <Scan className="w-3 h-3 text-blue-300" />
-                              <span>سكنر</span>
-                            </button>
 
                             <button
                               onClick={() => {
@@ -1555,13 +1601,6 @@ export const AdminModule: React.FC = () => {
 
                     {/* Admin Actions for Citizen */}
                     <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2 flex-wrap">
-                      <button
-                        onClick={() => openScannerForCitizen(cit.Citizen_ID)}
-                        className="px-3 py-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-                      >
-                        <Scan className="w-3.5 h-3.5 text-blue-300" />
-                        <span>سكنر وطباعة مباشرة</span>
-                      </button>
 
                       <button
                         onClick={() => openReferralForCitizen(cit)}
@@ -1613,11 +1652,6 @@ export const AdminModule: React.FC = () => {
             )}
           </div>
         </div>
-      )}
-
-      {/* Tab 3: Direct Scanner & Printer (سكنر مباشر الى الطابعة) */}
-      {activeTab === 'direct_scanner' && (
-        <DirectScannerPrinter initialCitizenId={scannerCitizenId} />
       )}
 
       {/* Tab 4: Smart Images Archive (أرشفة واستخراج صور المعاملات 1000 - 2000 صورة) */}
@@ -1691,7 +1725,7 @@ export const AdminModule: React.FC = () => {
               </div>
             </div>
             <span className="text-[11px] text-emerald-800 bg-white px-2.5 py-1 rounded-lg border border-emerald-200 font-bold">
-              أي عملية رفع اسكنر ستوثّق باسم: {currentUser?.FullName}
+              أي عملية رفع وأرشفة ستوثّق باسم: {currentUser?.FullName}
             </span>
           </div>
 
@@ -1705,7 +1739,7 @@ export const AdminModule: React.FC = () => {
                 🔒 نظام حماية الحسابات وتوثيق العمليات:
               </p>
               <p className="text-[11px] text-amber-800">
-                أنت مسجل حالياً باسم الموظف <strong>{currentUser?.FullName}</strong>. تم تأمين النظام بحيث لا يمكن لأي موظف التبديل إلى حساب زميل له في القسم بدون تسجيل الخروج وإدخال الرمز السري الشخصي، وذلك لضمان موثوقية السكنر وسلامة سجل المعاملات.
+                أنت مسجل حالياً باسم الموظف <strong>{currentUser?.FullName}</strong>. تم تأمين النظام بحيث لا يمكن لأي موظف التبديل إلى حساب زميل له في القسم بدون تسجيل الخروج وإدخال الرمز السري الشخصي، وذلك لضمان موثوقية الأرشفة وسلامة سجل المعاملات.
               </p>
             </div>
           </div>
@@ -2173,12 +2207,12 @@ export const AdminModule: React.FC = () => {
                 </div>
               </div>
 
-              {/* Direct Scanner Document Section (حفظ صورة الاسكنر كما هي + اسم الموظف والتاريخ) */}
+              {/* Document Image Attachment Section */}
               <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-blue-950 flex items-center gap-1.5">
-                    <Scan className="w-4 h-4 text-blue-700" />
-                    <span>إرفاق صورة الاسكنر للطلب (حفظ الصورة كما هي مع توثيق اسم الموظف والتاريخ)</span>
+                    <Paperclip className="w-4 h-4 text-blue-700" />
+                    <span>إرفاق صورة المعاملة / الوثيقة الرسمية (مع توثيق اسم الموظف والتاريخ)</span>
                   </label>
                   <span className="text-[10px] text-blue-800 bg-white px-2 py-0.5 rounded font-mono border border-blue-200 font-bold">
                     الموظف الموثق: {currentUser?.FullName || 'موظف الإدارة'}
@@ -2190,13 +2224,13 @@ export const AdminModule: React.FC = () => {
                     <div className="flex items-center gap-3">
                       <img 
                         src={attachedScanImage} 
-                        alt="Scan Preview" 
+                        alt="معاينة المرفق" 
                         className="w-14 h-16 object-cover rounded border border-slate-200 shadow-xs" 
                       />
                       <div className="text-xs space-y-0.5">
                         <div className="font-bold text-slate-800 flex items-center gap-1.5">
                           <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>تم ربط صورة الاسكنر بنجاح</span>
+                          <span>تم إرفاق صورة المعاملة بنجاح</span>
                         </div>
                         <div className="text-[11px] text-slate-600">
                           بواسطة الموظف: <strong className="text-blue-900">{scanUploadedBy || currentUser?.FullName}</strong>
@@ -2213,7 +2247,7 @@ export const AdminModule: React.FC = () => {
                           url: attachedScanImage,
                           uploadedBy: scanUploadedBy || currentUser?.FullName || 'موظف الإدارة',
                           uploadedAt: scanUploadedAt || new Date().toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' }),
-                          requestTitle: details || 'معاينة المسح الضوئي',
+                          requestTitle: details || 'معاينة الوثيقة المرفقة',
                           citizenName: editableCitizenName || 'المواطن'
                         })}
                         className="p-2 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-bold"
@@ -2239,8 +2273,8 @@ export const AdminModule: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <label className="flex-1 border-2 border-dashed border-blue-300 hover:border-blue-500 bg-white rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer transition-colors group">
                       <Upload className="w-5 h-5 text-blue-600 mb-1 group-hover:scale-110 transition-transform" />
-                      <span className="text-xs font-bold text-blue-900">انقر لاختيار صورة المسح الضوئي (Scanner Image)</span>
-                      <span className="text-[10px] text-slate-500">تُحفظ الصورة بدون تغيير ويُسجل اسم الموظف والتاريخ تلقائياً</span>
+                      <span className="text-xs font-bold text-blue-900">انقر لاختيار صورة الوثيقة أو الطلب الرسمي</span>
+                      <span className="text-[10px] text-slate-500">تُحفظ الصورة الأصلية ويُسجل اسم الموظف والتاريخ تلقائياً</span>
                       <input 
                         type="file" 
                         accept="image/*" 
@@ -2430,8 +2464,8 @@ export const AdminModule: React.FC = () => {
             <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
               <div className="space-y-0.5">
                 <h3 className="font-bold text-sm flex items-center gap-2">
-                  <Scan className="w-4 h-4 text-amber-400" />
-                  <span>معاينة صورة الاسكنر الأصلية للطلب</span>
+                  <Paperclip className="w-4 h-4 text-amber-400" />
+                  <span>معاينة صورة المعاملة المرفقة</span>
                 </h3>
                 <p className="text-[11px] text-slate-300">
                   {fullPreviewScan.citizenName} • {fullPreviewScan.requestTitle}

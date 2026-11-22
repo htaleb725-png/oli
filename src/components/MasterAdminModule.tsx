@@ -48,6 +48,7 @@ import {
 } from 'lucide-react';
 import { AiRequestDrafterModal } from './AiRequestDrafterModal';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { 
   initGoogleAuth, 
   googleSignIn, 
@@ -800,6 +801,10 @@ export const MasterAdminModule: React.FC = () => {
             }
           ]}
         />
+      )}
+
+      {activeTab === 'grid' && (
+        <DepartmentAnalyticsDashboard department="executive_all" />
       )}
 
       {/* ---------------- VIEW 2: INDIVIDUAL TOOL WORKSPACE (مع شريط الرجوع للأيقونات) ---------------- */}

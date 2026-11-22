@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { getAllImagesFromDB, ImageRecord } from '../utils/imageDb';
 import { printImageIsolated } from '../utils/printReceiptHelper';
+import { LiveDriveGalleryWidget } from './LiveDriveGalleryWidget';
 
 function normArabicStrict(val: string): string {
   return (val || '')
@@ -298,6 +299,15 @@ export const GlobalSearchArchiveModule: React.FC = () => {
         )}
       </div>
 
+      {/* Live Google Drive Dual Search Results (surfaces matching Drive photos & PDFs immediately when typing a full or partial name) */}
+      {searchQuery.trim().length >= 2 && (
+        <LiveDriveGalleryWidget
+          compact
+          externalSearchQuery={searchQuery.trim()}
+          title={`نتائج البحث الفوري في Google Drive والنظام عن: "${searchQuery.trim()}"`}
+        />
+      )}
+
       {/* 2-Column Split: Citizens List + Citizen Full Dossier */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Left Column: Search Results List (4 Cols) */}
@@ -529,13 +539,50 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                                 صادر: {req.OutgoingNumber} {req.OutgoingDate ? `(${req.OutgoingDate})` : ''}
                               </span>
                             )}
+                            {req.TargetDepartment && (
+                              <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-bold">
+                                {req.TargetDepartment}
+                              </span>
+                            )}
                           </div>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
                               req.ProcessingStatus === 'منجز' ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-amber-50 text-amber-700 border-amber-200'
                             }`}>
                               {req.ProcessingStatus}
                             </span>
+                            {(() => {
+                              const isDelivered = req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم';
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const nextStatus: 'مستلم' | 'غير مستلم' = isDelivered ? 'غير مستلم' : 'مستلم';
+                                    updateRequest({
+                                      ...req,
+                                      DeliveryStatus: nextStatus,
+                                      RequestStatus: nextStatus,
+                                      DeliveredAt: nextStatus === 'مستلم' ? new Date().toISOString().split('T')[0] : undefined,
+                                      DeliveredBy: currentUser?.FullName || 'موظف الأرشيف'
+                                    });
+                                    setNoticeBanner(
+                                      nextStatus === 'مستلم'
+                                        ? `تم توثيق استلام المواطن للطلب (${req.OutgoingNumber || req.Request_ID}).`
+                                        : `تم تغيير حالة التسليم إلى «غير مستلم» للطلب (${req.OutgoingNumber || req.Request_ID}).`
+                                    );
+                                    setTimeout(() => setNoticeBanner(null), 3500);
+                                  }}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-black border transition-colors cursor-pointer ${
+                                    isDelivered
+                                      ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700'
+                                      : 'bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100'
+                                  }`}
+                                  title="انقر لتبديل حالة استلام المواطن بعد الإنجاز (مستلم / غير مستلم)"
+                                >
+                                  {isDelivered ? 'مستلم ✓' : 'غير مستلم'}
+                                </button>
+                              );
+                            })()}
                             <button
                               type="button"
                               onClick={() => setEditingArchivedReq({ ...req })}
@@ -794,6 +841,15 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                   )}
                 </div>
               </div>
+
+              {/* Citizen's Live Google Drive Matching Documents & Photos */}
+              {selectedCitizen && !searchQuery.trim() && (
+                <LiveDriveGalleryWidget
+                  compact
+                  externalSearchQuery={selectedCitizen.FullName}
+                  title={`وثائق وصور "${selectedCitizen.FullName}" في مجلد Google Drive`}
+                />
+              )}
             </div>
           ) : (
             <div className="p-12 text-center bg-white rounded-xl border border-slate-200 text-slate-500 text-xs shadow-xs">
@@ -1048,7 +1104,7 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-900"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">رقم الكتاب / الصادر</label>
                   <input
@@ -1066,6 +1122,25 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                     onChange={e => setEditingArchivedReq({ ...editingArchivedReq, ProcessingStatus: e.target.value })}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-900"
                   />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">حالة الاستلام (بعد الإنجاز)</label>
+                  <select
+                    value={editingArchivedReq.DeliveryStatus || (editingArchivedReq.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم')}
+                    onChange={e => {
+                      const val = e.target.value as 'مستلم' | 'غير مستلم';
+                      setEditingArchivedReq({
+                        ...editingArchivedReq,
+                        DeliveryStatus: val,
+                        RequestStatus: val,
+                        DeliveredAt: val === 'مستلم' ? (editingArchivedReq.DeliveredAt || new Date().toISOString().split('T')[0]) : undefined
+                      });
+                    }}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-900 font-bold"
+                  >
+                    <option value="غير مستلم">غير مستلم</option>
+                    <option value="مستلم">مستلم ✓</option>
+                  </select>
                 </div>
               </div>
               <div>

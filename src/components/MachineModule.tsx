@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { OfficeRequest } from '../types';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { printElementIsolated } from '../utils/printReceiptHelper';
 
 interface OfficialLetter {
@@ -274,6 +275,9 @@ export const MachineModule: React.FC = () => {
               }
             ]}
           />
+
+          {/* Embedded Professional Analytics Dashboard for Machine */}
+          <DepartmentAnalyticsDashboard department="machine" compact />
         </div>
       )}
 

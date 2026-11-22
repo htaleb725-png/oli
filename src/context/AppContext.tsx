@@ -21,7 +21,8 @@ import {
   CustomSectionRecord,
   CustomFieldDefinition,
   UiCustomizationSettings,
-  SmartArchiveDossierData
+  SmartArchiveDossierData,
+  UrgentNotification
 } from '../types';
 import {
   fsSaveCitizen,
@@ -53,6 +54,9 @@ import {
   fsBulkPushAll,
   fsBulkPullAll,
   fsBulkSaveCitizensAndRequests,
+  fsSaveNotification,
+  fsMarkNotificationRead,
+  fsDeleteNotification,
   fsWatchCollection,
   isFirestoreTemporarilyBlocked,
   FS_COLLECTIONS
@@ -74,7 +78,7 @@ import {
 } from '../data/initialData';
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
-import { pushToGoogleSheetsRealtime, pushBulkDataToGoogleSheets, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets } from '../services/realtimeGoogleSync';
+import { pushToGoogleSheetsRealtime, pushBulkDataToGoogleSheets, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets, setRuntimeCloudConfig } from '../services/realtimeGoogleSync';
 import { sheetsIntegration } from '../services/sheetsIntegrationLayer';
 import { 
   loginAndSetupDeveloperCloud, 
@@ -206,21 +210,13 @@ export const recordDeletedId = (id: string) => {
   } catch {}
 };
 
-export interface UrgentNotification {
-  id: string;
-  title: string;
-  message: string;
-  timestamp: string;
-  type: 'urgent_request' | 'urgent_interview' | 'system';
-  linkSection?: string;
-  read: boolean;
-}
+export type { UrgentNotification } from '../types';
 
 interface AppContextType {
   currentUser: User | null;
   setCurrentUser: (user: User | null) => void;
   users: User[];
-  login: (usernameOrCode: string, pass?: string) => Promise<boolean>;
+  login: (usernameOrCode: string, pass?: string, mode?: 'passcode' | 'credentials') => Promise<boolean>;
   lastLoginError: string | null;
   logout: () => void;
   switchUser: (user: User) => void;
@@ -296,8 +292,11 @@ interface AppContextType {
   updateSystemSettings: (settings: Partial<SystemSettings>) => void;
 
   notifications: UrgentNotification[];
+  addNotification: (notif: Omit<UrgentNotification, 'id' | 'timestamp' | 'read'> & { id?: string; timestamp?: string; read?: boolean }) => void;
+  markNotificationAsRead: (id: string) => void;
   dismissNotification: (id: string) => void;
   markAllNotificationsAsRead: () => void;
+  clearReadNotifications: () => void;
 
   departmentGreeting: { title: string; message: string; date: string } | null;
   setDepartmentGreeting: (val: { title: string; message: string; date: string } | null) => void;
@@ -942,26 +941,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [whatsappTemplates] = useState<WhatsAppTemplate[]>(INITIAL_WHATSAPP_TEMPLATES);
 
-  const [notifications, setNotifications] = useState<UrgentNotification[]>([
-    {
-      id: 'N-01',
-      title: 'طلب عاجل مسجل حديثاً',
-      message: 'طلب عاجل للمواطن محمد الخفاجي موجه لوزارة العمل والشؤون الاجتماعية',
-      timestamp: 'قبل قليل',
-      type: 'urgent_request',
-      linkSection: 'admin',
-      read: false
-    },
-    {
-      id: 'N-02',
-      title: 'مقابلة برلمانية مهمة',
-      message: 'مقابلة قادمة ذات أولوية خاصة جداً لمتابعة ملف خريجي سوق الشيوخ',
-      timestamp: 'اليوم',
-      type: 'urgent_interview',
-      linkSection: 'interviews',
-      read: false
-    }
-  ]);
+  const [notifications, setNotifications] = useState<UrgentNotification[]>([]);
 
   const [printableCitizenCard, setPrintableCitizenCard] = useState<Citizen | null>(null);
   const [printableBadgeCitizen, setPrintableBadgeCitizen] = useState<Citizen | null>(null);
@@ -970,156 +950,86 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isDesktopInstallModalOpen, setIsDesktopInstallModalOpen] = useState<boolean>(false);
   const [isSystemWipeModalOpen, setIsSystemWipeModalOpen] = useState<boolean>(false);
 
-  // Sync state changes safely & asynchronously to localStorage (debounced so bulk operations never freeze the UI)
+  // Cloud-First Architecture: propagate Firestore settings (Apps Script URL, Google Sheet ID, Drive Folder ID)
+  // straight into in-memory cloud config so Vercel & every browser uses Cloud DB (Firestore + Google Sheets + Drive)
+  // rather than storing business data inside Chrome localStorage.
   useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', () => JSON.stringify(systemSettings), 200);
-  }, [systemSettings]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', () => JSON.stringify(users), 200);
-  }, [users]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', () => JSON.stringify(citizens), 400);
-  }, [citizens]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(
-      STORAGE_KEY_PREFIX + 'requests',
-      () => JSON.stringify(sanitizeRequestsForStorage(requests)),
-      450
-    );
-  }, [requests]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', () => JSON.stringify(cheques), 300);
-  }, [cheques]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', () => JSON.stringify(interviews), 300);
-  }, [interviews]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', () => JSON.stringify(organizationRecords), 300);
-  }, [organizationRecords]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', () => JSON.stringify(dropdowns), 250);
-  }, [dropdowns]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'audit', () => JSON.stringify(auditLogs.slice(0, 100)), 500);
-  }, [auditLogs]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'dynamic_fields', () => JSON.stringify(dynamicFields), 300);
-  }, [dynamicFields]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'documents', () => JSON.stringify(documents), 300);
-  }, [documents]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', () => JSON.stringify(officialLetters), 300);
-  }, [officialLetters]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', () => JSON.stringify(customSections), 250);
-  }, [customSections]);
-
-  useEffect(() => {
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', () => JSON.stringify(customRecords), 300);
-  }, [customRecords]);
+    setRuntimeCloudConfig({
+      appsScriptUrl: systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl,
+      googleSheetId: systemSettings.googleSheetId || systemSettings.activeGoogleSheetId,
+      googleDriveFolderId: systemSettings.googleDriveFolderId
+    });
+    if (systemSettings.googleDriveFolderId && systemSettings.googleDriveFolderId !== driveFolderId) {
+      setDriveFolderId(systemSettings.googleDriveFolderId);
+    }
+    if (systemSettings.googleSheetId && systemSettings.googleSheetId !== spreadsheetId) {
+      setSpreadsheetId(systemSettings.googleSheetId);
+    }
+  }, [
+    systemSettings.appsScriptUrl,
+    systemSettings.googleAppsScriptUrl,
+    systemSettings.googleSheetId,
+    systemSettings.activeGoogleSheetId,
+    systemSettings.googleDriveFolderId
+  ]);
 
   // Real-Time Firestore & Shared Server Synchronization Listeners
-  // Runs immediately on mount without waiting for anonymous auth so shared links stay synced in real time
+  // Runs immediately on mount so Vercel, AI Studio, and Desktop PWA stay synced live from Cloud Firestore
   useEffect(() => {
     const unsubs: (() => void)[] = [];
 
     const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items) => {
       if (Array.isArray(items) && items.length > 0) {
-        setCitizens(prev => {
-          const merged = mergeCitizens(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
-          return merged;
-        });
+        setCitizens(prev => mergeCitizens(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubCitizens);
 
     const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items) => {
       if (Array.isArray(items) && items.length > 0) {
-        setRequests(prev => {
-          const merged = mergeRequests(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
-          return merged;
-        });
+        setRequests(prev => mergeRequests(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubRequests);
 
     const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items) => {
       if (Array.isArray(items) && items.length > 0) {
-        setInterviews(prev => {
-          const merged = mergeInterviews(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
-          return merged;
-        });
+        setInterviews(prev => mergeInterviews(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubInterviews);
 
     const unsubLetters = fsWatchCollection<OfficialLetter>(FS_COLLECTIONS.LETTERS, (items) => {
       if (Array.isArray(items) && items.length > 0) {
-        setOfficialLetters(prev => {
-          const merged = mergeOfficialLetters(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
-          return merged;
-        });
+        setOfficialLetters(prev => mergeOfficialLetters(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubLetters);
 
     const unsubCheques = fsWatchCollection<ChequeRecord>(FS_COLLECTIONS.CHEQUES, (items) => {
       if (Array.isArray(items) && items.length > 0) {
-        setCheques(prev => {
-          const merged = mergeCheques(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
-          return merged;
-        });
+        setCheques(prev => mergeCheques(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubCheques);
 
     const unsubOrgs = fsWatchCollection<OrganizationRecord>(FS_COLLECTIONS.ORGANIZATIONS, (items) => {
       if (Array.isArray(items) && items.length > 0) {
-        setOrganizationRecords(prev => {
-          const merged = mergeOrganizationRecords(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
-          return merged;
-        });
+        setOrganizationRecords(prev => mergeOrganizationRecords(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubOrgs);
 
     const unsubSections = fsWatchCollection<CustomSection>(FS_COLLECTIONS.CUSTOM_SECTIONS, (items) => {
       if (Array.isArray(items) && items.length > 0) {
-        setCustomSections(prev => {
-          const merged = mergeCustomSections(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(merged));
-          return merged;
-        });
+        setCustomSections(prev => mergeCustomSections(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubSections);
 
     const unsubRecords = fsWatchCollection<CustomSectionRecord>(FS_COLLECTIONS.CUSTOM_RECORDS, (items) => {
       if (Array.isArray(items) && items.length > 0) {
-        setCustomRecords(prev => {
-          const merged = mergeCustomRecords(prev, items, getStoredDeletedIds());
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(merged));
-          return merged;
-        });
+        setCustomRecords(prev => mergeCustomRecords(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubRecords);
@@ -1127,11 +1037,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items) => {
       if (Array.isArray(items) && items.length > 0) {
         const deletedIds = getStoredDeletedIds();
-        setUsers(prev => {
-          const merged = mergeUsers(prev, items, deletedIds);
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(merged));
-          return merged;
-        });
+        setUsers(prev => mergeUsers(prev, items, deletedIds));
       }
     });
     unsubs.push(unsubUsers);
@@ -1142,22 +1048,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
           const added = items.filter(d => d && d.Category && d.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
           if (added.length === 0) return prev;
-          const merged = [...prev, ...added];
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', JSON.stringify(merged));
-          return merged;
+          return [...prev, ...added];
         });
       }
     });
     unsubs.push(unsubDropdowns);
 
+    const unsubNotifications = fsWatchCollection<UrgentNotification>(FS_COLLECTIONS.NOTIFICATIONS, (items) => {
+      if (Array.isArray(items)) {
+        const sorted = items
+          .filter(n => n && n.id && n.title)
+          .sort((a, b) => (Date.parse(b.createdAtIso || '') || 0) - (Date.parse(a.createdAtIso || '') || 0))
+          .slice(0, 80);
+        setNotifications(sorted);
+      }
+    });
+    unsubs.push(unsubNotifications);
+
     const unsubSettings = fsWatchCollection<any>(FS_COLLECTIONS.SETTINGS, (docs) => {
-      const mainDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements));
+      const mainDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements || d.googleDriveFolderId || d.appsScriptUrl));
       if (mainDoc) {
-        setSystemSettings(prev => {
-          const merged = { ...prev, ...mainDoc };
-          safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(merged));
-          return merged;
+        setRuntimeCloudConfig({
+          appsScriptUrl: mainDoc.appsScriptUrl || mainDoc.googleAppsScriptUrl,
+          googleSheetId: mainDoc.googleSheetId || mainDoc.activeGoogleSheetId,
+          googleDriveFolderId: mainDoc.googleDriveFolderId
         });
+        setSystemSettings(prev => ({ ...prev, ...mainDoc }));
       }
     });
     unsubs.push(unsubSettings);
@@ -1365,6 +1281,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               );
               return added.length > 0 ? [...prev, ...added] : prev;
             });
+          }
+
+          // Mirror server records to Cloud Firestore once on startup so Vercel & all external links immediately see them
+          if (allowInitialSeedPush && ((Array.isArray(s.citizens) && s.citizens.length > 0) || (Array.isArray(s.requests) && s.requests.length > 0))) {
+            fsBulkSaveCitizensAndRequests(s.citizens || [], s.requests || []).catch(() => {});
           }
 
           // One-time initial push if server store is empty but this browser already holds saved data
@@ -1739,104 +1660,73 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshAllDataFromAllSources = async () => {
     const deletedIds = getStoredDeletedIds();
 
-    // 1. Safe hydration from localStorage - merge with current state rather than replacing
+    // 1. CLOUD-FIRST: Pull authoritative data directly from Firebase Firestore FIRST (works identically on Vercel & every browser!)
+    let cloudSettings: Partial<SystemSettings> | undefined;
     try {
-      const savedCitizens = localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens');
-      if (savedCitizens) {
-        const parsed = JSON.parse(savedCitizens);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setCitizens(prev => mergeCitizens(prev, parsed, deletedIds));
-        }
+      const fsResult = await fetchAllFromFirestoreNow();
+      cloudSettings = fsResult.systemSettings;
+      if (cloudSettings) {
+        setRuntimeCloudConfig({
+          appsScriptUrl: cloudSettings.appsScriptUrl || cloudSettings.googleAppsScriptUrl,
+          googleSheetId: cloudSettings.googleSheetId || cloudSettings.activeGoogleSheetId,
+          googleDriveFolderId: cloudSettings.googleDriveFolderId
+        });
       }
-    } catch {}
+    } catch (e) {
+      console.warn('Cloud Firestore hydration notice:', e);
+    }
 
+    // 2. CLOUD-SECOND: Pull from Google Sheets using Firestore-hydrated Apps Script URL / Sheet ID (so Vercel gets Sheets data too!)
     try {
-      const savedRequests = localStorage.getItem(STORAGE_KEY_PREFIX + 'requests');
-      if (savedRequests) {
-        const parsed = JSON.parse(savedRequests);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setRequests(prev => mergeRequests(prev, parsed, deletedIds));
-        }
-      }
-    } catch {}
-
-    try {
-      const savedInterviews = localStorage.getItem(STORAGE_KEY_PREFIX + 'interviews');
-      if (savedInterviews) {
-        const parsed = JSON.parse(savedInterviews);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setInterviews(prev => mergeInterviews(prev, parsed, deletedIds));
-        }
-      }
-    } catch {}
-
-    try {
-      const savedLetters = localStorage.getItem(STORAGE_KEY_PREFIX + 'letters');
-      if (savedLetters) {
-        const parsed = JSON.parse(savedLetters);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setOfficialLetters(prev => mergeOfficialLetters(prev, parsed, deletedIds));
-        }
-      }
-    } catch {}
-
-    try {
-      const savedCheques = localStorage.getItem(STORAGE_KEY_PREFIX + 'cheques');
-      if (savedCheques) {
-        const parsed = JSON.parse(savedCheques);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setCheques(prev => mergeCheques(prev, parsed, deletedIds));
-        }
-      }
-    } catch {}
-
-    try {
-      const savedOrgs = localStorage.getItem(STORAGE_KEY_PREFIX + 'org');
-      if (savedOrgs) {
-        const parsed = JSON.parse(savedOrgs);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setOrganizationRecords(prev => mergeOrganizationRecords(prev, parsed, deletedIds));
-        }
-      }
-    } catch {}
-
-    try {
-      const savedCustomSections = localStorage.getItem(STORAGE_KEY_PREFIX + 'custom_sections');
-      if (savedCustomSections) {
-        const parsed = JSON.parse(savedCustomSections);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setCustomSections(prev => mergeCustomSections(prev, parsed, deletedIds));
-        }
-      }
-    } catch {}
-
-    try {
-      const savedCustomRecords = localStorage.getItem(STORAGE_KEY_PREFIX + 'custom_records');
-      if (savedCustomRecords) {
-        const parsed = JSON.parse(savedCustomRecords);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setCustomRecords(prev => mergeCustomRecords(prev, parsed, deletedIds));
-        }
-      }
-    } catch {}
-
-    // 2. Fetch from Google Sheets if configured
-    try {
-      const targetSheet = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-      const targetScript = systemSettings.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+      const targetSheet =
+        cloudSettings?.googleSheetId ||
+        cloudSettings?.activeGoogleSheetId ||
+        systemSettings.googleSheetId ||
+        (import.meta as any).env?.VITE_GOOGLE_SHEET_ID ||
+        '';
+      const targetScript =
+        cloudSettings?.appsScriptUrl ||
+        cloudSettings?.googleAppsScriptUrl ||
+        systemSettings.appsScriptUrl ||
+        (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
+        '';
       if (targetSheet || targetScript) {
-        await fetchAllFromGoogleSheetsNow();
+        await fetchAllFromGoogleSheetsNow(targetScript, targetSheet);
       }
     } catch (e) {
-      console.warn('Background Google Sheets load:', e);
+      console.warn('Background Google Sheets hydration notice:', e);
     }
 
-    // 3. Fetch from Firestore if active
+    // 3. One-time safe migration of any legacy browser-only records up to Cloud Firestore (never leaves data trapped in Chrome!)
     try {
-      await fetchAllFromFirestoreNow();
-    } catch (e) {
-      console.warn('Background Firestore load:', e);
-    }
+      const legacyCitizensRaw = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens') : null;
+      const legacyRequestsRaw = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'requests') : null;
+      const legacyCitizens: Citizen[] = legacyCitizensRaw ? JSON.parse(legacyCitizensRaw) : [];
+      const legacyRequests: OfficeRequest[] = legacyRequestsRaw ? JSON.parse(legacyRequestsRaw) : [];
+      const realLegacyCitizens = Array.isArray(legacyCitizens)
+        ? legacyCitizens.filter(c => c && c.Citizen_ID && !deletedIds.has(c.Citizen_ID) && !String(c.Citizen_ID).startsWith('CIT-00'))
+        : [];
+      const realLegacyRequests = Array.isArray(legacyRequests)
+        ? legacyRequests.filter(r => r && r.Request_ID && !deletedIds.has(r.Request_ID))
+        : [];
+      if (realLegacyCitizens.length > 0 || realLegacyRequests.length > 0) {
+        if (realLegacyCitizens.length > 0) setCitizens(prev => mergeCitizens(prev, realLegacyCitizens, deletedIds));
+        if (realLegacyRequests.length > 0) setRequests(prev => mergeRequests(prev, realLegacyRequests, deletedIds));
+        // Migrate up to Firestore & clear heavy Chrome storage once cloud push completes
+        fsBulkSaveCitizensAndRequests(realLegacyCitizens, realLegacyRequests)
+          .then(res => {
+            if (res.success) {
+              try {
+                [
+                  'citizens', 'requests', 'interviews', 'letters', 'cheques',
+                  'org', 'documents', 'audit', 'custom_records'
+                ].forEach(k => localStorage.removeItem(STORAGE_KEY_PREFIX + k));
+              } catch {}
+            }
+          })
+          .catch(() => {});
+      }
+    } catch {}
   };
 
   const triggerSessionDataLoad = (customMsg?: string) => {
@@ -1897,12 +1787,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const login = async (usernameOrCode: string, pass?: string): Promise<boolean> => {
+  const login = async (
+    usernameOrCode: string,
+    pass?: string,
+    mode?: 'passcode' | 'credentials'
+  ): Promise<boolean> => {
     setLastLoginError(null);
     const normalizeDigits = (val: string) =>
-      (val || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
+      (val || '')
+        .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+        .replace(/[۰-۹]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString())
+        .trim();
     const normalizeName = (val: string) =>
       normalizeDigits(val)
+        .replace(/[\u064B-\u065F\u0670]/g, '')
         .replace(/[أإآ]/g, 'ا')
         .replace(/ة/g, 'ه')
         .replace(/ى/g, 'ي')
@@ -1913,9 +1811,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const cleanPass = normalizeDigits(pass || '');
     const rawCode = normalizeDigits(pass || usernameOrCode || '');
     const currentDevCode = normalizeDigits(developerPasscode || systemSettings.developerPasscode || '2026');
-    const isDualMode = Boolean(cleanUser && cleanPass && cleanUser !== normalizeName(cleanPass));
+    const isDualMode =
+      mode === 'credentials'
+        ? true
+        : mode === 'passcode'
+          ? false
+          : Boolean(cleanUser && cleanPass && cleanUser !== normalizeName(cleanPass));
 
-    const matchLocalUser = (): { user?: User; frozen?: boolean } => {
+    const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> =>
+      Promise.race([
+        promise.catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))
+      ]);
+
+    const mirrorMatchedUserToServer = (matchedUser: User) => {
+      try {
+        fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(matchedUser)
+        }).catch(() => {});
+      } catch {
+        // ignore background mirror errors
+      }
+    };
+
+    const matchLocalUser = (): { user?: User; frozen?: boolean; wrongPassword?: boolean } => {
+      let matchedNameOnly = false;
       for (const u of users) {
         if (!u) continue;
         const uName = normalizeName(u.Username || '');
@@ -1926,31 +1848,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (isDualMode) {
           const userMatched =
-            cleanUser === uName ||
-            cleanUser === uId ||
-            cleanUser === uFull ||
+            (uName && cleanUser === uName) ||
+            (uId && cleanUser === uId) ||
+            (uFull && cleanUser === uFull) ||
             (uPhone && cleanUser === uPhone);
-          if (userMatched && uPass && cleanPass === uPass) {
-            if (u.Status === 'frozen') return { frozen: true };
-            return { user: u };
+          if (userMatched) {
+            const passMatched =
+              (uPass && (cleanPass === uPass || cleanPass.toLowerCase() === uPass.toLowerCase())) ||
+              (u.Role === 'developer' && currentDevCode && cleanPass === currentDevCode);
+            if (passMatched) {
+              if (u.Status === 'frozen') return { frozen: true };
+              return { user: u };
+            }
+            matchedNameOnly = true;
           }
         } else {
-          if (rawCode && ((uPass && rawCode === uPass) || (uId && rawCode.toLowerCase() === uId))) {
+          if (
+            rawCode &&
+            ((uPass && (rawCode === uPass || rawCode.toLowerCase() === uPass.toLowerCase())) ||
+              (uId && rawCode.toLowerCase() === uId))
+          ) {
             if (u.Status === 'frozen') return { frozen: true };
             return { user: u };
           }
         }
       }
-      return {};
+      return { wrongPassword: matchedNameOnly };
     };
 
-    // 1. LIVE SERVER DATABASE CHECK FIRST (/api/auth/login — authoritative for changed passcodes & shared users!)
+    let sawWrongPassword = false;
+
+    // 1. LIVE SERVER DATABASE CHECK FIRST (/api/auth/login — authoritative, fast 4s timeout)
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
       const serverRes = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ usernameOrCode: usernameOrCode.trim(), password: (pass || '').trim() })
+        body: JSON.stringify({
+          usernameOrCode: usernameOrCode.trim(),
+          password: (pass || '').trim(),
+          mode: isDualMode ? 'credentials' : 'passcode'
+        }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
+
       if (serverRes.ok) {
         const serverData = await serverRes.json();
         if (serverData?.frozen) {
@@ -1959,7 +1902,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (serverData?.success) {
           if (serverData.isDeveloper && !serverData.user) {
-            const devUser = users.find(u => u.Role === 'developer') || INITIAL_USERS[0];
+            const devUser = users.find((u) => u.Role === 'developer') || INITIAL_USERS[0];
             activateUserSession(devUser, 'تمت مطابقة رمز المطور المعتمد');
             return true;
           }
@@ -1968,89 +1911,89 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             activateUserSession(serverData.user, 'تمت مطابقة الحساب والصلاحيات من قاعدة بيانات الخادم');
             return true;
           }
+        } else if (serverData?.reason === 'wrong_password') {
+          sawWrongPassword = true;
         }
       }
     } catch {
-      // Server endpoint unavailable — continue to local & cloud checks
+      // Server endpoint unavailable or timed out — continue seamlessly to local & cloud checks
     }
 
-    // 2. DEVELOPER PASSCODE CHECK (strictly honors current custom developerPasscode — NO hardcoded backdoor once changed!)
-    const devAccount = users.find(u => u.Role === 'developer');
+    // 2. DEVELOPER PASSCODE CHECK (strictly honors active custom developerPasscode)
+    const devAccount = users.find((u) => u.Role === 'developer');
     const devAccountPass = normalizeDigits(devAccount?.Password || '');
     const activeDevPass = currentDevCode || devAccountPass || '2026';
     if (
       (!isDualMode && rawCode && (rawCode === activeDevPass || (devAccountPass && rawCode === devAccountPass))) ||
-      (isDualMode && (cleanUser === 'developer' || (devAccount && cleanUser === normalizeName(devAccount.Username))) && (cleanPass === activeDevPass || (devAccountPass && cleanPass === devAccountPass)))
+      (isDualMode &&
+        (cleanUser === 'developer' ||
+          cleanUser === 'المطور' ||
+          (devAccount && cleanUser === normalizeName(devAccount.Username))) &&
+        (cleanPass === activeDevPass || (devAccountPass && cleanPass === devAccountPass)))
     ) {
       const devUser = devAccount || INITIAL_USERS[0];
       activateUserSession(devUser, 'تم الدخول برمز المطور المعتمد');
       return true;
     }
 
-    // 3. LIVE FIREBASE FIRESTORE CHECK (server-first read so updated permissions always apply immediately)
-    try {
-      const fsResult = await fsVerifyLogin(usernameOrCode, pass);
-      if (fsResult.frozen) {
-        setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
-        return false;
-      }
-      if (fsResult.success) {
-        if (fsResult.isDeveloper && !fsResult.user) {
-          const devUser = users.find(u => u.Role === 'developer') || INITIAL_USERS[0];
-          activateUserSession(devUser, 'تمت مطابقة الرمز بنجاح مع قاعدة بيانات Firebase');
-          return true;
-        }
-        if (fsResult.user) {
-          upsertMatchedUserLocally(fsResult.user);
-          activateUserSession(fsResult.user, 'تمت مطابقة المستخدم بنجاح من قاعدة بيانات Firebase');
-          return true;
-        }
-      }
-    } catch (fsErr) {
-      console.warn('Firebase login verification notice:', fsErr);
-    }
-
-    // 4. LIVE GOOGLE SHEETS / APPS SCRIPT CHECK
-    try {
-      const gsResult = await verifyLoginWithGoogleSheets(
-        usernameOrCode,
-        pass,
-        systemSettings.appsScriptUrl,
-        systemSettings.googleSheetId
-      );
-      if (gsResult.frozen) {
-        setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
-        return false;
-      }
-      if (gsResult.success) {
-        if (gsResult.isDeveloper && !gsResult.user) {
-          const devUser = users.find(u => u.Role === 'developer') || INITIAL_USERS[0];
-          activateUserSession(devUser, 'تمت مطابقة الرمز بنجاح مع جدول Google Sheets');
-          return true;
-        }
-        if (gsResult.user) {
-          upsertMatchedUserLocally(gsResult.user);
-          activateUserSession(gsResult.user, 'تمت مطابقة المستخدم بنجاح من جدول Google Sheets');
-          return true;
-        }
-      }
-    } catch (gsErr) {
-      console.warn('Google Sheets login verification notice:', gsErr);
-    }
-
-    // 5. LOCAL USERS FALLBACK (same device or offline cache)
+    // 3. LOCAL USERS FAST CHECK (immediate success if user exists locally and isn't frozen)
     const localMatch = matchLocalUser();
     if (localMatch.frozen) {
       setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
       return false;
     }
     if (localMatch.user) {
+      mirrorMatchedUserToServer(localMatch.user);
       activateUserSession(localMatch.user, 'تمت مطابقة الحساب بنجاح');
       return true;
     }
+    if (localMatch.wrongPassword) {
+      sawWrongPassword = true;
+    }
 
-    // 6. Strict authentication — old hardcoded passcodes are never accepted once changed
-    setLastLoginError('اسم المستخدم أو الرمز السري غير صحيح. تأكد من إدخال الرمز المعتمد حالياً.');
+    // 4. PARALLEL CLOUD CHECK (Firebase Firestore + Google Sheets in parallel with 5s cap so login never hangs!)
+    const [fsResult, gsResult] = await Promise.all([
+      withTimeout(fsVerifyLogin(usernameOrCode, pass), 5000),
+      withTimeout(
+        verifyLoginWithGoogleSheets(
+          usernameOrCode,
+          pass,
+          systemSettings.appsScriptUrl,
+          systemSettings.googleSheetId
+        ),
+        5000
+      )
+    ]);
+
+    for (const cloudRes of [fsResult, gsResult]) {
+      if (!cloudRes) continue;
+      if (cloudRes.frozen) {
+        setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
+        return false;
+      }
+      if (cloudRes.success) {
+        if (cloudRes.isDeveloper && !cloudRes.user) {
+          const devUser = users.find((u) => u.Role === 'developer') || INITIAL_USERS[0];
+          activateUserSession(devUser, 'تمت مطابقة رمز المطور السحابي بنجاح');
+          return true;
+        }
+        if (cloudRes.user) {
+          upsertMatchedUserLocally(cloudRes.user);
+          mirrorMatchedUserToServer(cloudRes.user);
+          activateUserSession(cloudRes.user, 'تمت مطابقة الحساب من القاعدة السحابية بنجاح');
+          return true;
+        }
+      }
+    }
+
+    // 5. Clear contextual error message
+    setLastLoginError(
+      sawWrongPassword
+        ? 'كلمة المرور أو الرمز السري غير صحيح لهذا الحساب. يرجى التأكد من الرمز والمحاولة مجدداً.'
+        : isDualMode
+          ? 'اسم المستخدم أو كلمة المرور غير صحيحة. تأكد من كتابتهما بدقة أو راجع المطور لتفعيل الحساب.'
+          : 'الرمز السري غير صحيح. تأكد من إدخال الرمز المعتمد حالياً أو استخدم تبويب (اسم المستخدم وكلمة السر).'
+    );
     return false;
   };
 
@@ -2463,17 +2406,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     addAuditLog('تسجيل مواطن جديد بالاستعلامات', 'الاستعلامات', `تسجيل المراجع ${fullName} (${newCitizenId}) من ${citizenData.District || 'ذي قار'} - هاتف: ${newCitizen.Phone1}`);
 
-    // Instant Real-Time Notification to Office Director & Admin Officer
-    const receptionNotif: UrgentNotification = {
-      id: `N-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
-      title: `📥 وارد استعلامات: ${fullName}`,
-      message: `تسجيل مراجع جديد من الاستعلامات (${newCitizenId}) - ${newCitizen.District} | هاتف: ${newCitizen.Phone1} | التقييم: ${newCitizen.Rating || 'لائق'}`,
-      timestamp: 'الآن',
+    // Instant Real-Time Notification persisted to Cloud Firestore for Director & Admin
+    addNotification({
+      title: `وارد استعلامات جديد: ${fullName}`,
+      message: `تم تسجيل المراجع (${newCitizenId}) من ${newCitizen.District} | هاتف: ${newCitizen.Phone1 || 'غير مسجل'}`,
       type: 'urgent_request',
+      category: 'request',
+      priority: 'high',
       linkSection: 'director',
-      read: false
-    };
-    setNotifications(prev => [receptionNotif, ...prev]);
+      entityId: newCitizenId,
+      targetRoles: ['director', 'admin', 'admin_officer', 'developer']
+    });
 
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('citizens', 'upsert', { item: newCitizen });
@@ -2907,19 +2850,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     addAuditLog('إنشاء طلب إداري', 'قسم الإدارة', `تم تسجيل الطلب ${candidate} للمواطن ${reqData.CitizenName} موجه إلى ${reqData.Entity}`);
 
-    // If Urgent, trigger instant notification
-    if (reqData.Priority === 'عاجل' || reqData.Priority === 'خاص جداً') {
-      const urgentNotif: UrgentNotification = {
-        id: `N-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
-        title: `🚨 تنبيه عاجل: طلب إداري (${reqData.Priority})`,
-        message: `تم تسجيل طلب عاجل للمواطن ${reqData.CitizenName} موجه إلى [${reqData.Entity}]`,
-        timestamp: 'الآن',
-        type: 'urgent_request',
-        linkSection: 'admin',
-        read: false
-      };
-      setNotifications(prev => [urgentNotif, ...prev]);
-    }
+    // Trigger real-time cloud notification for every new request (marked urgent when Priority is عاجل/خاص جداً)
+    const isUrgentReq = reqData.Priority === 'عاجل' || reqData.Priority === 'خاص جداً';
+    addNotification({
+      title: isUrgentReq
+        ? `طلب عاجل (${reqData.Priority}): ${reqData.CitizenName}`
+        : `معاملة جديدة: ${reqData.CitizenName}`,
+      message: `الجهة: ${reqData.Entity || 'غير محدد'} | رقم الطلب: ${candidate}`,
+      type: 'urgent_request',
+      category: 'request',
+      priority: isUrgentReq ? 'urgent' : 'normal',
+      linkSection: 'admin',
+      entityId: candidate,
+      targetRoles: ['director', 'admin', 'admin_officer', 'developer']
+    });
 
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([newRequest])[0] || newRequest });
@@ -2937,12 +2881,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateRequest = (req: OfficeRequest) => {
+    const prevReq = requests.find(r => r.Request_ID === req.Request_ID);
     const updatedReq: OfficeRequest = {
       ...req,
       UpdatedAt: new Date().toISOString()
     };
     setRequests(prev => prev.map(r => r.Request_ID === req.Request_ID ? updatedReq : r));
     addAuditLog('تحديث طلب إداري', 'قسم الإدارة', `تم تعديل حالة أو مسار الطلب ${req.Request_ID} إلى (${req.ProcessingStatus})`);
+
+    // Smart real-time notifications on key workflow state transitions
+    if (updatedReq.DirectorDecision && updatedReq.DirectorDecision !== prevReq?.DirectorDecision) {
+      addNotification({
+        title: `توجيه المدير التنفيذي (${updatedReq.DirectorDecision}): ${updatedReq.CitizenName}`,
+        message: updatedReq.DirectorNotes || updatedReq.RejectionReason || `تم اعتماد قرار (${updatedReq.DirectorDecision}) للطلب ${updatedReq.Request_ID}`,
+        type: 'director_decision',
+        category: 'director',
+        priority: updatedReq.DirectorDecision === 'رفض' ? 'high' : 'urgent',
+        linkSection: 'admin',
+        entityId: updatedReq.Request_ID,
+        targetRoles: ['admin', 'admin_officer', 'reception', 'reception_officer', 'director', 'developer']
+      });
+    } else if (updatedReq.DeliveryStatus === 'مستلم' && prevReq?.DeliveryStatus !== 'مستلم') {
+      addNotification({
+        title: `تم تسليم المعاملة للمراجع: ${updatedReq.CitizenName}`,
+        message: `الطلب (${updatedReq.Request_ID}) للجهة [${updatedReq.Entity}] تم توثيق استلامه من قبل المراجع`,
+        type: 'delivery_update',
+        category: 'delivery',
+        priority: 'normal',
+        linkSection: 'admin',
+        entityId: updatedReq.Request_ID,
+        targetRoles: ['director', 'admin', 'admin_officer', 'developer']
+      });
+    } else if (updatedReq.ProcessingStatus === 'منجز' && prevReq?.ProcessingStatus !== 'منجز') {
+      addNotification({
+        title: `إنجاز معاملة: ${updatedReq.CitizenName}`,
+        message: `تم إنجاز الطلب (${updatedReq.Request_ID}) للجهة [${updatedReq.Entity}] وهو جاهز للتسليم`,
+        type: 'delivery_update',
+        category: 'delivery',
+        priority: 'high',
+        linkSection: 'reception',
+        entityId: updatedReq.Request_ID,
+        targetRoles: ['reception', 'reception_officer', 'director', 'admin', 'developer']
+      });
+    }
 
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
     
@@ -3096,18 +3077,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     addAuditLog('جدولة مقابلة مع النائب', 'مقابلات النائب', `تمت جدولة مقابلة للمواطن ${interviewData.FullName} بتاريخ ${interviewData.InterviewDate}`);
 
-    if (interviewData.Priority === 'عاجل' || interviewData.Priority === 'خاص جداً') {
-      const urgentNotif: UrgentNotification = {
-        id: `N-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
-        title: `🤝 تنبيه مقابلة عاجلة مع النائب`,
-        message: `تم حجز موعد مقابلة (${interviewData.Priority}) للمواطن ${interviewData.FullName} بتاريخ ${interviewData.InterviewDate}`,
-        timestamp: 'الآن',
-        type: 'urgent_interview',
-        linkSection: 'interviews',
-        read: false
-      };
-      setNotifications(prev => [urgentNotif, ...prev]);
-    }
+    const isUrgentInt = interviewData.Priority === 'عاجل' || interviewData.Priority === 'خاص جداً';
+    addNotification({
+      title: isUrgentInt ? `مقابلة عاجلة مع النائب: ${interviewData.FullName}` : `حجز مقابلة جديدة: ${interviewData.FullName}`,
+      message: `الموعد: ${interviewData.InterviewDate} | الموضوع: ${interviewData.Subject || 'مقابلة مباشرة'}`,
+      type: 'urgent_interview',
+      category: 'interview',
+      priority: isUrgentInt ? 'urgent' : 'normal',
+      linkSection: 'interviews',
+      entityId: newIntId,
+      targetRoles: ['director', 'deputy', 'interviews_officer', 'developer']
+    });
 
     emitServerMutation('interviews', 'upsert', { item: newInterview });
     pushToGoogleSheetsRealtime('interviews', newInterview, 'insert', systemSettings.appsScriptUrl);
@@ -3364,12 +3344,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('تحديث مجلد Google Drive', 'لوحة المطور', `تم ربط وتثبيت معرف المجلد (${cleanId}) في المنظومة`);
   };
 
+  const addNotification = (
+    notifInput: Omit<UrgentNotification, 'id' | 'timestamp' | 'read'> & { id?: string; timestamp?: string; read?: boolean }
+  ) => {
+    const nowIso = new Date().toISOString();
+    const newNotif: UrgentNotification = {
+      id: notifInput.id || `N-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      title: notifInput.title,
+      message: notifInput.message,
+      timestamp: notifInput.timestamp || 'الآن',
+      createdAtIso: notifInput.createdAtIso || nowIso,
+      type: notifInput.type || 'system',
+      category: notifInput.category || 'system',
+      priority: notifInput.priority || 'normal',
+      linkSection: notifInput.linkSection || 'dashboard',
+      entityId: notifInput.entityId,
+      targetRoles: notifInput.targetRoles,
+      createdBy: notifInput.createdBy || currentUser?.FullName || 'النظام',
+      read: Boolean(notifInput.read)
+    };
+    setNotifications(prev => [newNotif, ...prev.filter(n => n.id !== newNotif.id)].slice(0, 80));
+    fsSaveNotification(newNotif).catch(() => {});
+  };
+
+  const markNotificationAsRead = (id: string) => {
+    setNotifications(prev => prev.map(n => (n.id === id ? { ...n, read: true } : n)));
+    fsMarkNotificationRead(id, true).catch(() => {});
+  };
+
   const dismissNotification = (id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
+    fsDeleteNotification(id).catch(() => {});
   };
 
   const markAllNotificationsAsRead = () => {
+    const unreadIds = notifications.filter(n => !n.read).map(n => n.id);
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    unreadIds.forEach(id => fsMarkNotificationRead(id, true).catch(() => {}));
+  };
+
+  const clearReadNotifications = () => {
+    const readIds = notifications.filter(n => n.read).map(n => n.id);
+    setNotifications(prev => prev.filter(n => !n.read));
+    readIds.forEach(id => fsDeleteNotification(id).catch(() => {}));
   };
 
   const forwardCitizenWorkflow = (
@@ -4086,90 +4103,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const fetchAllFromFirestoreNow = async (): Promise<{ success: boolean; error?: string }> => {
+  const fetchAllFromFirestoreNow = async (): Promise<{ success: boolean; systemSettings?: Partial<SystemSettings>; error?: string }> => {
     setIsFirestoreSyncing(true);
     try {
       const res = await fsBulkPullAll();
       if (res.success) {
         const deletedIds = getStoredDeletedIds();
-        if (res.citizens && res.citizens.length > 0) {
-          setCitizens(prev => {
-            const merged = mergeCitizens(prev, res.citizens, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
-            return merged;
+        if (Array.isArray(res.deletedIds)) {
+          res.deletedIds.forEach(id => {
+            if (id) deletedIds.add(id);
           });
-          try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
+        }
+        if (res.citizens && res.citizens.length > 0) {
+          setCitizens(prev => mergeCitizens(prev, res.citizens, deletedIds));
         }
         if (res.requests && res.requests.length > 0) {
-          setRequests(prev => {
-            const merged = mergeRequests(prev, res.requests, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
-            return merged;
-          });
-          try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
+          setRequests(prev => mergeRequests(prev, res.requests, deletedIds));
         }
         if (res.interviews && res.interviews.length > 0) {
-          setInterviews(prev => {
-            const merged = mergeInterviews(prev, res.interviews, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
-            return merged;
-          });
+          setInterviews(prev => mergeInterviews(prev, res.interviews, deletedIds));
         }
         if (res.officialLetters && res.officialLetters.length > 0) {
-          setOfficialLetters(prev => {
-            const merged = mergeOfficialLetters(prev, res.officialLetters, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
-            return merged;
-          });
+          setOfficialLetters(prev => mergeOfficialLetters(prev, res.officialLetters, deletedIds));
         }
         if (res.cheques && res.cheques.length > 0) {
-          setCheques(prev => {
-            const merged = mergeCheques(prev, res.cheques, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
-            return merged;
-          });
+          setCheques(prev => mergeCheques(prev, res.cheques, deletedIds));
         }
         if (res.organizationRecords && res.organizationRecords.length > 0) {
-          setOrganizationRecords(prev => {
-            const merged = mergeOrganizationRecords(prev, res.organizationRecords, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
-            return merged;
-          });
+          setOrganizationRecords(prev => mergeOrganizationRecords(prev, res.organizationRecords, deletedIds));
         }
         if (res.customSections && res.customSections.length > 0) {
-          setCustomSections(prev => {
-            const merged = mergeCustomSections(prev, res.customSections, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(merged));
-            return merged;
-          });
+          setCustomSections(prev => mergeCustomSections(prev, res.customSections, deletedIds));
         }
         if (res.customRecords && res.customRecords.length > 0) {
-          setCustomRecords(prev => {
-            const merged = mergeCustomRecords(prev, res.customRecords, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(merged));
-            return merged;
-          });
+          setCustomRecords(prev => mergeCustomRecords(prev, res.customRecords, deletedIds));
         }
         if (res.dropdowns && res.dropdowns.length > 0) {
           setDropdowns(prev => {
             const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
             const added = res.dropdowns.filter((d: DropdownItem) => d && d.Category && d.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
             if (added.length === 0) return prev;
-            const merged = [...prev, ...added];
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', JSON.stringify(merged));
-            return merged;
+            return [...prev, ...added];
           });
         }
         if (res.users && res.users.length > 0) {
-          setUsers(prev => {
-            const merged = mergeUsers(prev, res.users, deletedIds);
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(merged));
-            return merged;
-          });
+          setUsers(prev => mergeUsers(prev, res.users, deletedIds));
+        }
+        if (res.notifications && res.notifications.length > 0) {
+          setNotifications(res.notifications.slice(0, 80));
         }
         if (res.developerPasscode) setDeveloperPasscodeState(res.developerPasscode);
-        if (res.systemSettings) setSystemSettings(prev => ({ ...prev, ...res.systemSettings }));
-        return { success: true };
+        if (res.systemSettings) {
+          setRuntimeCloudConfig({
+            appsScriptUrl: res.systemSettings.appsScriptUrl || res.systemSettings.googleAppsScriptUrl,
+            googleSheetId: res.systemSettings.googleSheetId || res.systemSettings.activeGoogleSheetId,
+            googleDriveFolderId: res.systemSettings.googleDriveFolderId
+          });
+          setSystemSettings(prev => ({ ...prev, ...res.systemSettings }));
+        }
+        return { success: true, systemSettings: res.systemSettings };
       }
       return { success: false, error: res.error };
     } catch (e: any) {
@@ -4375,55 +4367,79 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const fetchAllFromGoogleSheetsNow = async (): Promise<{ success: boolean; message: string }> => {
+  const fetchAllFromGoogleSheetsNow = async (
+    overrideScriptUrl?: string,
+    overrideSheetId?: string
+  ): Promise<{ success: boolean; message: string }> => {
     setIsGoogleSyncing(true);
     const deletedIds = getStoredDeletedIds();
     try {
-      // Attempt 1: Direct Integration Layer
+      // Attempt 1: Google Apps Script Web App (works seamlessly on Vercel & any device with zero OAuth popup!)
+      const targetScriptUrl =
+        overrideScriptUrl ||
+        systemSettings.appsScriptUrl ||
+        systemSettings.googleAppsScriptUrl ||
+        (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
+        (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+      if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
+        try {
+          const scriptRes = await pullDataFromGoogleAppsScript(targetScriptUrl);
+          if (scriptRes && scriptRes.success && scriptRes.data) {
+            if (scriptRes.data.citizens.length > 0) {
+              setCitizens(prev => mergeCitizens(prev, scriptRes.data!.citizens, deletedIds));
+            }
+            if (scriptRes.data.requests.length > 0) {
+              setRequests(prev => mergeRequests(prev, scriptRes.data!.requests, deletedIds));
+            }
+            if (scriptRes.data.interviews.length > 0) {
+              setInterviews(prev => mergeInterviews(prev, scriptRes.data!.interviews, deletedIds));
+            }
+            if (scriptRes.data.officialLetters.length > 0) {
+              setOfficialLetters(prev => mergeOfficialLetters(prev, scriptRes.data!.officialLetters, deletedIds));
+            }
+            if (scriptRes.data.organizationRecords.length > 0) {
+              setOrganizationRecords(prev => mergeOrganizationRecords(prev, scriptRes.data!.organizationRecords, deletedIds));
+            }
+            if (scriptRes.data.cheques.length > 0) {
+              setCheques(prev => mergeCheques(prev, scriptRes.data!.cheques, deletedIds));
+            }
+            if (scriptRes.data.users && scriptRes.data.users.length > 0) {
+              setUsers(prev => mergeUsers(prev, scriptRes.data!.users || [], deletedIds));
+            }
+            return {
+              success: true,
+              message: scriptRes.message || `✓ تم جلب (${scriptRes.data.citizens.length}) مراجع و (${scriptRes.data.requests.length}) معاملة من Google Sheets.`
+            };
+          }
+        } catch (scriptErr) {
+          console.warn('Apps Script fetch notice:', scriptErr);
+        }
+      }
+
+      // Attempt 2: Direct Integration Layer (when OAuth token & sheetId are active)
       try {
+        if (overrideSheetId) {
+          setRuntimeCloudConfig({ googleSheetId: overrideSheetId });
+        }
         const fullData = await sheetsIntegration.fetchAllData();
         if (fullData && ((fullData.citizens && fullData.citizens.length > 0) || (fullData.requests && fullData.requests.length > 0))) {
           if (fullData.citizens && fullData.citizens.length > 0) {
-            setCitizens(prev => {
-              const merged = mergeCitizens(prev, fullData.citizens, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
-              return merged;
-            });
+            setCitizens(prev => mergeCitizens(prev, fullData.citizens, deletedIds));
           }
           if (fullData.requests && fullData.requests.length > 0) {
-            setRequests(prev => {
-              const merged = mergeRequests(prev, fullData.requests, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
-              return merged;
-            });
+            setRequests(prev => mergeRequests(prev, fullData.requests, deletedIds));
           }
           if (fullData.interviews && fullData.interviews.length > 0) {
-            setInterviews(prev => {
-              const merged = mergeInterviews(prev, fullData.interviews, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
-              return merged;
-            });
+            setInterviews(prev => mergeInterviews(prev, fullData.interviews, deletedIds));
           }
           if (fullData.officialLetters && fullData.officialLetters.length > 0) {
-            setOfficialLetters(prev => {
-              const merged = mergeOfficialLetters(prev, fullData.officialLetters, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
-              return merged;
-            });
+            setOfficialLetters(prev => mergeOfficialLetters(prev, fullData.officialLetters, deletedIds));
           }
           if (fullData.organizationRecords && fullData.organizationRecords.length > 0) {
-            setOrganizationRecords(prev => {
-              const merged = mergeOrganizationRecords(prev, fullData.organizationRecords, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
-              return merged;
-            });
+            setOrganizationRecords(prev => mergeOrganizationRecords(prev, fullData.organizationRecords, deletedIds));
           }
           if (fullData.cheques && fullData.cheques.length > 0) {
-            setCheques(prev => {
-              const merged = mergeCheques(prev, fullData.cheques, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
-              return merged;
-            });
+            setCheques(prev => mergeCheques(prev, fullData.cheques, deletedIds));
           }
           return {
             success: true,
@@ -4431,124 +4447,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
         }
       } catch (directErr) {
-        console.warn('Direct Integration Layer fetch failed:', directErr);
+        console.warn('Direct Integration Layer fetch notice:', directErr);
       }
 
-      // Attempt 2: Direct REST BatchGet
+      // Attempt 3: Direct REST BatchGet
       try {
         const res = await pullAllDataFromGoogleSheets();
         if (res.success && res.data && (res.data.citizens.length > 0 || res.data.requests.length > 0)) {
-          if (res.data.citizens.length > 0) {
-            setCitizens(prev => {
-              const merged = mergeCitizens(prev, res.data.citizens, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
-              return merged;
-            });
-          }
-          if (res.data.requests.length > 0) {
-            setRequests(prev => {
-              const merged = mergeRequests(prev, res.data.requests, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
-              return merged;
-            });
-          }
-          if (res.data.interviews.length > 0) {
-            setInterviews(prev => {
-              const merged = mergeInterviews(prev, res.data.interviews, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
-              return merged;
-            });
-          }
-          if (res.data.officialLetters.length > 0) {
-            setOfficialLetters(prev => {
-              const merged = mergeOfficialLetters(prev, res.data.officialLetters, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
-              return merged;
-            });
-          }
-          if (res.data.organizationRecords.length > 0) {
-            setOrganizationRecords(prev => {
-              const merged = mergeOrganizationRecords(prev, res.data.organizationRecords, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
-              return merged;
-            });
-          }
-          if (res.data.cheques.length > 0) {
-            setCheques(prev => {
-              const merged = mergeCheques(prev, res.data.cheques, deletedIds);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
-              return merged;
-            });
-          }
+          if (res.data.citizens.length > 0) setCitizens(prev => mergeCitizens(prev, res.data.citizens, deletedIds));
+          if (res.data.requests.length > 0) setRequests(prev => mergeRequests(prev, res.data.requests, deletedIds));
+          if (res.data.interviews.length > 0) setInterviews(prev => mergeInterviews(prev, res.data.interviews, deletedIds));
+          if (res.data.officialLetters.length > 0) setOfficialLetters(prev => mergeOfficialLetters(prev, res.data.officialLetters, deletedIds));
+          if (res.data.organizationRecords.length > 0) setOrganizationRecords(prev => mergeOrganizationRecords(prev, res.data.organizationRecords, deletedIds));
+          if (res.data.cheques.length > 0) setCheques(prev => mergeCheques(prev, res.data.cheques, deletedIds));
           return { success: true, message: `✓ ${res.message}` };
         }
       } catch (batchErr) {
-        console.warn('pullAllDataFromGoogleSheets failed:', batchErr);
-      }
-
-      // Attempt 3: Google Apps Script Web App fallback
-      const targetScriptUrl = systemSettings.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
-      if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
-        try {
-          const scriptRes = await pullDataFromGoogleAppsScript(targetScriptUrl);
-          if (scriptRes && scriptRes.success && scriptRes.data) {
-            if (scriptRes.data.citizens.length > 0) {
-              setCitizens(prev => {
-                const merged = mergeCitizens(prev, scriptRes.data.citizens, deletedIds);
-                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(merged));
-                return merged;
-              });
-            }
-            if (scriptRes.data.requests.length > 0) {
-              setRequests(prev => {
-                const merged = mergeRequests(prev, scriptRes.data.requests, deletedIds);
-                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(merged));
-                return merged;
-              });
-            }
-            if (scriptRes.data.interviews.length > 0) {
-              setInterviews(prev => {
-                const merged = mergeInterviews(prev, scriptRes.data.interviews, deletedIds);
-                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(merged));
-                return merged;
-              });
-            }
-            if (scriptRes.data.officialLetters.length > 0) {
-              setOfficialLetters(prev => {
-                const merged = mergeOfficialLetters(prev, scriptRes.data.officialLetters, deletedIds);
-                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(merged));
-                return merged;
-              });
-            }
-            if (scriptRes.data.organizationRecords.length > 0) {
-              setOrganizationRecords(prev => {
-                const merged = mergeOrganizationRecords(prev, scriptRes.data.organizationRecords, deletedIds);
-                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(merged));
-                return merged;
-              });
-            }
-            if (scriptRes.data.cheques.length > 0) {
-              setCheques(prev => {
-                const merged = mergeCheques(prev, scriptRes.data.cheques, deletedIds);
-                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(merged));
-                return merged;
-              });
-            }
-            if (scriptRes.data.users && scriptRes.data.users.length > 0) {
-              setUsers(prev => {
-                const merged = mergeUsers(prev, scriptRes.data.users || [], deletedIds);
-                safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(merged));
-                return merged;
-              });
-            }
-            return {
-              success: true,
-              message: scriptRes.message || `✓ تم جلب (${scriptRes.data.citizens.length}) مراجع من Google Sheets عبر Apps Script.`
-            };
-          }
-        } catch (scriptErr) {
-          console.warn('Apps Script fetch failed:', scriptErr);
-        }
+        console.warn('pullAllDataFromGoogleSheets notice:', batchErr);
       }
 
       return {
@@ -4634,8 +4549,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateSettings,
         updateSystemSettings: updateSettings,
         notifications,
+        addNotification,
+        markNotificationAsRead,
         dismissNotification,
         markAllNotificationsAsRead,
+        clearReadNotifications,
         departmentGreeting,
         setDepartmentGreeting,
         triggerDepartmentGreeting,

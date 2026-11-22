@@ -52,6 +52,7 @@ import {
 import { autoUploadImageToDriveIfConnected } from '../services/googleSheetsService';
 import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
 import { printImageIsolated } from '../utils/printReceiptHelper';
+import { LiveDriveGalleryWidget } from './LiveDriveGalleryWidget';
 
 interface SmartImageArchiveModuleProps {
   onOpenCitizenHistory?: (citizenId: string) => void;
@@ -1047,6 +1048,9 @@ export const SmartImageArchiveModule: React.FC<SmartImageArchiveModuleProps> = (
         onChange={handleBatchFilesSelected}
         className="hidden"
       />
+
+      {/* LIVE GOOGLE DRIVE ARCHIVE (Images, PDFs, Docs + Simultaneous System & Drive Search) */}
+      <LiveDriveGalleryWidget title="أرشيف البريد والصور الحي — مجلد Google Drive والبحث الموحد بالنظام" />
 
       {/* Header with Prominent Actions */}
       <div className="p-4 rounded-xl bg-gradient-to-r from-slate-900 via-blue-950 to-indigo-950 text-white border border-blue-900 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">

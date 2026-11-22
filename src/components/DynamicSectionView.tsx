@@ -44,6 +44,7 @@ import {
 import * as XLSX from 'xlsx';
 import { SearchableSelect } from './SearchableSelect';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../utils/permissions';
 
 interface DynamicSectionViewProps {
@@ -316,6 +317,13 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({
           subtitle="اختر أي قسم فرعي للدخول الفوري إلى لوحته وسجلاته المستقلة"
           columns={4}
           items={hubSubTiles}
+        />
+
+        <DepartmentAnalyticsDashboard
+          department={section.id === 'social_care_section' || section.title.includes('رعاية') ? 'social_care' : 'custom'}
+          customSectionId={section.id}
+          customSectionTitle={section.title}
+          compact
         />
       </div>
     );
@@ -738,6 +746,11 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({
       {/* TAB 1: Department Dashboard & Statistics */}
       {activeTab === 'dashboard' && (
         <div className="space-y-6">
+          <DepartmentAnalyticsDashboard
+            department={section.id === 'social_care_section' || section.title.includes('رعاية') ? 'social_care' : 'custom'}
+            customSectionId={section.id}
+            customSectionTitle={effectiveTitle}
+          />
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <button
               onClick={handleOpenAdd}

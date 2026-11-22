@@ -26,7 +26,8 @@ import {
   DropdownItem, 
   AuditLog,
   CustomSection,
-  CustomSectionRecord
+  CustomSectionRecord,
+  UrgentNotification
 } from '../types';
 
 export enum OperationType {
@@ -180,7 +181,8 @@ export const FS_COLLECTIONS = {
   AUDIT_LOGS: 'audit_logs',
   CUSTOM_SECTIONS: 'custom_sections',
   CUSTOM_RECORDS: 'custom_records',
-  DELETED_RECORDS: 'deleted_records'
+  DELETED_RECORDS: 'deleted_records',
+  NOTIFICATIONS: 'notifications'
 } as const;
 
 // Multi-Office Partition and Database Isolation Manager
@@ -838,7 +840,56 @@ export async function fsAddAuditLog(log: AuditLog): Promise<void> {
   }
 }
 
-// 13. Bulk Upload all System State to Firestore
+// 12.1 Notifications Operations (Real-Time Multi-Device Alerts)
+export async function fsSaveNotification(notif: UrgentNotification): Promise<void> {
+  if (!notif || !notif.id || isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.NOTIFICATIONS);
+  const safeId = sanitizeFirestoreDocId(notif.id, 'NOTIF');
+  const payload: UrgentNotification = {
+    id: safeId,
+    title: clipStr(notif.title, 300) || 'تنبيه إداري',
+    message: clipStr(notif.message, 2000) || '',
+    timestamp: clipStr(notif.timestamp, 100) || 'الآن',
+    createdAtIso: clipStr(notif.createdAtIso, 60) || new Date().toISOString(),
+    type: (clipStr(notif.type, 60) as UrgentNotification['type']) || 'system',
+    category: (clipStr(notif.category, 60) as UrgentNotification['category']) || 'system',
+    priority: (clipStr(notif.priority, 30) as UrgentNotification['priority']) || 'normal',
+    linkSection: clipStr(notif.linkSection, 100) || 'dashboard',
+    ...(notif.entityId ? { entityId: clipStr(notif.entityId, 128) } : {}),
+    ...(notif.createdBy ? { createdBy: clipStr(notif.createdBy, 200) } : {}),
+    ...(Array.isArray(notif.targetRoles) ? { targetRoles: notif.targetRoles.slice(0, 30) } : {}),
+    read: Boolean(notif.read)
+  };
+  try {
+    await setDoc(doc(db, col, safeId), payload, { merge: true });
+  } catch (error) {
+    console.warn('Firestore save notification notice:', error);
+  }
+}
+
+export async function fsMarkNotificationRead(id: string, read = true): Promise<void> {
+  if (!id || isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.NOTIFICATIONS);
+  const safeId = sanitizeFirestoreDocId(id, 'NOTIF');
+  try {
+    await setDoc(doc(db, col, safeId), { id: safeId, read: Boolean(read) }, { merge: true });
+  } catch (error) {
+    console.warn('Firestore mark notification read notice:', error);
+  }
+}
+
+export async function fsDeleteNotification(id: string): Promise<void> {
+  if (!id || isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.NOTIFICATIONS);
+  const safeId = sanitizeFirestoreDocId(id, 'NOTIF');
+  try {
+    await deleteDoc(doc(db, col, safeId));
+  } catch (error) {
+    console.warn('Firestore delete notification notice:', error);
+  }
+}
+
+// 13. Bulk Upload all System State to Firestore (with strict per-record sanitization so 1 bad doc never breaks a batch)
 export async function fsBulkPushAll(data: {
   citizens: Citizen[];
   requests: OfficeRequest[];
@@ -854,8 +905,7 @@ export async function fsBulkPushAll(data: {
 }): Promise<{ success: boolean; count: number; error?: string }> {
   try {
     let total = 0;
-    // Process in batches of 400 (Firestore limit is 500)
-    const BATCH_SIZE = 400;
+    const BATCH_SIZE = 200;
     const items: Array<{ col: string; id: string; docData: any }> = [];
 
     const colCitizens = getFSCol(FS_COLLECTIONS.CITIZENS);
@@ -870,38 +920,87 @@ export async function fsBulkPushAll(data: {
     const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
     const colDropdowns = getFSCol(FS_COLLECTIONS.DROPDOWNS);
 
-    data.citizens.forEach(c => items.push({ col: colCitizens, id: c.Citizen_ID, docData: c }));
-    data.requests.forEach(r => items.push({ col: colRequests, id: r.Request_ID, docData: r }));
-    data.interviews.forEach(i => items.push({ col: colInterviews, id: i.Interview_ID, docData: i }));
-    data.officialLetters.forEach(l => items.push({ col: colLetters, id: l.Letter_ID, docData: l }));
-    data.cheques.forEach(ch => items.push({ col: colCheques, id: ch.id, docData: ch }));
-    data.organizationRecords.forEach(o => items.push({ col: colOrgs, id: o.Org_ID || o.Citizen_ID, docData: o }));
-    data.users.forEach(u => items.push({ col: colUsers, id: u.User_ID, docData: u }));
-    data.customSections.forEach(s => items.push({ col: colSections, id: s.id, docData: s }));
-    data.customRecords.forEach(cr => items.push({ col: colRecords, id: cr.id, docData: cr }));
-    data.dropdowns.forEach(dd => {
+    (data.citizens || []).forEach(c => {
+      if (!c || !c.Citizen_ID || !c.FullName) return;
+      const clean = sanitizeCitizenForFirestore(c);
+      items.push({ col: colCitizens, id: clean.Citizen_ID, docData: clean });
+    });
+    (data.requests || []).forEach(r => {
+      if (!r || !r.Request_ID || !r.Citizen_ID) return;
+      const clean = sanitizeRequestForFirestore(r);
+      items.push({ col: colRequests, id: clean.Request_ID, docData: clean });
+    });
+    (data.interviews || []).forEach(i => {
+      if (!i || !i.Interview_ID || !i.Citizen_ID) return;
+      const safeId = sanitizeFirestoreDocId(i.Interview_ID, 'INT');
+      const safeCitId = sanitizeFirestoreDocId(i.Citizen_ID, 'ONA');
+      items.push({ col: colInterviews, id: safeId, docData: { ...i, Interview_ID: safeId, Citizen_ID: safeCitId } });
+    });
+    (data.officialLetters || []).forEach(l => {
+      if (!l || !l.Letter_ID) return;
+      const safeId = sanitizeFirestoreDocId(l.Letter_ID, 'LET');
+      items.push({ col: colLetters, id: safeId, docData: { ...l, Letter_ID: safeId } });
+    });
+    (data.cheques || []).forEach(ch => {
+      if (!ch || !ch.id || !ch.Citizen_ID) return;
+      const safeId = sanitizeFirestoreDocId(ch.id, 'CHQ');
+      items.push({ col: colCheques, id: safeId, docData: { ...ch, id: safeId } });
+    });
+    (data.organizationRecords || []).forEach(o => {
+      if (!o || !o.Citizen_ID) return;
+      const safeId = sanitizeFirestoreDocId(o.Org_ID || o.Citizen_ID, 'ORG');
+      items.push({ col: colOrgs, id: safeId, docData: { ...o, Org_ID: safeId } });
+    });
+    (data.users || []).forEach(u => {
+      if (!u || !u.User_ID || !u.Username || !u.FullName) return;
+      const safeId = sanitizeFirestoreDocId(u.User_ID, 'USR');
+      items.push({ col: colUsers, id: safeId, docData: { ...u, User_ID: safeId } });
+    });
+    (data.customSections || []).forEach(s => {
+      if (!s || !s.id || !s.title) return;
+      const safeId = sanitizeFirestoreDocId(s.id, 'SEC');
+      items.push({ col: colSections, id: safeId, docData: { ...s, id: safeId } });
+    });
+    (data.customRecords || []).forEach(cr => {
+      if (!cr || !cr.id || !cr.sectionId) return;
+      const safeId = sanitizeFirestoreDocId(cr.id, 'REC');
+      items.push({ col: colRecords, id: safeId, docData: { ...cr, id: safeId } });
+    });
+    (data.dropdowns || []).forEach(dd => {
+      if (!dd || !dd.Category || !dd.ItemValue) return;
       const safeId = buildSafeDropdownDocId(dd.Category, dd.ItemValue, dd.id);
       items.push({ col: colDropdowns, id: safeId, docData: { id: safeId, Category: dd.Category, ItemValue: dd.ItemValue } });
     });
-    
-    // Save settings
-    items.push({ col: colSettings, id: 'general', docData: data.systemSettings });
-    if (data.systemSettings.developerPasscode) {
-      items.push({ 
-        col: colSettings, 
-        id: 'developer_auth', 
-        docData: { developerPasscode: data.systemSettings.developerPasscode } 
-      });
+
+    if (data.systemSettings) {
+      items.push({ col: colSettings, id: 'general', docData: data.systemSettings });
+      if (data.systemSettings.developerPasscode) {
+        items.push({
+          col: colSettings,
+          id: 'developer_auth',
+          docData: { developerPasscode: data.systemSettings.developerPasscode }
+        });
+      }
     }
 
     for (let i = 0; i < items.length; i += BATCH_SIZE) {
       const slice = items.slice(i, i + BATCH_SIZE);
-      const batch = writeBatch(db);
-      slice.forEach(item => {
-        batch.set(doc(db, item.col, item.id), item.docData, { merge: true });
-      });
-      await batch.commit();
-      total += slice.length;
+      try {
+        const batch = writeBatch(db);
+        slice.forEach(item => {
+          batch.set(doc(db, item.col, item.id), item.docData, { merge: true });
+        });
+        await batch.commit();
+        total += slice.length;
+      } catch (batchErr) {
+        // Fallback: commit individually so one rejected doc never blocks valid records
+        for (const item of slice) {
+          try {
+            await setDoc(doc(db, item.col, item.id), item.docData, { merge: true });
+            total++;
+          } catch {}
+        }
+      }
     }
 
     return { success: true, count: total };
@@ -911,7 +1010,7 @@ export async function fsBulkPushAll(data: {
   }
 }
 
-// 14. Bulk Pull all Data from Firestore
+// 14. Bulk Pull all Data from Firestore (Server-First so Vercel & fresh browsers ALWAYS see latest cloud data!)
 export async function fsBulkPullAll(): Promise<{
   success: boolean;
   citizens: Citizen[];
@@ -924,23 +1023,36 @@ export async function fsBulkPullAll(): Promise<{
   customSections: CustomSection[];
   customRecords: CustomSectionRecord[];
   dropdowns: DropdownItem[];
+  notifications: UrgentNotification[];
+  deletedIds: string[];
   systemSettings?: Partial<SystemSettings>;
   developerPasscode?: string;
   error?: string;
 }> {
   try {
-    const fetchCol = async <T>(colName: string, preferServer = false): Promise<T[]> => {
+    const fetchCol = async <T>(colName: string): Promise<T[]> => {
       try {
-        if (preferServer) {
-          try {
-            const snap = await withTimeout(getDocsFromServer(collection(db, colName)), 5000, `pull(${colName})`);
-            return snap.docs.map(d => d.data() as T);
-          } catch {}
+        try {
+          const snap = await withTimeout(getDocsFromServer(collection(db, colName)), 12000, `serverPull(${colName})`);
+          return snap.docs.map(d => d.data() as T);
+        } catch {
+          const snap = await withTimeout(getDocs(collection(db, colName)), 8000, `cachePull(${colName})`);
+          return snap.docs.map(d => d.data() as T);
         }
-        const snap = await withTimeout(getDocs(collection(db, colName)), 4000, `getDocs(${colName})`);
-        return snap.docs.map(d => d.data() as T);
       } catch {
         return [];
+      }
+    };
+
+    const fetchDocSafe = async (colName: string, docId: string) => {
+      try {
+        try {
+          return await withTimeout(getDocFromServer(doc(db, colName, docId)), 10000, `serverDoc(${colName}/${docId})`);
+        } catch {
+          return await withTimeout(getDoc(doc(db, colName, docId)), 6000, `cacheDoc(${colName}/${docId})`);
+        }
+      } catch {
+        return null;
       }
     };
 
@@ -956,6 +1068,7 @@ export async function fsBulkPullAll(): Promise<{
     const colDropdowns = getFSCol(FS_COLLECTIONS.DROPDOWNS);
     const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
     const colDeleted = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
+    const colNotifications = getFSCol(FS_COLLECTIONS.NOTIFICATIONS);
 
     const [
       rawCitizens,
@@ -968,7 +1081,8 @@ export async function fsBulkPullAll(): Promise<{
       rawCustomSections,
       rawCustomRecords,
       dropdowns,
-      deletedDocsSnap,
+      rawNotifications,
+      rawDeletedDocs,
       settingsSnap,
       passcodeSnap
     ] = await Promise.all([
@@ -978,34 +1092,33 @@ export async function fsBulkPullAll(): Promise<{
       fetchCol<OfficialLetter>(colLetters),
       fetchCol<ChequeRecord>(colCheques),
       fetchCol<OrganizationRecord>(colOrgs),
-      fetchCol<User>(colUsers, true),
+      fetchCol<User>(colUsers),
       fetchCol<CustomSection>(colSections),
       fetchCol<CustomSectionRecord>(colRecords),
       fetchCol<DropdownItem>(colDropdowns),
-      getDocs(collection(db, colDeleted)).catch(() => null),
-      getDoc(doc(db, colSettings, 'general')).catch(() => null),
-      getDoc(doc(db, colSettings, 'developer_auth')).catch(() => null)
+      fetchCol<UrgentNotification>(colNotifications),
+      fetchCol<any>(colDeleted),
+      fetchDocSafe(colSettings, 'general'),
+      fetchDocSafe(colSettings, 'developer_auth')
     ]);
 
-    const deletedIds = new Set<string>();
-    if (deletedDocsSnap && !deletedDocsSnap.empty) {
-      deletedDocsSnap.docs.forEach(d => {
-        deletedIds.add(d.id);
-        const data = d.data();
-        if (data?.id) deletedIds.add(String(data.id));
-      });
-    }
+    const deletedIdsSet = new Set<string>();
+    rawDeletedDocs.forEach(d => {
+      if (d?.id) deletedIdsSet.add(String(d.id));
+    });
 
-    // Strictly filter out any permanently deleted records
-    const citizens = rawCitizens.filter(c => c && c.Citizen_ID && !deletedIds.has(c.Citizen_ID));
-    const requests = rawRequests.filter(r => r && r.Request_ID && !deletedIds.has(r.Request_ID) && !deletedIds.has(r.Citizen_ID));
-    const interviews = rawInterviews.filter(i => i && i.Interview_ID && !deletedIds.has(i.Interview_ID) && !deletedIds.has(i.Citizen_ID));
-    const officialLetters = rawOfficialLetters.filter(l => l && l.Letter_ID && !deletedIds.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIds.has(l.Citizen_ID)));
-    const cheques = rawCheques.filter(ch => ch && ch.id && !deletedIds.has(ch.id) && !deletedIds.has(ch.Citizen_ID));
-    const organizationRecords = rawOrganizationRecords.filter(o => o && o.Org_ID && !deletedIds.has(o.Org_ID) && !deletedIds.has(o.Citizen_ID));
-    const users = rawUsers.filter(u => u && u.User_ID && !deletedIds.has(u.User_ID));
-    const customSections = rawCustomSections.filter(s => s && s.id && !deletedIds.has(s.id));
-    const customRecords = rawCustomRecords.filter(cr => cr && cr.id && !deletedIds.has(cr.id) && !deletedIds.has(cr.sectionId));
+    const citizens = rawCitizens.filter(c => c && c.Citizen_ID && !deletedIdsSet.has(c.Citizen_ID));
+    const requests = rawRequests.filter(r => r && r.Request_ID && !deletedIdsSet.has(r.Request_ID) && !deletedIdsSet.has(r.Citizen_ID));
+    const interviews = rawInterviews.filter(i => i && i.Interview_ID && !deletedIdsSet.has(i.Interview_ID) && !deletedIdsSet.has(i.Citizen_ID));
+    const officialLetters = rawOfficialLetters.filter(l => l && l.Letter_ID && !deletedIdsSet.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIdsSet.has(l.Citizen_ID)));
+    const cheques = rawCheques.filter(ch => ch && ch.id && !deletedIdsSet.has(ch.id) && !deletedIdsSet.has(ch.Citizen_ID));
+    const organizationRecords = rawOrganizationRecords.filter(o => o && (o.Org_ID || o.Citizen_ID) && !deletedIdsSet.has(o.Org_ID || '') && !deletedIdsSet.has(o.Citizen_ID));
+    const users = rawUsers.filter(u => u && u.User_ID && !deletedIdsSet.has(u.User_ID));
+    const customSections = rawCustomSections.filter(s => s && s.id && !deletedIdsSet.has(s.id));
+    const customRecords = rawCustomRecords.filter(cr => cr && cr.id && !deletedIdsSet.has(cr.id) && !deletedIdsSet.has(cr.sectionId));
+    const notifications = rawNotifications
+      .filter(n => n && n.id && n.title)
+      .sort((a, b) => Date.parse(b.createdAtIso || '') - Date.parse(a.createdAtIso || ''));
 
     const systemSettings = settingsSnap && settingsSnap.exists() ? (settingsSnap.data() as Partial<SystemSettings>) : undefined;
     const developerPasscode = passcodeSnap && passcodeSnap.exists() ? (passcodeSnap.data()?.developerPasscode as string) : undefined;
@@ -1022,6 +1135,8 @@ export async function fsBulkPullAll(): Promise<{
       customSections,
       customRecords,
       dropdowns,
+      notifications,
+      deletedIds: Array.from(deletedIdsSet),
       systemSettings,
       developerPasscode
     };
@@ -1039,6 +1154,8 @@ export async function fsBulkPullAll(): Promise<{
       customSections: [],
       customRecords: [],
       dropdowns: [],
+      notifications: [],
+      deletedIds: [],
       error: err.message
     };
   }

@@ -62,29 +62,30 @@ export function exportUnifiedSystemExcel(params: UnifiedExportParams): boolean {
     const wsCitizens = XLSX.utils.json_to_sheet(citizensRows.length ? citizensRows : [{ 'الحالة': 'لا توجد سجلات مراجعين' }]);
     XLSX.utils.book_append_sheet(wb, wsCitizens, 'المراجعين_Citizens');
 
-    // 2. ورقة الطلبات والمعاملات الرسمية
+    // 2. ورقة الطلبات والمعاملات الرسمية (مرتبة بدقة حسب الأعمدة الرسمية)
     const requestsRows = params.requests.map((r, idx) => ({
-      'ت': idx + 1,
-      'رقم المعاملة / الطلب': r.Request_ID,
-      'رقم المراجع': r.Citizen_ID,
-      'اسم المواطن': r.CitizenName,
-      'هاتف المواطن': r.CitizenPhone || '',
-      'الجهة المعنية / الدائرة': r.Entity,
-      'حالة المعاملة': r.ProcessingStatus,
-      'حالة الاستلام': r.RequestStatus,
+      'ت': r.SerialNumber || idx + 1,
+      'اسم صاحب الطلب': r.CitizenName,
+      'اسم الدائرة / الوزارة': r.Entity,
+      'الموضوع': r.Details,
+      'رقم الكتاب / العدد': r.OutgoingNumber || 'بدون صادر',
+      'تاريخ الكتاب': r.OutgoingDate || '',
+      'رقم الهاتف': r.CitizenPhone || '',
+      'المعرف': r.ReferralSource || '',
+      'عنوان السكن': r.Address || r.ResidentialArea || '',
+      'الهامش': r.Margin || r.DeputyNotes || '',
+      'حالة الطلب': r.ProcessingStatus,
+      'حالة الاستلام': r.DeliveryStatus || (r.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم'),
+      'التحصيل الدراسي': r.Education || '',
+      'نوع العمل': r.Job || '',
+      'ملاحظات اخرى': r.OtherNotes || '',
+      'القسم المخصص': r.TargetDepartment || r.RegisteredVia || 'الإدارة',
+      'رقم المعاملة': r.Request_ID,
+      'رقم المراجع ONA': r.Citizen_ID,
       'الأولوية': r.Priority,
-      'تفاصيل وموضوع الطلب': r.Details,
-      'رقم الصادر / العدد الرسمي': r.OutgoingNumber || 'بدون صادر',
-      'تاريخ الصادر': r.OutgoingDate || '',
-      'قرار وتوجيه مدير المكتب': r.DirectorDecision || '',
-      'هوامش وتوجيهات النائب': r.DeputyNotes || '',
-      'مرفق الطلب': r.AttachmentRequest || '',
-      'مرفق الإجابة': r.AttachmentResponse || '',
-      'صورة الاسكنر المرفقة': r.AttachedRequestImage || (r.ScanAttachments?.length ? `${r.ScanAttachments.length} صور مرفقة` : 'لا يوجد'),
-      'الموظف الذي قام برفع الاسكنر': r.ScanUploadedBy || '',
-      'تاريخ رفع الاسكنر': r.ScanUploadedAt || '',
-      'تاريخ إنشاء المعاملة': r.CreatedAt,
-      'الموظف الذي أدخل الطلب': r.CreatedBy || 'الإدارة'
+      'قرار المدير': r.DirectorDecision || '',
+      'تاريخ الإنشاء': r.CreatedAt,
+      'الموظف المدخل': r.CreatedBy || 'الإدارة'
     }));
     const wsRequests = XLSX.utils.json_to_sheet(requestsRows.length ? requestsRows : [{ 'الحالة': 'لا توجد طلبات' }]);
     XLSX.utils.book_append_sheet(wb, wsRequests, 'المعاملات_Requests');

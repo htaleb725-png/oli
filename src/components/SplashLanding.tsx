@@ -119,16 +119,12 @@ export const SplashLanding: React.FC = () => {
     setMatchingStatus('جاري التحقق ومطابقة البيانات من قاعدة البيانات...');
 
     try {
-      const success = await login(targetUserOrCode, targetPass);
+      const success = await login(targetUserOrCode, targetPass, loginMode);
 
       if (success) {
         setMatchingStatus('✓ تمت المطابقة بنجاح! جاري فتح المنظومة...');
         playWelcomeChime();
       } else {
-        setErrorMsg(
-          lastLoginError ||
-            'اسم المستخدم أو الرمز السري غير صحيح. تأكد من كتابتهما بدقة ومزامنة الحساب في قاعدة البيانات.'
-        );
         setIsSubmitting(false);
         setMatchingStatus('');
       }

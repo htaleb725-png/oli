@@ -30,6 +30,7 @@ import {
 import { SearchableSelect } from './SearchableSelect';
 import { UnifiedCitizenCardModal } from './UnifiedCitizenCardModal';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 
 const DHI_QAR_DISTRICTS = [
   'قضاء الناصرية (المركز)',
@@ -493,6 +494,10 @@ export const InterviewsModule: React.FC = () => {
             }
           ]}
         />
+      )}
+
+      {viewMode === 'hub' && (
+        <DepartmentAnalyticsDashboard department="interviews" compact />
       )}
 
       {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}

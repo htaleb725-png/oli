@@ -42,6 +42,7 @@ import {
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { UsersAndPermissionsManager } from './developer/UsersAndPermissionsManager';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
+import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
 // Executive Office Module
@@ -1102,6 +1103,9 @@ export const DirectorExecutiveModule: React.FC = () => {
               }
             ]}
           />
+
+          {/* Executive All-Departments Analytics Dashboard for Office Director */}
+          <DepartmentAnalyticsDashboard department="executive_all" />
         </div>
       )}
 

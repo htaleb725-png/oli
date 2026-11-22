@@ -24,7 +24,7 @@ export interface PermissionDefinition {
 }
 
 export const SYSTEM_PERMISSIONS: PermissionDefinition[] = [
-  { id: 'scan_upload', name: 'رفع ومسح المستندات بالسكانر', category: 'السكانر والأرشفة', description: 'رفع صور المستندات وحفظ السكنر في الطلبات' },
+  { id: 'scan_upload', name: 'أرشفة وإرفاق صور المستندات', category: 'الأرشفة والوثائق', description: 'رفع صور المستندات وحفظها في سجل الطلبات' },
   { id: 'requests_create', name: 'تسجيل وإنشاء طلبات المواطنين', category: 'المعاملات', description: 'إضافة كتب وطلبات جديدة للمراجعين' },
   { id: 'requests_edit', name: 'تعديل المعاملات وتحديث الحالة', category: 'المعاملات', description: 'تعديل الجهة، الحالة، الأولوية وهامش المعاملة' },
   { id: 'requests_delete', name: 'حذف المعاملات والطلبات', category: 'المعاملات', description: 'صلاحية حذف المعاملة من السجلات' },
@@ -219,6 +219,11 @@ export interface OfficeRequest {
   IsArchived?: boolean;    // هل تم نقل الطلب إلى الأرشيف طويل الأمد
   ArchivedAt?: string;    // تاريخ ووقت الأرشفة
   ArchiveCode?: string;   // كود الحفظ الأرشيفي
+  DeliveryStatus?: 'مستلم' | 'غير مستلم'; // هل قام المراجع باستلام الطلب المنجز أم لا
+  DeliveredAt?: string;   // تاريخ استلام الطلب من قبل المراجع
+  DeliveredBy?: string;   // الموظف الذي وثّق تسليم الطلب
+  TargetDepartment?: string; // القسم المخصص الذي تنزل فيه المعاملة (admin, social_care, interviews, reception, organization, أو معرف قسم مخصص)
+  SerialNumber?: string;  // التسلسل الأصلي في ملف الإكسل
   UpdatedAt?: string;
 }
 
@@ -601,3 +606,20 @@ export interface CitizenInquiryLog {
   ip?: string;
   device?: string;
 }
+
+export interface UrgentNotification {
+  id: string;
+  title: string;
+  message: string;
+  timestamp: string;
+  createdAtIso?: string;
+  type: 'urgent_request' | 'urgent_interview' | 'director_decision' | 'delivery_update' | 'drive_upload' | 'system';
+  category?: 'request' | 'director' | 'interview' | 'delivery' | 'drive' | 'system';
+  priority?: 'normal' | 'high' | 'urgent';
+  linkSection?: string;
+  entityId?: string;
+  targetRoles?: string[];
+  createdBy?: string;
+  read: boolean;
+}
+

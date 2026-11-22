@@ -36,10 +36,38 @@ let isProcessingQueue = false;
 
 const stripQuotes = (val?: string) => (val || '').replace(/^["']|["']$/g, '').trim();
 
-// Helper to reliably resolve Google Sheet ID from multiple fallbacks
+// Runtime cloud config hydrated directly from Firestore settings/general (works cleanly on Vercel without Chrome localStorage)
+let _runtimeCloudConfig: {
+  appsScriptUrl?: string;
+  googleSheetId?: string;
+  googleDriveFolderId?: string;
+} = {};
+
+export function setRuntimeCloudConfig(cfg: {
+  appsScriptUrl?: string;
+  googleSheetId?: string;
+  googleDriveFolderId?: string;
+}): void {
+  if (cfg.appsScriptUrl && cfg.appsScriptUrl.trim()) {
+    _runtimeCloudConfig.appsScriptUrl = stripQuotes(cfg.appsScriptUrl);
+  }
+  if (cfg.googleSheetId && cfg.googleSheetId.trim()) {
+    _runtimeCloudConfig.googleSheetId = stripQuotes(cfg.googleSheetId);
+  }
+  if (cfg.googleDriveFolderId && cfg.googleDriveFolderId.trim()) {
+    _runtimeCloudConfig.googleDriveFolderId = stripQuotes(cfg.googleDriveFolderId);
+  }
+}
+
+export function getRuntimeCloudConfig() {
+  return { ..._runtimeCloudConfig };
+}
+
+// Helper to reliably resolve Google Sheet ID from Cloud Firestore config, Vercel env, or legacy fallback
 export function resolveTargetSheetId(customSheetId?: string): string {
   if (customSheetId && customSheetId.trim()) return stripQuotes(customSheetId);
-  // 1. Check environment variable (Vercel)
+  if (_runtimeCloudConfig.googleSheetId) return _runtimeCloudConfig.googleSheetId;
+  // Check environment variable (Vercel)
   const envSheetId = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID;
   if (envSheetId && envSheetId.trim()) return stripQuotes(envSheetId);
 
@@ -58,10 +86,11 @@ export function resolveTargetSheetId(customSheetId?: string): string {
   return '';
 }
 
-// Helper to reliably resolve Apps Script Webhook URL from multiple fallbacks
+// Helper to reliably resolve Apps Script Webhook URL from Cloud Firestore config, Vercel env, or legacy fallback
 export function resolveAppsScriptUrl(customUrl?: string): string {
   if (customUrl && customUrl.trim()) return stripQuotes(customUrl);
-  // 1. Check environment variable (Vercel)
+  if (_runtimeCloudConfig.appsScriptUrl) return _runtimeCloudConfig.appsScriptUrl;
+  // Check environment variable (Vercel)
   const envUrl = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL;
   if (envUrl && envUrl.trim()) return stripQuotes(envUrl);
 
@@ -310,15 +339,19 @@ export async function pushBulkDataToGoogleSheets(
             r.Details || '',
             r.OutgoingNumber || '',
             r.OutgoingDate || '',
-            r.RequestStatus || 'مستلم',
+            r.Address || r.ResidentialArea || '',
+            r.ReferralSource || '',
+            r.Margin || '',
             r.ProcessingStatus || 'منجز',
-            r.Priority || 'عام',
-            r.DirectorDecision || 'مؤرشف',
+            r.DeliveryStatus || r.RequestStatus || 'غير مستلم',
+            r.Education || '',
+            r.Job || '',
+            r.TargetDepartment || r.RegisteredVia || 'admin',
             r.CreatedAt || '',
             r.CreatedBy || '',
             r.OtherNotes || ''
           ]);
-          const encReqRange = encodeURIComponent('طلبات_المواطنين_Requests!A:O');
+          const encReqRange = encodeURIComponent('طلبات_المواطنين_Requests!A:S');
           const resReq = await fetch(
             `https://sheets.googleapis.com/v4/spreadsheets/${resolvedSheetId}/values/${encReqRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
             {
@@ -402,13 +435,27 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       Entity: String(r.Entity || '').trim(),
       RequestStatus: (r.RequestStatus as any) || 'مستلم',
       ProcessingStatus: (r.ProcessingStatus as any) || 'قيد التدقيق',
-      Priority: (r.Priority as any) || 'عادي',
+      DeliveryStatus: r.DeliveryStatus === 'مستلم' ? 'مستلم' : r.DeliveryStatus === 'غير مستلم' ? 'غير مستلم' : undefined,
+      Priority: (r.Priority as any) || 'عام',
       Details: String(r.Details || '').trim(),
+      OutgoingNumber: r.OutgoingNumber ? String(r.OutgoingNumber).trim() : undefined,
+      OutgoingDate: r.OutgoingDate ? String(r.OutgoingDate).trim() : undefined,
+      Address: r.Address ? String(r.Address).trim() : undefined,
+      ResidentialArea: r.ResidentialArea ? String(r.ResidentialArea).trim() : undefined,
+      ReferralSource: r.ReferralSource ? String(r.ReferralSource).trim() : undefined,
+      Margin: r.Margin ? String(r.Margin).trim() : undefined,
+      Education: r.Education ? String(r.Education).trim() : undefined,
+      Job: r.Job ? String(r.Job).trim() : undefined,
+      TargetDepartment: r.TargetDepartment ? String(r.TargetDepartment).trim() : undefined,
+      SerialNumber: r.SerialNumber ? String(r.SerialNumber).trim() : undefined,
+      OtherNotes: r.OtherNotes ? String(r.OtherNotes).trim() : undefined,
       AttachmentRequest: r.AttachmentRequest || undefined,
       AttachmentResponse: r.AttachmentResponse || undefined,
       DeputyNotes: String(r.DeputyNotes || '').trim(),
+      IsHistoricalImported: r.IsHistoricalImported === true || r.IsHistoricalImported === 'true',
       CreatedAt: String(r.CreatedAt || new Date().toISOString().split('T')[0]).trim(),
-      CreatedBy: String(r.CreatedBy || 'Google Sheets').trim()
+      CreatedBy: String(r.CreatedBy || 'Google Sheets').trim(),
+      UpdatedAt: r.UpdatedAt ? String(r.UpdatedAt).trim() : undefined
     }));
 
     const interviews: Interview[] = (sourceData.interviews || []).map((i: any) => ({
