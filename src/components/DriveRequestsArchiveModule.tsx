@@ -32,7 +32,6 @@ import {
   Loader2,
   Edit3
 } from 'lucide-react';
-import { SmartImageArchiveModule } from './SmartImageArchiveModule';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
 import { LiveDriveGalleryWidget } from './LiveDriveGalleryWidget';
 import { printElementIsolated } from '../utils/printReceiptHelper';
@@ -61,7 +60,7 @@ export const DriveRequestsArchiveModule: React.FC = () => {
     (Boolean(systemSettings.allowAdminOpenDriveFolder) && (currentUser?.Role === 'director' || currentUser?.Role === 'admin' || currentUser?.Role === 'admin_officer'));
 
   // Main Tab: default directly to Live Drive Gallery so Google Drive images & PDFs display immediately!
-  const [activeMainTab, setActiveMainTab] = useState<'hub' | 'smart_images' | 'image_viewer' | 'requests_list'>('image_viewer');
+  const [activeMainTab, setActiveMainTab] = useState<'hub' | 'image_viewer' | 'requests_list'>('image_viewer');
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState('');
@@ -260,24 +259,12 @@ export const DriveRequestsArchiveModule: React.FC = () => {
         <OfficeIconTilesGrid
           title="أيقونات ومهام أرشيف الطلبات وسحب الصور السحابية"
           subtitle="انقر على أي أيقونة للاستعراض المباشر أو البحث السحابي واستخراج الصور"
-          columns={5}
+          columns={4}
           items={[
             {
-              id: 'drv_smart_images',
-              title: 'أرشيف صور المعاملات (OCR)',
-              subtitle: '1000 - 2000 صورة بالاسم والذكاء',
-              icon: FileImage,
-              iconColor: 'text-emerald-600 dark:text-emerald-400',
-              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-              onClick: () => {
-                setActiveMainTab('smart_images');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            },
-            {
               id: 'drv_image_viewer',
-              title: 'سحب وعرض صورة الطلب',
-              subtitle: 'جلب الصور وتكبيرها وتصغيرها',
+              title: 'أرشيف البريد والصور (Google Drive)',
+              subtitle: 'جلب الصور والبحث المباشر والمعاينة والطباعة',
               icon: Search,
               iconColor: 'text-blue-600 dark:text-blue-400',
               iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
@@ -347,8 +334,7 @@ export const DriveRequestsArchiveModule: React.FC = () => {
             <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
 
             <span className="font-black text-sm text-slate-900 dark:text-white">
-              {activeMainTab === 'smart_images' && '🖼️ أرشيف صور المعاملات (1000 - 2000 صورة)'}
-              {activeMainTab === 'image_viewer' && '🔍 سحب وعرض صورة الطلب (تكبير وتصغير وطباعة)'}
+              {activeMainTab === 'image_viewer' && '🖼️ أرشيف البريد والصور المباشر (Google Drive)'}
               {activeMainTab === 'requests_list' && '📁 سجل المعاملات والربط السحابي'}
             </span>
           </div>
@@ -356,20 +342,12 @@ export const DriveRequestsArchiveModule: React.FC = () => {
           {/* Quick Sub-tab Jump Pills */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
             <button
-              onClick={() => setActiveMainTab('smart_images')}
-              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
-                activeMainTab === 'smart_images' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
-              }`}
-            >
-              أرشيف الصور
-            </button>
-            <button
               onClick={() => setActiveMainTab('image_viewer')}
               className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
                 activeMainTab === 'image_viewer' ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
-              سحب وعرض صورة
+              أرشيف البريد والصور
             </button>
             <button
               onClick={() => setActiveMainTab('requests_list')}
@@ -383,11 +361,6 @@ export const DriveRequestsArchiveModule: React.FC = () => {
         </div>
       )}
 
-
-      {/* TAB 0: SMART IMAGE ARCHIVE & BULK EXTRACTION (1,000 - 2,000 Images) */}
-      {activeMainTab === 'smart_images' && (
-        <SmartImageArchiveModule />
-      )}
 
       {/* TAB 1: LIVE GOOGLE DRIVE GALLERY + SIMULTANEOUS SYSTEM & DRIVE SEARCH */}
       {activeMainTab === 'image_viewer' && (

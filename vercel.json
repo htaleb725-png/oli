@@ -4,6 +4,14 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/pwa-icon/192",
+      "destination": "/icon-192.png"
+    },
+    {
+      "source": "/api/pwa-icon/512",
+      "destination": "/icon-512.png"
+    },
+    {
       "source": "/api/drive/image/:fileId",
       "destination": "/api/drive/image?id=:fileId"
     },

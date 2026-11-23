@@ -720,8 +720,8 @@ export const AdminModule: React.FC = () => {
             },
             {
               id: 'adm_smart_images',
-              title: 'أرشيف صور المعاملات والطلبات',
-              subtitle: 'رفع وحفظ الصور والمستمسكات كما هي (1000-2000)',
+              title: 'أرشيف البريد والصور (Google Drive)',
+              subtitle: 'عرض والبحث المباشر في صور وملفات مجلد Drive والنظام',
               icon: FileImage,
               iconColor: 'text-teal-600 dark:text-teal-400',
               iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800',

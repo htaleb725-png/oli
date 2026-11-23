@@ -1239,7 +1239,16 @@ export const GlobalSearchArchiveModule: React.FC = () => {
                 type="button"
                 disabled={!blockReasonInput.trim()}
                 onClick={() => {
-                  blockCitizen(selectedCitizen.Citizen_ID, blockReasonInput.trim());
+                  blockCitizen(
+                    selectedCitizen.Citizen_ID,
+                    blockReasonInput.trim(),
+                    currentUser?.FullName || 'موظف الإدارة',
+                    {
+                      FullName: selectedCitizen.FullName,
+                      Phone1: selectedCitizen.Phone1,
+                      District: selectedCitizen.District
+                    }
+                  );
                   setBlockModalOpen(false);
                 }}
                 className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold cursor-pointer"

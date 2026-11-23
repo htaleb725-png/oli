@@ -316,8 +316,51 @@ function saveBlacklistStore(next: BlacklistStoreState): void {
   }
 }
 
+const CP720_HIGH_CHARS_SRV = [
+  0x00c7, 0x00fc, 0x00e9, 0x00e2, 0x00e4, 0x00e0, 0x00e5, 0x00e7, 0x00ea, 0x00eb, 0x00e8, 0x00ef, 0x00ee, 0x00ec, 0x00c4, 0x00c5,
+  0x00c9, 0x0651, 0x0652, 0x00f4, 0x00a4, 0x0640, 0x00fb, 0x00f9, 0x0621, 0x0622, 0x0623, 0x0624, 0x00a3, 0x0625, 0x0626, 0x0627,
+  0x0628, 0x0629, 0x062a, 0x062b, 0x062c, 0x062d, 0x062e, 0x062f, 0x0630, 0x0631, 0x0632, 0x0633, 0x0634, 0x0635, 0x0636, 0x00ab,
+  0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557, 0x255d, 0x255c, 0x255b, 0x2510,
+  0x2514, 0x2534, 0x252c, 0x251c, 0x2500, 0x253c, 0x255e, 0x255f, 0x255a, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256c, 0x2567,
+  0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256b, 0x256a, 0x2518, 0x250c, 0x2588, 0x2584, 0x258c, 0x2590, 0x2580,
+  0x0637, 0x0638, 0x0639, 0x063a, 0x0641, 0x0642, 0x0643, 0x0644, 0x0645, 0x0646, 0x0647, 0x0648, 0x0649, 0x064a, 0x064b, 0x064c,
+  0x064d, 0x064e, 0x064f, 0x0650, 0x0670, 0x00bb, 0x067e, 0x0686, 0x0698, 0x06af, 0x00b7, 0x221a, 0x207f, 0x00b2, 0x25a0, 0x00a0
+];
+const CP720_REVERSE_MAP_SRV = new Map<number, number>();
+CP720_HIGH_CHARS_SRV.forEach((cp, idx) => CP720_REVERSE_MAP_SRV.set(cp, 0x80 + idx));
+
+function repairArabicMojibakeServer(input: string): string {
+  const s = String(input || '');
+  if (!s) return s;
+  if (s.includes('\u256a') || s.includes('\u2518')) {
+    try {
+      const bytes: number[] = [];
+      for (let i = 0; i < s.length; i++) {
+        const code = s.charCodeAt(i);
+        if (code < 0x80) bytes.push(code);
+        else if (CP720_REVERSE_MAP_SRV.has(code)) bytes.push(CP720_REVERSE_MAP_SRV.get(code)!);
+        else bytes.push(code & 0xff);
+      }
+      const decoded = Buffer.from(bytes).toString('utf8');
+      if (!decoded.includes('\ufffd') && /[\u0600-\u06FF]/.test(decoded)) return decoded;
+    } catch {}
+  }
+  if (s.includes('\u00d8') || s.includes('\u00d9')) {
+    try {
+      const bytes: number[] = [];
+      for (let i = 0; i < s.length; i++) {
+        const code = s.charCodeAt(i);
+        bytes.push(code & 0xff);
+      }
+      const decoded = Buffer.from(bytes).toString('utf8');
+      if (!decoded.includes('\ufffd') && /[\u0600-\u06FF]/.test(decoded)) return decoded;
+    } catch {}
+  }
+  return s;
+}
+
 function decodeHtmlEntities(str: string): string {
-  return str
+  const decoded = str
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -325,10 +368,18 @@ function decodeHtmlEntities(str: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
+  return repairArabicMojibakeServer(decoded);
 }
 
-function guessMimeFromName(name: string): string {
+function guessMimeFromName(name: string, entryBlockHtml = ''): string {
   const lower = (name || '').toLowerCase();
+  const b = (entryBlockHtml || '').toLowerCase();
+  if (b.includes('type/application/pdf') || b.includes('alt="pdf"')) return 'application/pdf';
+  if (b.includes('type/image/png') || b.includes('alt="png image"')) return 'image/png';
+  if (b.includes('type/image/webp')) return 'image/webp';
+  if (b.includes('type/image/gif')) return 'image/gif';
+  if (b.includes('type/image/') || b.includes('alt="jpeg image"') || b.includes('alt="image"')) return 'image/jpeg';
+
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
   if (lower.endsWith('.png')) return 'image/png';
   if (lower.endsWith('.webp')) return 'image/webp';
@@ -344,6 +395,7 @@ function guessMimeFromName(name: string): string {
   if (lower.endsWith('.pptx') || lower.endsWith('.ppt')) return 'application/vnd.ms-powerpoint';
   if (lower.endsWith('.txt')) return 'text/plain';
   if (lower.endsWith('.zip') || lower.endsWith('.rar')) return 'application/zip';
+  if (!/\.[a-z0-9]{2,5}$/i.test(lower)) return 'image/jpeg';
   return 'application/octet-stream';
 }
 
@@ -1207,7 +1259,7 @@ async function startServer() {
             files.push({
               id: fid,
               name: fname,
-              mimeType: guessMimeFromName(fname),
+              mimeType: guessMimeFromName(fname, block),
               webViewLink: `https://drive.google.com/file/d/${fid}/view`,
               webContentLink: `https://drive.google.com/uc?export=download&id=${fid}`,
               thumbnailLink: `https://drive.google.com/thumbnail?id=${fid}&sz=w1200`
@@ -1261,17 +1313,52 @@ async function startServer() {
           }
         }
 
-        allFiles = combined;
+        const isArabicCitizenFile = (name: string) => {
+          const clean = repairArabicMojibakeServer(name || '')
+            .replace(/\.[a-zA-Z0-9]{2,5}$/, '')
+            .replace(/CamScanner[\s\S]*/i, '')
+            .replace(/(?:نسخة من|نسخه من|صورة|صور)/gi, '')
+            .trim();
+          return /[\u0621-\u064A]{2,}/.test(clean);
+        };
+        const arabicNamed = combined.filter(f => isArabicCitizenFile(f.name));
+        const otherFiles = combined.filter(f => !isArabicCitizenFile(f.name));
+
+        allFiles = [...arabicNamed, ...otherFiles];
         driveFolderCache.set(cacheKey, { fetchedAt: Date.now(), files: allFiles });
       }
 
+      const normalizeDriveArabic = (val: string) =>
+        repairArabicMojibakeServer(val || '')
+          .replace(/\.[a-zA-Z0-9]{2,5}$/, '')
+          .replace(/^(?:نسخة من|نسخه من)\s+/i, '')
+          .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+          .replace(/[۰-۹]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString())
+          .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+          .replace(/[أإآٱ]/g, 'ا')
+          .replace(/ة/g, 'ه')
+          .replace(/ى/g, 'ي')
+          .replace(/ؤ/g, 'و')
+          .replace(/ئ/g, 'ي')
+          .replace(/[._\-()/\\]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase();
+
       let filtered = allFiles;
       if (query) {
-        const normQ = normalizeCredString(query).toLowerCase();
+        const normQ = normalizeDriveArabic(query);
+        const compactQ = normQ.replace(/\s+/g, '');
         const tokens = normQ.split(' ').filter(Boolean);
         filtered = allFiles.filter((f) => {
-          const normName = normalizeCredString(f.name).toLowerCase();
-          return tokens.every((t) => normName.includes(t)) || f.id.toLowerCase().includes(normQ);
+          const normName = normalizeDriveArabic(f.name);
+          const compactName = normName.replace(/\s+/g, '');
+          return (
+            normName.includes(normQ) ||
+            (compactQ.length >= 2 && compactName.includes(compactQ)) ||
+            (tokens.length > 0 && tokens.every((t) => normName.includes(t) || compactName.includes(t))) ||
+            f.id.toLowerCase().includes(normQ)
+          );
         });
       }
 

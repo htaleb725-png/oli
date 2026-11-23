@@ -1,0 +1,163 @@
+{
+  "systemSettings": {
+    "appName": "برنامج مكتب النائب علا الناشي",
+    "deputyName": "النائب  علا عودة الناشي",
+    "deputyTitle": "عضو مجلس النواب العراقي - الدورة الخامسة - مطور النظام - حسن طالب الوائلي",
+    "province": "محافظة ذي قار",
+    "officeAddress": "الناصرية - شارع المحافظة القديم - مقابل ديوان المحافظة",
+    "hotline": "07801234567",
+    "logoUrl": "/office-logo.png",
+    "parliamentEmblemUrl": "/office-logo.png",
+    "maintenanceMode": false,
+    "tickerNews": [
+      "المكتب يستقبل المراجعين يومياً من الساعة 9 صباحاً وحتى 2 ظهراً",
+      "تم إنجاز أكثر من 1,420 معاملة خلال الشهر الحالي في مختلف الدوائر والوزارات",
+      "مقابلات النائب المباشرة يومي الاثنين والخميس حسب جدول الحجوزات المعتمد",
+      "نظام الأرشفة الإلكتروني والربط السحابي قيد التشغيل المباشر لخدمة أهالي ذي قار"
+    ],
+    "googleSheetId": "1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ",
+    "googleDriveFolderId": "1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc",
+    "appsScriptUrl": "https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec",
+    "primaryThemeColor": "amber",
+    "id": "global_settings",
+    "updatedAt": "2026-11-22T06:42:14.682Z",
+    "activeGoogleSheetId": "1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ",
+    "activeGoogleSheetUrl": "https://docs.google.com/spreadsheets/d/1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ/edit",
+    "uiCustomizations": {
+      "borderRadius": "rounded",
+      "buttonSize": "standard",
+      "inputFieldSize": "standard",
+      "showAcademicEducation": true,
+      "showCitizenRating": true,
+      "showClanSurname": true,
+      "showDependencyStatus": true,
+      "showSecondaryPhone": true,
+      "tableDensity": "standard"
+    },
+    "allowAdminOpenDriveFolder": false,
+    "officeBranch": "nasiriyah",
+    "customImages": {
+      "loadingEmblem": "/office-logo.png"
+    },
+    "customTilesConfig": {},
+    "lastOutgoingNumberNasiriyah": 103,
+    "settingsVersion": 0,
+    "pwaIcon192": "/icon-192.png",
+    "pwaIcon512": "/icon-512.png"
+  },
+  "customSections": [
+    {
+      "id": "sec_social_welfare",
+      "title": "قسم الرعاية الاجتماعية وشبكة الحماية",
+      "description": "متابعة معاملات شبكة الحماية الاجتماعية، إصدار الماستر كارد، راتب المعين المتفرغ، والمسح الميداني للباحث الاجتماعي",
+      "badgeColor": "emerald",
+      "icon": "HeartHandshake",
+      "createdAt": "2026-03-01",
+      "createdBy": "مطور النظام",
+      "fields": [
+        {
+          "id": "f_welf_name",
+          "name": "citizen_name",
+          "label": "اسم المواطن / صاحب القيد الرباعي",
+          "type": "text",
+          "required": true,
+          "placeholder": "مثال: جاسم محمد خضير الركابي"
+        },
+        {
+          "id": "f_welf_phone",
+          "name": "phone",
+          "label": "رقم هاتف المراجع للتواصل",
+          "type": "text",
+          "required": true,
+          "placeholder": "07800000000"
+        },
+        {
+          "id": "f_welf_code",
+          "name": "welfare_code",
+          "label": "رقم القيد / رقم المعاملة الوزارية",
+          "type": "text",
+          "required": true,
+          "placeholder": "مثال: رع/ذي/2026/894"
+        },
+        {
+          "id": "f_welf_type",
+          "name": "case_type",
+          "label": "نوع الإعانة أو الفئة المشمولة",
+          "type": "dropdown",
+          "required": true,
+          "options": [
+            "شبكة الحماية الاجتماعية (رجال)",
+            "شبكة الحماية الاجتماعية (نساء وأرامل ومطلقات)",
+            "راتب المعين المتفرغ (هيئة رعاية ذوي الإعاقة)",
+            "إصدار وتجديد الماستر كارد (كي كارد)",
+            "اعتراض وتقارير اللجان الطبية",
+            "تحديث البيانات والبيان السنوي"
+          ]
+        },
+        {
+          "id": "f_welf_researcher",
+          "name": "researcher_status",
+          "label": "موقف الباحث الاجتماعي والمسح الميداني",
+          "type": "dropdown",
+          "required": false,
+          "options": [
+            "تمت زيارة الباحث الاجتماعي بنجاح",
+            "بانتظار وصول الباحث الميداني",
+            "مرفوض من الباحث (فوق خط الفقر)",
+            "ملف مدقق ومكتمل بانتظار التخصيص المالي"
+          ]
+        },
+        {
+          "id": "f_welf_district",
+          "name": "district",
+          "label": "القضاء / محل السكن",
+          "type": "dropdown",
+          "required": true,
+          "options": [
+            "الناصرية (المركز)",
+            "الشطرة",
+            "الرفاعي",
+            "سوق الشيوخ",
+            "الجبايش",
+            "قلعة سكر",
+            "الدواية",
+            "الغراف",
+            "البطحاء",
+            "سيد دخيل",
+            "الفهود",
+            "الإصلاح",
+            "الطار",
+            "أخرى"
+          ]
+        },
+        {
+          "id": "f_welf_date",
+          "name": "submission_date",
+          "label": "تاريخ استلام ومتابعة المعاملة",
+          "type": "date",
+          "required": false
+        },
+        {
+          "id": "f_welf_doc",
+          "name": "attachment",
+          "label": "صورة الطلب أو القرار الطبي / كتاب الشمول",
+          "type": "image",
+          "required": false,
+          "helpText": "رفع صورة التقرير أو الوثيقة الرسمية"
+        },
+        {
+          "id": "f_welf_notes",
+          "name": "notes",
+          "label": "ملاحظات وتوجيهات متابعة المعاملة",
+          "type": "textarea",
+          "required": false,
+          "placeholder": "اكتب التوجيهات أو الملاحظات الخاصة بوزارة العمل..."
+        }
+      ]
+    }
+  ],
+  "settingsVersion": 0,
+  "updateSummary": "تم تحديث إعدادات وتصميم المنظومة",
+  "updatedBy": "مطور المنظومة البرمجي",
+  "updatedAt": "2026-11-22T23:12:38.511Z"
+}

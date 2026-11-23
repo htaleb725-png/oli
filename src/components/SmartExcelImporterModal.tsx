@@ -18,6 +18,7 @@ import {
 import {
   MAX_VALID_OUTGOING_SEQ,
   scanMaxOutgoingSequences,
+  findLastOutgoingInRawValues,
   parseExcelDateValue,
   parseDeliveryStatus,
   splitCombinedOutgoingAndDate,
@@ -351,6 +352,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     {} as Record<CanonicalFieldKey, string>
   );
   const [showColumnMapper, setShowColumnMapper] = useState(false);
+  const [customOutgoingBaseline, setCustomOutgoingBaseline] = useState<string>('');
 
   const [previewRows, setPreviewRows] = useState<any[]>([]);
   const [importSummary, setImportSummary] = useState<{
@@ -394,6 +396,56 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     }
     return Array.from(set);
   }, [availableSheets]);
+
+  // Live scan of the uploaded Excel file's (رقم الكتاب / العدد) column across all selected sheets
+  const detectedFileOutgoing = useMemo(() => {
+    if (!loadedWorkbook || availableSheets.length === 0) {
+      return { lastInFileOrder: 0, maxValid: 0, recommendedBaseline: 0, totalValidFound: 0, columnHeader: '' };
+    }
+    const rawValues: any[] = [];
+    let usedHeader = '';
+    for (const s of availableSheets) {
+      if (!s.selected) continue;
+      const ws = loadedWorkbook.Sheets[s.name];
+      if (!ws) continue;
+      const matrix = XLSX.utils.sheet_to_json(ws, { defval: '', header: 1 }) as any[][];
+      let headerRowIdx = 0;
+      for (let r = 0; r < Math.min(matrix.length, 6); r++) {
+        const nonEmpty = (matrix[r] || []).filter((c) => String(c || '').trim() !== '');
+        if (nonEmpty.length >= 2) {
+          headerRowIdx = r;
+          break;
+        }
+      }
+      const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '', range: headerRowIdx });
+      if (rows.length === 0) continue;
+      const sheetHeaders = Object.keys(rows[0] || {});
+      const autoMap = detectExclusiveColumnMapping(sheetHeaders);
+      const userOutCol = columnMapping.outgoingNumber;
+      const outHeader =
+        userOutCol === '__NONE__'
+          ? ''
+          : userOutCol && sheetHeaders.includes(userOutCol)
+          ? userOutCol
+          : autoMap.outgoingNumber || '';
+      if (!outHeader) continue;
+      if (!usedHeader) usedHeader = outHeader;
+      const dateHeader =
+        columnMapping.outgoingDate && sheetHeaders.includes(columnMapping.outgoingDate)
+          ? columnMapping.outgoingDate
+          : autoMap.outgoingDate || '';
+      for (const r of rows) {
+        const split = splitCombinedOutgoingAndDate(r[outHeader], dateHeader ? r[dateHeader] : '');
+        if (split.outgoingNumber) {
+          rawValues.push(split.outgoingNumber);
+        } else if (r[outHeader] !== undefined && r[outHeader] !== '') {
+          rawValues.push(r[outHeader]);
+        }
+      }
+    }
+    const stats = findLastOutgoingInRawValues(rawValues);
+    return { ...stats, columnHeader: usedHeader };
+  }, [loadedWorkbook, availableSheets, columnMapping.outgoingNumber, columnMapping.outgoingDate]);
 
   if (!isOpen) return null;
 
@@ -456,6 +508,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         const detected = detectExclusiveColumnMapping(mergedHeaders);
         setColumnMapping(detected);
         setShowColumnMapper(true);
+        setCustomOutgoingBaseline('');
 
         setAvailableSheets(sheetDetails);
         setTotalRows(totalRecordsFound);
@@ -609,9 +662,8 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     let normalizedEntitiesCount = 0;
     let deliveredCount = 0;
     let undeliveredCount = 0;
-    let maxNasiriyahOutgoing = 0;
-    let maxSuqOutgoing = 0;
     let maxAnyOutgoing = 0;
+    const allRawOutgoingInFile: string[] = [];
     let reqSeqCounter = 1;
 
     const nowStamp = new Date().toISOString().split('T')[0];
@@ -675,8 +727,11 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           continue;
         }
 
-        // Outgoing sequence max is calculated robustly at the end via scanMaxOutgoingSequences(createdRequests)
-        // so stray phone numbers, Excel serial dates, or typos can never poison the counter.
+        // Always record the raw outgoing number from the file in file order BEFORE duplicate skipping,
+        // so the file's last outgoing number (e.g. 1343) is captured even if some or all rows were imported before.
+        if (rawOutgoing) {
+          allRawOutgoingInFile.push(rawOutgoing);
+        }
 
         const normName = normalizeArabicName(rawName);
         const standardizedEntity = rawEntity
@@ -831,35 +886,37 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
         const finalNewCitizensList = Array.from(workingNewCitizensByName.values());
 
-        // 1. Compute robust highest outgoing sequence from imported requests (rejecting corrupted 6+ digit values/dates)
-        const robustScanned = scanMaxOutgoingSequences(createdRequests);
-        maxNasiriyahOutgoing = robustScanned.maxNasiriyah;
-        maxSuqOutgoing = robustScanned.maxSuq;
-        maxAnyOutgoing = robustScanned.maxAny;
+        // 1. Determine the exact last outgoing number in the uploaded file's (العدد / الصادر) column
+        const fileOutgoingStats = findLastOutgoingInRawValues(allRawOutgoingInFile);
+        const manualBaselineNum = parseInt(toWesternDigits(customOutgoingBaseline).replace(/\D/g, ''), 10);
+        const targetOutgoingBaseline =
+          !isNaN(manualBaselineNum) && manualBaselineNum > 0 && manualBaselineNum <= MAX_VALID_OUTGOING_SEQ
+            ? manualBaselineNum
+            : fileOutgoingStats.recommendedBaseline > 0
+            ? fileOutgoingStats.recommendedBaseline
+            : scanMaxOutgoingSequences(createdRequests).maxAny;
 
-        // Immediately advance (and self-heal if previously poisoned > MAX_VALID_OUTGOING_SEQ) office outgoing baselines
-        const rawCurrentNas = Number(systemSettings.lastOutgoingNumberNasiriyah) || 0;
-        const rawCurrentSuq = Number(systemSettings.lastOutgoingNumberSuq) || 0;
-        const nasPoisoned = rawCurrentNas > MAX_VALID_OUTGOING_SEQ;
-        const suqPoisoned = rawCurrentSuq > MAX_VALID_OUTGOING_SEQ;
-        const currentNas = nasPoisoned ? 0 : rawCurrentNas;
-        const currentSuq = suqPoisoned ? 0 : rawCurrentSuq;
-        const settingsUpdates: Record<string, any> = {};
+        maxAnyOutgoing = targetOutgoingBaseline;
 
-        if (nasPoisoned || maxNasiriyahOutgoing > currentNas) {
-          settingsUpdates.lastOutgoingNumberNasiriyah = Math.max(currentNas, maxNasiriyahOutgoing);
-        }
-        if (suqPoisoned || maxSuqOutgoing > currentSuq) {
-          settingsUpdates.lastOutgoingNumberSuq = Math.max(currentSuq, maxSuqOutgoing);
-        }
-        if (Object.keys(settingsUpdates).length > 0) {
-          updateSystemSettings(settingsUpdates);
+        // Anchor the system outgoing counter strictly to the uploaded file's last outgoing number
+        // so the very next outgoing number in the system is targetOutgoingBaseline + 1 (e.g., 1343 -> ن / 12 / 1344)
+        if (targetOutgoingBaseline > 0) {
+          const anchorTimestamp = new Date().toISOString();
+          updateSystemSettings({
+            lastOutgoingNumberNasiriyah: targetOutgoingBaseline,
+            lastOutgoingNumberSuq: targetOutgoingBaseline,
+            outgoingBaselineSetAt: anchorTimestamp,
+            outgoingBaselineLabel: `${fileName} (${targetOutgoingBaseline})`
+          });
         }
 
         const isSuqBranch = systemSettings.officeBranch === 'suq_al_shuyoukh';
-        const effectiveMaxForBranch = isSuqBranch
-          ? Math.max(currentSuq, maxSuqOutgoing)
-          : Math.max(currentNas, maxNasiriyahOutgoing);
+        const effectiveMaxForBranch =
+          targetOutgoingBaseline > 0
+            ? targetOutgoingBaseline
+            : isSuqBranch
+            ? Number(systemSettings.lastOutgoingNumberSuq) || 0
+            : Number(systemSettings.lastOutgoingNumberNasiriyah) || 0;
         const nextOutgoingPreview =
           effectiveMaxForBranch > 0
             ? `${isSuqBranch ? 'س / 14 / ' : 'ن / 12 / '}${effectiveMaxForBranch + 1}`
@@ -1172,6 +1229,56 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
               </div>
             )}
 
+            {/* Step 4: Detected Last Outgoing Number from Uploaded Excel File (عمود العدد / الصادر) */}
+            <div className="p-3.5 rounded-xl bg-teal-50/80 dark:bg-teal-950/40 border border-teal-300 dark:border-teal-800 space-y-2 text-xs">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="font-black text-teal-950 dark:text-teal-200 flex items-center gap-2">
+                  <span>4. ضبط عداد الصادر تلقائياً من عمود ({detectedFileOutgoing.columnHeader || 'رقم الكتاب / العدد'}) في الملف:</span>
+                </div>
+                {detectedFileOutgoing.recommendedBaseline > 0 && (
+                  <span className="px-2.5 py-0.5 rounded-md bg-teal-700 text-white font-mono font-black text-[11px]">
+                    آخر رقم صادر بالملف: {detectedFileOutgoing.recommendedBaseline}
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-center pt-1">
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 shrink-0">
+                    آخر رقم صادر في الملف:
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={
+                      customOutgoingBaseline !== ''
+                        ? customOutgoingBaseline
+                        : detectedFileOutgoing.recommendedBaseline > 0
+                        ? String(detectedFileOutgoing.recommendedBaseline)
+                        : ''
+                    }
+                    onChange={(e) => setCustomOutgoingBaseline(e.target.value)}
+                    placeholder="مثال: 1343"
+                    className="w-32 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-teal-400 dark:border-teal-700 text-slate-900 dark:text-white font-mono font-black text-xs text-center outline-none focus:ring-2 focus:ring-teal-500"
+                  />
+                </div>
+
+                <div className="p-2 rounded-lg bg-slate-900 text-amber-300 font-bold text-[11px] flex items-center justify-between">
+                  <span>الصادر القادم في النظام بعد الاستيراد:</span>
+                  <span className="font-mono font-black text-xs text-emerald-300" dir="rtl">
+                    {(() => {
+                      const base =
+                        parseInt(toWesternDigits(customOutgoingBaseline).replace(/\D/g, ''), 10) ||
+                        detectedFileOutgoing.recommendedBaseline ||
+                        0;
+                      const prefix = systemSettings.officeBranch === 'suq_al_shuyoukh' ? 'س / 14 / ' : 'ن / 12 / ';
+                      return base > 0 ? `${prefix}${base + 1}` : 'يُحتسب تلقائياً';
+                    })()}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             {/* Launch Action Button */}
             {!isProcessing && (
               <div className="pt-1 flex justify-end">
@@ -1181,7 +1288,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
                   className="px-6 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-black flex items-center gap-2 cursor-pointer shadow-md active:scale-95 transition-all"
                 >
                   <Sparkles className="w-4 h-4 text-amber-300" />
-                  <span>تصفية وإنزال البيانات في القسم وتحديث الصادر</span>
+                  <span>تصفية وإنزال البيانات في القسم وتثبيت عداد الصادر</span>
                 </button>
               </div>
             )}

@@ -27,6 +27,12 @@ export function smartMergeObject<T extends Record<string, any>>(existing: T, inc
       result[key] = value;
     }
   }
+  if (incoming.IsBlocked === false) {
+    result.IsBlocked = false;
+    result.BlockReason = undefined;
+    result.BlockedAt = undefined;
+    result.BlockedBy = undefined;
+  }
   return result as T;
 }
 

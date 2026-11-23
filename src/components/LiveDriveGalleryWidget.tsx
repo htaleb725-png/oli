@@ -35,7 +35,8 @@ import {
   deleteLiveDriveFile,
   downloadDriveFileAsAsset,
   printDriveFileDirectly,
-  matchesArabicPartial
+  matchesArabicPartial,
+  normalizeArabicQuery
 } from '../services/driveArchiveService';
 import { getAllImagesFromDB, deleteImageFromDB, ImageRecord } from '../utils/imageDb';
 import { printImageIsolated, printHtmlSafely } from '../utils/printReceiptHelper';
@@ -232,28 +233,15 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
     return () => clearInterval(interval);
   }, [autoRefreshEnabled, loadArchiveData]);
 
-  // Live debounced remote Google Drive search while typing (catches any newly added or remote-only files in Drive)
+  // Live debounced remote Google Drive search while typing (actively queries the Drive folder for matching filenames)
   useEffect(() => {
-    if (!activeQuery || activeQuery.length < 2) {
+    const trimmedQ = activeQuery.trim();
+    if (!trimmedQ || trimmedQ.length < 2) {
       setRemoteDriveHits([]);
       setIsSearchingDriveLive(false);
       return;
     }
-    setVisibleCount(compact ? 16 : 48);
-
-    // If all Drive files are already loaded locally via server proxy, local filtering is already 100% exhaustive in 0ms;
-    // still run a lightweight 280ms remote search when using Apps Script / OAuth or when folder has more files than loaded.
-    const needsRemoteQuery =
-      driveSource === 'apps_script' ||
-      driveSource === 'oauth_api' ||
-      driveSource === 'none' ||
-      (totalInFolder > 0 && driveFiles.length < totalInFolder);
-
-    if (!needsRemoteQuery) {
-      setRemoteDriveHits([]);
-      setIsSearchingDriveLive(false);
-      return;
-    }
+    setVisibleCount(compact ? 24 : 72);
 
     let cancelled = false;
     setIsSearchingDriveLive(true);
@@ -262,8 +250,8 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
         const res = await fetchLiveDriveFolderFiles({
           folderId: resolvedFolderId,
           appsScriptUrl,
-          query: activeQuery,
-          limit: 500
+          query: trimmedQ,
+          limit: 1000
         });
         if (!cancelled) {
           setRemoteDriveHits(res.files || []);
@@ -273,26 +261,29 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
       } finally {
         if (!cancelled) setIsSearchingDriveLive(false);
       }
-    }, 280);
+    }, 220);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [activeQuery, compact, driveSource, driveFiles.length, totalInFolder, resolvedFolderId, appsScriptUrl]);
+  }, [activeQuery, compact, resolvedFolderId, appsScriptUrl]);
 
   // Filtered Google Drive files (0ms instant Arabic-normalized partial & progressive full-name match across ALL Drive files + remote hits)
   const matchedDriveFiles = useMemo(() => {
     const combinedMap = new Map<string, UnifiedDriveFile>();
-    for (const f of driveFiles) combinedMap.set(f.id, f);
+    // Put remoteDriveHits first so direct Drive search hits appear at the very top
     if (activeQuery && remoteDriveHits.length > 0) {
       for (const f of remoteDriveHits) {
-        if (!combinedMap.has(f.id)) combinedMap.set(f.id, f);
+        combinedMap.set(f.id, f);
       }
+    }
+    for (const f of driveFiles) {
+      if (!combinedMap.has(f.id)) combinedMap.set(f.id, f);
     }
 
     const pool = Array.from(combinedMap.values());
-    return pool.filter((file) => {
+    const filtered = pool.filter((file) => {
       if (activeQuery) {
         const match =
           matchesArabicPartial(file.name, activeQuery) ||
@@ -304,6 +295,24 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
       if (categoryFilter === 'system') return false;
       return true;
     });
+
+    if (activeQuery) {
+      const normQ = normalizeArabicQuery(activeQuery);
+      const compactQ = normQ.replace(/\s+/g, '');
+      filtered.sort((a, b) => {
+        const na = normalizeArabicQuery(a.name);
+        const nb = normalizeArabicQuery(b.name);
+        const aExact = na === normQ || na.replace(/\s+/g, '') === compactQ ? 1 : 0;
+        const bExact = nb === normQ || nb.replace(/\s+/g, '') === compactQ ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
+        const aStarts = na.startsWith(normQ) || na.replace(/\s+/g, '').startsWith(compactQ) ? 1 : 0;
+        const bStarts = nb.startsWith(normQ) || nb.replace(/\s+/g, '').startsWith(compactQ) ? 1 : 0;
+        if (aStarts !== bStarts) return bStarts - aStarts;
+        return 0;
+      });
+    }
+
+    return filtered;
   }, [driveFiles, remoteDriveHits, activeQuery, categoryFilter]);
 
   // Matched System Records (Citizens + Requests + Documents + IndexedDB images)

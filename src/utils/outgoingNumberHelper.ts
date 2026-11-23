@@ -291,6 +291,75 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
 }
 
 /**
+ * Scan raw cell values from an uploaded Excel file's "العدد / الصادر" column in exact file order
+ * and extract the LAST valid outgoing number appearing at the bottom of the column.
+ * Guarantees that whatever the last number in the uploaded file is (e.g. 1343),
+ * the system counts strictly from after that number (1344, 1345, ...).
+ */
+export function findLastOutgoingInRawValues(
+  rawValues: Array<string | number | null | undefined>
+): {
+  lastSeq: number;
+  lastInFileOrder: number;
+  maxValid: number;
+  recommendedBaseline: number;
+  lastBranch: OutgoingBranch;
+  lastRaw: string;
+  lastNasiriyah: number;
+  lastSuq: number;
+  validCount: number;
+  totalValidFound: number;
+} {
+  let lastSeq = 0;
+  let lastBranch: OutgoingBranch = 'general';
+  let lastRaw = '';
+  let lastNasiriyah = 0;
+  let lastSuq = 0;
+  let validCount = 0;
+  const allValidSeqs: number[] = [];
+
+  for (const raw of rawValues || []) {
+    if (raw === null || raw === undefined) continue;
+    const str = toWesternDigits(raw).trim();
+    if (!str) continue;
+    const split = splitCombinedOutgoingAndDate(str);
+    const parsed = extractOutgoingSequence(split.outgoingNumber || str);
+    if (parsed.seq <= 0 || parsed.seq > MAX_VALID_OUTGOING_SEQ) continue;
+
+    validCount += 1;
+    lastSeq = parsed.seq;
+    allValidSeqs.push(parsed.seq);
+    lastBranch = parsed.branch;
+    lastRaw = split.outgoingNumber || str;
+
+    if (parsed.branch === 'suq_al_shuyoukh') {
+      lastSuq = parsed.seq;
+    } else if (parsed.branch === 'nasiriyah') {
+      lastNasiriyah = parsed.seq;
+    } else {
+      lastNasiriyah = parsed.seq;
+      lastSuq = parsed.seq;
+    }
+  }
+
+  const maxValid = findRobustMaxSequence(allValidSeqs);
+  const recommendedBaseline = lastSeq > 0 ? lastSeq : maxValid;
+
+  return {
+    lastSeq,
+    lastInFileOrder: lastSeq,
+    maxValid,
+    recommendedBaseline,
+    lastBranch,
+    lastRaw,
+    lastNasiriyah,
+    lastSuq,
+    validCount,
+    totalValidFound: validCount
+  };
+}
+
+/**
  * Scan any list of OfficeRequests (and optional OfficialLetters) to find the robust highest outgoing sequence
  * per office branch so importing Excel archives ALWAYS advances the outgoing counter accurately
  * without being poisoned by stray dates/phone numbers/typos.
@@ -335,6 +404,8 @@ export function scanMaxOutgoingSequences(
 /**
  * Compute the next authoritative outgoing number across ALL requests (active + archived Excel imports),
  * official letters, and systemSettings baselines so archiving ANY Excel file immediately advances the outgoing counter.
+ * When an authoritative Excel baseline (outgoingBaselineSetAt) is set, only requests issued AFTER that timestamp
+ * can advance the counter further — preventing old historical rows from hijacking the sequence.
  * Automatically self-heals poisoned/corrupted baselines (e.g. > 50,000 or impossible spikes).
  */
 export function computeNextOutgoingNumber(
@@ -364,12 +435,22 @@ export function computeNextOutgoingNumber(
     ? Number(systemSettings?.lastOutgoingNumberSuq) || 0
     : Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
 
+  const baselineSetAtMs = systemSettings?.outgoingBaselineSetAt
+    ? Date.parse(systemSettings.outgoingBaselineSetAt)
+    : NaN;
+  const hasAuthoritativeBaselineAnchor =
+    Number.isFinite(baselineSetAtMs) &&
+    Number.isFinite(rawBaseline) &&
+    rawBaseline > 0 &&
+    rawBaseline <= MAX_VALID_OUTGOING_SEQ;
+
   type CandidateRecord = {
     outgoingNumber: string;
     outgoingDate: string;
     citizenName: string;
     seq: number;
     request?: OfficeRequest;
+    isAfterAnchor?: boolean;
   };
 
   const candidates: CandidateRecord[] = [];
@@ -381,15 +462,31 @@ export function computeNextOutgoingNumber(
 
     // Count matching branch records + general/numeric records
     const appliesToBranch = parsed.branch === 'general' || parsed.branch === targetBranch;
-    if (appliesToBranch) {
-      candidates.push({
-        outgoingNumber: r.OutgoingNumber,
-        outgoingDate: r.OutgoingDate || (r.CreatedAt ? String(r.CreatedAt).split('T')[0] : ''),
-        citizenName: r.CitizenName || 'غير محدد',
-        seq: parsed.seq,
-        request: r
-      });
+    if (!appliesToBranch) continue;
+
+    let isAfterAnchor = true;
+    if (hasAuthoritativeBaselineAnchor) {
+      // Imported historical rows never advance past an explicit Excel-file anchor;
+      // only real new outgoing books issued AFTER outgoingBaselineSetAt advance the counter.
+      if (r.IsHistoricalImported) {
+        isAfterAnchor = false;
+      } else {
+        const recMs = Math.max(
+          r.UpdatedAt ? Date.parse(r.UpdatedAt) : 0,
+          r.CreatedAt && String(r.CreatedAt).includes('T') ? Date.parse(r.CreatedAt) : 0
+        );
+        isAfterAnchor = Number.isFinite(recMs) && recMs > baselineSetAtMs + 2000;
+      }
     }
+
+    candidates.push({
+      outgoingNumber: r.OutgoingNumber,
+      outgoingDate: r.OutgoingDate || (r.CreatedAt ? String(r.CreatedAt).split('T')[0] : ''),
+      citizenName: r.CitizenName || 'غير محدد',
+      seq: parsed.seq,
+      request: r,
+      isAfterAnchor
+    });
   }
 
   for (const l of officialLetters || []) {
@@ -397,17 +494,32 @@ export function computeNextOutgoingNumber(
     const parsed = extractOutgoingSequence(l.LetterNumber);
     if (parsed.seq <= 0 || parsed.seq > MAX_VALID_OUTGOING_SEQ) continue;
     const appliesToBranch = parsed.branch === 'general' || parsed.branch === targetBranch;
-    if (appliesToBranch) {
-      candidates.push({
-        outgoingNumber: l.LetterNumber,
-        outgoingDate: l.LetterDate || '',
-        citizenName: l.CitizenName || l.Recipient || 'كتاب رسمي',
-        seq: parsed.seq
-      });
+    if (!appliesToBranch) continue;
+
+    let isAfterAnchor = true;
+    if (hasAuthoritativeBaselineAnchor) {
+      const lCreatedAt = (l as any).CreatedAt;
+      const lMs = Math.max(
+        (l as any).UpdatedAt ? Date.parse((l as any).UpdatedAt) : 0,
+        lCreatedAt && String(lCreatedAt).includes('T') ? Date.parse(String(lCreatedAt)) : 0
+      );
+      isAfterAnchor = Number.isFinite(lMs) && lMs > baselineSetAtMs + 2000;
     }
+
+    candidates.push({
+      outgoingNumber: l.LetterNumber,
+      outgoingDate: l.LetterDate || '',
+      citizenName: l.CitizenName || l.Recipient || 'كتاب رسمي',
+      seq: parsed.seq,
+      isAfterAnchor
+    });
   }
 
-  const robustMaxFromRecords = findRobustMaxSequence(candidates.map((c) => c.seq));
+  const activeCandidates = hasAuthoritativeBaselineAnchor
+    ? candidates.filter((c) => c.isAfterAnchor)
+    : candidates;
+
+  const robustMaxFromRecords = findRobustMaxSequence(activeCandidates.map((c) => c.seq));
 
   // Self-heal poisoned baselines (e.g. 23182436 stored in Firestore from an older buggy import)
   let effectiveBaseline =
@@ -416,6 +528,7 @@ export function computeNextOutgoingNumber(
       : 0;
 
   if (
+    !hasAuthoritativeBaselineAnchor &&
     effectiveBaseline > 0 &&
     robustMaxFromRecords > 0 &&
     effectiveBaseline - robustMaxFromRecords > 2000 &&
@@ -426,13 +539,33 @@ export function computeNextOutgoingNumber(
 
   const maxFound = Math.max(effectiveBaseline, robustMaxFromRecords);
 
-  // Pick the best record matching the true robust max (not an outlier!)
+  // Pick the best record matching the true authoritative max
   let bestRecord: CandidateRecord | undefined;
-  if (robustMaxFromRecords > 0) {
-    for (const c of candidates) {
-      if (c.seq === robustMaxFromRecords) {
+  if (maxFound > 0) {
+    // Prefer a post-anchor or matching record with seq === maxFound
+    for (const c of activeCandidates) {
+      if (c.seq === maxFound) {
         bestRecord = c;
       }
+    }
+    // If maxFound came from the uploaded file baseline, find the record matching that exact number (even historical)
+    if (!bestRecord) {
+      for (const c of candidates) {
+        if (c.seq === maxFound) {
+          bestRecord = c;
+        }
+      }
+    }
+    // Fallback synthetic display record so the live status bar ALWAYS displays the anchored last number cleanly
+    if (!bestRecord && effectiveBaseline > 0 && maxFound === effectiveBaseline) {
+      bestRecord = {
+        outgoingNumber: `${branchPrefix} / ${branchCode} / ${effectiveBaseline}`,
+        outgoingDate: systemSettings?.outgoingBaselineSetAt
+          ? systemSettings.outgoingBaselineSetAt.split('T')[0]
+          : new Date().toISOString().split('T')[0],
+        citizenName: systemSettings?.outgoingBaselineLabel || 'آخر عدد في الملف المرفوع',
+        seq: effectiveBaseline
+      };
     }
   }
 

@@ -95,6 +95,25 @@ function clipStr(val: any, maxLen: number): string | undefined {
   return s.length > maxLen ? s.slice(0, maxLen) : s;
 }
 
+function stripUndefinedProps(obj: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined) continue;
+    if (Array.isArray(v)) {
+      out[k] = v.map((item) =>
+        item && typeof item === 'object' && !Array.isArray(item)
+          ? stripUndefinedProps(item)
+          : item
+      );
+    } else if (v && typeof v === 'object' && !(v instanceof Date)) {
+      out[k] = stripUndefinedProps(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updatedAt: string } {
   const safeId = sanitizeFirestoreDocId(citizen.Citizen_ID, 'ONA');
   const fullName = clipStr(citizen.FullName, 250) || 'مراجع';
@@ -109,11 +128,18 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
     CreatedAt: clipStr(citizen.CreatedAt, 100) || new Date().toISOString().split('T')[0],
     updatedAt: new Date().toISOString()
   };
+  // Explicitly clear block fields in Firestore when unblocked (instead of passing undefined which Firestore rejects)
+  if (citizen.IsBlocked === false) {
+    copy.IsBlocked = false;
+    copy.BlockReason = '';
+    copy.BlockedAt = '';
+    copy.BlockedBy = '';
+  }
   // Prevent oversized base64 images from exceeding Firestore's 1MB document limit
   if (typeof copy.PhotoUrl === 'string' && copy.PhotoUrl.length > 250000) {
     delete copy.PhotoUrl;
   }
-  return copy;
+  return stripUndefinedProps(copy) as Citizen & { updatedAt: string };
 }
 
 export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest & { updatedAt: string } {
@@ -142,7 +168,7 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
       return att;
     });
   }
-  return copy;
+  return stripUndefinedProps(copy) as OfficeRequest & { updatedAt: string };
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {

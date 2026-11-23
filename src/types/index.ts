@@ -526,6 +526,8 @@ export interface SystemSettings {
   receptionResidentialAreas?: string[]; // قائمة مناطق السكن المنسدلة
   lastOutgoingNumberNasiriyah?: number; // آخر عدد صادر مسجل لمكتب الناصرية
   lastOutgoingNumberSuq?: number; // آخر عدد صادر مسجل لمكتب سوق الشيوخ
+  outgoingBaselineSetAt?: string; // توقيت تثبيت آخر رقم صادر من الملف المرفوع لمنع تداخل السجلات القديمة
+  outgoingBaselineLabel?: string; // وصف مصدر آخر رقم صادر مثبت (مثل اسم ملف الإكسل المرفوع)
   receptionCustomFields?: CustomFieldDefinition[]; // الحقول المخصصة التي يضيفها المطور للاستعلامات
   receptionHiddenDefaultFields?: string[]; // الحقول الافتراضية التي يقرر المطور إخفاءها من الاستعلامات
   settingsVersion?: number; // إصدار التحديث الفوري للأيقونات والإعدادات لجميع المستخدمين

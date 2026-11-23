@@ -18,7 +18,8 @@ import { Citizen, OfficeRequest } from '../types';
 import {
   MAX_VALID_OUTGOING_SEQ,
   splitCombinedOutgoingAndDate,
-  scanMaxOutgoingSequences
+  scanMaxOutgoingSequences,
+  findLastOutgoingInRawValues
 } from '../utils/outgoingNumberHelper';
 
 interface LegacyDataImporterModalProps {
@@ -170,7 +171,7 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
         setIsProcessing(false);
       } catch (error) {
         console.error(error);
-        alert('حدث خطأ أثناء قراءة ملف الإكسل. يرجى التأكد من صيغة الملف.');
+        setProgressMsg('حدث خطأ أثناء قراءة ملف الإكسل. يرجى التأكد من صيغة الملف.');
         setIsProcessing(false);
       }
     };
@@ -231,22 +232,18 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
     }
 
     try {
+      const fileOutStats = findLastOutgoingInRawValues(cleanedRows.map((r) => r.outgoingNumber || ''));
       const scanned = scanMaxOutgoingSequences(requestsToCreate);
-      const settingsPatch: Record<string, any> = {};
-      const rawNas = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
-      const rawSuq = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
-      const nasPoisoned = rawNas > MAX_VALID_OUTGOING_SEQ;
-      const suqPoisoned = rawSuq > MAX_VALID_OUTGOING_SEQ;
-      const safeNas = nasPoisoned ? 0 : rawNas;
-      const safeSuq = suqPoisoned ? 0 : rawSuq;
-      if (nasPoisoned || scanned.maxNasiriyah > safeNas) {
-        settingsPatch.lastOutgoingNumberNasiriyah = Math.max(safeNas, scanned.maxNasiriyah);
-      }
-      if (suqPoisoned || scanned.maxSuq > safeSuq) {
-        settingsPatch.lastOutgoingNumberSuq = Math.max(safeSuq, scanned.maxSuq);
-      }
-      if (Object.keys(settingsPatch).length > 0) {
-        updateSystemSettings(settingsPatch);
+      const targetBaseline =
+        fileOutStats.recommendedBaseline > 0 ? fileOutStats.recommendedBaseline : scanned.maxAny;
+
+      if (targetBaseline > 0 && targetBaseline <= MAX_VALID_OUTGOING_SEQ) {
+        updateSystemSettings({
+          lastOutgoingNumberNasiriyah: targetBaseline,
+          lastOutgoingNumberSuq: targetBaseline,
+          outgoingBaselineSetAt: new Date().toISOString(),
+          outgoingBaselineLabel: `${file?.name || 'ملف مستورد'} (${targetBaseline})`
+        });
       }
 
       await batchImportRecords(Array.from(uniqueCitizensMap.values()), requestsToCreate);
@@ -255,7 +252,7 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
     } catch (err) {
       console.error(err);
       setIsProcessing(false);
-      alert('حدث خطأ أثناء حفظ السجلات.');
+      setProgressMsg('حدث خطأ أثناء حفظ السجلات.');
     }
   };
 

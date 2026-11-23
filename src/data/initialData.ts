@@ -15,27 +15,34 @@ import {
 
 export const INITIAL_SETTINGS: SystemSettings = {
   appName: 'برنامج مكتب النائب علا الناشي',
-  deputyName: 'النائب المهندسة علا عودة الناشي',
-  deputyTitle: 'عضو مجلس النواب العراقي - الدورة الخامسة',
+  deputyName: 'النائب علا عودة الناشي',
+  deputyTitle: 'عضو مجلس النواب العراقي - الدورة الخامسة - مطور النظام - حسن طالب الوائلي',
   province: 'محافظة ذي قار',
   officeAddress: 'الناصرية - شارع المحافظة القديم - مقابل ديوان المحافظة',
   hotline: '07801234567',
-  logoUrl: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=200&auto=format&fit=crop&q=80',
-  parliamentEmblemUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f6/Coat_of_arms_of_Iraq_%282008%E2%80%93present%29.svg/200px-Coat_of_arms_of_Iraq_%282008%E2%80%93present%29.svg.png',
+  logoUrl: '/office-logo.png',
+  parliamentEmblemUrl: '/office-logo.png',
+  pwaIcon192: '/icon-192.png',
+  pwaIcon512: '/icon-512.png',
+  customImages: {
+    loadingEmblem: '/office-logo.png'
+  },
   maintenanceMode: false,
   tickerNews: [
     'المكتب يستقبل المراجعين يومياً من الساعة 9 صباحاً وحتى 2 ظهراً',
     'تم تفعيل الربط السحابي المباشر وقاعدة بيانات Firebase بنجاح',
     'نظام الأرشفة الإلكتروني والمزامنة اللحظية قيد التشغيل المباشر لخدمة أهالي ذي قار'
   ],
-  googleSheetId: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms',
+  googleSheetId: '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ',
+  activeGoogleSheetId: '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ',
+  activeGoogleSheetUrl: 'https://docs.google.com/spreadsheets/d/1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ/edit',
   googleDriveFolderId: '1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc',
-  appsScriptUrl: '',
+  appsScriptUrl: 'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec',
   primaryThemeColor: 'amber',
   developerPasscode: '2026',
-  allowAdminOpenDriveFolder: true,
+  allowAdminOpenDriveFolder: false,
   officeBranch: 'nasiriyah',
-  lastOutgoingNumberNasiriyah: 0,
+  lastOutgoingNumberNasiriyah: 103,
   lastOutgoingNumberSuq: 0,
   requiredFieldsConfig: {
     FullName: true,
@@ -88,18 +95,63 @@ export const INITIAL_SETTINGS: SystemSettings = {
 export const INITIAL_USERS: User[] = [
   {
     User_ID: 'USR-001',
-    Username: 'developer',
+    Username: 'حسن طالب',
     Password: '123',
     Role: 'developer',
-    RoleArabic: 'مطور النظام (صلاحية مطلقة)',
+    RoleArabic: 'مطور المنظومة (صلاحية برمجية مطلقة)',
     Status: 'active',
-    FullName: 'مطور المنظومة البرمجي',
+    FullName: 'حسن طالب الوائلي',
     Department: 'قسم تكنولوجيا المعلومات والبرمجة',
     CreatedAt: '2026-01-01',
     Permissions: [
-      'scan_upload', 'requests_create', 'requests_edit', 'requests_delete', 
-      'workflow_referral', 'citizens_register', 'print_cards', 'org_evaluation', 
+      'scan_upload', 'requests_create', 'requests_edit', 'requests_delete',
+      'workflow_referral', 'citizens_register', 'print_cards', 'org_evaluation',
       'official_letters', 'export_reports', 'view_archive'
+    ]
+  },
+  {
+    User_ID: 'USR-002',
+    Username: 'احمد كامل',
+    Password: '123',
+    Role: 'director',
+    RoleArabic: 'مدير المكتب التنفيذي (إشراف ومصادقة)',
+    Status: 'active',
+    FullName: 'احمد كامل الاسدي',
+    Department: 'قسم الإدارة والمعاملات',
+    CreatedAt: '2026-10-05',
+    Permissions: [
+      'scan_upload', 'requests_create', 'requests_edit', 'workflow_referral',
+      'view_archive', 'requests_delete', 'citizens_register', 'org_evaluation',
+      'print_cards', 'official_letters', 'export_reports'
+    ]
+  },
+  {
+    User_ID: 'USR-003',
+    Username: 'محمد',
+    Password: '123',
+    Role: 'admin',
+    RoleArabic: 'مسؤول قسم الإدارة والمعاملات',
+    Status: 'active',
+    FullName: 'محمد علي',
+    Department: 'قسم الإدارة والمعاملات',
+    CreatedAt: '2026-10-17',
+    Permissions: [
+      'requests_create', 'requests_edit', 'workflow_referral', 'view_archive',
+      'requests_delete', 'citizens_register', 'official_letters', 'export_reports'
+    ]
+  },
+  {
+    User_ID: 'USR-004',
+    Username: 'علي خيون',
+    Password: '123456',
+    Role: 'reception',
+    RoleArabic: 'مسؤول قسم الاستعلامات والمراجعين',
+    Status: 'active',
+    FullName: 'علي خيون',
+    Department: 'قسم الاستعلامات والمراجعين',
+    CreatedAt: '2026-11-21',
+    Permissions: [
+      'citizens_register', 'print_cards', 'export_reports'
     ]
   }
 ];

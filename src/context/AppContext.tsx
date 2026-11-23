@@ -97,6 +97,7 @@ import {
   ensureSheetTabExists
 } from '../services/googleSheetsService';
 import { safeLocalStorageSet, scheduleSafeLocalStorageSet, sanitizeRequestsForStorage, cleanBloatedLocalStorage } from '../utils/safeStorage';
+import { idbGetJSON, idbSetJSON } from '../utils/persistentStorage';
 import {
   mergeCitizens,
   mergeRequests,
@@ -616,10 +617,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [isFirestoreSyncing, setIsFirestoreSyncing] = useState<boolean>(false);
 
+  const normalizeSystemSettings = (raw?: Partial<SystemSettings> | null): SystemSettings => {
+    const merged: SystemSettings = {
+      ...INITIAL_SETTINGS,
+      ...(raw || {}),
+      customImages: {
+        ...(INITIAL_SETTINGS.customImages || {}),
+        ...(raw?.customImages || {})
+      }
+    };
+    // Upgrade legacy placeholder Unsplash / Wikimedia logo URLs to the real office logo
+    if (
+      !merged.logoUrl ||
+      merged.logoUrl.includes('images.unsplash.com/photo-1589829545856') ||
+      merged.logoUrl.includes('upload.wikimedia.org')
+    ) {
+      merged.logoUrl = '/office-logo.png';
+    }
+    if (
+      !merged.parliamentEmblemUrl ||
+      merged.parliamentEmblemUrl.includes('images.unsplash.com/photo-1589829545856') ||
+      merged.parliamentEmblemUrl.includes('upload.wikimedia.org')
+    ) {
+      merged.parliamentEmblemUrl = '/office-logo.png';
+    }
+    if (!merged.customImages?.loadingEmblem || merged.customImages.loadingEmblem.includes('unsplash.com')) {
+      merged.customImages = { ...(merged.customImages || {}), loadingEmblem: merged.logoUrl || '/office-logo.png' };
+    }
+    if (!merged.pwaIcon192 || merged.pwaIcon192.startsWith('data:image/')) {
+      merged.pwaIcon192 = '/icon-192.png';
+    }
+    if (!merged.pwaIcon512 || merged.pwaIcon512.startsWith('data:image/')) {
+      merged.pwaIcon512 = '/icon-512.png';
+    }
+    // Upgrade legacy Google sample sheet ID or empty Apps Script URL to the real office cloud endpoints
+    if (!merged.googleSheetId || merged.googleSheetId === '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms') {
+      merged.googleSheetId = INITIAL_SETTINGS.googleSheetId;
+      merged.activeGoogleSheetId = INITIAL_SETTINGS.activeGoogleSheetId;
+      merged.activeGoogleSheetUrl = INITIAL_SETTINGS.activeGoogleSheetUrl;
+    }
+    if (!merged.appsScriptUrl && INITIAL_SETTINGS.appsScriptUrl) {
+      merged.appsScriptUrl = INITIAL_SETTINGS.appsScriptUrl;
+    }
+    if (!merged.googleDriveFolderId && INITIAL_SETTINGS.googleDriveFolderId) {
+      merged.googleDriveFolderId = INITIAL_SETTINGS.googleDriveFolderId;
+    }
+    return merged;
+  };
+
   const [systemSettings, setSystemSettings] = useState<SystemSettings>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'settings');
-      return saved ? JSON.parse(saved) : INITIAL_SETTINGS;
+      const parsed = saved ? JSON.parse(saved) : INITIAL_SETTINGS;
+      const normalized = normalizeSystemSettings(parsed);
+      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(normalized));
+      return normalized;
     } catch {
       return INITIAL_SETTINGS;
     }
@@ -993,6 +1045,84 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     systemSettings.activeGoogleSheetId,
     systemSettings.googleDriveFolderId
   ]);
+
+  // High-capacity dual persistence (localStorage + IndexedDB) so large Excel imports (1,343+ rows),
+  // settings, and custom logos survive page reloads, Desktop PWA launches, and offline operation.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const deletedSet = getStoredDeletedIds();
+      const [idbCitizens, idbRequests, idbSettings, idbUsers, idbDropdowns] = await Promise.all([
+        idbGetJSON<Citizen[]>(STORAGE_KEY_PREFIX + 'citizens'),
+        idbGetJSON<OfficeRequest[]>(STORAGE_KEY_PREFIX + 'requests'),
+        idbGetJSON<SystemSettings>(STORAGE_KEY_PREFIX + 'settings'),
+        idbGetJSON<User[]>(STORAGE_KEY_PREFIX + 'users'),
+        idbGetJSON<DropdownItem[]>(STORAGE_KEY_PREFIX + 'dropdowns')
+      ]);
+      if (cancelled) return;
+      if (Array.isArray(idbCitizens) && idbCitizens.length > 0) {
+        setCitizens(prev => mergeCitizens(prev, idbCitizens, deletedSet));
+      }
+      if (Array.isArray(idbRequests) && idbRequests.length > 0) {
+        setRequests(prev => mergeRequests(prev, idbRequests, deletedSet));
+      }
+      if (idbSettings && typeof idbSettings === 'object') {
+        setSystemSettings(prev => {
+          const next = normalizeSystemSettings({ ...idbSettings, ...prev });
+          systemSettingsRef.current = next;
+          return next;
+        });
+      }
+      if (Array.isArray(idbUsers) && idbUsers.length > 0) {
+        setUsers(prev => mergeUsers(prev, idbUsers, deletedSet));
+      }
+      if (Array.isArray(idbDropdowns) && idbDropdowns.length > 0) {
+        setDropdowns(prev => {
+          const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
+          const added = idbDropdowns.filter(d => d && d.Category && d.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
+          return added.length > 0 ? [...prev, ...added] : prev;
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (citizens.length > 0) {
+      scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', () => JSON.stringify(citizens));
+      idbSetJSON(STORAGE_KEY_PREFIX + 'citizens', citizens).catch(() => {});
+    }
+  }, [citizens]);
+
+  useEffect(() => {
+    if (requests.length > 0) {
+      const cleanReqs = sanitizeRequestsForStorage(requests);
+      scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', () => JSON.stringify(cleanReqs));
+      idbSetJSON(STORAGE_KEY_PREFIX + 'requests', cleanReqs).catch(() => {});
+    }
+  }, [requests]);
+
+  useEffect(() => {
+    const normalized = normalizeSystemSettings(systemSettings);
+    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', () => JSON.stringify(normalized));
+    idbSetJSON(STORAGE_KEY_PREFIX + 'settings', normalized).catch(() => {});
+  }, [systemSettings]);
+
+  useEffect(() => {
+    if (users.length > 0) {
+      scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', () => JSON.stringify(users));
+      idbSetJSON(STORAGE_KEY_PREFIX + 'users', users).catch(() => {});
+    }
+  }, [users]);
+
+  useEffect(() => {
+    if (dropdowns.length > 0) {
+      scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', () => JSON.stringify(dropdowns));
+      idbSetJSON(STORAGE_KEY_PREFIX + 'dropdowns', dropdowns).catch(() => {});
+    }
+  }, [dropdowns]);
 
   // Real-Time Firestore & Shared Server Synchronization Listeners
   // Runs immediately on mount so Vercel, AI Studio, and Desktop PWA stay synced live from Cloud Firestore
@@ -1780,19 +1910,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (realLegacyCitizens.length > 0 || realLegacyRequests.length > 0) {
         if (realLegacyCitizens.length > 0) setCitizens(prev => mergeCitizens(prev, realLegacyCitizens, deletedIds));
         if (realLegacyRequests.length > 0) setRequests(prev => mergeRequests(prev, realLegacyRequests, deletedIds));
-        // Migrate up to Firestore & clear heavy Chrome storage once cloud push completes
-        fsBulkSaveCitizensAndRequests(realLegacyCitizens, realLegacyRequests)
-          .then(res => {
-            if (res.success) {
-              try {
-                [
-                  'citizens', 'requests', 'interviews', 'letters', 'cheques',
-                  'org', 'documents', 'audit', 'custom_records'
-                ].forEach(k => localStorage.removeItem(STORAGE_KEY_PREFIX + k));
-              } catch {}
-            }
-          })
-          .catch(() => {});
+        // Push local records to Firestore without ever deleting local browser / PWA storage
+        fsBulkSaveCitizensAndRequests(realLegacyCitizens, realLegacyRequests).catch(() => {});
       }
     } catch {}
   };
@@ -2667,35 +2786,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     fallbackInfo?: { FullName: string; Phone1?: string; District?: string }
   ) => {
     const cleanId = (citizenId || '').trim().toLowerCase();
+    const normStr = (s: string) =>
+      (s || '')
+        .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+        .trim()
+        .toLowerCase()
+        .replace(/[إأآا]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/[\u064B-\u065F\u0640]/g, '')
+        .replace(/\s+/g, ' ');
+
     const existingCit = citizens.find(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === cleanId);
-    const nowStamp = new Date().toLocaleDateString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
+    let nowStamp = '';
+    try {
+      nowStamp = new Date().toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
+    } catch {
+      nowStamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    }
+    const nowIso = new Date().toISOString();
     const operator = blockedBy || currentUser?.FullName || 'موظف الإدارة';
+    const cleanReason = (reason || '').trim() || 'محظور من قبل الإدارة';
 
     let targetCitizen: Citizen;
     if (existingCit) {
       targetCitizen = {
         ...existingCit,
         IsBlocked: true,
-        BlockReason: reason,
+        BlockReason: cleanReason,
         BlockedAt: nowStamp,
-        BlockedBy: operator
+        BlockedBy: operator,
+        UpdatedAt: nowIso
       };
       updateCitizen(targetCitizen);
     } else if (fallbackInfo && fallbackInfo.FullName && fallbackInfo.FullName.trim()) {
       const finalId = citizenId && citizenId.trim() ? citizenId.trim() : `BLK-${Date.now().toString(36).toUpperCase()}`;
+      const nameParts = fallbackInfo.FullName.trim().split(/\s+/);
       targetCitizen = {
         Citizen_ID: finalId,
+        FirstName: nameParts[0] || fallbackInfo.FullName.trim(),
+        FatherName: nameParts[1] || '',
+        GrandFatherName: nameParts[2] || '',
+        GreatGrandFatherName: nameParts.slice(3).join(' ') || '',
         FullName: fallbackInfo.FullName.trim(),
         Phone1: (fallbackInfo.Phone1 || '').trim(),
         Gender: 'ذكر',
-        District: fallbackInfo.District || 'الناصرية - المركز',
+        District: (fallbackInfo.District || 'الناصرية - المركز').trim(),
         SubDistrict: 'المركز',
         Job: 'كاسب',
         Education: 'إعدادية فما دون',
         Rating: 'مراجعة أمنية / محظور',
-        CreatedAt: new Date().toISOString().split('T')[0],
+        CreatedAt: nowIso.split('T')[0],
+        UpdatedAt: nowIso,
         IsBlocked: true,
-        BlockReason: reason,
+        BlockReason: cleanReason,
         BlockedAt: nowStamp,
         BlockedBy: operator
       };
@@ -2704,25 +2848,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
         return next;
       });
-      fsSaveCitizen(targetCitizen).catch(() => {});
+      emitServerMutation('citizens', 'upsert', { item: targetCitizen });
+      fsSaveCitizen(targetCitizen).catch((err) => {
+        console.warn('Firestore manual block save:', err);
+      });
     } else {
       console.warn('Citizen not found for blocking and no fallbackInfo provided:', citizenId);
       return;
     }
 
-    // 2. Synchronize all matching requests (by ID or normalized Name) to blocked state
-    const normTargetName = (targetCitizen.FullName || '').trim().toLowerCase().replace(/[إأآا]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
-    setRequests(prev => {
-      const next = prev.map(r => {
-        const matchId = r.Citizen_ID && r.Citizen_ID.trim().toLowerCase() === targetCitizen.Citizen_ID.toLowerCase();
-        const matchName = normTargetName && (r.CitizenName || '').trim().toLowerCase().replace(/[إأآا]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي') === normTargetName;
-        return (matchId || matchName) ? { ...r, IsBlocked: true } : r;
-      });
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(next));
-      return next;
+    // 1b. Also mark any duplicate citizen records with identical normalized name or phone as blocked
+    const normTargetName = normStr(targetCitizen.FullName || '');
+    const targetPhoneDigits = normStr(targetCitizen.Phone1 || '').replace(/[^0-9]/g, '');
+    const matchingOtherCitizens = citizens.filter(c => {
+      if (!c || c.Citizen_ID === targetCitizen.Citizen_ID || c.IsBlocked) return false;
+      const sameName = normTargetName && normStr(c.FullName || '') === normTargetName;
+      const cPhone = normStr(c.Phone1 || '').replace(/[^0-9]/g, '');
+      const samePhone = targetPhoneDigits.length >= 8 && cPhone.length >= 8 && cPhone.slice(-10) === targetPhoneDigits.slice(-10);
+      return Boolean(sameName || samePhone);
     });
+    if (matchingOtherCitizens.length > 0) {
+      const updatedOthers = matchingOtherCitizens.map(c => ({
+        ...c,
+        IsBlocked: true,
+        BlockReason: cleanReason,
+        BlockedAt: nowStamp,
+        BlockedBy: operator,
+        UpdatedAt: nowIso
+      }));
+      const otherMap = new Map(updatedOthers.map(c => [c.Citizen_ID, c]));
+      setCitizens(prev => {
+        const next = prev.map(c => otherMap.get(c.Citizen_ID) || c);
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
+        return next;
+      });
+      updatedOthers.forEach(c => {
+        emitServerMutation('citizens', 'upsert', { item: c });
+        fsSaveCitizen(c).catch(() => {});
+      });
+    }
 
-    // 3. Persist to shared server blacklist DB so ALL users/devices enforce the block immediately
+    // 2. Synchronize all matching requests (by ID or normalized Name) to blocked state + persist to Firestore
+    const updatedBlockedRequests: OfficeRequest[] = requests
+      .filter(r => {
+        const matchId = r.Citizen_ID && r.Citizen_ID.trim().toLowerCase() === targetCitizen.Citizen_ID.toLowerCase();
+        const matchName = normTargetName && normStr(r.CitizenName || '') === normTargetName;
+        return Boolean(matchId || matchName);
+      })
+      .map(r => ({ ...r, IsBlocked: true, BlockReason: cleanReason, UpdatedAt: nowIso }));
+
+    if (updatedBlockedRequests.length > 0) {
+      const blockedReqMap = new Map(updatedBlockedRequests.map(r => [r.Request_ID, r]));
+      setRequests(prev => {
+        const next = prev.map(r => blockedReqMap.get(r.Request_ID) || r);
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(sanitizeRequestsForStorage(next)));
+        return next;
+      });
+      updatedBlockedRequests.forEach(r => {
+        emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([r])[0] || r });
+        fsSaveRequest(r).catch(() => {});
+      });
+    }
+
+    // 3. Persist to shared server blacklist DB (when running with local Express server)
     fetch('/api/blacklist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2731,14 +2919,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         FullName: targetCitizen.FullName,
         Phone1: targetCitizen.Phone1 || '',
         District: targetCitizen.District || 'الناصرية - المركز',
-        BlockReason: reason,
+        BlockReason: cleanReason,
         BlockedAt: nowStamp,
         BlockedBy: operator,
         IsBlocked: true
       })
     }).catch(() => {});
 
-    addAuditLog('إدراج بالقائمة السوداء', 'الإدارة / الرقابة', `تم حظر المراجع ${targetCitizen.FullName} (${targetCitizen.Citizen_ID}) بسبب: ${reason}`);
+    addAuditLog('إدراج بالقائمة السوداء', 'الإدارة / الرقابة', `تم حظر المراجع ${targetCitizen.FullName} (${targetCitizen.Citizen_ID}) بسبب: ${cleanReason}`);
     pushToGoogleSheetsRealtime('citizens', targetCitizen, 'upsert', systemSettings.appsScriptUrl);
   };
 
@@ -2746,28 +2934,82 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const cleanId = (citizenId || '').trim().toLowerCase();
     const cit = citizens.find(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === cleanId);
     if (!cit) return;
+
+    const normStr = (s: string) =>
+      (s || '')
+        .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+        .trim()
+        .toLowerCase()
+        .replace(/[إأآا]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/[\u064B-\u065F\u0640]/g, '')
+        .replace(/\s+/g, ' ');
+
+    const nowIso = new Date().toISOString();
     const updated: Citizen = {
       ...cit,
       IsBlocked: false,
       BlockReason: undefined,
       BlockedAt: undefined,
-      BlockedBy: undefined
+      BlockedBy: undefined,
+      UpdatedAt: nowIso
     };
 
     // 1. Update citizen state and Firestore
     updateCitizen(updated);
 
-    // 2. Clear blocked state on all matching requests
-    const normTargetName = (cit.FullName || '').trim().toLowerCase().replace(/[إأآا]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
-    setRequests(prev => {
-      const next = prev.map(r => {
-        const matchId = r.Citizen_ID && r.Citizen_ID.trim().toLowerCase() === cleanId;
-        const matchName = normTargetName && (r.CitizenName || '').trim().toLowerCase().replace(/[إأآا]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي') === normTargetName;
-        return (matchId || matchName) ? { ...r, IsBlocked: false } : r;
+    // 1b. Also unblock any duplicate blocked citizen records with identical normalized name
+    const normTargetName = normStr(cit.FullName || '');
+    const matchingBlockedDuplicates = citizens.filter(c =>
+      c &&
+      c.Citizen_ID !== cit.Citizen_ID &&
+      c.IsBlocked &&
+      normTargetName &&
+      normStr(c.FullName || '') === normTargetName
+    );
+    if (matchingBlockedDuplicates.length > 0) {
+      const clearedDuplicates = matchingBlockedDuplicates.map(c => ({
+        ...c,
+        IsBlocked: false,
+        BlockReason: undefined,
+        BlockedAt: undefined,
+        BlockedBy: undefined,
+        UpdatedAt: nowIso
+      }));
+      const dupMap = new Map(clearedDuplicates.map(c => [c.Citizen_ID, c]));
+      setCitizens(prev => {
+        const next = prev.map(c => dupMap.get(c.Citizen_ID) || c);
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
+        return next;
       });
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(next));
-      return next;
-    });
+      clearedDuplicates.forEach(c => {
+        emitServerMutation('citizens', 'upsert', { item: c });
+        fsSaveCitizen(c).catch(() => {});
+      });
+    }
+
+    // 2. Clear blocked state on all matching requests + persist to Firestore
+    const updatedUnblockedRequests: OfficeRequest[] = requests
+      .filter(r => {
+        const matchId = r.Citizen_ID && r.Citizen_ID.trim().toLowerCase() === cleanId;
+        const matchName = normTargetName && normStr(r.CitizenName || '') === normTargetName;
+        return Boolean(matchId || matchName);
+      })
+      .map(r => ({ ...r, IsBlocked: false, BlockReason: undefined, UpdatedAt: nowIso }));
+
+    if (updatedUnblockedRequests.length > 0) {
+      const unblockedReqMap = new Map(updatedUnblockedRequests.map(r => [r.Request_ID, r]));
+      setRequests(prev => {
+        const next = prev.map(r => unblockedReqMap.get(r.Request_ID) || r);
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(sanitizeRequestsForStorage(next)));
+        return next;
+      });
+      updatedUnblockedRequests.forEach(r => {
+        emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([r])[0] || r });
+        fsSaveRequest(r).catch(() => {});
+      });
+    }
 
     // 3. Remove from shared server blacklist DB
     fetch(`/api/blacklist/${encodeURIComponent(cit.Citizen_ID)}`, { method: 'DELETE' }).catch(() => {});
@@ -2791,15 +3033,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         .replace(/\s+/g, ' ')
         .trim();
 
+    const phonesMatch = (storedPhone: string | undefined, inputDigits: string) => {
+      if (!storedPhone || inputDigits.length < 8) return false;
+      const p = normalizeAr(storedPhone).replace(/[^0-9]/g, '');
+      if (p.length < 8) return false;
+      return p === inputDigits || p.slice(-10) === inputDigits.slice(-10);
+    };
+
     // Check explicit phone argument first if provided
     if (phone && phone.trim().length >= 8) {
       const cleanPhone = normalizeAr(phone).replace(/[^0-9]/g, '');
       if (cleanPhone.length >= 8) {
-        const matchPhoneArg = blockedList.find(c => {
-          const p1 = normalizeAr(c.Phone1 || '').replace(/[^0-9]/g, '');
-          const p2 = normalizeAr(c.Phone2 || '').replace(/[^0-9]/g, '');
-          return (p1 && (p1 === cleanPhone || p1.endsWith(cleanPhone.slice(-10)))) || (p2 && (p2 === cleanPhone || p2.endsWith(cleanPhone.slice(-10))));
-        });
+        const matchPhoneArg = blockedList.find(c => phonesMatch(c.Phone1, cleanPhone) || phonesMatch(c.Phone2, cleanPhone));
         if (matchPhoneArg) {
           return { isBlocked: true, citizen: matchPhoneArg, reason: matchPhoneArg.BlockReason || 'مدرج في القائمة السوداء' };
         }
@@ -2818,11 +3063,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // 2. Direct match by Phone
     const digitsOnly = normalizeAr(clean).replace(/[^0-9]/g, '');
     if (digitsOnly.length >= 8) {
-      const matchByPhone = blockedList.find(c => {
-        const p1 = normalizeAr(c.Phone1 || '').replace(/[^0-9]/g, '');
-        const p2 = normalizeAr(c.Phone2 || '').replace(/[^0-9]/g, '');
-        return (p1 && p1 === digitsOnly) || (p2 && p2 === digitsOnly);
-      });
+      const matchByPhone = blockedList.find(c => phonesMatch(c.Phone1, digitsOnly) || phonesMatch(c.Phone2, digitsOnly));
       if (matchByPhone) {
         return { isBlocked: true, citizen: matchByPhone, reason: matchByPhone.BlockReason || 'مدرج في القائمة السوداء' };
       }
@@ -4091,7 +4332,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const existingMap = new Map<string, Citizen>();
         prev.forEach(c => existingMap.set(c.Citizen_ID, c));
         validCitizens.forEach(c => existingMap.set(c.Citizen_ID, c));
-        return Array.from(existingMap.values());
+        const mergedList = Array.from(existingMap.values());
+        scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', () => JSON.stringify(mergedList));
+        idbSetJSON(STORAGE_KEY_PREFIX + 'citizens', mergedList).catch(() => {});
+        return mergedList;
       });
       try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
     }
@@ -4101,25 +4345,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const existingReqMap = new Map<string, OfficeRequest>();
         prev.forEach(r => existingReqMap.set(r.Request_ID, r));
         validRequests.forEach(r => existingReqMap.set(r.Request_ID, r));
-        return Array.from(existingReqMap.values());
+        const mergedReqs = Array.from(existingReqMap.values());
+        const cleanMerged = sanitizeRequestsForStorage(mergedReqs);
+        scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', () => JSON.stringify(cleanMerged));
+        idbSetJSON(STORAGE_KEY_PREFIX + 'requests', cleanMerged).catch(() => {});
+        return mergedReqs;
       });
       try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
 
-      // Authoritatively advance (and self-heal if poisoned > MAX_VALID_OUTGOING_SEQ) office outgoing counters
-      const scanned = scanMaxOutgoingSequences(validRequests);
-      const rawCurrentNas = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
-      const rawCurrentSuq = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
-      const nasPoisoned = rawCurrentNas > MAX_VALID_OUTGOING_SEQ;
-      const suqPoisoned = rawCurrentSuq > MAX_VALID_OUTGOING_SEQ;
-      const safeCurrentNas = nasPoisoned ? 0 : rawCurrentNas;
-      const safeCurrentSuq = suqPoisoned ? 0 : rawCurrentSuq;
-      const nextNas = Math.max(safeCurrentNas, scanned.maxNasiriyah);
-      const nextSuq = Math.max(safeCurrentSuq, scanned.maxSuq);
-      if (nasPoisoned || suqPoisoned || nextNas > safeCurrentNas || nextSuq > safeCurrentSuq) {
-        updateSettings({
-          lastOutgoingNumberNasiriyah: nextNas,
-          lastOutgoingNumberSuq: nextSuq
-        });
+      // Authoritatively advance (and self-heal if poisoned > MAX_VALID_OUTGOING_SEQ) office outgoing counters,
+      // unless SmartExcelImporterModal just anchored the exact last outgoing number from the uploaded file.
+      const recentAnchorMs = systemSettings?.outgoingBaselineSetAt
+        ? Date.parse(systemSettings.outgoingBaselineSetAt)
+        : 0;
+      const hasFreshAnchor = Number.isFinite(recentAnchorMs) && Date.now() - recentAnchorMs < 15_000;
+
+      if (!hasFreshAnchor) {
+        const scanned = scanMaxOutgoingSequences(validRequests);
+        const rawCurrentNas = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
+        const rawCurrentSuq = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
+        const nasPoisoned = rawCurrentNas > MAX_VALID_OUTGOING_SEQ;
+        const suqPoisoned = rawCurrentSuq > MAX_VALID_OUTGOING_SEQ;
+        const safeCurrentNas = nasPoisoned ? 0 : rawCurrentNas;
+        const safeCurrentSuq = suqPoisoned ? 0 : rawCurrentSuq;
+        const nextNas = Math.max(safeCurrentNas, scanned.maxNasiriyah);
+        const nextSuq = Math.max(safeCurrentSuq, scanned.maxSuq);
+        if (nasPoisoned || suqPoisoned || nextNas > safeCurrentNas || nextSuq > safeCurrentSuq) {
+          updateSettings({
+            lastOutgoingNumberNasiriyah: nextNas,
+            lastOutgoingNumberSuq: nextSuq
+          });
+        }
       }
     }
 

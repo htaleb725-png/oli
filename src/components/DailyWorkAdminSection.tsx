@@ -63,6 +63,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     deleteRequest,
     blockCitizen,
     unblockCitizen,
+    checkIfCitizenBlocked,
     currentUser,
     systemSettings,
     updateSystemSettings,
@@ -94,9 +95,17 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [editingTarget, setEditingTarget] = useState<{ citizen: Citizen; request?: OfficeRequest } | null>(null);
   const [blockingTarget, setBlockingTarget] = useState<Citizen | null>(null);
   const [blockReasonInput, setBlockReasonInput] = useState('');
+  const [blockModalError, setBlockModalError] = useState<string | null>(null);
+  const [pendingUnblockCitizenId, setPendingUnblockCitizenId] = useState<string | null>(null);
+  const [blockStatusBanner, setBlockStatusBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deletingTarget, setDeletingTarget] = useState<{ citizen: Citizen; request?: OfficeRequest } | null>(null);
   const [rejectingTarget, setRejectingTarget] = useState<{ citizen: Citizen; request: OfficeRequest } | null>(null);
   const [rejectionReasonInput, setRejectionReasonInput] = useState('');
+
+  const showBlockBanner = (type: 'success' | 'error', text: string) => {
+    setBlockStatusBanner({ type, text });
+    setTimeout(() => setBlockStatusBanner(null), 5000);
+  };
 
   // Official Card state after save (Full Executive Popup Modal)
   const [savedOfficialCard, setSavedOfficialCard] = useState<{
@@ -388,8 +397,14 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     if (!completingTarget) return;
 
     const { citizen, request } = completingTarget;
-    if (citizen.IsBlocked) {
-      alert(`⛔ تنبيه فوري: لا يمكن إتمام العملية!\n\nالمواطن (${citizen.FullName}) مدرج في «القائمة السوداء» (الأشخاص المحظورين).\nسبب الحظر: ${citizen.BlockReason || 'غير محدد'}\nتاريخ الحظر: ${citizen.BlockedAt || 'سابقاً'}\nبواسطة: ${citizen.BlockedBy || 'الإدارة'}\n\nيمنع النظام استكمال المعاملة أو إصدار كتاب صادر رسمي لهذا الشخص قبل إلغاء الحظر من قسم الإدارة.`);
+    const liveBlockCheck = checkIfCitizenBlocked(citizen.FullName, citizen.Phone1);
+    if (citizen.IsBlocked || liveBlockCheck.isBlocked) {
+      const bCit = liveBlockCheck.citizen || citizen;
+      showBlockBanner(
+        'error',
+        `⛔ لا يمكن إتمام العملية: المواطن (${bCit.FullName}) مدرج في القائمة السوداء — السبب: ${bCit.BlockReason || 'غير محدد'}`
+      );
+      setCompletingTarget(null);
       return;
     }
     const finalOutgoingNumber = formOutgoingNumber.trim() || generateOutgoingNumber();
@@ -485,15 +500,25 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     setCompletingTarget(null);
   };
 
-  // Handle Blacklist / Block
+  // Handle Blacklist / Block (inline validation & banner — no window.alert)
   const handleConfirmBlock = () => {
     if (!blockingTarget) return;
     if (!blockReasonInput.trim()) {
-      alert('يرجى كتابة سبب الحظر الإداري أو الأمني.');
+      setBlockModalError('يرجى كتابة سبب الحظر الإداري أو الأمني.');
       return;
     }
-    blockCitizen(blockingTarget.Citizen_ID, blockReasonInput.trim(), currentUser?.FullName || 'موظف الإدارة');
-    alert(`⛔ تم بنجاح حظر المواطن (${blockingTarget.FullName}) وإدراجه في القائمة السوداء.`);
+    setBlockModalError(null);
+    blockCitizen(
+      blockingTarget.Citizen_ID,
+      blockReasonInput.trim(),
+      currentUser?.FullName || 'موظف الإدارة',
+      {
+        FullName: blockingTarget.FullName,
+        Phone1: blockingTarget.Phone1,
+        District: blockingTarget.District
+      }
+    );
+    showBlockBanner('success', `⛔ تم بنجاح حظر المواطن (${blockingTarget.FullName}) وإدراجه في القائمة السوداء وتعميم الحظر على كامل المنظومة.`);
     setBlockingTarget(null);
     setBlockReasonInput('');
   };
@@ -922,6 +947,26 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         </div>
       </div>
 
+      {/* Inline Block / Blacklist Status Banner */}
+      {blockStatusBanner && (
+        <div
+          className={`p-3.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2 border shadow-xs animate-in fade-in ${
+            blockStatusBanner.type === 'success'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-700 dark:text-emerald-200'
+              : 'bg-rose-50 border-rose-300 text-rose-900 dark:bg-rose-950/60 dark:border-rose-700 dark:text-rose-200'
+          }`}
+        >
+          <span>{blockStatusBanner.text}</span>
+          <button
+            type="button"
+            onClick={() => setBlockStatusBanner(null)}
+            className="text-slate-400 hover:text-slate-600 cursor-pointer font-bold px-1.5"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Search Input Bar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
         <div className="relative flex-1">
@@ -1212,8 +1257,9 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
             const citReqs = item.requests;
             const primaryReq = citReqs[0];
 
-            // Color status styles based on director decision
-            const isBlocked = cit.IsBlocked;
+            // Color status styles based on director decision + live blacklist check
+            const liveBlockInfo = cit.IsBlocked ? { isBlocked: true, citizen: cit } : checkIfCitizenBlocked(cit.FullName, cit.Phone1);
+            const isBlocked = Boolean(cit.IsBlocked || liveBlockInfo.isBlocked);
             const isRej = item.hasRejection;
             const isSpec = item.hasSpecial;
             const isGen = item.hasGeneral;
@@ -1382,18 +1428,21 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                   {/* Complete Request Button (Button 1) */}
                   <button
                     onClick={() => {
-                      if (cit.IsBlocked) {
-                        alert(`⛔ تنبيه أمني: هذا المراجع مدرج في القائمة السوداء (محظور)!\nالسبب: ${cit.BlockReason || 'غير محدد'}\nلا يمكن إكمال المعاملة أو إصدار كتاب صادر حتى يتم إلغاء الحظر أولاً.`);
+                      if (isBlocked) {
+                        showBlockBanner(
+                          'error',
+                          `⛔ هذا المراجع مدرج في القائمة السوداء (السبب: ${cit.BlockReason || liveBlockInfo.reason || 'غير محدد'}) — لا يمكن إكمال المعاملة أو إصدار صادر قبل إلغاء الحظر.`
+                        );
                         return;
                       }
                       handleOpenCompleteRequest(cit, primaryReq);
                     }}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs transition-transform active:scale-95 ${
-                      cit.IsBlocked
+                      isBlocked
                         ? 'bg-slate-300 dark:bg-slate-700 text-slate-500 cursor-not-allowed opacity-80'
                         : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white'
                     }`}
-                    title={cit.IsBlocked ? 'محظور بالقائمة السوداء - لا يمكن إكمال الطلب' : 'استكمال بيانات المعاملة وتوثيق رقم الصادر الرسمي'}
+                    title={isBlocked ? 'محظور بالقائمة السوداء - لا يمكن إكمال الطلب' : 'استكمال بيانات المعاملة وتوثيق رقم الصادر الرسمي'}
                   >
                     <CheckCircle2 className="w-4 h-4 text-emerald-300" />
                     <span>إكمال الطلب</span>
@@ -1435,25 +1484,51 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                   </button>
 
                   {/* Block / Unblock Button (Button 4) */}
-                  {cit.IsBlocked ? (
-                    <button
-                      onClick={() => {
-                        if (window.confirm(`هل أنت متأكد من إلغاء الحظر عن المواطن (${cit.FullName})؟`)) {
-                          unblockCitizen(cit.Citizen_ID);
-                          alert(`✓ تم بنجاح إلغاء الحظر عن (${cit.FullName}) وإعادته للوضع الطبيعي.`);
-                        }
-                      }}
-                      className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 transition-transform"
-                      title="إلغاء الحظر وإعادة المراجع إلى الوضع الطبيعي"
-                    >
-                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-200" />
-                      <span>إلغاء الحظر</span>
-                    </button>
+                  {isBlocked ? (
+                    pendingUnblockCitizenId === cit.Citizen_ID ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const matchedBlockedId = liveBlockInfo.citizen?.Citizen_ID;
+                            if (matchedBlockedId && matchedBlockedId !== cit.Citizen_ID) {
+                              unblockCitizen(matchedBlockedId);
+                            }
+                            unblockCitizen(cit.Citizen_ID);
+                            setPendingUnblockCitizenId(null);
+                            showBlockBanner('success', `✓ تم بنجاح إلغاء الحظر عن (${cit.FullName}) وإعادته للوضع الطبيعي.`);
+                          }}
+                          className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 transition-transform"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-200" />
+                          <span>تأكيد إلغاء الحظر</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPendingUnblockCitizenId(null)}
+                          className="px-2.5 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold cursor-pointer"
+                        >
+                          تراجع
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setPendingUnblockCitizenId(cit.Citizen_ID)}
+                        className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 transition-transform"
+                        title="إلغاء الحظر وإعادة المراجع إلى الوضع الطبيعي"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-200" />
+                        <span>إلغاء الحظر</span>
+                      </button>
+                    )
                   ) : (
                     <button
+                      type="button"
                       onClick={() => {
                         setBlockingTarget(cit);
                         setBlockReasonInput('');
+                        setBlockModalError(null);
                       }}
                       className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
                       title="حظر هذا الشخص وإدراجه بالقائمة السوداء مع كتابة السبب"
@@ -1942,64 +2017,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* MODAL 2: نافذة الحظر (Block / Blacklist Reason)         */}
-      {/* ======================================================== */}
-      {blockingTarget && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-red-300 dark:border-red-800 max-w-md w-full p-6 shadow-2xl space-y-4 text-right animate-in fade-in zoom-in-95">
-            <div className="flex items-center gap-3">
-              <span className="p-3 rounded-2xl bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400">
-                <ShieldAlert className="w-6 h-6" />
-              </span>
-              <div>
-                <h3 className="font-black text-base text-slate-900 dark:text-white">
-                  حظر المراجع وإدراجه بالقائمة السوداء
-                </h3>
-                <p className="text-xs text-red-600 dark:text-red-400 font-semibold">
-                  المراجع: {blockingTarget.FullName} ({blockingTarget.Citizen_ID})
-                </p>
-              </div>
-            </div>
-
-            <p className="text-xs text-slate-600 dark:text-slate-300">
-              عند حظر هذا الشخص، سيقوم النظام بحفظه في القائمة السوداء، وإظهار تنبيه تحذيري لأي موظف يحاول تسجيل طلب آخر بنفس الاسم مستقبلاً مع ذكر السبب.
-            </p>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                سبب الحظر (مطلوب): <span className="text-rose-500">*</span>
-              </label>
-              <textarea
-                rows={3}
-                required
-                value={blockReasonInput}
-                onChange={(e) => setBlockReasonInput(e.target.value)}
-                placeholder="اكتب سبب الحظر بالتفصيل (مثال: عدم صحة المستمسكات، تكرار طلبات وهمية، إساءة استخدام...)"
-                className="w-full p-3 bg-red-50/50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setBlockingTarget(null)}
-                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmBlock}
-                className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-md"
-              >
-                <ShieldAlert className="w-4 h-4" />
-                <span>تأكيد الحظر والإدراج بالقائمة السوداء</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Modal 6 below handles Block / Blacklist Reason cleanly without duplicate overlay */}
 
       {/* ======================================================== */}
       {/* MODAL 3: نافذة رفض الطلب (Rejection Reason)              */}
@@ -2747,10 +2765,16 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                 rows={3}
                 required
                 value={blockReasonInput}
-                onChange={(e) => setBlockReasonInput(e.target.value)}
+                onChange={(e) => {
+                  setBlockReasonInput(e.target.value);
+                  if (blockModalError) setBlockModalError(null);
+                }}
                 placeholder="اكتب سبب الحظر الإداري أو الأمني بالتفصيل ليظهر لجميع موظفي المكتب..."
                 className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
               />
+              {blockModalError && (
+                <p className="text-xs font-bold text-rose-600 dark:text-rose-400 mt-1">{blockModalError}</p>
+              )}
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
