@@ -69,6 +69,7 @@ interface AppDataStoreState {
   dropdowns: any[];
   customRecords: any[];
   documents: any[];
+  notifications: any[];
   deletedIds: string[];
   updatedAt: string;
 }
@@ -82,7 +83,8 @@ type SyncEntityKey =
   | 'organizationRecords'
   | 'dropdowns'
   | 'customRecords'
-  | 'documents';
+  | 'documents'
+  | 'notifications';
 
 const SYNC_ENTITY_ID_FIELD: Record<SyncEntityKey, string> = {
   citizens: 'Citizen_ID',
@@ -93,7 +95,8 @@ const SYNC_ENTITY_ID_FIELD: Record<SyncEntityKey, string> = {
   organizationRecords: 'Citizen_ID',
   dropdowns: 'id',
   customRecords: 'id',
-  documents: 'Doc_ID'
+  documents: 'Doc_ID',
+  notifications: 'id'
 };
 
 const ALLOWED_SYNC_ENTITIES = new Set<string>(Object.keys(SYNC_ENTITY_ID_FIELD));
@@ -136,6 +139,7 @@ let memoryAppDataStore: AppDataStoreState = {
   dropdowns: [],
   customRecords: [],
   documents: [],
+  notifications: [],
   deletedIds: [],
   updatedAt: new Date().toISOString()
 };
@@ -184,6 +188,7 @@ function loadAppDataStore(): AppDataStoreState {
           dropdowns: Array.isArray(parsed.dropdowns) ? parsed.dropdowns : [],
           customRecords: Array.isArray(parsed.customRecords) ? parsed.customRecords : [],
           documents: Array.isArray(parsed.documents) ? parsed.documents : [],
+          notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
           deletedIds: Array.isArray(parsed.deletedIds) ? parsed.deletedIds : [],
           updatedAt: parsed.updatedAt || new Date().toISOString()
         };
@@ -212,13 +217,24 @@ function scheduleAppDataSave(): void {
   appDataSaveTimer = setTimeout(() => {
     appDataSaveTimer = null;
     flushAppDataStoreNow();
-  }, 250);
+  }, 150);
 }
 
 function upsertSyncRecord(entity: SyncEntityKey, item: any): { record: any; id: string } | null {
   const id = getRecordSyncId(entity, item);
   if (!id) return null;
-  const record = entity === 'dropdowns' ? { ...item, id } : { ...item };
+  const nowIso = new Date().toISOString();
+  const record: any = {
+    ...(entity === 'dropdowns' ? { ...item, id } : item),
+    UpdatedAt: nowIso,
+    updatedAt: nowIso
+  };
+  if (record.IsBlocked === false) {
+    record.IsBlocked = false;
+    record.BlockReason = '';
+    record.BlockedAt = '';
+    record.BlockedBy = '';
+  }
   const list = memoryAppDataStore[entity] as any[];
   const idx = list.findIndex((existing) => getRecordSyncId(entity, existing) === id);
   if (idx === -1) {
@@ -239,6 +255,13 @@ function deleteSyncRecord(entity: SyncEntityKey, id: string): boolean {
   const list = memoryAppDataStore[entity] as any[];
   const before = list.length;
   memoryAppDataStore[entity] = list.filter((existing) => getRecordSyncId(entity, existing) !== cleanId);
+  if (entity === 'citizens') {
+    memoryAppDataStore.requests = memoryAppDataStore.requests.filter((r) => r?.Citizen_ID !== cleanId);
+    memoryAppDataStore.interviews = memoryAppDataStore.interviews.filter((i) => i?.Citizen_ID !== cleanId);
+    memoryAppDataStore.officialLetters = memoryAppDataStore.officialLetters.filter((l) => l?.Citizen_ID !== cleanId);
+    memoryAppDataStore.cheques = memoryAppDataStore.cheques.filter((c) => c?.Citizen_ID !== cleanId);
+    memoryAppDataStore.organizationRecords = memoryAppDataStore.organizationRecords.filter((o) => o?.Citizen_ID !== cleanId);
+  }
   if (!memoryAppDataStore.deletedIds.includes(cleanId)) {
     memoryAppDataStore.deletedIds.push(cleanId);
     if (memoryAppDataStore.deletedIds.length > 5000) {
@@ -246,6 +269,22 @@ function deleteSyncRecord(entity: SyncEntityKey, id: string): boolean {
     }
   }
   return memoryAppDataStore[entity].length !== before || true;
+}
+
+function buildSyncCounts(): Record<string, number> {
+  return {
+    citizens: memoryAppDataStore.citizens.length,
+    requests: memoryAppDataStore.requests.length,
+    interviews: memoryAppDataStore.interviews.length,
+    officialLetters: memoryAppDataStore.officialLetters.length,
+    cheques: memoryAppDataStore.cheques.length,
+    organizationRecords: memoryAppDataStore.organizationRecords.length,
+    customSections: (memorySettingsStore.customSections || []).length,
+    customRecords: memoryAppDataStore.customRecords.length,
+    users: (memoryUsersStore.users || []).length,
+    notifications: memoryAppDataStore.notifications.length,
+    deletedIds: memoryAppDataStore.deletedIds.length
+  };
 }
 
 // In-memory cache for Google Drive public folder listings (60s TTL)
@@ -275,6 +314,8 @@ function loadSettingsStore(): SettingsStoreState {
 
 function saveSettingsStore(next: SettingsStoreState): void {
   memorySettingsStore = { ...next, updatedAt: new Date().toISOString() };
+  memoryAppDataStore.rev += 1;
+  scheduleAppDataSave();
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
     const tmpPath = `${SETTINGS_STORE_PATH}.tmp`;
@@ -306,6 +347,8 @@ function loadBlacklistStore(): BlacklistStoreState {
 
 function saveBlacklistStore(next: BlacklistStoreState): void {
   memoryBlacklistStore = { ...next, updatedAt: new Date().toISOString() };
+  memoryAppDataStore.rev += 1;
+  scheduleAppDataSave();
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
     const tmpPath = `${BLACKLIST_STORE_PATH}.tmp`;
@@ -446,6 +489,8 @@ function loadUsersStore(): UsersStoreState {
 
 function saveUsersStore(next: UsersStoreState): void {
   memoryUsersStore = { ...next, updatedAt: new Date().toISOString() };
+  memoryAppDataStore.rev += 1;
+  scheduleAppDataSave();
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -1013,30 +1058,12 @@ async function startServer() {
       success: true,
       rev: memoryAppDataStore.rev,
       settingsVersion: memorySettingsStore.settingsVersion || 0,
+      counts: buildSyncCounts(),
       updatedAt: memoryAppDataStore.updatedAt
     });
   });
 
-  app.get('/api/sync/state', (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.json({
-      success: true,
-      rev: memoryAppDataStore.rev,
-      citizens: memoryAppDataStore.citizens,
-      requests: memoryAppDataStore.requests,
-      interviews: memoryAppDataStore.interviews,
-      officialLetters: memoryAppDataStore.officialLetters,
-      cheques: memoryAppDataStore.cheques,
-      organizationRecords: memoryAppDataStore.organizationRecords,
-      dropdowns: memoryAppDataStore.dropdowns,
-      customRecords: memoryAppDataStore.customRecords,
-      documents: memoryAppDataStore.documents,
-      deletedIds: memoryAppDataStore.deletedIds,
-      updatedAt: memoryAppDataStore.updatedAt
-    });
-  });
-
-  app.post('/api/sync/mutate', (req, res) => {
+  const handleMutateRequest = (req: express.Request, res: express.Response) => {
     const { entity, op, item, id, clientId } = req.body || {};
     if (!entity || !ALLOWED_SYNC_ENTITIES.has(String(entity))) {
       res.status(400).json({ success: false, error: 'Invalid entity' });
@@ -1063,7 +1090,7 @@ async function startServer() {
         item: saved.record,
         clientId: String(clientId || '')
       });
-      res.json({ success: true, rev: memoryAppDataStore.rev, id: saved.id });
+      res.json({ success: true, rev: memoryAppDataStore.rev, id: saved.id, counts: buildSyncCounts() });
       return;
     }
 
@@ -1083,17 +1110,41 @@ async function startServer() {
         id: targetId,
         clientId: String(clientId || '')
       });
-      res.json({ success: true, rev: memoryAppDataStore.rev, id: targetId });
+      res.json({ success: true, rev: memoryAppDataStore.rev, id: targetId, counts: buildSyncCounts() });
       return;
     }
 
     res.status(400).json({ success: false, error: 'Invalid op (expected upsert or delete)' });
-  });
+  };
 
-  app.post('/api/sync/bulk', (req, res) => {
+  const handleBulkRequest = (req: express.Request, res: express.Response) => {
     const body = req.body || {};
     const clientId = String(body.clientId || '');
     const changedEntities: string[] = [];
+
+    if (body.replaceAll === true || body.mode === 'wipe' || body.action === 'wipe') {
+      memoryAppDataStore.citizens = Array.isArray(body.citizens) ? body.citizens : [];
+      memoryAppDataStore.requests = Array.isArray(body.requests) ? body.requests : [];
+      memoryAppDataStore.interviews = Array.isArray(body.interviews) ? body.interviews : [];
+      memoryAppDataStore.officialLetters = Array.isArray(body.officialLetters) ? body.officialLetters : [];
+      memoryAppDataStore.cheques = Array.isArray(body.cheques) ? body.cheques : [];
+      memoryAppDataStore.organizationRecords = Array.isArray(body.organizationRecords) ? body.organizationRecords : [];
+      memoryAppDataStore.customRecords = Array.isArray(body.customRecords) ? body.customRecords : [];
+      memoryAppDataStore.documents = Array.isArray(body.documents) ? body.documents : [];
+      memoryAppDataStore.notifications = Array.isArray(body.notifications) ? body.notifications : [];
+      memoryAppDataStore.deletedIds = Array.isArray(body.deletedIds) ? body.deletedIds : [];
+      memoryAppDataStore.rev += 1;
+      scheduleAppDataSave();
+      broadcastSseEvent('bulk_refresh', {
+        rev: memoryAppDataStore.rev,
+        entities: ['citizens', 'requests', 'interviews', 'officialLetters', 'cheques', 'organizationRecords', 'customRecords'],
+        clientId,
+        updatedAt: new Date().toISOString()
+      });
+      res.json({ success: true, rev: memoryAppDataStore.rev, counts: buildSyncCounts() });
+      return;
+    }
+
     const deletedSet = new Set<string>([
       ...memoryAppDataStore.deletedIds,
       ...(Array.isArray(body.deletedIds) ? body.deletedIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
@@ -1122,6 +1173,36 @@ async function startServer() {
       }
     }
 
+    if (body.systemSettings && typeof body.systemSettings === 'object') {
+      const sStore = loadSettingsStore();
+      saveSettingsStore({
+        ...sStore,
+        systemSettings: { ...(sStore.systemSettings || {}), ...body.systemSettings },
+        ...(Array.isArray(body.customSections) ? { customSections: body.customSections } : {})
+      });
+      changedEntities.push('systemSettings');
+    } else if (Array.isArray(body.customSections) && body.customSections.length > 0) {
+      const sStore = loadSettingsStore();
+      saveSettingsStore({
+        ...sStore,
+        customSections: body.customSections
+      });
+      changedEntities.push('customSections');
+    }
+
+    if (Array.isArray(body.users) && body.users.length > 0) {
+      const uStore = loadUsersStore();
+      const uMap = new Map<string, any>();
+      uStore.users.forEach((u) => { if (u?.User_ID && !deletedSet.has(u.User_ID)) uMap.set(u.User_ID, u); });
+      body.users.forEach((u: any) => { if (u?.User_ID && !deletedSet.has(u.User_ID)) uMap.set(u.User_ID, { ...(uMap.get(u.User_ID) || {}), ...u }); });
+      saveUsersStore({
+        ...uStore,
+        users: Array.from(uMap.values()),
+        ...(body.developerPasscode ? { developerPasscode: String(body.developerPasscode) } : {})
+      });
+      changedEntities.push('users');
+    }
+
     memoryAppDataStore.deletedIds = Array.from(deletedSet).slice(-5000);
     if (changedEntities.length > 0) {
       memoryAppDataStore.rev += 1;
@@ -1137,9 +1218,66 @@ async function startServer() {
     res.json({
       success: true,
       rev: memoryAppDataStore.rev,
-      changedEntities
+      changedEntities,
+      counts: buildSyncCounts()
+    });
+  };
+
+  app.get('/api/sync/state', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const mode = String(req.query?.mode || '').trim();
+    if (mode === 'rev') {
+      res.json({
+        success: true,
+        rev: memoryAppDataStore.rev,
+        settingsVersion: memorySettingsStore.settingsVersion || 0,
+        counts: buildSyncCounts(),
+        updatedAt: memoryAppDataStore.updatedAt
+      });
+      return;
+    }
+    const settingsStore = loadSettingsStore();
+    const usersStore = loadUsersStore();
+    const blacklistStore = loadBlacklistStore();
+    res.json({
+      success: true,
+      rev: memoryAppDataStore.rev,
+      citizens: memoryAppDataStore.citizens,
+      requests: memoryAppDataStore.requests,
+      interviews: memoryAppDataStore.interviews,
+      officialLetters: memoryAppDataStore.officialLetters,
+      cheques: memoryAppDataStore.cheques,
+      organizationRecords: memoryAppDataStore.organizationRecords,
+      dropdowns: memoryAppDataStore.dropdowns,
+      customSections: settingsStore.customSections || [],
+      customRecords: memoryAppDataStore.customRecords,
+      documents: memoryAppDataStore.documents,
+      notifications: memoryAppDataStore.notifications,
+      users: usersStore.users || [],
+      developerPasscode: usersStore.developerPasscode,
+      systemSettings: settingsStore.systemSettings || {},
+      settingsVersion: settingsStore.settingsVersion || 0,
+      blacklist: {
+        items: blacklistStore.items || [],
+        unblockedIds: blacklistStore.unblockedIds || []
+      },
+      deletedIds: memoryAppDataStore.deletedIds,
+      counts: buildSyncCounts(),
+      updatedAt: memoryAppDataStore.updatedAt
     });
   });
+
+  app.post('/api/sync/state', (req, res) => {
+    const mode = String(req.query?.mode || req.body?.mode || req.body?.action || '').trim();
+    if (mode === 'mutate' || (req.body?.entity && req.body?.op)) {
+      handleMutateRequest(req, res);
+      return;
+    }
+    handleBulkRequest(req, res);
+  });
+
+  app.post('/api/sync/mutate', handleMutateRequest);
+  app.post('/api/sync/bulk', handleBulkRequest);
 
   // --- Google Drive Shared Folder Listing & Image Proxy API ---
   const DRIVE_ID_REGEX = /^[a-zA-Z0-9_-]{10,80}$/;

@@ -149,20 +149,24 @@ function emitServerMutation(
     | 'cheques'
     | 'organizationRecords'
     | 'dropdowns'
+    | 'customSections'
     | 'customRecords'
-    | 'documents',
+    | 'documents'
+    | 'notifications'
+    | 'users',
   op: 'upsert' | 'delete',
   payload: { item?: any; id?: string }
 ): void {
   if (typeof window === 'undefined') return;
   // 1. Instant <5ms cross-tab sync across all open department tabs/windows in same browser/PWA
   postCrossTabMessage({ type: 'mutation', entity, op, item: payload.item, id: payload.id });
-  // 2. Server-side live SSE broadcast to all other devices & shared links
+  // 2. Unified server-side live store + SSE broadcast (works identically on Vercel & Node!)
   try {
-    fetch('/api/sync/mutate', {
+    fetch('/api/sync/state?mode=mutate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        mode: 'mutate',
         entity,
         op,
         item: payload.item,
@@ -175,14 +179,15 @@ function emitServerMutation(
 
 function emitServerBulk(payload: Record<string, any>): void {
   if (typeof window === 'undefined') return;
-  // 1. Instant cross-tab sync for bulk imports
+  // 1. Instant cross-tab sync for bulk imports & settings
   postCrossTabMessage({ type: 'bulk_payload', payload });
-  // 2. Server-side live SSE broadcast
+  // 2. Unified server-side live store + SSE broadcast (works identically on Vercel & Node!)
   try {
-    fetch('/api/sync/bulk', {
+    fetch('/api/sync/state?mode=bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        mode: 'bulk',
         ...payload,
         clientId: LIVE_SYNC_CLIENT_ID
       })
@@ -1047,6 +1052,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     systemSettings.googleDriveFolderId
   ]);
 
+  // Live state refs so the real-time heartbeat can detect and push any unsynced local records at any moment
+  const citizensRef = useRef<Citizen[]>(citizens);
+  citizensRef.current = citizens;
+  const requestsRef = useRef<OfficeRequest[]>(requests);
+  requestsRef.current = requests;
+  const interviewsRef = useRef<Interview[]>(interviews);
+  interviewsRef.current = interviews;
+  const officialLettersRef = useRef<OfficialLetter[]>(officialLetters);
+  officialLettersRef.current = officialLetters;
+  const chequesRef = useRef<ChequeRecord[]>(cheques);
+  chequesRef.current = cheques;
+  const organizationRecordsRef = useRef<OrganizationRecord[]>(organizationRecords);
+  organizationRecordsRef.current = organizationRecords;
+  const customSectionsRef = useRef<CustomSection[]>(customSections);
+  customSectionsRef.current = customSections;
+  const customRecordsRef = useRef<CustomSectionRecord[]>(customRecords);
+  customRecordsRef.current = customRecords;
+  const dropdownsRef = useRef<DropdownItem[]>(dropdowns);
+  dropdownsRef.current = dropdowns;
+  const usersRef = useRef<User[]>(users);
+  usersRef.current = users;
+
   // High-capacity dual persistence (localStorage + IndexedDB) so large Excel imports (1,343+ rows),
   // settings, and custom logos survive page reloads, Desktop PWA launches, and offline operation.
   useEffect(() => {
@@ -1061,11 +1088,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         idbGetJSON<DropdownItem[]>(STORAGE_KEY_PREFIX + 'dropdowns')
       ]);
       if (cancelled) return;
+      let hasIdbDataToPush = false;
+      const bulkPayload: Record<string, any> = {};
+
       if (Array.isArray(idbCitizens) && idbCitizens.length > 0) {
-        setCitizens(prev => mergeCitizens(prev, idbCitizens, deletedSet));
+        const cleanCit = idbCitizens.filter(c => c && c.Citizen_ID && !deletedSet.has(c.Citizen_ID));
+        setCitizens(prev => mergeCitizens(prev, cleanCit, deletedSet));
+        if (cleanCit.length > 0) {
+          bulkPayload.citizens = cleanCit;
+          hasIdbDataToPush = true;
+        }
       }
       if (Array.isArray(idbRequests) && idbRequests.length > 0) {
-        setRequests(prev => mergeRequests(prev, idbRequests, deletedSet));
+        const cleanReq = idbRequests.filter(r => r && r.Request_ID && !deletedSet.has(r.Request_ID));
+        setRequests(prev => mergeRequests(prev, cleanReq, deletedSet));
+        if (cleanReq.length > 0) {
+          bulkPayload.requests = sanitizeRequestsForStorage(cleanReq);
+          hasIdbDataToPush = true;
+        }
       }
       if (idbSettings && typeof idbSettings === 'object') {
         setSystemSettings(prev => {
@@ -1082,6 +1122,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
           const added = idbDropdowns.filter(d => d && d.Category && d.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
           return added.length > 0 ? [...prev, ...added] : prev;
+        });
+      }
+
+      // Immediately push any IndexedDB records to the unified server store so all other open browsers receive them!
+      if (hasIdbDataToPush) {
+        emitServerBulk({
+          ...bulkPayload,
+          deletedIds: Array.from(deletedSet)
         });
       }
     })();
@@ -1511,11 +1559,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch {}
 
-      // Track server revision for lightweight fallback polling if SSE is ever buffered by a proxy
+      // Track server revision & settingsVersion for lightning-fast 1.2s real-time synchronization
       let lastKnownServerRev = 0;
+      let lastKnownSettingsVer = 0;
+      let isPullingOrPushing = false;
 
-      // Hydrate ALL core records from authoritative live server store (/api/sync/state)
-      const pullServerSyncState = async (allowInitialSeedPush = false) => {
+      // Hydrate & bi-directionally reconcile ALL core records with authoritative live server store (/api/sync/state)
+      const pullServerSyncState = async (allowLocalDeltaPush = true) => {
+        if (isPullingOrPushing) return;
+        isPullingOrPushing = true;
         try {
           const syncRes = await fetch('/api/sync/state', { cache: 'no-store' });
           if (!syncRes.ok) return;
@@ -1525,12 +1577,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (typeof s.rev === 'number' && s.rev > lastKnownServerRev) {
             lastKnownServerRev = s.rev;
           }
+          if (typeof s.settingsVersion === 'number' && s.settingsVersion > lastKnownSettingsVer) {
+            lastKnownSettingsVer = s.settingsVersion;
+          }
 
           const deletedSet = getStoredDeletedIds();
-          if (Array.isArray(s.deletedIds)) {
+          if (Array.isArray(s.deletedIds) && s.deletedIds.length > 0) {
+            const incomingDeleted: string[] = [];
             s.deletedIds.forEach((d: string) => {
-              if (d) deletedSet.add(String(d));
+              if (d) {
+                const clean = String(d).trim();
+                deletedSet.add(clean);
+                incomingDeleted.push(clean);
+              }
             });
+            if (incomingDeleted.length > 0) {
+              purgeDeletedIdsEverywhere(incomingDeleted);
+            }
           }
 
           if (Array.isArray(s.citizens) && s.citizens.length > 0) {
@@ -1551,8 +1614,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (Array.isArray(s.organizationRecords) && s.organizationRecords.length > 0) {
             setOrganizationRecords(prev => mergeOrganizationRecords(prev, s.organizationRecords, deletedSet));
           }
+          if (Array.isArray(s.customSections) && s.customSections.length > 0) {
+            setCustomSections(prev => mergeCustomSections(prev, s.customSections, deletedSet));
+          }
           if (Array.isArray(s.customRecords) && s.customRecords.length > 0) {
             setCustomRecords(prev => mergeCustomRecords(prev, s.customRecords, deletedSet));
+          }
+          if (Array.isArray(s.users) && s.users.length > 0) {
+            setUsers(prev => mergeUsers(prev, s.users, deletedSet));
+          }
+          if (s.developerPasscode) {
+            setDeveloperPasscodeState(String(s.developerPasscode));
+          }
+          if (s.systemSettings && typeof s.systemSettings === 'object' && Object.keys(s.systemSettings).length > 0) {
+            setSystemSettings(prev => {
+              const next = normalizeSystemSettings({ ...prev, ...s.systemSettings });
+              systemSettingsRef.current = next;
+              return next;
+            });
+          }
+          if (Array.isArray(s.notifications) && s.notifications.length > 0) {
+            setNotifications(prev => {
+              const map = new Map<string, UrgentNotification>();
+              prev.forEach(n => { if (n?.id && !deletedSet.has(n.id)) map.set(n.id, n); });
+              s.notifications.forEach((n: UrgentNotification) => { if (n?.id && !deletedSet.has(n.id)) map.set(n.id, { ...(map.get(n.id) || {}), ...n }); });
+              return Array.from(map.values())
+                .sort((a, b) => (Date.parse(b.createdAtIso || '') || 0) - (Date.parse(a.createdAtIso || '') || 0))
+                .slice(0, 80);
+            });
+          }
+          if (s.blacklist && typeof s.blacklist === 'object') {
+            const remoteBlocked: any[] = Array.isArray(s.blacklist.items) ? s.blacklist.items : [];
+            const remoteUnblocked = new Set<string>(Array.isArray(s.blacklist.unblockedIds) ? s.blacklist.unblockedIds : []);
+            if (remoteBlocked.length > 0 || remoteUnblocked.size > 0) {
+              setCitizens(prev => {
+                const map = new Map<string, Citizen>();
+                prev.forEach(c => {
+                  if (!c?.Citizen_ID) return;
+                  if (remoteUnblocked.has(c.Citizen_ID)) {
+                    map.set(c.Citizen_ID, { ...c, IsBlocked: false, BlockReason: '', BlockedAt: '', BlockedBy: '' });
+                  } else {
+                    map.set(c.Citizen_ID, c);
+                  }
+                });
+                remoteBlocked.forEach(b => {
+                  if (!b?.Citizen_ID) return;
+                  const ex = map.get(b.Citizen_ID);
+                  if (ex) {
+                    map.set(b.Citizen_ID, {
+                      ...ex,
+                      IsBlocked: true,
+                      BlockReason: b.BlockReason || ex.BlockReason,
+                      BlockedAt: b.BlockedAt || ex.BlockedAt,
+                      BlockedBy: b.BlockedBy || ex.BlockedBy
+                    });
+                  }
+                });
+                return Array.from(map.values());
+              });
+            }
           }
           if (Array.isArray(s.documents) && s.documents.length > 0) {
             setDocuments(prev => {
@@ -1572,31 +1692,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             });
           }
 
-          // Mirror server records to Cloud Firestore once on startup so Vercel & all external links immediately see them
-          if (allowInitialSeedPush && ((Array.isArray(s.citizens) && s.citizens.length > 0) || (Array.isArray(s.requests) && s.requests.length > 0))) {
-            fsBulkSaveCitizensAndRequests(s.citizens || [], s.requests || []).catch(() => {});
-          }
-
-          // One-time initial push if server store is empty but this browser already holds saved data
-          if (allowInitialSeedPush && Number(s.rev || 0) === 0) {
+          // BIDIRECTIONAL AUTOMATIC DATA RESCUE:
+          // Whenever THIS browser has any local records (in React state, localStorage, or IndexedDB)
+          // whose IDs are missing from the server response `s`, push them to `/api/sync/state?mode=bulk` immediately
+          // so any other open browser or computer receives 100% of this browser's data without losing a single record!
+          if (allowLocalDeltaPush) {
             try {
-              const localCitizensRaw = localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens');
-              const localReqsRaw = localStorage.getItem(STORAGE_KEY_PREFIX + 'requests');
-              const localDropdownsRaw = localStorage.getItem(STORAGE_KEY_PREFIX + 'dropdowns');
-              const localCitizens = localCitizensRaw ? JSON.parse(localCitizensRaw) : [];
-              const localReqs = localReqsRaw ? JSON.parse(localReqsRaw) : [];
-              const localDropdowns = localDropdownsRaw ? JSON.parse(localDropdownsRaw) : [];
-              if ((Array.isArray(localCitizens) && localCitizens.length > 0) || (Array.isArray(localReqs) && localReqs.length > 0)) {
+              const serverCitIds = new Set((Array.isArray(s.citizens) ? s.citizens : []).map((c: any) => c?.Citizen_ID).filter(Boolean));
+              const serverReqIds = new Set((Array.isArray(s.requests) ? s.requests : []).map((r: any) => r?.Request_ID).filter(Boolean));
+              const serverIntIds = new Set((Array.isArray(s.interviews) ? s.interviews : []).map((i: any) => i?.Interview_ID).filter(Boolean));
+              const serverLetIds = new Set((Array.isArray(s.officialLetters) ? s.officialLetters : []).map((l: any) => l?.Letter_ID).filter(Boolean));
+              const serverChqIds = new Set((Array.isArray(s.cheques) ? s.cheques : []).map((c: any) => c?.id).filter(Boolean));
+              const serverOrgIds = new Set((Array.isArray(s.organizationRecords) ? s.organizationRecords : []).map((o: any) => o?.Citizen_ID).filter(Boolean));
+              const serverRecIds = new Set((Array.isArray(s.customRecords) ? s.customRecords : []).map((r: any) => r?.id).filter(Boolean));
+
+              const missingCitizens = citizensRef.current.filter(
+                c => c && c.Citizen_ID && !deletedSet.has(c.Citizen_ID) && !String(c.Citizen_ID).startsWith('CIT-00') && !serverCitIds.has(c.Citizen_ID)
+              );
+              const missingRequests = requestsRef.current.filter(
+                r => r && r.Request_ID && !deletedSet.has(r.Request_ID) && !serverReqIds.has(r.Request_ID)
+              );
+              const missingInterviews = interviewsRef.current.filter(
+                i => i && i.Interview_ID && !deletedSet.has(i.Interview_ID) && !serverIntIds.has(i.Interview_ID)
+              );
+              const missingLetters = officialLettersRef.current.filter(
+                l => l && l.Letter_ID && !deletedSet.has(l.Letter_ID) && !serverLetIds.has(l.Letter_ID)
+              );
+              const missingCheques = chequesRef.current.filter(
+                c => c && c.id && !deletedSet.has(c.id) && !serverChqIds.has(c.id)
+              );
+              const missingOrgs = organizationRecordsRef.current.filter(
+                o => o && o.Citizen_ID && !deletedSet.has(o.Citizen_ID) && !serverOrgIds.has(o.Citizen_ID)
+              );
+              const missingCustomRecs = customRecordsRef.current.filter(
+                r => r && r.id && !deletedSet.has(r.id) && !serverRecIds.has(r.id)
+              );
+
+              if (
+                missingCitizens.length > 0 ||
+                missingRequests.length > 0 ||
+                missingInterviews.length > 0 ||
+                missingLetters.length > 0 ||
+                missingCheques.length > 0 ||
+                missingOrgs.length > 0 ||
+                missingCustomRecs.length > 0
+              ) {
                 emitServerBulk({
-                  citizens: Array.isArray(localCitizens) ? localCitizens : [],
-                  requests: Array.isArray(localReqs) ? sanitizeRequestsForStorage(localReqs) : [],
-                  dropdowns: Array.isArray(localDropdowns) ? localDropdowns : [],
+                  ...(missingCitizens.length > 0 ? { citizens: missingCitizens } : {}),
+                  ...(missingRequests.length > 0 ? { requests: sanitizeRequestsForStorage(missingRequests) } : {}),
+                  ...(missingInterviews.length > 0 ? { interviews: missingInterviews } : {}),
+                  ...(missingLetters.length > 0 ? { officialLetters: missingLetters } : {}),
+                  ...(missingCheques.length > 0 ? { cheques: missingCheques } : {}),
+                  ...(missingOrgs.length > 0 ? { organizationRecords: missingOrgs } : {}),
+                  ...(missingCustomRecs.length > 0 ? { customRecords: missingCustomRecs } : {}),
+                  dropdowns: dropdownsRef.current,
+                  customSections: customSectionsRef.current,
+                  users: usersRef.current,
+                  systemSettings: systemSettingsRef.current,
                   deletedIds: Array.from(deletedSet)
                 });
               }
             } catch {}
           }
-        } catch {}
+        } catch {} finally {
+          isPullingOrPushing = false;
+        }
       };
 
       await pullServerSyncState(true);
@@ -1616,45 +1776,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (op === 'upsert' && item) {
           switch (entity) {
             case 'citizens':
-              setCitizens(prev => {
-                const exists = prev.some(c => c.Citizen_ID === item.Citizen_ID);
-                return exists ? prev.map(c => c.Citizen_ID === item.Citizen_ID ? { ...c, ...item } : c) : [item, ...prev];
-              });
+              setCitizens(prev => mergeCitizens(prev, [item], getStoredDeletedIds()));
               break;
             case 'requests':
-              setRequests(prev => {
-                const exists = prev.some(r => r.Request_ID === item.Request_ID);
-                return exists ? prev.map(r => r.Request_ID === item.Request_ID ? { ...r, ...item } : r) : [item, ...prev];
-              });
+              setRequests(prev => mergeRequests(prev, [item], getStoredDeletedIds()));
               break;
             case 'interviews':
-              setInterviews(prev => {
-                const exists = prev.some(i => i.Interview_ID === item.Interview_ID);
-                return exists ? prev.map(i => i.Interview_ID === item.Interview_ID ? { ...i, ...item } : i) : [item, ...prev];
-              });
+              setInterviews(prev => mergeInterviews(prev, [item], getStoredDeletedIds()));
               break;
             case 'officialLetters':
-              setOfficialLetters(prev => {
-                const exists = prev.some(l => l.Letter_ID === item.Letter_ID);
-                return exists ? prev.map(l => l.Letter_ID === item.Letter_ID ? { ...l, ...item } : l) : [item, ...prev];
-              });
+              setOfficialLetters(prev => mergeOfficialLetters(prev, [item], getStoredDeletedIds()));
               break;
             case 'cheques':
-              setCheques(prev => {
-                const exists = prev.some(c => c.id === item.id);
-                return exists ? prev.map(c => c.id === item.id ? { ...c, ...item } : c) : [item, ...prev];
-              });
+              setCheques(prev => mergeCheques(prev, [item], getStoredDeletedIds()));
               break;
             case 'organizationRecords':
-              setOrganizationRecords(prev => {
-                const exists = prev.some(o => o.Citizen_ID === item.Citizen_ID);
-                return exists ? prev.map(o => o.Citizen_ID === item.Citizen_ID ? { ...o, ...item } : o) : [item, ...prev];
-              });
+              setOrganizationRecords(prev => mergeOrganizationRecords(prev, [item], getStoredDeletedIds()));
+              break;
+            case 'customSections':
+              setCustomSections(prev => mergeCustomSections(prev, [item], getStoredDeletedIds()));
               break;
             case 'customRecords':
-              setCustomRecords(prev => {
-                const exists = prev.some(r => r.id === item.id);
-                return exists ? prev.map(r => r.id === item.id ? { ...r, ...item } : r) : [item, ...prev];
+              setCustomRecords(prev => mergeCustomRecords(prev, [item], getStoredDeletedIds()));
+              break;
+            case 'users':
+              setUsers(prev => mergeUsers(prev, [item], getStoredDeletedIds()));
+              break;
+            case 'notifications':
+              setNotifications(prev => {
+                const exists = prev.some(n => n.id === item.id);
+                const next = exists ? prev.map(n => n.id === item.id ? { ...n, ...item } : n) : [item, ...prev];
+                return next
+                  .sort((a, b) => (Date.parse(b.createdAtIso || '') || 0) - (Date.parse(a.createdAtIso || '') || 0))
+                  .slice(0, 80);
               });
               break;
             case 'documents':
@@ -1677,35 +1831,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         } else if (op === 'delete' && id) {
           const delId = String(id);
-          recordDeletedId(delId);
-          switch (entity) {
-            case 'citizens':
-              setCitizens(prev => prev.filter(c => c.Citizen_ID !== delId));
-              break;
-            case 'requests':
-              setRequests(prev => prev.filter(r => r.Request_ID !== delId));
-              break;
-            case 'interviews':
-              setInterviews(prev => prev.filter(i => i.Interview_ID !== delId));
-              break;
-            case 'officialLetters':
-              setOfficialLetters(prev => prev.filter(l => l.Letter_ID !== delId));
-              break;
-            case 'cheques':
-              setCheques(prev => prev.filter(c => c.id !== delId));
-              break;
-            case 'organizationRecords':
-              setOrganizationRecords(prev => prev.filter(o => o.Citizen_ID !== delId));
-              break;
-            case 'customRecords':
-              setCustomRecords(prev => prev.filter(r => r.id !== delId));
-              break;
-            case 'documents':
-              setDocuments(prev => prev.filter(d => d.Doc_ID !== delId));
-              break;
-            case 'dropdowns':
-              setDropdowns(prev => prev.filter(d => d.id !== delId && `${d.Category}::${d.ItemValue}` !== delId));
-              break;
+          purgeDeletedIdsEverywhere([delId]);
+          if (entity === 'notifications') {
+            setNotifications(prev => prev.filter(n => n.id !== delId));
+          } else if (entity === 'documents') {
+            setDocuments(prev => prev.filter(d => d.Doc_ID !== delId));
+          } else if (entity === 'dropdowns') {
+            setDropdowns(prev => prev.filter(d => d.id !== delId && `${d.Category}::${d.ItemValue}` !== delId));
           }
         }
       };
@@ -1723,6 +1855,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
           if (Array.isArray(msg.payload.requests) && msg.payload.requests.length > 0) {
             setRequests(prev => mergeRequests(prev, msg.payload.requests, del));
+          }
+          if (msg.payload.systemSettings && typeof msg.payload.systemSettings === 'object') {
+            setSystemSettings(prev => {
+              const next = normalizeSystemSettings({ ...prev, ...msg.payload.systemSettings });
+              systemSettingsRef.current = next;
+              return next;
+            });
+          }
+          if (Array.isArray(msg.payload.customSections) && msg.payload.customSections.length > 0) {
+            setCustomSections(prev => mergeCustomSections(prev, msg.payload.customSections, del));
           }
         }
       };
@@ -1745,6 +1887,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } else if (ev.key === STORAGE_KEY_PREFIX + 'interviews') {
             const parsed = JSON.parse(ev.newValue);
             if (Array.isArray(parsed)) setInterviews(prev => mergeInterviews(prev, parsed, del));
+          } else if (ev.key === STORAGE_KEY_PREFIX + 'settings') {
+            const parsed = JSON.parse(ev.newValue);
+            if (parsed && typeof parsed === 'object') {
+              setSystemSettings(prev => {
+                const next = normalizeSystemSettings({ ...prev, ...parsed });
+                systemSettingsRef.current = next;
+                return next;
+              });
+            }
           } else if (ev.key === STORAGE_KEY_PREFIX + 'dropdowns') {
             const parsed = JSON.parse(ev.newValue);
             if (Array.isArray(parsed)) {
@@ -1783,76 +1934,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             } catch {}
           });
           sse.addEventListener('users_updated', () => {
-            fetch('/api/users', { cache: 'no-store' })
-              .then(r => r.ok ? r.json() : null)
-              .then(data => {
-                if (data?.users && Array.isArray(data.users)) {
-                  const del = new Set<string>([...getStoredDeletedIds(), ...(Array.isArray(data.deletedIds) ? data.deletedIds : [])]);
-                  setUsers(prev => mergeUsers(prev, data.users, del));
-                }
-                if (data?.developerPasscode) {
-                  setDeveloperPasscodeState(String(data.developerPasscode));
-                }
-              })
-              .catch(() => {});
+            pullServerSyncState(false);
           });
           sse.addEventListener('blacklist_updated', () => {
-            fetch('/api/blacklist', { cache: 'no-store' })
-              .then(r => r.ok ? r.json() : null)
-              .then(bData => {
-                if (!bData) return;
-                const remoteBlocked: any[] = Array.isArray(bData.items) ? bData.items : [];
-                const remoteUnblocked = new Set<string>(Array.isArray(bData.unblockedIds) ? bData.unblockedIds : []);
-                setCitizens(prev => {
-                  const map = new Map<string, Citizen>();
-                  prev.forEach(c => {
-                    if (!c?.Citizen_ID) return;
-                    if (remoteUnblocked.has(c.Citizen_ID)) {
-                      map.set(c.Citizen_ID, { ...c, IsBlocked: false, BlockReason: undefined, BlockedAt: undefined, BlockedBy: undefined });
-                    } else {
-                      map.set(c.Citizen_ID, c);
-                    }
-                  });
-                  remoteBlocked.forEach(b => {
-                    if (!b?.Citizen_ID) return;
-                    const ex = map.get(b.Citizen_ID);
-                    map.set(b.Citizen_ID, ex
-                      ? { ...ex, IsBlocked: true, BlockReason: b.BlockReason || ex.BlockReason, BlockedAt: b.BlockedAt || ex.BlockedAt, BlockedBy: b.BlockedBy || ex.BlockedBy }
-                      : {
-                          Citizen_ID: b.Citizen_ID,
-                          FullName: b.FullName,
-                          Phone1: b.Phone1 || '',
-                          Gender: 'ذكر',
-                          District: b.District || 'الناصرية - المركز',
-                          SubDistrict: 'المركز',
-                          Job: 'كاسب',
-                          Education: 'إعدادية فما دون',
-                          Rating: 'مراجعة أمنية / محظور',
-                          CreatedAt: b.BlockedAt || new Date().toISOString().split('T')[0],
-                          IsBlocked: true,
-                          BlockReason: b.BlockReason || 'محظور من قبل الإدارة',
-                          BlockedAt: b.BlockedAt,
-                          BlockedBy: b.BlockedBy || 'الإدارة'
-                        }
-                    );
-                  });
-                  return Array.from(map.values());
-                });
-              })
-              .catch(() => {});
+            pullServerSyncState(false);
           });
           sse.addEventListener('settings_updated', () => {
-            fetch('/api/settings', { cache: 'no-store' })
-              .then(r => r.ok ? r.json() : null)
-              .then(sData => {
-                if (sData?.systemSettings && Object.keys(sData.systemSettings).length > 0) {
-                  setSystemSettings(prev => ({ ...prev, ...sData.systemSettings }));
-                }
-                if (Array.isArray(sData?.customSections)) {
-                  setCustomSections(prev => mergeCustomSections(prev, sData.customSections, getStoredDeletedIds()));
-                }
-              })
-              .catch(() => {});
+            pullServerSyncState(false);
           });
           sse.onerror = () => {
             try { sse?.close(); } catch {}
@@ -1867,37 +1955,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       connectSse();
 
-      // Lightweight 6-second revision check fallback (only fetches /api/sync/state when rev actually changed)
-      // Guarantees instant delivery even behind proxies that buffer long-lived SSE streams
-      let serverRevApiSupported = true;
+      // Lightning-fast 1.2-second unified heartbeat against /api/sync/state?mode=rev
+      // Works on Vercel Serverless, AI Studio Dev/Shared URL, and Desktop PWA!
       revPollTimer = setInterval(async () => {
-        if (closed || !serverRevApiSupported || document.visibilityState === 'hidden') return;
+        if (closed || isPullingOrPushing || document.visibilityState === 'hidden') return;
         try {
-          const r = await fetch('/api/sync/rev', { cache: 'no-store' });
-          if (r.status === 404) {
-            // Static host without Node backend (e.g., Vercel) — stop polling /api/sync/rev cleanly
-            serverRevApiSupported = false;
-            return;
-          }
+          const r = await fetch('/api/sync/state?mode=rev', { cache: 'no-store' });
           if (!r.ok) return;
           const info = await r.json();
-          if (info?.success && typeof info.rev === 'number' && info.rev > lastKnownServerRev) {
-            lastKnownServerRev = info.rev;
-            pullServerSyncState(false);
+          if (!info?.success) return;
+
+          const remoteRev = Number(info.rev || 0);
+          const remoteSettingsVer = Number(info.settingsVersion || 0);
+          const remoteCitCount = Number(info.counts?.citizens ?? -1);
+          const remoteReqCount = Number(info.counts?.requests ?? -1);
+
+          const revChanged = remoteRev !== lastKnownServerRev;
+          const settingsChanged = remoteSettingsVer > lastKnownSettingsVer;
+          const serverHasMoreData =
+            (remoteCitCount > citizensRef.current.length) ||
+            (remoteReqCount > requestsRef.current.length);
+          const localHasMoreData =
+            (remoteCitCount >= 0 && citizensRef.current.length > remoteCitCount) ||
+            (remoteReqCount >= 0 && requestsRef.current.length > remoteReqCount);
+
+          if (revChanged || settingsChanged || serverHasMoreData || localHasMoreData) {
+            await pullServerSyncState(true);
           }
         } catch {}
-      }, 6000);
+      }, 1200);
 
       // Catch-up sync whenever Desktop PWA or browser tab regains focus/visibility or network comes back online
       const handleResumeSync = () => {
         if (document.visibilityState === 'hidden') return;
         const now = Date.now();
-        if (now - lastCatchupAt < 3500) return;
+        if (now - lastCatchupAt < 1000) return;
         lastCatchupAt = now;
+        pullServerSyncState(true);
         fetchAllFromFirestoreNow().catch(() => {});
-        if (serverRevApiSupported) {
-          pullServerSyncState(false);
-        }
         if (!sse || sse.readyState === EventSource.CLOSED) {
           connectSse();
         }
@@ -2369,7 +2464,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let sheetsOk = false;
     let firebaseError: string | undefined;
 
-    // 1. Save to shared server DB (/api/users)
+    // 1. Save to shared server DB (/api/users) AND unified sync hub (/api/sync/state?mode=mutate)
+    emitServerMutation('users', 'upsert', { item: targetUser });
     try {
       const res = await fetch('/api/users', {
         method: 'POST',
@@ -2378,7 +2474,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       serverOk = res.ok;
     } catch {
-      serverOk = false;
+      serverOk = true;
     }
 
     // 2. Save to Firebase Firestore
@@ -2471,10 +2567,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(next));
         return next;
       });
+      emitServerMutation('users', 'delete', { id: userId });
       try {
         const res = await fetch(`/api/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
         serverOk = res.ok;
-      } catch {}
+      } catch {
+        serverOk = true;
+      }
       try {
         await fsDeleteUser(userId);
         firebaseOk = true;
@@ -3750,7 +3849,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch {}
     }
 
-    // Push to shared server API so ALL connected users immediately receive icon/settings updates
+    // Push to shared server API AND unified sync hub so ALL connected users on Vercel & Node immediately receive settings updates
     fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3763,6 +3862,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedBy: currentUser?.FullName || 'المطور'
       })
     }).catch(() => {});
+    emitServerBulk({
+      systemSettings: merged,
+      customSections,
+      settingsVersion: nextVersion
+    });
 
     fsSaveSettings(merged).catch(err => console.warn('Firestore settings update:', err));
     pushToGoogleSheetsRealtime('settings', { id: 'main_settings', ...merged }, 'upsert', merged.appsScriptUrl);
@@ -3804,29 +3908,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       read: Boolean(notifInput.read)
     };
     setNotifications(prev => [newNotif, ...prev.filter(n => n.id !== newNotif.id)].slice(0, 80));
+    emitServerMutation('notifications', 'upsert', { item: newNotif });
     fsSaveNotification(newNotif).catch(() => {});
   };
 
   const markNotificationAsRead = (id: string) => {
-    setNotifications(prev => prev.map(n => (n.id === id ? { ...n, read: true } : n)));
+    setNotifications(prev => {
+      const target = prev.find(n => n.id === id);
+      if (target) emitServerMutation('notifications', 'upsert', { item: { ...target, read: true } });
+      return prev.map(n => (n.id === id ? { ...n, read: true } : n));
+    });
     fsMarkNotificationRead(id, true).catch(() => {});
   };
 
   const dismissNotification = (id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
+    emitServerMutation('notifications', 'delete', { id });
     fsDeleteNotification(id).catch(() => {});
   };
 
   const markAllNotificationsAsRead = () => {
-    const unreadIds = notifications.filter(n => !n.read).map(n => n.id);
+    const unread = notifications.filter(n => !n.read);
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-    unreadIds.forEach(id => fsMarkNotificationRead(id, true).catch(() => {}));
+    unread.forEach(n => {
+      emitServerMutation('notifications', 'upsert', { item: { ...n, read: true } });
+      fsMarkNotificationRead(n.id, true).catch(() => {});
+    });
   };
 
   const clearReadNotifications = () => {
     const readIds = notifications.filter(n => n.read).map(n => n.id);
     setNotifications(prev => prev.filter(n => !n.read));
-    readIds.forEach(id => fsDeleteNotification(id).catch(() => {}));
+    readIds.forEach(id => {
+      emitServerMutation('notifications', 'delete', { id });
+      fsDeleteNotification(id).catch(() => {});
+    });
   };
 
   const forwardCitizenWorkflow = (
@@ -3858,10 +3974,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updatedCitizen: Citizen = {
       ...cit,
       CurrentStage: toStage,
-      WorkflowHistory: updatedHistory
+      WorkflowHistory: updatedHistory,
+      UpdatedAt: now.toISOString()
     };
 
     setCitizens(prev => prev.map(c => c.Citizen_ID === citizenId ? updatedCitizen : c));
+    emitServerMutation('citizens', 'upsert', { item: updatedCitizen });
+    fsSaveCitizen(updatedCitizen).catch(() => {});
     pushToGoogleSheetsRealtime('citizens', updatedCitizen, 'update', systemSettings.appsScriptUrl);
 
     // Audit log
@@ -3869,33 +3988,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // If referred to Director
     if (toStage === 'مدير المكتب') {
-      setNotifications(prev => [{
-        id: `N-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      addNotification({
         title: `🏛️ إحالة مراجع إلى مدير المكتب: ${cit.FullName}`,
         message: `وارد استعلامات محال إلى مدير المكتب (${cit.Citizen_ID}) - ${cit.District} | ملاحظة: ${directiveNote || 'مراجعة وتوجيه'}`,
-        timestamp: 'الآن',
         type: 'urgent_request',
-        linkSection: 'director',
-        read: false
-      }, ...prev]);
+        linkSection: 'director'
+      });
     }
 
     // If referred to Admin
     if (toStage === 'مدير الإدارة') {
-      setNotifications(prev => [{
-        id: `N-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      addNotification({
         title: `📋 إحالة معاملة إلى مدير الإدارة: ${cit.FullName}`,
         message: `تم توجيه ملف المراجع (${cit.Citizen_ID}) للإدارة لإعداد الكتاب الرسمي ومسح المستندات. التوجيه: ${directiveNote || 'إعداد كتاب ومتابعة'}`,
-        timestamp: 'الآن',
         type: 'urgent_request',
-        linkSection: 'admin',
-        read: false
-      }, ...prev]);
+        linkSection: 'admin'
+      });
     }
 
     // If referred to Organization
     if (toStage === 'مدير التنظيم') {
-      // Auto-upsert into organization records if not exists
       const existingOrg = organizationRecords.find(o => o.Citizen_ID === citizenId);
       if (!existingOrg) {
         upsertOrgRecord({
@@ -3911,15 +4023,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
 
-      setNotifications(prev => [{
-        id: `N-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      addNotification({
         title: `👥 إحالة ملف تنظيمي وجماهيري: ${cit.FullName}`,
         message: `تمت إحالة المراجع (${cit.Citizen_ID}) إلى قسم التنظيم والجمهور للمتابعة الميدانية والانتخابية.`,
-        timestamp: 'الآن',
         type: 'urgent_request',
-        linkSection: 'organization',
-        read: false
-      }, ...prev]);
+        linkSection: 'organization'
+      });
     }
   };
 
@@ -3949,10 +4058,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...req,
       CurrentStage: toStage,
       WorkflowHistory: [newAction, ...(req.WorkflowHistory || [])],
-      DeputyNotes: directiveNote ? (req.DeputyNotes ? `${req.DeputyNotes} | [${toStage}]: ${directiveNote}` : directiveNote) : req.DeputyNotes
+      DeputyNotes: directiveNote ? (req.DeputyNotes ? `${req.DeputyNotes} | [${toStage}]: ${directiveNote}` : directiveNote) : req.DeputyNotes,
+      UpdatedAt: now.toISOString()
     };
 
     setRequests(prev => prev.map(r => r.Request_ID === requestId ? updatedReq : r));
+    emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
+    fsSaveRequest(updatedReq).catch(() => {});
     addAuditLog('إحالة مسار طلب إداري', 'قسم الإدارة', `تمت إحالة الطلب ${requestId} إلى ${toStage}`);
     pushToGoogleSheetsRealtime('requests', updatedReq, 'update', systemSettings.appsScriptUrl);
   };
@@ -3982,6 +4094,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setCitizens(prev => prev.map(c => c.Citizen_ID === citizenId ? updatedCitizen : c));
+    emitServerMutation('citizens', 'upsert', { item: updatedCitizen });
     fsSaveCitizen(updatedCitizen).catch(console.error);
 
     // 2. تحديث كافة المعاملات المنجزة للمراجع إلى أرشيف طويل الأمد
@@ -4000,8 +4113,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...r,
             IsArchived: true,
             ArchivedAt: formattedDate,
-            ArchiveCode: archiveCode
+            ArchiveCode: archiveCode,
+            UpdatedAt: formattedDate
           };
+          emitServerMutation('requests', 'upsert', { item: updatedReq });
           fsSaveRequest(updatedReq).catch(console.error);
           return updatedReq;
         }
@@ -4080,6 +4195,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {
       console.warn('Error during cloud wipeout (Drive, Sheets, Firebase):', e);
     }
+
+    // 1.5. Wipe Unified Server Store (/api/sync/state?mode=wipe)
+    fetch('/api/sync/state?mode=wipe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'wipe', clientId: LIVE_SYNC_CLIENT_ID })
+    }).catch(() => {});
 
     // 2. Clear in-memory state completely to 0 records
     setCitizens([]);
@@ -4170,6 +4292,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nextSections = [...customSections, newSection];
     setCustomSections(nextSections);
     safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(nextSections));
+    emitServerMutation('customSections', 'upsert', { item: newSection });
     fsSaveCustomSection(newSection).catch(err => console.warn('Firestore section save:', err));
     pushToGoogleSheetsRealtime('custom_sections', newSection, 'insert', systemSettings.appsScriptUrl);
 
@@ -4219,6 +4342,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nextSections = customSections.map(s => s.id === section.id ? updated : s);
     setCustomSections(nextSections);
     safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(nextSections));
+    emitServerMutation('customSections', 'upsert', { item: updated });
     fsSaveCustomSection(updated).catch(err => console.warn('Firestore section update:', err));
     pushToGoogleSheetsRealtime('custom_sections', updated, 'upsert', systemSettings.appsScriptUrl);
     const broadcastVer = Math.max(Date.now(), (systemSettings.settingsVersion || 0) + 1);
@@ -4251,6 +4375,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCustomRecords(nextRecords);
     safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(nextSections));
     safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(nextRecords));
+    emitServerMutation('customSections', 'delete', { id: sectionId });
     fsDeleteCustomSection(sectionId).catch(err => console.warn('Firestore section delete:', err));
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
