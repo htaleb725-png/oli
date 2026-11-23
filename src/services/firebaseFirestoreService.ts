@@ -114,9 +114,10 @@ function stripUndefinedProps(obj: Record<string, any>): Record<string, any> {
   return out;
 }
 
-export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updatedAt: string } {
+export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updatedAt: string; UpdatedAt: string } {
   const safeId = sanitizeFirestoreDocId(citizen.Citizen_ID, 'ONA');
   const fullName = clipStr(citizen.FullName, 250) || 'مراجع';
+  const nowIso = new Date().toISOString();
   const copy: any = {
     ...citizen,
     Citizen_ID: safeId,
@@ -125,8 +126,9 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
     Rating: clipStr(citizen.Rating, 50) || 'مؤيد',
     District: clipStr(citizen.District, 100) || 'الناصرية',
     SubDistrict: clipStr(citizen.SubDistrict, 100) || 'المركز',
-    CreatedAt: clipStr(citizen.CreatedAt, 100) || new Date().toISOString().split('T')[0],
-    updatedAt: new Date().toISOString()
+    CreatedAt: clipStr(citizen.CreatedAt, 100) || nowIso.split('T')[0],
+    UpdatedAt: nowIso,
+    updatedAt: nowIso
   };
   // Explicitly clear block fields in Firestore when unblocked (instead of passing undefined which Firestore rejects)
   if (citizen.IsBlocked === false) {
@@ -139,12 +141,13 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
   if (typeof copy.PhotoUrl === 'string' && copy.PhotoUrl.length > 250000) {
     delete copy.PhotoUrl;
   }
-  return stripUndefinedProps(copy) as Citizen & { updatedAt: string };
+  return stripUndefinedProps(copy) as Citizen & { updatedAt: string; UpdatedAt: string };
 }
 
-export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest & { updatedAt: string } {
+export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest & { updatedAt: string; UpdatedAt: string } {
   const safeReqId = sanitizeFirestoreDocId(req.Request_ID, 'REQ');
   const safeCitId = sanitizeFirestoreDocId(req.Citizen_ID, 'ONA');
+  const nowIso = new Date().toISOString();
   const copy: any = {
     ...req,
     Request_ID: safeReqId,
@@ -154,7 +157,8 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
     ProcessingStatus: clipStr(req.ProcessingStatus, 50) || 'قيد التدقيق',
     Priority: clipStr(req.Priority, 50) || 'عام',
     Details: clipStr(req.Details, 10000) ?? '',
-    updatedAt: new Date().toISOString()
+    UpdatedAt: nowIso,
+    updatedAt: nowIso
   };
   // Strip large inline base64 attachments that exceed Firestore's 1MB document limit
   if (typeof copy.AttachedRequestImage === 'string' && copy.AttachedRequestImage.length > 250000) {
@@ -168,7 +172,7 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
       return att;
     });
   }
-  return stripUndefinedProps(copy) as OfficeRequest & { updatedAt: string };
+  return stripUndefinedProps(copy) as OfficeRequest & { updatedAt: string; UpdatedAt: string };
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
@@ -395,11 +399,13 @@ export async function fsBulkSaveCitizensAndRequests(
 export async function fsSaveInterview(interview: Interview): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.INTERVIEWS);
   const path = `${col}/${interview.Interview_ID}`;
+  const nowIso = new Date().toISOString();
   try {
-    await setDoc(doc(db, col, interview.Interview_ID), {
+    await setDoc(doc(db, col, interview.Interview_ID), stripUndefinedProps({
       ...interview,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+      UpdatedAt: nowIso,
+      updatedAt: nowIso
+    }), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -420,11 +426,13 @@ export async function fsDeleteInterview(interviewId: string): Promise<void> {
 export async function fsSaveOfficialLetter(letter: OfficialLetter): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.LETTERS);
   const path = `${col}/${letter.Letter_ID}`;
+  const nowIso = new Date().toISOString();
   try {
-    await setDoc(doc(db, col, letter.Letter_ID), {
+    await setDoc(doc(db, col, letter.Letter_ID), stripUndefinedProps({
       ...letter,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+      UpdatedAt: nowIso,
+      updatedAt: nowIso
+    }), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -445,11 +453,13 @@ export async function fsDeleteOfficialLetter(letterId: string): Promise<void> {
 export async function fsSaveCheque(cheque: ChequeRecord): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.CHEQUES);
   const path = `${col}/${cheque.id}`;
+  const nowIso = new Date().toISOString();
   try {
-    await setDoc(doc(db, col, cheque.id), {
+    await setDoc(doc(db, col, cheque.id), stripUndefinedProps({
       ...cheque,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+      UpdatedAt: nowIso,
+      updatedAt: nowIso
+    }), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -469,12 +479,16 @@ export async function fsDeleteCheque(chequeId: string): Promise<void> {
 // 6. Organization Records Operations
 export async function fsSaveOrgRecord(record: OrganizationRecord): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.ORGANIZATIONS);
-  const path = `${col}/${record.Org_ID}`;
+  const safeId = sanitizeFirestoreDocId(record.Org_ID || record.Citizen_ID, 'ORG');
+  const path = `${col}/${safeId}`;
+  const nowIso = new Date().toISOString();
   try {
-    await setDoc(doc(db, col, record.Org_ID), {
+    await setDoc(doc(db, col, safeId), stripUndefinedProps({
       ...record,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+      Org_ID: safeId,
+      UpdatedAt: nowIso,
+      updatedAt: nowIso
+    }), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -577,16 +591,23 @@ export async function fsDeleteUser(userId: string): Promise<void> {
 }
 
 // 8. System Settings & Developer Passcode
-const stripUndefinedDeep = (input: any): any => {
+const stripUndefinedAndOversizedDeep = (input: any): any => {
   if (input === null || input === undefined) return null;
+  if (typeof input === 'string') {
+    // Prevent huge inline base64 strings (>180KB) from breaking Firestore's 1MB doc limit on settings/general
+    if (input.length > 180000 && input.startsWith('data:image/')) {
+      return '/office-logo.png';
+    }
+    return input;
+  }
   if (Array.isArray(input)) {
-    return input.filter((v) => v !== undefined).map(stripUndefinedDeep);
+    return input.filter((v) => v !== undefined).map(stripUndefinedAndOversizedDeep);
   }
   if (typeof input === 'object') {
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(input)) {
       if (v === undefined) continue;
-      out[k] = stripUndefinedDeep(v);
+      out[k] = stripUndefinedAndOversizedDeep(v);
     }
     return out;
   }
@@ -597,9 +618,9 @@ export async function fsSaveSettings(settings: Partial<SystemSettings>): Promise
   const col = getFSCol(FS_COLLECTIONS.SETTINGS);
   const nowIso = new Date().toISOString();
 
-  // Always save critical cloud linkage fields to a tiny dedicated document (<1 KB)
-  // so Drive Folder ID / Sheet ID / Apps Script URL NEVER fail Firestore's 1MB document limit!
-  const cloudPatch: Record<string, any> = { updatedAt: nowIso };
+  // Always save critical cloud linkage & live outgoing counter fields to a tiny dedicated document (<2 KB)
+  // so Drive Folder ID / Sheet ID / Outgoing Counters / Logo NEVER fail Firestore's 1MB document limit!
+  const cloudPatch: Record<string, any> = { updatedAt: nowIso, UpdatedAt: nowIso };
   if (settings.googleDriveFolderId) cloudPatch.googleDriveFolderId = settings.googleDriveFolderId;
   if (settings.googleSheetId) cloudPatch.googleSheetId = settings.googleSheetId;
   if (settings.activeGoogleSheetId) cloudPatch.activeGoogleSheetId = settings.activeGoogleSheetId;
@@ -608,8 +629,23 @@ export async function fsSaveSettings(settings: Partial<SystemSettings>): Promise
   if (typeof settings.allowAdminOpenDriveFolder === 'boolean') {
     cloudPatch.allowAdminOpenDriveFolder = settings.allowAdminOpenDriveFolder;
   }
+  if (typeof settings.lastOutgoingNumberNasiriyah === 'number') {
+    cloudPatch.lastOutgoingNumberNasiriyah = settings.lastOutgoingNumberNasiriyah;
+  }
+  if (typeof settings.lastOutgoingNumberSuq === 'number') {
+    cloudPatch.lastOutgoingNumberSuq = settings.lastOutgoingNumberSuq;
+  }
+  if (settings.outgoingBaselineSetAt) {
+    cloudPatch.outgoingBaselineSetAt = settings.outgoingBaselineSetAt;
+  }
+  if (settings.outgoingBaselineLabel) {
+    cloudPatch.outgoingBaselineLabel = settings.outgoingBaselineLabel;
+  }
+  if (settings.officeName) cloudPatch.officeName = settings.officeName;
+  if (settings.deputyName) cloudPatch.deputyName = settings.deputyName;
+  if (settings.logoUrl && settings.logoUrl.length < 180000) cloudPatch.logoUrl = settings.logoUrl;
 
-  if (Object.keys(cloudPatch).length > 1) {
+  if (Object.keys(cloudPatch).length > 2) {
     try {
       await setDoc(doc(db, col, 'cloud_config'), cloudPatch, { merge: true });
     } catch (cloudErr) {
@@ -619,8 +655,9 @@ export async function fsSaveSettings(settings: Partial<SystemSettings>): Promise
 
   const path = `${col}/general`;
   try {
-    const cleanPayload = stripUndefinedDeep({
+    const cleanPayload = stripUndefinedAndOversizedDeep({
       ...settings,
+      UpdatedAt: nowIso,
       updatedAt: nowIso
     });
     await setDoc(doc(db, col, 'general'), cleanPayload, { merge: true });
@@ -637,6 +674,13 @@ export function fsWatchCloudConfig(
     appsScriptUrl?: string;
     googleAppsScriptUrl?: string;
     allowAdminOpenDriveFolder?: boolean;
+    lastOutgoingNumberNasiriyah?: number;
+    lastOutgoingNumberSuq?: number;
+    outgoingBaselineSetAt?: string;
+    outgoingBaselineLabel?: string;
+    officeName?: string;
+    deputyName?: string;
+    logoUrl?: string;
   }) => void
 ): () => void {
   if (isFirestoreTemporarilyBlocked()) return () => {};
@@ -1260,10 +1304,10 @@ export async function fsBulkPullAll(): Promise<{
   }
 }
 
-// 15. Realtime Collection Watcher
+// 15. Realtime Collection Watcher (emits full snapshot list AND explicitly removed doc IDs for instant deletion sync)
 export function fsWatchCollection<T>(
   colName: string, 
-  onData: (items: T[]) => void, 
+  onData: (items: T[], removedIds: string[]) => void, 
   onError?: (err: Error) => void
 ): Unsubscribe {
   const dynamicCol = getFSCol(colName);
@@ -1272,7 +1316,12 @@ export function fsWatchCollection<T>(
       collection(db, dynamicCol),
       (snapshot) => {
         const list = snapshot.docs.map(d => d.data() as T);
-        onData(list);
+        const removedIds = snapshot
+          .docChanges()
+          .filter(change => change.type === 'removed')
+          .map(change => change.doc.id)
+          .filter(Boolean);
+        onData(list, removedIds);
       },
       (err) => {
         // Never throw uncaught errors or trip global write circuit-breaker from a listener warning
@@ -1285,3 +1334,32 @@ export function fsWatchCollection<T>(
     return () => {};
   }
 }
+
+// 16. Realtime Tombstone Watcher (propagates deleted record IDs across all browsers/computers instantaneously)
+export function fsWatchDeletedRecords(
+  onDeletedIds: (deletedIds: string[]) => void
+): Unsubscribe {
+  const dynamicCol = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
+  try {
+    return onSnapshot(
+      collection(db, dynamicCol),
+      (snapshot) => {
+        const ids: string[] = [];
+        snapshot.docs.forEach(d => {
+          const data = d.data();
+          if (data?.id) ids.push(String(data.id).trim());
+          else if (d.id) ids.push(String(d.id).trim());
+        });
+        if (ids.length > 0) {
+          onDeletedIds(ids);
+        }
+      },
+      (err) => {
+        console.warn('Firestore deleted_records watcher notice:', err?.message || err);
+      }
+    );
+  } catch {
+    return () => {};
+  }
+}
+

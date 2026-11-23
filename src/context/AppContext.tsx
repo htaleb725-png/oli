@@ -62,6 +62,7 @@ import {
   fsDeleteNotification,
   fsWatchCollection,
   fsWatchCloudConfig,
+  fsWatchDeletedRecords,
   isFirestoreTemporarilyBlocked,
   FS_COLLECTIONS
 } from '../services/firebaseFirestoreService';
@@ -1125,67 +1126,145 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [dropdowns]);
 
   // Real-Time Firestore & Shared Server Synchronization Listeners
-  // Runs immediately on mount so Vercel, AI Studio, and Desktop PWA stay synced live from Cloud Firestore
+  // Runs immediately on mount so Vercel, AI Studio, and Desktop PWA stay synced live (<100ms) across all computers & browsers
   useEffect(() => {
     const unsubs: (() => void)[] = [];
 
-    const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items) => {
+    const purgeDeletedIdsEverywhere = (idsToRemove: string[]) => {
+      if (!Array.isArray(idsToRemove) || idsToRemove.length === 0) return;
+      const delSet = getStoredDeletedIds();
+      let addedNew = false;
+      for (const rawId of idsToRemove) {
+        const clean = String(rawId || '').trim();
+        if (!clean) continue;
+        if (!delSet.has(clean)) {
+          addedNew = true;
+          delSet.add(clean);
+        }
+        recordDeletedId(clean);
+      }
+      if (!addedNew && idsToRemove.length === 0) return;
+      const removeSet = new Set(idsToRemove.map(i => String(i || '').trim()).filter(Boolean));
+      if (removeSet.size === 0) return;
+
+      setCitizens(prev => prev.some(c => removeSet.has(c.Citizen_ID)) ? prev.filter(c => !removeSet.has(c.Citizen_ID)) : prev);
+      setRequests(prev => prev.some(r => removeSet.has(r.Request_ID) || removeSet.has(r.Citizen_ID))
+        ? prev.filter(r => !removeSet.has(r.Request_ID) && !removeSet.has(r.Citizen_ID))
+        : prev
+      );
+      setInterviews(prev => prev.some(i => removeSet.has(i.Interview_ID) || removeSet.has(i.Citizen_ID))
+        ? prev.filter(i => !removeSet.has(i.Interview_ID) && !removeSet.has(i.Citizen_ID))
+        : prev
+      );
+      setOfficialLetters(prev => prev.some(l => removeSet.has(l.Letter_ID) || (l.Citizen_ID && removeSet.has(l.Citizen_ID)))
+        ? prev.filter(l => !removeSet.has(l.Letter_ID) && (!l.Citizen_ID || !removeSet.has(l.Citizen_ID)))
+        : prev
+      );
+      setCheques(prev => prev.some(ch => removeSet.has(ch.id) || removeSet.has(ch.Citizen_ID))
+        ? prev.filter(ch => !removeSet.has(ch.id) && !removeSet.has(ch.Citizen_ID))
+        : prev
+      );
+      setOrganizationRecords(prev => prev.some(o => removeSet.has(o.Citizen_ID) || (o.Org_ID && removeSet.has(o.Org_ID)))
+        ? prev.filter(o => !removeSet.has(o.Citizen_ID) && (!o.Org_ID || !removeSet.has(o.Org_ID)))
+        : prev
+      );
+      setCustomSections(prev => prev.some(s => removeSet.has(s.id)) ? prev.filter(s => !removeSet.has(s.id)) : prev);
+      setCustomRecords(prev => prev.some(r => removeSet.has(r.id) || removeSet.has(r.sectionId))
+        ? prev.filter(r => !removeSet.has(r.id) && !removeSet.has(r.sectionId))
+        : prev
+      );
+      setUsers(prev => prev.some(u => removeSet.has(u.User_ID)) ? prev.filter(u => !removeSet.has(u.User_ID)) : prev);
+    };
+
+    const unsubDeletedRecords = fsWatchDeletedRecords((deletedIds) => {
+      purgeDeletedIdsEverywhere(deletedIds);
+    });
+    unsubs.push(unsubDeletedRecords);
+
+    const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         setCitizens(prev => mergeCitizens(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubCitizens);
 
-    const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items) => {
+    const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         setRequests(prev => mergeRequests(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubRequests);
 
-    const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items) => {
+    const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         setInterviews(prev => mergeInterviews(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubInterviews);
 
-    const unsubLetters = fsWatchCollection<OfficialLetter>(FS_COLLECTIONS.LETTERS, (items) => {
+    const unsubLetters = fsWatchCollection<OfficialLetter>(FS_COLLECTIONS.LETTERS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         setOfficialLetters(prev => mergeOfficialLetters(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubLetters);
 
-    const unsubCheques = fsWatchCollection<ChequeRecord>(FS_COLLECTIONS.CHEQUES, (items) => {
+    const unsubCheques = fsWatchCollection<ChequeRecord>(FS_COLLECTIONS.CHEQUES, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         setCheques(prev => mergeCheques(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubCheques);
 
-    const unsubOrgs = fsWatchCollection<OrganizationRecord>(FS_COLLECTIONS.ORGANIZATIONS, (items) => {
+    const unsubOrgs = fsWatchCollection<OrganizationRecord>(FS_COLLECTIONS.ORGANIZATIONS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         setOrganizationRecords(prev => mergeOrganizationRecords(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubOrgs);
 
-    const unsubSections = fsWatchCollection<CustomSection>(FS_COLLECTIONS.CUSTOM_SECTIONS, (items) => {
+    const unsubSections = fsWatchCollection<CustomSection>(FS_COLLECTIONS.CUSTOM_SECTIONS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         setCustomSections(prev => mergeCustomSections(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubSections);
 
-    const unsubRecords = fsWatchCollection<CustomSectionRecord>(FS_COLLECTIONS.CUSTOM_RECORDS, (items) => {
+    const unsubRecords = fsWatchCollection<CustomSectionRecord>(FS_COLLECTIONS.CUSTOM_RECORDS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         setCustomRecords(prev => mergeCustomRecords(prev, items, getStoredDeletedIds()));
       }
     });
     unsubs.push(unsubRecords);
 
-    const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items) => {
+    const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
       if (Array.isArray(items) && items.length > 0) {
         const deletedIds = getStoredDeletedIds();
         setUsers(prev => mergeUsers(prev, items, deletedIds));
@@ -1193,7 +1272,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     unsubs.push(unsubUsers);
 
-    const unsubDropdowns = fsWatchCollection<DropdownItem>(FS_COLLECTIONS.DROPDOWNS, (items) => {
+    const unsubDropdowns = fsWatchCollection<DropdownItem>(FS_COLLECTIONS.DROPDOWNS, (items, removedIds) => {
+      if (removedIds && removedIds.length > 0) {
+        const removeSet = new Set(removedIds);
+        setDropdowns(prev => prev.filter(d => !d.id || !removeSet.has(d.id)));
+      }
       if (Array.isArray(items) && items.length > 0) {
         setDropdowns(prev => {
           const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
@@ -1217,8 +1300,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     unsubs.push(unsubNotifications);
 
     const unsubSettings = fsWatchCollection<any>(FS_COLLECTIONS.SETTINGS, (docs) => {
-      const generalDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements));
-      const cloudDoc = docs.find((d: any) => d && (d.googleDriveFolderId || d.appsScriptUrl) && !d.appName);
+      const generalDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements || typeof d.lastOutgoingNumberNasiriyah === 'number'));
+      const cloudDoc = docs.find((d: any) => d && (d.googleDriveFolderId || d.appsScriptUrl || typeof d.lastOutgoingNumberNasiriyah === 'number') && !d.appName);
       const mergedRemote = { ...(generalDoc || {}), ...(cloudDoc || {}) };
       if (Object.keys(mergedRemote).length > 0) {
         const cleanRemoteDrive = mergedRemote.googleDriveFolderId
@@ -1234,11 +1317,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           try { localStorage.setItem('al_nashi_drive_folder_id', cleanRemoteDrive); } catch {}
         }
         setSystemSettings(prev => {
-          const next = {
+          const next = normalizeSystemSettings({
             ...prev,
             ...mergedRemote,
             ...(cleanRemoteDrive ? { googleDriveFolderId: cleanRemoteDrive } : {})
-          };
+          });
           systemSettingsRef.current = next;
           return next;
         });
@@ -1246,7 +1329,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     unsubs.push(unsubSettings);
 
-    // Real-time dedicated watcher for lightweight cloud_config (Drive Folder ID / Sheet ID / Apps Script URL)
+    // Real-time dedicated watcher for lightweight cloud_config (Drive Folder ID / Sheet ID / Outgoing Counters / Branding)
     const unsubCloudConfig = fsWatchCloudConfig((cfg) => {
       if (!cfg) return;
       const cleanRemoteDrive = cfg.googleDriveFolderId
@@ -1262,15 +1345,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         try { localStorage.setItem('al_nashi_drive_folder_id', cleanRemoteDrive); } catch {}
       }
       setSystemSettings(prev => {
-        const next = {
+        const next = normalizeSystemSettings({
           ...prev,
           ...(cleanRemoteDrive ? { googleDriveFolderId: cleanRemoteDrive } : {}),
           ...(cfg.googleSheetId ? { googleSheetId: cfg.googleSheetId, activeGoogleSheetId: cfg.googleSheetId } : {}),
           ...(cfg.appsScriptUrl ? { appsScriptUrl: cfg.appsScriptUrl, googleAppsScriptUrl: cfg.appsScriptUrl } : {}),
-          ...(typeof cfg.allowAdminOpenDriveFolder === 'boolean' ? { allowAdminOpenDriveFolder: cfg.allowAdminOpenDriveFolder } : {})
-        };
+          ...(typeof cfg.allowAdminOpenDriveFolder === 'boolean' ? { allowAdminOpenDriveFolder: cfg.allowAdminOpenDriveFolder } : {}),
+          ...(typeof cfg.lastOutgoingNumberNasiriyah === 'number' ? { lastOutgoingNumberNasiriyah: cfg.lastOutgoingNumberNasiriyah } : {}),
+          ...(typeof cfg.lastOutgoingNumberSuq === 'number' ? { lastOutgoingNumberSuq: cfg.lastOutgoingNumberSuq } : {}),
+          ...(cfg.outgoingBaselineSetAt ? { outgoingBaselineSetAt: cfg.outgoingBaselineSetAt } : {}),
+          ...(cfg.outgoingBaselineLabel ? { outgoingBaselineLabel: cfg.outgoingBaselineLabel } : {}),
+          ...(cfg.officeName ? { officeName: cfg.officeName } : {}),
+          ...(cfg.deputyName ? { deputyName: cfg.deputyName } : {}),
+          ...(cfg.logoUrl ? { logoUrl: cfg.logoUrl } : {})
+        });
         systemSettingsRef.current = next;
         safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(next));
+        idbSetJSON(STORAGE_KEY_PREFIX + 'settings', next).catch(() => {});
         return next;
       });
     });
@@ -1797,12 +1888,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } catch {}
       }, 6000);
 
-      // Catch-up sync whenever Desktop PWA or browser tab regains focus/visibility
+      // Catch-up sync whenever Desktop PWA or browser tab regains focus/visibility or network comes back online
       const handleResumeSync = () => {
         if (document.visibilityState === 'hidden') return;
         const now = Date.now();
-        if (now - lastCatchupAt < 4000) return;
+        if (now - lastCatchupAt < 3500) return;
         lastCatchupAt = now;
+        fetchAllFromFirestoreNow().catch(() => {});
         if (serverRevApiSupported) {
           pullServerSyncState(false);
         }
@@ -1811,6 +1903,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       };
       window.addEventListener('focus', handleResumeSync);
+      window.addEventListener('online', handleResumeSync);
       document.addEventListener('visibilitychange', handleResumeSync);
 
       unsubs.push(() => {
@@ -1821,6 +1914,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (bc) bc.removeEventListener('message', handleBroadcastMessage);
         window.removeEventListener('storage', handleStorageEvent);
         window.removeEventListener('focus', handleResumeSync);
+        window.removeEventListener('online', handleResumeSync);
         document.removeEventListener('visibilitychange', handleResumeSync);
       });
     })();

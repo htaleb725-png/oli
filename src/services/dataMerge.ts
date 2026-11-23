@@ -18,45 +18,60 @@ import {
 } from '../types';
 
 /**
- * Merges two objects by keeping existing non-empty values unless incoming has a newer/non-empty value.
+ * Merges two objects where `incoming` is the newer/winning record and `existing` is the older record.
+ * Every defined property on `incoming` (including empty string '', false, 0, null) overwrites `existing`,
+ * while preserving any extra fields on `existing` that are undefined on `incoming`.
  */
 export function smartMergeObject<T extends Record<string, any>>(existing: T, incoming: T): T {
   const result: any = { ...existing };
   for (const [key, value] of Object.entries(incoming)) {
-    if (value !== undefined && value !== null && value !== '') {
+    if (value !== undefined) {
       result[key] = value;
     }
   }
   if (incoming.IsBlocked === false) {
     result.IsBlocked = false;
-    result.BlockReason = undefined;
-    result.BlockedAt = undefined;
-    result.BlockedBy = undefined;
+    result.BlockReason = '';
+    result.BlockedAt = '';
+    result.BlockedBy = '';
   }
   return result as T;
 }
 
-/**
- * Extracts a numeric timestamp from any record to determine recency.
- */
-export function getRecordTimestamp(item: any): number {
-  if (!item || typeof item !== 'object') return 0;
-  const raw = 
-    item.UpdatedAt || 
-    item.updatedAt || 
-    item.CreatedAt || 
-    item.createdAt || 
-    item.Timestamp || 
-    item.LetterDate || 
-    item.InterviewDate || 
-    item.Date;
+function parseSingleTimestamp(raw: any): number {
   if (!raw) return 0;
   const str = String(raw).trim();
+  if (!str) return 0;
   let parsed = Date.parse(str);
   if (isNaN(parsed) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(str)) {
     parsed = Date.parse(str.replace(' ', 'T'));
   }
   return isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Extracts the latest numeric timestamp from any record across all timestamp fields
+ * (handling both PascalCase UpdatedAt and camelCase updatedAt) to determine recency accurately.
+ */
+export function getRecordTimestamp(item: any): number {
+  if (!item || typeof item !== 'object') return 0;
+  const candidates = [
+    item.UpdatedAt,
+    item.updatedAt,
+    item.BlockedAt,
+    item.CreatedAt,
+    item.createdAt,
+    item.Timestamp,
+    item.LetterDate,
+    item.InterviewDate,
+    item.Date
+  ];
+  let maxTs = 0;
+  for (const c of candidates) {
+    const ts = parseSingleTimestamp(c);
+    if (ts > maxTs) maxTs = ts;
+  }
+  return maxTs;
 }
 
 /**
