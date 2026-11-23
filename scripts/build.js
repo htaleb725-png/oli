@@ -21,7 +21,11 @@ try {
 // 2. Build Vite production bundle into dist/
 console.log('[Build] Compiling Vite production client bundle...');
 try {
-  execSync('npx vite build', { stdio: 'inherit', cwd: rootDir });
+  try {
+    execSync('node ./node_modules/vite/bin/vite.js build', { stdio: 'inherit', cwd: rootDir });
+  } catch {
+    execSync('npx vite build', { stdio: 'inherit', cwd: rootDir });
+  }
   console.log('[Build] Vite client build succeeded.');
 } catch (e) {
   console.error('[Build] Vite client build failed:', e);
@@ -46,10 +50,17 @@ if (fs.existsSync(distDir)) {
 // 4. Bundle backend server.ts for Node / Cloud environments
 try {
   console.log('[Build] Bundling Express server.ts with esbuild...');
-  execSync('npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs', { 
-    stdio: 'inherit', 
-    cwd: rootDir 
-  });
+  try {
+    execSync('node ./node_modules/esbuild/bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs', { 
+      stdio: 'inherit', 
+      cwd: rootDir 
+    });
+  } catch {
+    execSync('npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs', { 
+      stdio: 'inherit', 
+      cwd: rootDir 
+    });
+  }
   console.log('[Build] Server bundling completed successfully.');
 } catch (e) {
   console.warn('[Build] Server bundling warning (non-fatal on static hosts):', e.message);
