@@ -1,0 +1,96 @@
+{
+  "users": [
+    {
+      "User_ID": "USR-001",
+      "Username": "حسن طالب",
+      "Password": "2026",
+      "Role": "developer",
+      "RoleArabic": "مطور المنظومة (صلاحية برمجية مطلقة)",
+      "Status": "active",
+      "FullName": "حسن طالب الوائلي",
+      "Department": "قسم تكنولوجيا المعلومات والبرمجة",
+      "CreatedAt": "2026-01-01",
+      "Permissions": [
+        "scan_upload",
+        "requests_create",
+        "requests_edit",
+        "requests_delete",
+        "workflow_referral",
+        "citizens_register",
+        "print_cards",
+        "org_evaluation",
+        "official_letters",
+        "export_reports",
+        "view_archive"
+      ],
+      "UpdatedAt": "2026-11-23T02:49:15.490Z"
+    },
+    {
+      "User_ID": "USR-002",
+      "Username": "احمد كامل",
+      "Password": "123",
+      "Role": "director",
+      "RoleArabic": "مدير المكتب التنفيذي (إشراف ومصادقة)",
+      "Status": "active",
+      "FullName": "احمد كامل الاسدي",
+      "Department": "قسم الإدارة والمعاملات",
+      "CreatedAt": "2026-10-05",
+      "Permissions": [
+        "scan_upload",
+        "requests_create",
+        "requests_edit",
+        "workflow_referral",
+        "view_archive",
+        "requests_delete",
+        "citizens_register",
+        "org_evaluation",
+        "print_cards",
+        "official_letters",
+        "export_reports"
+      ],
+      "UpdatedAt": "2026-11-22T07:27:05.141Z"
+    },
+    {
+      "User_ID": "USR-003",
+      "Username": "محمد",
+      "Password": "123",
+      "Role": "admin",
+      "RoleArabic": "مسؤول قسم الإدارة والمعاملات",
+      "Status": "active",
+      "FullName": "محمد علي",
+      "Department": "قسم الإدارة والمعاملات",
+      "CreatedAt": "2026-10-17",
+      "Permissions": [
+        "requests_create",
+        "requests_edit",
+        "workflow_referral",
+        "view_archive",
+        "requests_delete",
+        "citizens_register",
+        "official_letters",
+        "export_reports"
+      ],
+      "UpdatedAt": "2026-11-22T07:27:05.141Z"
+    },
+    {
+      "User_ID": "USR-004",
+      "Username": "علي خيون",
+      "Password": "123456",
+      "Role": "reception",
+      "RoleArabic": "مسؤول قسم الاستعلامات والمراجعين",
+      "Status": "active",
+      "FullName": "علي خيون",
+      "Department": "قسم الاستعلامات والمراجعين",
+      "CreatedAt": "2026-11-21",
+      "Permissions": [
+        "citizens_register",
+        "print_cards",
+        "export_reports"
+      ],
+      "UpdatedAt": "2026-11-22T07:27:05.141Z"
+    }
+  ],
+  "deletedIds": [],
+  "developerPasscode": "2026",
+  "updatedAt": "2026-11-23T08:24:53.140Z"
+}

@@ -43,7 +43,46 @@
     "lastOutgoingNumberNasiriyah": 103,
     "settingsVersion": 0,
     "pwaIcon192": "/icon-192.png",
-    "pwaIcon512": "/icon-512.png"
+    "pwaIcon512": "/icon-512.png",
+    "developerPasscode": "2026",
+    "lastOutgoingNumberSuq": 0,
+    "requiredFieldsConfig": {
+      "FullName": true,
+      "Phone1": true,
+      "District": true,
+      "ResidentialArea": false,
+      "NearestLandmark": false,
+      "Job": false,
+      "Education": false,
+      "ReferralSource": false
+    },
+    "receptionResidentialAreas": [
+      "الشهداء",
+      "أريدو",
+      "الإسكان القديم",
+      "الإدارة المحلية",
+      "حي المعلمين",
+      "سومر",
+      "الصالحية",
+      "الشرقية",
+      "المنصورية",
+      "الثورة",
+      "التضحية",
+      "الشموخ",
+      "الحواسم",
+      "الشيباني",
+      "الفداء",
+      "المهدي",
+      "الفضلية",
+      "حي أور",
+      "حي الحسين",
+      "حي الزهراء",
+      "حي المتنزه",
+      "دور الشروق",
+      "الفرات"
+    ],
+    "googleAppsScriptUrl": "https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec",
+    "UpdatedAt": "2026-11-23T02:49:15.413Z"
   },
   "customSections": [
     {
@@ -159,5 +198,5 @@
   "settingsVersion": 0,
   "updateSummary": "تم تحديث إعدادات وتصميم المنظومة",
   "updatedBy": "مطور المنظومة البرمجي",
-  "updatedAt": "2026-11-22T23:12:38.511Z"
+  "updatedAt": "2026-11-23T08:24:53.140Z"
 }
