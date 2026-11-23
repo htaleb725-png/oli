@@ -478,35 +478,141 @@ function buildRowMap(headers: string[], row: string[]): Record<string, string> {
 }
 
 export function toCleanSheetCitizenPayload(c: Partial<Citizen>): Record<string, string> {
-  return buildRowMap(CITIZENS_SHEET_HEADERS, citizenToSheetRow(c));
+  const row = citizenToSheetRow(c);
+  const map = buildRowMap(CITIZENS_SHEET_HEADERS, row);
+  return {
+    ...map,
+    Citizen_ID: cleanSheetCell(c.Citizen_ID),
+    FullName: cleanSheetCell(c.FullName),
+    Phone1: cleanSheetCell(c.Phone1),
+    Phone2: cleanSheetCell(c.Phone2),
+    District: cleanSheetCell(c.District),
+    SubDistrict: cleanSheetCell(c.SubDistrict),
+    Gender: cleanSheetCell(c.Gender),
+    Job: cleanSheetCell(c.Job),
+    Education: cleanSheetCell(c.Education),
+    Rating: cleanSheetCell(c.Rating),
+    ReferralSource: cleanSheetCell(c.ReferralSource),
+    CreatedAt: cleanSheetCell(c.CreatedAt),
+    CreatedBy: cleanSheetCell(c.CreatedBy)
+  };
 }
 
 export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<string, string> {
-  return buildRowMap(REQUESTS_SHEET_HEADERS, requestToSheetRow(r));
+  const row = requestToSheetRow(r);
+  const map = buildRowMap(REQUESTS_SHEET_HEADERS, row);
+  return {
+    ...map,
+    Request_ID: cleanSheetCell(r.Request_ID),
+    Citizen_ID: cleanSheetCell(r.Citizen_ID),
+    CitizenName: cleanSheetCell(r.CitizenName),
+    CitizenPhone: cleanSheetCell(r.CitizenPhone),
+    Entity: cleanSheetCell(r.Entity),
+    Details: cleanSheetCell(r.Details),
+    OutgoingNumber: cleanSheetCell(r.OutgoingNumber),
+    OutgoingDate: cleanSheetCell(r.OutgoingDate),
+    ProcessingStatus: cleanSheetCell(r.ProcessingStatus),
+    DeliveryStatus: cleanSheetCell(r.DeliveryStatus || r.RequestStatus),
+    Priority: cleanSheetCell(r.Priority),
+    Address: cleanSheetCell(r.Address || r.ResidentialArea),
+    ReferralSource: cleanSheetCell(r.ReferralSource),
+    Margin: cleanSheetCell(r.Margin || r.DeputyNotes),
+    TargetDepartment: cleanSheetCell(r.TargetDepartment),
+    CreatedAt: cleanSheetCell(r.CreatedAt),
+    CreatedBy: cleanSheetCell(r.CreatedBy)
+  };
 }
 
 export function toCleanSheetInterviewPayload(i: Partial<Interview>): Record<string, string> {
-  return buildRowMap(INTERVIEWS_SHEET_HEADERS, interviewToSheetRow(i));
+  const row = interviewToSheetRow(i);
+  const map = buildRowMap(INTERVIEWS_SHEET_HEADERS, row);
+  return {
+    ...map,
+    Interview_ID: cleanSheetCell(i.Interview_ID),
+    Citizen_ID: cleanSheetCell(i.Citizen_ID),
+    FullName: cleanSheetCell(i.FullName),
+    Phone1: cleanSheetCell(i.Phone1),
+    Subject: cleanSheetCell(i.Subject),
+    InterviewDate: cleanSheetCell(i.InterviewDate),
+    Status: cleanSheetCell(i.Status),
+    Priority: cleanSheetCell(i.Priority),
+    DeputyNotes: cleanSheetCell(i.DeputyNotes),
+    Outcome: cleanSheetCell(i.Outcome)
+  };
 }
 
 export function toCleanSheetOrganizationPayload(o: Partial<OrganizationRecord>): Record<string, string> {
-  return buildRowMap(ORGANIZATION_SHEET_HEADERS, organizationToSheetRow(o));
+  const row = organizationToSheetRow(o);
+  const map = buildRowMap(ORGANIZATION_SHEET_HEADERS, row);
+  return {
+    ...map,
+    Citizen_ID: cleanSheetCell(o.Citizen_ID || o.Org_ID),
+    FullName: cleanSheetCell(o.FullName),
+    Phone1: cleanSheetCell(o.Phone1),
+    District: cleanSheetCell(o.District),
+    OrgRating: cleanSheetCell(o.OrgRating),
+    InfluenceType: cleanSheetCell(o.InfluenceType)
+  };
 }
 
 export function toCleanSheetLetterPayload(l: Partial<OfficialLetter>): Record<string, string> {
-  return buildRowMap(LETTERS_SHEET_HEADERS, letterToSheetRow(l));
+  const row = letterToSheetRow(l);
+  const map = buildRowMap(LETTERS_SHEET_HEADERS, row);
+  return {
+    ...map,
+    Letter_ID: cleanSheetCell(l.Letter_ID),
+    LetterNumber: cleanSheetCell(l.LetterNumber || l.Letter_Number),
+    LetterDate: cleanSheetCell(l.LetterDate || l.Letter_Date),
+    Recipient: cleanSheetCell(l.Recipient || l.To_Entity),
+    Subject: cleanSheetCell(l.Subject),
+    Body: cleanSheetCell(l.Body),
+    CitizenName: cleanSheetCell(l.CitizenName),
+    Status: cleanSheetCell(l.Status)
+  };
 }
 
 export function toCleanSheetChequePayload(ch: Partial<ChequeRecord>): Record<string, string> {
-  return buildRowMap(CHEQUES_SHEET_HEADERS, chequeToSheetRow(ch));
+  const row = chequeToSheetRow(ch);
+  const map = buildRowMap(CHEQUES_SHEET_HEADERS, row);
+  return {
+    ...map,
+    id: cleanSheetCell(ch.id),
+    ChequeNumber: cleanSheetCell(ch.ChequeNumber),
+    Citizen_ID: cleanSheetCell(ch.Citizen_ID),
+    CitizenName: cleanSheetCell(ch.CitizenName),
+    Amount: cleanSheetCell(ch.Amount),
+    BankName: cleanSheetCell(ch.BankName),
+    Purpose: cleanSheetCell(ch.Purpose),
+    Status: cleanSheetCell(ch.Status)
+  };
 }
 
 export function toCleanSheetSocialCarePayload(rec: any): Record<string, string> {
-  return buildRowMap(SOCIAL_CARE_SHEET_HEADERS, socialCareToSheetRow(rec));
+  const row = socialCareToSheetRow(rec);
+  const map = buildRowMap(SOCIAL_CARE_SHEET_HEADERS, row);
+  const d = (rec && typeof rec.data === 'object' && rec.data) ? rec.data : (rec || {});
+  return {
+    ...map,
+    id: cleanSheetCell(rec.id || d.id),
+    f_welf_name: cleanSheetCell(d.f_welf_name || d.citizen_name || rec.CitizenName),
+    f_welf_phone: cleanSheetCell(d.f_welf_phone || d.phone),
+    f_welf_code: cleanSheetCell(d.f_welf_code || d.welfare_code),
+    f_welf_type: cleanSheetCell(d.f_welf_type || d.case_type),
+    f_welf_researcher: cleanSheetCell(d.f_welf_researcher || d.researcher_status)
+  };
 }
 
 export function toCleanSheetUserPayload(u: Partial<User>): Record<string, string> {
-  return buildRowMap(USERS_SHEET_HEADERS, userToSheetRow(u));
+  const row = userToSheetRow(u);
+  const map = buildRowMap(USERS_SHEET_HEADERS, row);
+  return {
+    ...map,
+    User_ID: cleanSheetCell(u.User_ID),
+    Username: cleanSheetCell(u.Username),
+    FullName: cleanSheetCell(u.FullName),
+    Role: cleanSheetCell(u.Role),
+    Department: cleanSheetCell(u.Department)
+  };
 }
 
 export function mapSheetRowByHeaders(headers: string[], row: any[]): Record<string, string> {

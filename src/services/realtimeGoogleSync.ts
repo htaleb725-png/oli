@@ -83,7 +83,6 @@ export function getRuntimeCloudConfig() {
 export function resolveTargetSheetId(customSheetId?: string): string {
   if (customSheetId && customSheetId.trim()) return stripQuotes(customSheetId);
   if (_runtimeCloudConfig.googleSheetId) return _runtimeCloudConfig.googleSheetId;
-  // Check environment variable (Vercel)
   const envSheetId = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID;
   if (envSheetId && envSheetId.trim()) return stripQuotes(envSheetId);
 
@@ -99,14 +98,13 @@ export function resolveTargetSheetId(customSheetId?: string): string {
       }
     } catch {}
   }
-  return '';
+  return '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
 }
 
 // Helper to reliably resolve Apps Script Webhook URL from Cloud Firestore config, Vercel env, or legacy fallback
 export function resolveAppsScriptUrl(customUrl?: string): string {
   if (customUrl && customUrl.trim()) return stripQuotes(customUrl);
   if (_runtimeCloudConfig.appsScriptUrl) return _runtimeCloudConfig.appsScriptUrl;
-  // Check environment variable (Vercel)
   const envUrl = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL;
   if (envUrl && envUrl.trim()) return stripQuotes(envUrl);
 
@@ -122,7 +120,7 @@ export function resolveAppsScriptUrl(customUrl?: string): string {
       }
     } catch {}
   }
-  return '';
+  return 'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec';
 }
 
 /**

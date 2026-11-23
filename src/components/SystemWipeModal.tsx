@@ -76,11 +76,6 @@ export const SystemWipeModal: React.FC<SystemWipeModalProps> = ({ isOpen, onClos
       return;
     }
 
-    if (confirmInput.trim() !== 'تصفير') {
-      alert('يرجى كتابة كلمة (تصفير) في الحقل أدناه لتأكيد رغبتك بحذف كافة البيانات.');
-      return;
-    }
-
     setIsWiping(true);
 
     try {
@@ -293,9 +288,9 @@ export const SystemWipeModal: React.FC<SystemWipeModalProps> = ({ isOpen, onClos
                 <button
                   type="button"
                   onClick={handleExecuteWipe}
-                  disabled={confirmInput.trim() !== 'تصفير' || isWiping}
+                  disabled={isWiping}
                   className={`w-full py-3 px-4 rounded-xl text-white text-xs font-black flex items-center justify-center gap-2 transition-all shadow-md ${
-                    confirmInput.trim() === 'تصفير' && !isWiping
+                    !isWiping
                       ? 'bg-rose-600 hover:bg-rose-700 cursor-pointer active:scale-[0.99]'
                       : 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none'
                   }`}

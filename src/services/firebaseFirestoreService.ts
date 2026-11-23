@@ -1304,6 +1304,84 @@ export async function fsBulkPullAll(): Promise<{
   }
 }
 
+export async function fsWipeAllCollections(): Promise<{ success: boolean; error?: string }> {
+  try {
+    const collectionsToWipe = [
+      FS_COLLECTIONS.CITIZENS,
+      FS_COLLECTIONS.REQUESTS,
+      FS_COLLECTIONS.INTERVIEWS,
+      FS_COLLECTIONS.LETTERS,
+      FS_COLLECTIONS.CHEQUES,
+      FS_COLLECTIONS.ORGANIZATIONS,
+      FS_COLLECTIONS.USERS,
+      FS_COLLECTIONS.CUSTOM_SECTIONS,
+      FS_COLLECTIONS.CUSTOM_RECORDS,
+      FS_COLLECTIONS.DROPDOWNS,
+      FS_COLLECTIONS.AUDIT_LOGS,
+      FS_COLLECTIONS.NOTIFICATIONS,
+      FS_COLLECTIONS.DELETED_RECORDS,
+      'citizens',
+      'requests',
+      'interviews',
+      'letters',
+      'cheques',
+      'organizations',
+      'users',
+      'custom_sections',
+      'custom_records',
+      'dropdowns',
+      'audit_logs',
+      'notifications',
+      'deleted_records'
+    ];
+
+    const uniqueCols = Array.from(new Set(collectionsToWipe));
+    for (const baseCol of uniqueCols) {
+      const colName = getFSCol(baseCol);
+      try {
+        const snap = await getDocs(collection(db, colName));
+        if (snap.empty) continue;
+        const batch = writeBatch(db);
+        let count = 0;
+        snap.forEach(d => {
+          batch.delete(d.ref);
+          count++;
+          if (count >= 400) {
+            // commit batch
+          }
+        });
+        await batch.commit().catch(() => {});
+        // Also delete documents individually if batch commit had issues
+        for (const d of snap.docs) {
+          await deleteDoc(d.ref).catch(() => {});
+        }
+      } catch (e) {
+        console.warn(`Wipe collection notice (${baseCol}):`, e);
+      }
+    }
+
+    // Reset outgoing counters in cloud_config
+    try {
+      const settingsCol = getFSCol(FS_COLLECTIONS.SETTINGS);
+      await setDoc(doc(db, settingsCol, 'cloud_config'), {
+        lastOutgoingNumberNasiriyah: 0,
+        lastOutgoingNumberSuq: 0,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+      await setDoc(doc(db, settingsCol, 'general'), {
+        lastOutgoingNumberNasiriyah: 0,
+        lastOutgoingNumberSuq: 0,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch {}
+
+    return { success: true };
+  } catch (err: any) {
+    console.warn('fsWipeAllCollections warning:', err);
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
 // 15. Realtime Collection Watcher (emits full snapshot list AND explicitly removed doc IDs for instant deletion sync)
 export function fsWatchCollection<T>(
   colName: string, 

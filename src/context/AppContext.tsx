@@ -63,6 +63,7 @@ import {
   fsWatchCollection,
   fsWatchCloudConfig,
   fsWatchDeletedRecords,
+  fsWipeAllCollections,
   isFirestoreTemporarilyBlocked,
   FS_COLLECTIONS
 } from '../services/firebaseFirestoreService';
@@ -4189,21 +4190,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    // 1. Wipe Cloud Data (Firebase Firestore + Google Sheets data rows + Google Drive folder photos)
+    // 1. Wipe Firebase Firestore collections
+    try {
+      await fsWipeAllCollections();
+    } catch (e) {
+      console.warn('Error wiping Firebase collections:', e);
+    }
+
+    // 2. Wipe Google Drive / Sheets Cloud Data
     try {
       await wipeDeveloperCloudData();
     } catch (e) {
-      console.warn('Error during cloud wipeout (Drive, Sheets, Firebase):', e);
+      console.warn('Error during cloud wipeout (Drive, Sheets):', e);
     }
 
-    // 1.5. Wipe Unified Server Store (/api/sync/state?mode=wipe)
-    fetch('/api/sync/state?mode=wipe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'wipe', clientId: LIVE_SYNC_CLIENT_ID })
-    }).catch(() => {});
+    // 3. Wipe Google Sheets via Apps Script Webhook
+    const targetScriptUrl = systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl;
+    if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
+      try {
+        await fetch(targetScriptUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'wipeAll',
+            timestamp: new Date().toISOString()
+          })
+        });
+      } catch {}
+    }
 
-    // 2. Clear in-memory state completely to 0 records
+    // 4. Wipe Unified Server Store & Blacklist Store
+    try {
+      await fetch('/api/sync/state?mode=wipe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'wipe', clientId: LIVE_SYNC_CLIENT_ID })
+      });
+      await fetch('/api/blacklist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [], unblockedIds: [] })
+      }).catch(() => {});
+    } catch {}
+
+    // 5. Clear in-memory state completely to 0 records
     setCitizens([]);
     setRequests([]);
     setCheques([]);
@@ -4211,27 +4242,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setOrganizationRecords([]);
     setDocuments([]);
     setOfficialLetters([]);
+    setNotifications([]);
     setIsSystemZeroed(true);
 
-    // 3. Mark system as zeroed in localStorage and save empty arrays
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'is_zeroed', 'true');
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'requests', JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'org', JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'documents', JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'letters', JSON.stringify([]));
-    localStorage.removeItem(STORAGE_KEY_PREFIX + 'drive_requests_cache');
+    // 6. Reset outgoing counters in systemSettings
+    updateSettings({
+      lastOutgoingNumberNasiriyah: 0,
+      lastOutgoingNumberSuq: 0
+    });
 
-    // 4. Clear IndexedDB Image Archive (scans, OCR attachments)
+    // 7. Clear browser storage and IndexedDB
+    try {
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'citizens');
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'requests');
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'cheques');
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'interviews');
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'org');
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'documents');
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'letters');
+      localStorage.removeItem(STORAGE_KEY_PREFIX + 'drive_requests_cache');
+      localStorage.removeItem('al_nashi_deleted_ids');
+      localStorage.setItem(STORAGE_KEY_PREFIX + 'is_zeroed', 'true');
+    } catch {}
+
     try {
       await clearAllImagesFromDB();
     } catch (e) {
       console.warn('Error clearing IndexedDB images during wipe:', e);
     }
 
-    // 5. Log audit entry for complete system wipeout
+    // 8. Log audit entry
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const wipeLog: AuditLog = {
@@ -4246,7 +4286,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Timestamp: formattedDate
     };
     setAuditLogs([wipeLog]);
-    localStorage.setItem(STORAGE_KEY_PREFIX + 'audit', JSON.stringify([wipeLog]));
   };
 
   const resetToDefaultData = () => {
