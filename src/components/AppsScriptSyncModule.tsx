@@ -68,14 +68,17 @@ export const AppsScriptSyncModule: React.FC = () => {
     addAuditLog 
   } = useApp();
 
+  const envSheetId = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID || '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
+  const envScriptUrl = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec';
+
   // Sheets & Drive State
-  const [selectedSheetId, setSelectedSheetId] = useState<string>(systemSettings.activeGoogleSheetId || systemSettings.googleSheetId || '');
-  const [selectedSheetUrl, setSelectedSheetUrl] = useState<string>(systemSettings.activeGoogleSheetUrl || (systemSettings.googleSheetId ? `https://docs.google.com/spreadsheets/d/${systemSettings.googleSheetId}/edit` : ''));
+  const [selectedSheetId, setSelectedSheetId] = useState<string>(systemSettings.activeGoogleSheetId || systemSettings.googleSheetId || envSheetId);
+  const [selectedSheetUrl, setSelectedSheetUrl] = useState<string>(systemSettings.activeGoogleSheetUrl || `https://docs.google.com/spreadsheets/d/${systemSettings.googleSheetId || envSheetId}/edit`);
 
   // Direct Link Settings State
-  const [customSheetId, setCustomSheetId] = useState(systemSettings.googleSheetId || '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ');
+  const [customSheetId, setCustomSheetId] = useState(systemSettings.googleSheetId || envSheetId);
   const [customDriveFolderId, setCustomDriveFolderId] = useState(systemSettings.googleDriveFolderId || '1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc');
-  const [customAppsScriptUrl, setCustomAppsScriptUrl] = useState(systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl || '');
+  const [customAppsScriptUrl, setCustomAppsScriptUrl] = useState(systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl || envScriptUrl);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState('');
 
   // Apps Script Legacy / Webhook
