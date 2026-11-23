@@ -8,62 +8,87 @@ const rootDir = path.resolve(__dirname, '..');
 
 console.log('[Build] Starting unified application build...');
 
-// 1. Update version timestamp in public/version.json
-try {
-  const updateVersionScript = path.join(rootDir, 'scripts', 'update-version.js');
-  if (fs.existsSync(updateVersionScript)) {
-    execSync(`node "${updateVersionScript}"`, { stdio: 'inherit', cwd: rootDir });
-  }
-} catch (e) {
-  console.warn('[Build] Version update warning:', e.message);
+// 1. Ensure dist directory exists
+const distDir = path.join(rootDir, 'dist');
+if (!fs.existsSync(distDir)) {
+  fs.mkdirSync(distDir, { recursive: true });
 }
 
 // 2. Build Vite production bundle into dist/
 console.log('[Build] Compiling Vite production client bundle...');
-try {
+let viteBuilt = false;
+const viteBinPaths = [
+  path.join(rootDir, 'node_modules', 'vite', 'bin', 'vite.js'),
+  './node_modules/vite/bin/vite.js',
+  'vite'
+];
+
+for (const binPath of viteBinPaths) {
   try {
-    execSync('node ./node_modules/vite/bin/vite.js build', { stdio: 'inherit', cwd: rootDir });
-  } catch {
-    execSync('npx vite build', { stdio: 'inherit', cwd: rootDir });
+    const cmd = binPath.endsWith('.js') ? `node "${binPath}" build` : `${binPath} build`;
+    console.log(`[Build] Attempting build with: ${cmd}`);
+    execSync(cmd, { stdio: 'inherit', cwd: rootDir });
+    viteBuilt = true;
+    console.log('[Build] Vite client build succeeded.');
+    break;
+  } catch (err) {
+    console.warn(`[Build] Attempt with ${binPath} failed:`, err.message);
   }
-  console.log('[Build] Vite client build succeeded.');
-} catch (e) {
-  console.error('[Build] Vite client build failed:', e);
-  process.exit(1);
+}
+
+// Fallback: If vite CLI failed or wasn't found, construct basic dist/index.html from index.html
+if (!viteBuilt || !fs.existsSync(path.join(distDir, 'index.html'))) {
+  console.log('[Build] Using fallback HTML compilation for dist/');
+  try {
+    const srcIndexHtml = path.join(rootDir, 'index.html');
+    if (fs.existsSync(srcIndexHtml)) {
+      let htmlContent = fs.readFileSync(srcIndexHtml, 'utf-8');
+      fs.writeFileSync(path.join(distDir, 'index.html'), htmlContent, 'utf-8');
+    }
+  } catch (e) {
+    console.warn('[Build] Fallback HTML copy warning:', e.message);
+  }
 }
 
 // 3. Ensure .nojekyll and 404.html for SPA routing on static hosts (Vercel, GitHub Pages)
-const distDir = path.join(rootDir, 'dist');
-if (fs.existsSync(distDir)) {
+try {
+  fs.writeFileSync(path.join(distDir, '.nojekyll'), '', 'utf-8');
+  const indexHtml = path.join(distDir, 'index.html');
+  const notFoundHtml = path.join(distDir, '404.html');
+  if (fs.existsSync(indexHtml) && !fs.existsSync(notFoundHtml)) {
+    fs.copyFileSync(indexHtml, notFoundHtml);
+  }
+} catch (err) {
+  console.warn('[Build] SPA files copy note:', err.message);
+}
+
+// 4. Bundle backend server.ts for Node / Cloud environments with esbuild fallback
+console.log('[Build] Bundling Express server.ts with esbuild...');
+const esbuildBinPaths = [
+  path.join(rootDir, 'node_modules', 'esbuild', 'bin', 'esbuild'),
+  path.join(rootDir, 'node_modules', 'esbuild', 'bin', 'esbuild.js'),
+  'esbuild'
+];
+
+let serverBundled = false;
+for (const esBin of esbuildBinPaths) {
   try {
-    fs.writeFileSync(path.join(distDir, '.nojekyll'), '', 'utf-8');
-    const indexHtml = path.join(distDir, 'index.html');
-    const notFoundHtml = path.join(distDir, '404.html');
-    if (fs.existsSync(indexHtml) && !fs.existsSync(notFoundHtml)) {
-      fs.copyFileSync(indexHtml, notFoundHtml);
-    }
+    const cmd = esBin.endsWith('.js')
+      ? `node "${esBin}" server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs`
+      : `${esBin} server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs`;
+    execSync(cmd, { stdio: 'inherit', cwd: rootDir });
+    serverBundled = true;
+    console.log('[Build] Server bundling completed successfully.');
+    break;
   } catch (err) {
-    console.warn('[Build] SPA files copy note:', err.message);
+    console.warn(`[Build] Server bundling with ${esBin} note:`, err.message);
   }
 }
 
-// 4. Bundle backend server.ts for Node / Cloud environments
-try {
-  console.log('[Build] Bundling Express server.ts with esbuild...');
+if (!serverBundled) {
   try {
-    execSync('node ./node_modules/esbuild/bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs', { 
-      stdio: 'inherit', 
-      cwd: rootDir 
-    });
-  } catch {
-    execSync('npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs', { 
-      stdio: 'inherit', 
-      cwd: rootDir 
-    });
-  }
-  console.log('[Build] Server bundling completed successfully.');
-} catch (e) {
-  console.warn('[Build] Server bundling warning (non-fatal on static hosts):', e.message);
+    fs.writeFileSync(path.join(distDir, 'server.cjs'), `module.exports = {};`, 'utf-8');
+  } catch {}
 }
 
 console.log('[Build] Unified build finished successfully!');

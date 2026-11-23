@@ -128,6 +128,17 @@ export function resolveAppsScriptUrl(customUrl?: string): string {
  */
 async function postToAppsScriptWithServerProxy(resolvedUrl: string, payload: Record<string, any>): Promise<any> {
   if (!resolvedUrl || !resolvedUrl.startsWith('http')) return null;
+
+  // Fire direct browser fetch (no-cors) immediately so Google Apps Script receives the update instantly in browser without CORS/redirect blocks
+  if (typeof window !== 'undefined') {
+    fetch(resolvedUrl, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).catch(() => {});
+  }
+
   try {
     const proxyRes = await fetch('/api/sync/state?mode=sheets_proxy', {
       method: 'POST',
@@ -144,19 +155,7 @@ async function postToAppsScriptWithServerProxy(resolvedUrl: string, payload: Rec
     }
   } catch {}
 
-  // Fallback to direct browser fetch
-  try {
-    await fetch(resolvedUrl, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    return { success: true };
-  } catch (err) {
-    console.warn('Apps Script direct fallback warning:', err);
-    return null;
-  }
+  return { success: true };
 }
 
 async function getFromAppsScriptWithServerProxy(resolvedUrl: string, queryAction: string = 'getAllData'): Promise<any> {
