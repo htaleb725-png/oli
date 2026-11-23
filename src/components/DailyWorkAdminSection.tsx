@@ -42,7 +42,7 @@ import { SearchableSelect } from './SearchableSelect';
 import { DHI_QAR_DISTRICTS, IRAQI_MINISTRIES, DEFAULT_CLANS } from './ReceptionModule';
 import { printSingleOutgoingReceipt, printCollectiveOutgoingReceipt } from '../utils/printReceiptHelper';
 import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
-import { computeNextOutgoingNumber, extractOutgoingSequence } from '../utils/outgoingNumberHelper';
+import { computeNextOutgoingNumber, extractOutgoingSequence, MAX_VALID_OUTGOING_SEQ } from '../utils/outgoingNumberHelper';
 
 interface DailyWorkAdminSectionProps {
   onOpenSmartArchive?: () => void;
@@ -142,12 +142,18 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
 
   const advanceOutgoingBaseline = (outgoingNumberStr: string) => {
     const seq = extractOutgoingSequence(outgoingNumberStr).seq;
-    if (seq <= 0) return;
+    if (seq <= 0 || seq > MAX_VALID_OUTGOING_SEQ) return;
     const isSuq = systemSettings?.officeBranch === 'suq_al_shuyoukh';
-    if (isSuq && seq > (systemSettings?.lastOutgoingNumberSuq || 0)) {
-      updateSystemSettings({ lastOutgoingNumberSuq: seq });
-    } else if (!isSuq && seq > (systemSettings?.lastOutgoingNumberNasiriyah || 0)) {
-      updateSystemSettings({ lastOutgoingNumberNasiriyah: seq });
+    if (isSuq) {
+      const cur = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
+      if (cur > MAX_VALID_OUTGOING_SEQ || seq > cur) {
+        updateSystemSettings({ lastOutgoingNumberSuq: seq });
+      }
+    } else {
+      const cur = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
+      if (cur > MAX_VALID_OUTGOING_SEQ || seq > cur) {
+        updateSystemSettings({ lastOutgoingNumberNasiriyah: seq });
+      }
     }
   };
 
@@ -184,26 +190,13 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return null;
   }, [requests, citizens]);
 
-  // Real-time detection of last outgoing number and date recorded in requests (supports Arabic digits & archived Excel files)
-  const lastOutgoingRecord = useMemo(() => {
-    const outgoings = requests
-      .filter(r => r.OutgoingNumber && r.OutgoingNumber.trim())
-      .map(r => ({
-        request: r,
-        seq: extractOutgoingSequence(r.OutgoingNumber).seq,
-        outgoingNumber: r.OutgoingNumber || '',
-        outgoingDate: r.OutgoingDate || r.CreatedAt?.split('T')[0] || '',
-        citizenName: r.CitizenName || citizens.find(c => c.Citizen_ID === r.Citizen_ID)?.FullName || 'غير محدد'
-      }));
-
-    if (outgoings.length === 0) return null;
-    outgoings.sort((a, b) => b.seq - a.seq);
-    return outgoings[0];
-  }, [requests, citizens]);
-
-  const nextAutoOutgoingNumber = useMemo(() => {
-    return computeNextOutgoingNumber(requests, systemSettings, officialLetters).nextNumber;
+  // Real-time detection of last outgoing number and date recorded in requests (outlier-proof & supports archived Excel files)
+  const outgoingComputed = useMemo(() => {
+    return computeNextOutgoingNumber(requests, systemSettings, officialLetters);
   }, [requests, officialLetters, systemSettings?.officeBranch, systemSettings?.lastOutgoingNumberNasiriyah, systemSettings?.lastOutgoingNumberSuq]);
+
+  const lastOutgoingRecord = outgoingComputed.lastOutgoingRecord || null;
+  const nextAutoOutgoingNumber = outgoingComputed.nextNumber;
 
   // Collective Outgoing (صادر موحد لمجموعة مراجعين)
   const [isBulkOutgoingModalOpen, setIsBulkOutgoingModalOpen] = useState(false);

@@ -16,7 +16,8 @@ import {
   Check
 } from 'lucide-react';
 import {
-  extractOutgoingSequence,
+  MAX_VALID_OUTGOING_SEQ,
+  scanMaxOutgoingSequences,
   parseExcelDateValue,
   parseDeliveryStatus,
   splitCombinedOutgoingAndDate,
@@ -81,6 +82,7 @@ const CANONICAL_FIELDS: FieldSpec[] = [
     label: 'رقم الكتاب / العدد',
     exactPatterns: [
       /^رقم الكتاب\s*\/?\s*العدد$/i,
+      /^العدد\s*\/?\s*رقم الكتاب$/i,
       /^العدد\s*\/?\s*التاريخ$/i,
       /^العدد والتاريخ$/i,
       /^العدد و التاريخ$/i,
@@ -673,21 +675,8 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           continue;
         }
 
-        // Accurate Iraqi outgoing sequence extraction (supports ن / 12 / 450, س / 14 / 320, Arabic digits, etc.)
-        if (rawOutgoing) {
-          const parsedOut = extractOutgoingSequence(rawOutgoing);
-          if (parsedOut.seq > 0) {
-            if (parsedOut.seq > maxAnyOutgoing) maxAnyOutgoing = parsedOut.seq;
-            if (parsedOut.branch === 'suq_al_shuyoukh') {
-              if (parsedOut.seq > maxSuqOutgoing) maxSuqOutgoing = parsedOut.seq;
-            } else if (parsedOut.branch === 'nasiriyah') {
-              if (parsedOut.seq > maxNasiriyahOutgoing) maxNasiriyahOutgoing = parsedOut.seq;
-            } else {
-              if (parsedOut.seq > maxNasiriyahOutgoing) maxNasiriyahOutgoing = parsedOut.seq;
-              if (parsedOut.seq > maxSuqOutgoing) maxSuqOutgoing = parsedOut.seq;
-            }
-          }
-        }
+        // Outgoing sequence max is calculated robustly at the end via scanMaxOutgoingSequences(createdRequests)
+        // so stray phone numbers, Excel serial dates, or typos can never poison the counter.
 
         const normName = normalizeArabicName(rawName);
         const standardizedEntity = rawEntity
@@ -842,16 +831,26 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
         const finalNewCitizensList = Array.from(workingNewCitizensByName.values());
 
-        // 1. Immediately advance office outgoing baselines (Nasiriyah & Suq Al-Shuyoukh)
-        const currentNas = Number(systemSettings.lastOutgoingNumberNasiriyah) || 0;
-        const currentSuq = Number(systemSettings.lastOutgoingNumberSuq) || 0;
+        // 1. Compute robust highest outgoing sequence from imported requests (rejecting corrupted 6+ digit values/dates)
+        const robustScanned = scanMaxOutgoingSequences(createdRequests);
+        maxNasiriyahOutgoing = robustScanned.maxNasiriyah;
+        maxSuqOutgoing = robustScanned.maxSuq;
+        maxAnyOutgoing = robustScanned.maxAny;
+
+        // Immediately advance (and self-heal if previously poisoned > MAX_VALID_OUTGOING_SEQ) office outgoing baselines
+        const rawCurrentNas = Number(systemSettings.lastOutgoingNumberNasiriyah) || 0;
+        const rawCurrentSuq = Number(systemSettings.lastOutgoingNumberSuq) || 0;
+        const nasPoisoned = rawCurrentNas > MAX_VALID_OUTGOING_SEQ;
+        const suqPoisoned = rawCurrentSuq > MAX_VALID_OUTGOING_SEQ;
+        const currentNas = nasPoisoned ? 0 : rawCurrentNas;
+        const currentSuq = suqPoisoned ? 0 : rawCurrentSuq;
         const settingsUpdates: Record<string, any> = {};
 
-        if (maxNasiriyahOutgoing > currentNas) {
-          settingsUpdates.lastOutgoingNumberNasiriyah = maxNasiriyahOutgoing;
+        if (nasPoisoned || maxNasiriyahOutgoing > currentNas) {
+          settingsUpdates.lastOutgoingNumberNasiriyah = Math.max(currentNas, maxNasiriyahOutgoing);
         }
-        if (maxSuqOutgoing > currentSuq) {
-          settingsUpdates.lastOutgoingNumberSuq = maxSuqOutgoing;
+        if (suqPoisoned || maxSuqOutgoing > currentSuq) {
+          settingsUpdates.lastOutgoingNumberSuq = Math.max(currentSuq, maxSuqOutgoing);
         }
         if (Object.keys(settingsUpdates).length > 0) {
           updateSystemSettings(settingsUpdates);

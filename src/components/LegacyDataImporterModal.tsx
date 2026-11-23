@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { Citizen, OfficeRequest } from '../types';
 import {
+  MAX_VALID_OUTGOING_SEQ,
   splitCombinedOutgoingAndDate,
   scanMaxOutgoingSequences
 } from '../utils/outgoingNumberHelper';
@@ -144,7 +145,7 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
           }
           const citId = citizensMap.get(name)!;
 
-          const rawOutgoingCell = row['العدد'] || row['رقم الصادر'] || row['العدد الصادر'] || row['الصادر'] || row['رقم الكتاب'] || row['العدد والتاريخ'] || row['OutgoingNumber'] || '';
+          const rawOutgoingCell = row['رقم الكتاب / العدد'] || row['العدد'] || row['رقم الصادر'] || row['العدد الصادر'] || row['الصادر'] || row['رقم الكتاب'] || row['العدد والتاريخ'] || row['OutgoingNumber'] || '';
           const rawOutgoingDateCell = row['تاريخ الصادر'] || row['تاريخ الكتاب'] || row['التاريخ'] || row['تاريخ_الصادر'] || row['OutgoingDate'] || '';
           const splitOut = splitCombinedOutgoingAndDate(rawOutgoingCell, rawOutgoingDateCell);
 
@@ -232,11 +233,17 @@ export const LegacyDataImporterModal: React.FC<LegacyDataImporterModalProps> = (
     try {
       const scanned = scanMaxOutgoingSequences(requestsToCreate);
       const settingsPatch: Record<string, any> = {};
-      if (scanned.maxNasiriyah > (Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0)) {
-        settingsPatch.lastOutgoingNumberNasiriyah = scanned.maxNasiriyah;
+      const rawNas = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
+      const rawSuq = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
+      const nasPoisoned = rawNas > MAX_VALID_OUTGOING_SEQ;
+      const suqPoisoned = rawSuq > MAX_VALID_OUTGOING_SEQ;
+      const safeNas = nasPoisoned ? 0 : rawNas;
+      const safeSuq = suqPoisoned ? 0 : rawSuq;
+      if (nasPoisoned || scanned.maxNasiriyah > safeNas) {
+        settingsPatch.lastOutgoingNumberNasiriyah = Math.max(safeNas, scanned.maxNasiriyah);
       }
-      if (scanned.maxSuq > (Number(systemSettings?.lastOutgoingNumberSuq) || 0)) {
-        settingsPatch.lastOutgoingNumberSuq = scanned.maxSuq;
+      if (suqPoisoned || scanned.maxSuq > safeSuq) {
+        settingsPatch.lastOutgoingNumberSuq = Math.max(safeSuq, scanned.maxSuq);
       }
       if (Object.keys(settingsPatch).length > 0) {
         updateSystemSettings(settingsPatch);

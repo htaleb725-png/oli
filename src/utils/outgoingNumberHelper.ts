@@ -124,6 +124,47 @@ export interface ParsedOutgoingInfo {
 }
 
 /**
+ * Maximum realistic parliamentary office outgoing book sequence number.
+ * Rejects accidental 6-8+ digit phone numbers, national IDs, timestamps, or YYYYMMDD dates
+ * (e.g., 23182436 / 23182437) from ever poisoning the office outgoing counter.
+ */
+export const MAX_VALID_OUTGOING_SEQ = 50000;
+
+/**
+ * Compute a robust maximum outgoing sequence from a list of candidate numbers.
+ * Rejects impossible values (> MAX_VALID_OUTGOING_SEQ) and isolated huge outlier spikes
+ * (e.g. a single typo row like 45920 inside an archive whose real numbers are 1..1343).
+ */
+export function findRobustMaxSequence(sequences: number[]): number {
+  const valid = sequences.filter(
+    (n) => Number.isFinite(n) && Number.isInteger(n) && n > 0 && n <= MAX_VALID_OUTGOING_SEQ
+  );
+  if (valid.length === 0) return 0;
+
+  const uniqueSorted = Array.from(new Set(valid)).sort((a, b) => a - b);
+  if (uniqueSorted.length < 5) {
+    return uniqueSorted[uniqueSorted.length - 1];
+  }
+
+  // Walk downward from the top to discard isolated corrupted tail spikes
+  // (e.g., 1..1343 followed by 1-4 stray Excel serial dates or typo numbers like 45890)
+  let topIdx = uniqueSorted.length - 1;
+  while (topIdx >= 1) {
+    const candidate = uniqueSorted[topIdx];
+    const prev = uniqueSorted[topIdx - 1];
+    const tailSize = uniqueSorted.length - topIdx;
+    const isHugeJump = candidate - prev > 2000 && candidate > prev * 3;
+    if (isHugeJump && tailSize <= 4) {
+      topIdx -= 1;
+      continue;
+    }
+    break;
+  }
+
+  return uniqueSorted[topIdx];
+}
+
+/**
  * Intelligently extract the outgoing sequence number and office branch from ANY Iraqi outgoing format:
  * Examples:
  * - "ن / 12 / 450"              -> { seq: 450, branch: 'nasiriyah' }
@@ -133,7 +174,7 @@ export interface ParsedOutgoingInfo {
  * - "450 في 12/03/2026"         -> { seq: 450, branch: 'general' }
  * - "450 / 2026"                -> { seq: 450, branch: 'general' }
  * - "2026/450"                  -> { seq: 450, branch: 'general' }
- * - "450"                       -> { seq: 450, branch: 'general' }
+ * - "1343"                      -> { seq: 1343, branch: 'general' }
  */
 export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutgoingInfo {
   const rawNormalized = toWesternDigits(rawOutgoing || '').trim();
@@ -164,14 +205,21 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
   // Extract numeric segments in order
   const rawTokens = normalized.split(/[\/\\\-|،,\s]+/).filter(Boolean);
   const numericTokens: number[] = [];
+  let hadRejectedOversizedToken = false;
   for (const tok of rawTokens) {
     const m = tok.match(/\d+/g);
     if (m) {
       for (const digits of m) {
+        // Immediately reject 6+ digit numbers (phone fragments, national IDs, YYYYMMDD dates, 23182437, etc.)
+        if (digits.length > 5) {
+          hadRejectedOversizedToken = true;
+          continue;
+        }
         const val = parseInt(digits, 10);
-        // Ignore absurdly long phone numbers (10+ digits) accidentally pasted into outgoing cells
-        if (!isNaN(val) && val > 0 && digits.length <= 7) {
+        if (!isNaN(val) && val > 0 && val <= MAX_VALID_OUTGOING_SEQ) {
           numericTokens.push(val);
+        } else if (!isNaN(val) && val > MAX_VALID_OUTGOING_SEQ) {
+          hadRejectedOversizedToken = true;
         }
       }
     }
@@ -183,8 +231,16 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
 
   if (numericTokens.length === 1) {
     const only = numericTokens[0];
-    // Reject obvious standalone 4-digit year unless nothing else exists
+    // If an oversized corrupted sequence was dropped (e.g. "ن / 12 / 23182437") leaving only branch code 12/14, reject!
+    if (hadRejectedOversizedToken && (only === 12 || only === 14)) {
+      return { seq: 0, branch, normalized };
+    }
+    // Reject obvious standalone 4-digit year (2020..2040)
     if (only >= 2020 && only <= 2040) {
+      return { seq: 0, branch, normalized };
+    }
+    // Reject bare 5-digit Excel serial date numbers (40000..55000 => years 2009..2050) when no branch prefix is present
+    if (branch === 'general' && only >= 40000 && only <= 55000) {
       return { seq: 0, branch, normalized };
     }
     return { seq: only, branch, normalized };
@@ -197,7 +253,11 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
   }
 
   if (nonYearTokens.length === 1) {
-    return { seq: nonYearTokens[0], branch, normalized };
+    const only = nonYearTokens[0];
+    if (branch === 'general' && only >= 40000 && only <= 55000) {
+      return { seq: 0, branch, normalized };
+    }
+    return { seq: only, branch, normalized };
   }
 
   // Multiple non-year numbers exist:
@@ -231,29 +291,30 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
 }
 
 /**
- * Scan any list of OfficeRequests (and optional OfficialLetters) to find the highest outgoing sequence
- * per office branch so importing Excel archives ALWAYS advances the outgoing counter accurately.
+ * Scan any list of OfficeRequests (and optional OfficialLetters) to find the robust highest outgoing sequence
+ * per office branch so importing Excel archives ALWAYS advances the outgoing counter accurately
+ * without being poisoned by stray dates/phone numbers/typos.
  */
 export function scanMaxOutgoingSequences(
   requests: OfficeRequest[],
   officialLetters?: OfficialLetter[]
 ): { maxNasiriyah: number; maxSuq: number; maxAny: number } {
-  let maxNasiriyah = 0;
-  let maxSuq = 0;
-  let maxAny = 0;
+  const nasiriyahSeqs: number[] = [];
+  const suqSeqs: number[] = [];
+  const anySeqs: number[] = [];
 
   const inspectRaw = (raw?: string | null) => {
     if (!raw || !String(raw).trim()) return;
     const parsed = extractOutgoingSequence(raw);
-    if (parsed.seq <= 0) return;
-    if (parsed.seq > maxAny) maxAny = parsed.seq;
+    if (parsed.seq <= 0 || parsed.seq > MAX_VALID_OUTGOING_SEQ) return;
+    anySeqs.push(parsed.seq);
     if (parsed.branch === 'suq_al_shuyoukh') {
-      if (parsed.seq > maxSuq) maxSuq = parsed.seq;
+      suqSeqs.push(parsed.seq);
     } else if (parsed.branch === 'nasiriyah') {
-      if (parsed.seq > maxNasiriyah) maxNasiriyah = parsed.seq;
+      nasiriyahSeqs.push(parsed.seq);
     } else {
-      if (parsed.seq > maxNasiriyah) maxNasiriyah = parsed.seq;
-      if (parsed.seq > maxSuq) maxSuq = parsed.seq;
+      nasiriyahSeqs.push(parsed.seq);
+      suqSeqs.push(parsed.seq);
     }
   };
 
@@ -264,12 +325,17 @@ export function scanMaxOutgoingSequences(
     inspectRaw(l?.LetterNumber);
   }
 
-  return { maxNasiriyah, maxSuq, maxAny };
+  return {
+    maxNasiriyah: findRobustMaxSequence(nasiriyahSeqs),
+    maxSuq: findRobustMaxSequence(suqSeqs),
+    maxAny: findRobustMaxSequence(anySeqs)
+  };
 }
 
 /**
  * Compute the next authoritative outgoing number across ALL requests (active + archived Excel imports),
  * official letters, and systemSettings baselines so archiving ANY Excel file immediately advances the outgoing counter.
+ * Automatically self-heals poisoned/corrupted baselines (e.g. > 50,000 or impossible spikes).
  */
 export function computeNextOutgoingNumber(
   requests: OfficeRequest[],
@@ -294,60 +360,78 @@ export function computeNextOutgoingNumber(
   const branchPrefix = isSuq ? 'س' : 'ن';
   const branchCode = isSuq ? '14' : '12';
 
-  const baseline = isSuq
+  const rawBaseline = isSuq
     ? Number(systemSettings?.lastOutgoingNumberSuq) || 0
     : Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
 
-  let maxFound = baseline;
-  let bestRecord:
-    | {
-        outgoingNumber: string;
-        outgoingDate: string;
-        citizenName: string;
-        seq: number;
-        request?: OfficeRequest;
-      }
-    | undefined;
+  type CandidateRecord = {
+    outgoingNumber: string;
+    outgoingDate: string;
+    citizenName: string;
+    seq: number;
+    request?: OfficeRequest;
+  };
+
+  const candidates: CandidateRecord[] = [];
 
   for (const r of requests || []) {
     if (!r?.OutgoingNumber || !String(r.OutgoingNumber).trim()) continue;
     const parsed = extractOutgoingSequence(r.OutgoingNumber);
-    if (parsed.seq <= 0) continue;
+    if (parsed.seq <= 0 || parsed.seq > MAX_VALID_OUTGOING_SEQ) continue;
 
     // Count matching branch records + general/numeric records
     const appliesToBranch = parsed.branch === 'general' || parsed.branch === targetBranch;
     if (appliesToBranch) {
-      if (parsed.seq > maxFound) {
-        maxFound = parsed.seq;
-      }
-      if (!bestRecord || parsed.seq >= bestRecord.seq) {
-        bestRecord = {
-          outgoingNumber: r.OutgoingNumber,
-          outgoingDate: r.OutgoingDate || (r.CreatedAt ? String(r.CreatedAt).split('T')[0] : ''),
-          citizenName: r.CitizenName || 'غير محدد',
-          seq: parsed.seq,
-          request: r
-        };
-      }
+      candidates.push({
+        outgoingNumber: r.OutgoingNumber,
+        outgoingDate: r.OutgoingDate || (r.CreatedAt ? String(r.CreatedAt).split('T')[0] : ''),
+        citizenName: r.CitizenName || 'غير محدد',
+        seq: parsed.seq,
+        request: r
+      });
     }
   }
 
   for (const l of officialLetters || []) {
     if (!l?.LetterNumber || !String(l.LetterNumber).trim()) continue;
     const parsed = extractOutgoingSequence(l.LetterNumber);
-    if (parsed.seq <= 0) continue;
+    if (parsed.seq <= 0 || parsed.seq > MAX_VALID_OUTGOING_SEQ) continue;
     const appliesToBranch = parsed.branch === 'general' || parsed.branch === targetBranch;
     if (appliesToBranch) {
-      if (parsed.seq > maxFound) {
-        maxFound = parsed.seq;
-      }
-      if (!bestRecord || parsed.seq > bestRecord.seq) {
-        bestRecord = {
-          outgoingNumber: l.LetterNumber,
-          outgoingDate: l.LetterDate || '',
-          citizenName: l.CitizenName || l.Recipient || 'كتاب رسمي',
-          seq: parsed.seq
-        };
+      candidates.push({
+        outgoingNumber: l.LetterNumber,
+        outgoingDate: l.LetterDate || '',
+        citizenName: l.CitizenName || l.Recipient || 'كتاب رسمي',
+        seq: parsed.seq
+      });
+    }
+  }
+
+  const robustMaxFromRecords = findRobustMaxSequence(candidates.map((c) => c.seq));
+
+  // Self-heal poisoned baselines (e.g. 23182436 stored in Firestore from an older buggy import)
+  let effectiveBaseline =
+    Number.isFinite(rawBaseline) && rawBaseline > 0 && rawBaseline <= MAX_VALID_OUTGOING_SEQ
+      ? Math.floor(rawBaseline)
+      : 0;
+
+  if (
+    effectiveBaseline > 0 &&
+    robustMaxFromRecords > 0 &&
+    effectiveBaseline - robustMaxFromRecords > 2000 &&
+    effectiveBaseline > robustMaxFromRecords * 3
+  ) {
+    effectiveBaseline = 0;
+  }
+
+  const maxFound = Math.max(effectiveBaseline, robustMaxFromRecords);
+
+  // Pick the best record matching the true robust max (not an outlier!)
+  let bestRecord: CandidateRecord | undefined;
+  if (robustMaxFromRecords > 0) {
+    for (const c of candidates) {
+      if (c.seq === robustMaxFromRecords) {
+        bestRecord = c;
       }
     }
   }

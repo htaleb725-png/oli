@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { scanMaxOutgoingSequences } from '../utils/outgoingNumberHelper';
+import { MAX_VALID_OUTGOING_SEQ, scanMaxOutgoingSequences } from '../utils/outgoingNumberHelper';
 import { toCleanSheetCitizenPayload, toCleanSheetRequestPayload } from '../services/googleSheetsSchema';
 import { extractDriveFolderId } from '../services/driveArchiveService';
 import {
@@ -61,6 +61,7 @@ import {
   fsMarkNotificationRead,
   fsDeleteNotification,
   fsWatchCollection,
+  fsWatchCloudConfig,
   isFirestoreTemporarilyBlocked,
   FS_COLLECTIONS
 } from '../services/firebaseFirestoreService';
@@ -248,7 +249,10 @@ interface AppContextType {
   checkIfCitizenBlocked: (nameOrId: string, phone?: string) => { isBlocked: boolean; citizen?: Citizen; reason?: string };
 
   requests: OfficeRequest[];
-  addRequest: (req: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string }) => OfficeRequest;
+  addRequest: (
+    req: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string },
+    options?: { skipAuditLog?: boolean; skipNotification?: boolean }
+  ) => OfficeRequest;
   updateRequest: (req: OfficeRequest) => void;
   deleteRequest: (requestId: string) => void;
   bulkUpdateRequestsStatus: (citizenNames: string[], newStatus: ProcessingStatus, notes?: string) => { updatedCount: number; updatedRequests: OfficeRequest[] };
@@ -282,7 +286,7 @@ interface AppContextType {
   deleteDynamicField: (id: string) => void;
 
   documents: DocumentArchiveItem[];
-  addDocument: (doc: Omit<DocumentArchiveItem, 'Doc_ID' | 'UploadedAt'>) => void;
+  addDocument: (doc: Omit<DocumentArchiveItem, 'Doc_ID' | 'UploadedAt'>, options?: { skipAuditLog?: boolean }) => void;
   deleteDocument: (docId: string) => void;
 
   whatsappTemplates: WhatsAppTemplate[];
@@ -1083,17 +1087,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     unsubs.push(unsubNotifications);
 
     const unsubSettings = fsWatchCollection<any>(FS_COLLECTIONS.SETTINGS, (docs) => {
-      const mainDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements || d.googleDriveFolderId || d.appsScriptUrl));
-      if (mainDoc) {
+      const generalDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements));
+      const cloudDoc = docs.find((d: any) => d && (d.googleDriveFolderId || d.appsScriptUrl) && !d.appName);
+      const mergedRemote = { ...(generalDoc || {}), ...(cloudDoc || {}) };
+      if (Object.keys(mergedRemote).length > 0) {
+        const cleanRemoteDrive = mergedRemote.googleDriveFolderId
+          ? extractDriveFolderId(mergedRemote.googleDriveFolderId)
+          : undefined;
         setRuntimeCloudConfig({
-          appsScriptUrl: mainDoc.appsScriptUrl || mainDoc.googleAppsScriptUrl,
-          googleSheetId: mainDoc.googleSheetId || mainDoc.activeGoogleSheetId,
-          googleDriveFolderId: mainDoc.googleDriveFolderId
+          appsScriptUrl: mergedRemote.appsScriptUrl || mergedRemote.googleAppsScriptUrl,
+          googleSheetId: mergedRemote.googleSheetId || mergedRemote.activeGoogleSheetId,
+          googleDriveFolderId: cleanRemoteDrive
         });
-        setSystemSettings(prev => ({ ...prev, ...mainDoc }));
+        if (cleanRemoteDrive) {
+          setDriveFolderId(cleanRemoteDrive);
+          try { localStorage.setItem('al_nashi_drive_folder_id', cleanRemoteDrive); } catch {}
+        }
+        setSystemSettings(prev => {
+          const next = {
+            ...prev,
+            ...mergedRemote,
+            ...(cleanRemoteDrive ? { googleDriveFolderId: cleanRemoteDrive } : {})
+          };
+          systemSettingsRef.current = next;
+          return next;
+        });
       }
     });
     unsubs.push(unsubSettings);
+
+    // Real-time dedicated watcher for lightweight cloud_config (Drive Folder ID / Sheet ID / Apps Script URL)
+    const unsubCloudConfig = fsWatchCloudConfig((cfg) => {
+      if (!cfg) return;
+      const cleanRemoteDrive = cfg.googleDriveFolderId
+        ? extractDriveFolderId(cfg.googleDriveFolderId)
+        : undefined;
+      setRuntimeCloudConfig({
+        appsScriptUrl: cfg.appsScriptUrl || cfg.googleAppsScriptUrl,
+        googleSheetId: cfg.googleSheetId || cfg.activeGoogleSheetId,
+        googleDriveFolderId: cleanRemoteDrive
+      });
+      if (cleanRemoteDrive) {
+        setDriveFolderId(cleanRemoteDrive);
+        try { localStorage.setItem('al_nashi_drive_folder_id', cleanRemoteDrive); } catch {}
+      }
+      setSystemSettings(prev => {
+        const next = {
+          ...prev,
+          ...(cleanRemoteDrive ? { googleDriveFolderId: cleanRemoteDrive } : {}),
+          ...(cfg.googleSheetId ? { googleSheetId: cfg.googleSheetId, activeGoogleSheetId: cfg.googleSheetId } : {}),
+          ...(cfg.appsScriptUrl ? { appsScriptUrl: cfg.appsScriptUrl, googleAppsScriptUrl: cfg.appsScriptUrl } : {}),
+          ...(typeof cfg.allowAdminOpenDriveFolder === 'boolean' ? { allowAdminOpenDriveFolder: cfg.allowAdminOpenDriveFolder } : {})
+        };
+        systemSettingsRef.current = next;
+        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(next));
+        return next;
+      });
+    });
+    unsubs.push(unsubCloudConfig);
 
     // Check remote developer passcode
     fsGetDeveloperPasscode().then(code => {
@@ -2811,7 +2862,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const requestSeqCounterRef = useRef<number>(120);
 
-  const addRequest = (reqData: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string }): OfficeRequest => {
+  const addRequest = (
+    reqData: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string },
+    options?: { skipAuditLog?: boolean; skipNotification?: boolean }
+  ): OfficeRequest => {
     const year = new Date().getFullYear();
     const existingIds = new Set(requests.map(r => r.Request_ID));
 
@@ -2865,22 +2919,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addDropdownItem('Entity', reqData.Entity);
     }
 
-    addAuditLog('إنشاء طلب إداري', 'قسم الإدارة', `تم تسجيل الطلب ${candidate} للمواطن ${reqData.CitizenName} موجه إلى ${reqData.Entity}`);
+    if (!options?.skipAuditLog) {
+      addAuditLog('إنشاء طلب إداري', 'قسم الإدارة', `تم تسجيل الطلب ${candidate} للمواطن ${reqData.CitizenName} موجه إلى ${reqData.Entity}`);
+    }
 
-    // Trigger real-time cloud notification for every new request (marked urgent when Priority is عاجل/خاص جداً)
-    const isUrgentReq = reqData.Priority === 'عاجل' || reqData.Priority === 'خاص جداً';
-    addNotification({
-      title: isUrgentReq
-        ? `طلب عاجل (${reqData.Priority}): ${reqData.CitizenName}`
-        : `معاملة جديدة: ${reqData.CitizenName}`,
-      message: `الجهة: ${reqData.Entity || 'غير محدد'} | رقم الطلب: ${candidate}`,
-      type: 'urgent_request',
-      category: 'request',
-      priority: isUrgentReq ? 'urgent' : 'normal',
-      linkSection: 'admin',
-      entityId: candidate,
-      targetRoles: ['director', 'admin', 'admin_officer', 'developer']
-    });
+    // Trigger real-time cloud notification unless explicitly suppressed (e.g. direct instant administrative requests)
+    if (!options?.skipNotification) {
+      const isUrgentReq = reqData.Priority === 'عاجل' || reqData.Priority === 'خاص جداً';
+      addNotification({
+        title: isUrgentReq
+          ? `طلب عاجل (${reqData.Priority}): ${reqData.CitizenName}`
+          : `معاملة جديدة: ${reqData.CitizenName}`,
+        message: `الجهة: ${reqData.Entity || 'غير محدد'} | رقم الطلب: ${candidate}`,
+        type: 'urgent_request',
+        category: 'request',
+        priority: isUrgentReq ? 'urgent' : 'normal',
+        linkSection: 'admin',
+        entityId: candidate,
+        targetRoles: ['director', 'admin', 'admin_officer', 'developer']
+      });
+    }
 
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([newRequest])[0] || newRequest });
@@ -3219,7 +3277,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const addDocument = (docData: Omit<DocumentArchiveItem, 'Doc_ID' | 'UploadedAt'>) => {
+  const addDocument = (
+    docData: Omit<DocumentArchiveItem, 'Doc_ID' | 'UploadedAt'>,
+    options?: { skipAuditLog?: boolean }
+  ) => {
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const newDoc: DocumentArchiveItem = {
@@ -3229,7 +3290,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDocuments(prev => [newDoc, ...prev]);
     emitServerMutation('documents', 'upsert', { item: newDoc });
-    addAuditLog('رفع وثيقة للأرشيف', 'أرشيف المستندات', `تم رفع المستند [${docData.Title}] للمواطن ${docData.CitizenName}`);
+    if (!options?.skipAuditLog) {
+      addAuditLog('رفع وثيقة للأرشيف', 'أرشيف المستندات', `تم رفع المستند [${docData.Title}] للمواطن ${docData.CitizenName}`);
+    }
   };
 
   const deleteDocument = (docId: string) => {
@@ -4042,14 +4105,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
 
-      // Authoritatively advance office outgoing counters (Nasiriyah & Suq Al-Shuyoukh) whenever ANY import brings archived outgoing numbers
+      // Authoritatively advance (and self-heal if poisoned > MAX_VALID_OUTGOING_SEQ) office outgoing counters
       const scanned = scanMaxOutgoingSequences(validRequests);
-      const nextNas = Math.max(Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0, scanned.maxNasiriyah);
-      const nextSuq = Math.max(Number(systemSettings?.lastOutgoingNumberSuq) || 0, scanned.maxSuq);
-      if (
-        nextNas > (Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0) ||
-        nextSuq > (Number(systemSettings?.lastOutgoingNumberSuq) || 0)
-      ) {
+      const rawCurrentNas = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
+      const rawCurrentSuq = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
+      const nasPoisoned = rawCurrentNas > MAX_VALID_OUTGOING_SEQ;
+      const suqPoisoned = rawCurrentSuq > MAX_VALID_OUTGOING_SEQ;
+      const safeCurrentNas = nasPoisoned ? 0 : rawCurrentNas;
+      const safeCurrentSuq = suqPoisoned ? 0 : rawCurrentSuq;
+      const nextNas = Math.max(safeCurrentNas, scanned.maxNasiriyah);
+      const nextSuq = Math.max(safeCurrentSuq, scanned.maxSuq);
+      if (nasPoisoned || suqPoisoned || nextNas > safeCurrentNas || nextSuq > safeCurrentSuq) {
         updateSettings({
           lastOutgoingNumberNasiriyah: nextNas,
           lastOutgoingNumberSuq: nextSuq
@@ -4118,6 +4184,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       sheetsDispatched
     };
   };
+
+  // Auto-heal poisoned outgoing baselines (e.g. 23182436 stored from an older buggy import)
+  useEffect(() => {
+    const rawNas = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
+    const rawSuq = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
+    const nasPoisoned = rawNas > MAX_VALID_OUTGOING_SEQ;
+    const suqPoisoned = rawSuq > MAX_VALID_OUTGOING_SEQ;
+    if (!nasPoisoned && !suqPoisoned) return;
+
+    const scanned = scanMaxOutgoingSequences(requests, officialLetters);
+    const patch: Partial<SystemSettings> = {};
+    if (nasPoisoned) patch.lastOutgoingNumberNasiriyah = scanned.maxNasiriyah;
+    if (suqPoisoned) patch.lastOutgoingNumberSuq = scanned.maxSuq;
+    if (Object.keys(patch).length > 0) {
+      updateSettings(patch);
+    }
+  }, [
+    systemSettings?.lastOutgoingNumberNasiriyah,
+    systemSettings?.lastOutgoingNumberSuq,
+    requests.length,
+    officialLetters.length
+  ]);
 
   const updateUiCustomizations = (customizations: Partial<UiCustomizationSettings>) => {
     const current = systemSettings.uiCustomizations || {

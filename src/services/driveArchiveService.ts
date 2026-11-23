@@ -148,7 +148,7 @@ export async function fetchLiveDriveFolderFiles(options: {
   let lastError: string | undefined;
   let isPrivate = false;
 
-  // Strategy 1: Express Server Proxy (when running on AI Studio / Node server — instant, works on public folders with zero OAuth)
+  // Strategy 1: Native Cloud Proxy (/api/drive/folder-files — runs natively on BOTH Vercel Serverless AND AI Studio Express with ZERO Google Sign-In!)
   if (_expressDriveProxyAvailable !== false) {
     try {
       const params = new URLSearchParams({
@@ -161,13 +161,14 @@ export async function fetchLiveDriveFolderFiles(options: {
       const res = await fetch(`/api/drive/folder-files?${params.toString()}`, {
         cache: 'no-store'
       });
-      if (res.status === 404) {
-        // Static deployment (e.g., Vercel) — remember and skip proxy cleanly
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (res.status === 404 || !contentType.includes('application/json')) {
+        // Pure static host without /api serverless functions (returned HTML SPA rewrite or 404)
         _expressDriveProxyAvailable = false;
       } else if (res.ok) {
         _expressDriveProxyAvailable = true;
         const json = await res.json();
-        if (json?.success && Array.isArray(json.files) && json.files.length > 0) {
+        if (json?.success && Array.isArray(json.files)) {
           rawFiles = json.files;
           totalInFolder = Number(json.totalInFolder || json.files.length);
           source = 'server_proxy';
@@ -177,6 +178,9 @@ export async function fetchLiveDriveFolderFiles(options: {
         } else if (json?.error) {
           lastError = json.error;
         }
+      } else {
+        const errJson = await res.json().catch(() => null);
+        if (errJson?.error) lastError = errJson.error;
       }
     } catch {
       // Fall through cleanly to Apps Script / OAuth

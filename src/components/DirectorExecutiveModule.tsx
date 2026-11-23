@@ -136,7 +136,7 @@ export const DirectorExecutiveModule: React.FC = () => {
       return isNaN(t) ? 0 : t;
     };
     return (requests || [])
-      .filter(r => r && !r.IsHistoricalImported && !r.IsArchived && r.DirectorDecision !== 'مؤرشف')
+      .filter(r => r && !r.IsHistoricalImported && !r.IsArchived && !r.IsDirectInstantRequest && r.DirectorDecision !== 'مؤرشف')
       .slice()
       .sort((a, b) => parseTs(b) - parseTs(a));
   }, [requests]);

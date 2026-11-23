@@ -119,9 +119,10 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
   // Local IndexedDB images
   const [localImages, setLocalImages] = useState<ImageRecord[]>([]);
 
-  // Inline Developer folder editor
+  // Inline Developer folder editor & embedded Drive backup view toggle
   const [isEditingFolder, setIsEditingFolder] = useState(false);
   const [folderInput, setFolderInput] = useState(resolvedFolderId);
+  const [showEmbeddedDriveView, setShowEmbeddedDriveView] = useState(false);
   const [statusBanner, setStatusBanner] = useState<{
     type: 'success' | 'info' | 'warning';
     text: string;
@@ -622,6 +623,21 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
               <span>تحديث المجلد الآن</span>
             </button>
 
+            {/* Instant Embedded Public Drive Folder Backup View Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowEmbeddedDriveView((v) => !v)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border ${
+                showEmbeddedDriveView
+                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                  : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title="عرض محتوى مجلد Google Drive العام مباشرة داخل النافذة كعرض احتياطي فوري"
+            >
+              <FolderKanban className="w-3.5 h-3.5" />
+              <span>{showEmbeddedDriveView ? 'العودة لمعرض البحث الذكي' : 'عرض المجلد المدمج'}</span>
+            </button>
+
             {/* Open Drive Folder (RBAC guarded) */}
             {canOpenDriveFolder ? (
               <a
@@ -822,7 +838,35 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
 
       {/* Main Content Area */}
       <div className="p-4 space-y-5">
-        {isLoading ? (
+        {showEmbeddedDriveView ? (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-xs">
+              <div className="flex items-center gap-2 font-bold text-indigo-900 dark:text-indigo-200">
+                <FolderKanban className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <span>العرض المباشر لمجلد Google Drive العام:</span>
+                <code dir="ltr" className="px-2 py-0.5 rounded bg-white dark:bg-slate-900 font-mono text-[11px]">
+                  {resolvedFolderId}
+                </code>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowEmbeddedDriveView(false);
+                  loadArchiveData({ forceRefresh: true });
+                }}
+                className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] cursor-pointer"
+              >
+                العودة للبحث والمعرض الذكي
+              </button>
+            </div>
+            <iframe
+              key={resolvedFolderId}
+              src={`https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(resolvedFolderId)}#grid`}
+              title="عرض مجلد Google Drive المدمج"
+              className="w-full h-[640px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white"
+            />
+          </div>
+        ) : isLoading ? (
           <div className="py-12 text-center space-y-3">
             <Loader2 className="w-8 h-8 text-emerald-600 dark:text-emerald-400 animate-spin mx-auto" />
             <p className="text-xs font-black text-slate-700 dark:text-slate-200">
@@ -850,7 +894,7 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
                 </div>
 
                 {matchedDriveFiles.length === 0 ? (
-                  <div className="p-6 rounded-xl bg-slate-50 dark:bg-[#0A1020] border border-dashed border-slate-300 dark:border-slate-700 text-center space-y-2">
+                  <div className="p-6 rounded-xl bg-slate-50 dark:bg-[#0A1020] border border-dashed border-slate-300 dark:border-slate-700 text-center space-y-3">
                     <FileImage className="w-9 h-9 text-slate-400 mx-auto" />
                     <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
                       {activeQuery
@@ -858,15 +902,33 @@ export const LiveDriveGalleryWidget: React.FC<LiveDriveGalleryWidgetProps> = ({
                         : 'لم يتم العثور على ملفات معروضة في مجلد Google Drive حالياً.'}
                     </p>
                     {driveError && (
-                      <p className="text-[11px] text-amber-700 dark:text-amber-300 max-w-xl mx-auto">
+                      <p className="text-[11px] text-amber-700 dark:text-amber-300 max-w-xl mx-auto font-bold">
                         {driveError}
                       </p>
                     )}
                     {!activeQuery && (
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 max-w-xl mx-auto">
-                        تأكد من أن مجلد Google Drive مضبوط على «أي شخص لديه الرابط يمكنه العرض» أو أن رابط Google Apps Script المحدّث محفوظ في إعدادات المطور.
+                        تأكد من أن مجلد Google Drive مضبوط على «أي شخص لديه الرابط — عارض»، أو اضغط أدناه لإعادة المحاولة أو فتح العرض المدمج المباشر للمجلد.
                       </p>
                     )}
+                    <div className="flex items-center justify-center gap-2 flex-wrap pt-1">
+                      <button
+                        type="button"
+                        onClick={() => loadArchiveData({ forceRefresh: true })}
+                        className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>إعادة فحص المجلد الآن</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowEmbeddedDriveView(true)}
+                        className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <FolderKanban className="w-3.5 h-3.5" />
+                        <span>فتح العرض المدمج للمجلد مباشرة</span>
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <>

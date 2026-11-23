@@ -224,6 +224,7 @@ export interface OfficeRequest {
   DeliveredBy?: string;   // الموظف الذي وثّق تسليم الطلب
   TargetDepartment?: string; // القسم المخصص الذي تنزل فيه المعاملة (admin, social_care, interviews, reception, organization, أو معرف قسم مخصص)
   SerialNumber?: string;  // التسلسل الأصلي في ملف الإكسل
+  IsDirectInstantRequest?: boolean; // طلب إداري فوري مباشر (بدون إشعارات ودون تسجيل في القسم الرقابي)
   UpdatedAt?: string;
 }
 

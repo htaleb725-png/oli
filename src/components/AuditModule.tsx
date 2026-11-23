@@ -79,12 +79,18 @@ export const AuditModule: React.FC = () => {
   const [newSubject, setNewSubject] = useState('');
   const [newDetails, setNewDetails] = useState('');
 
+  // Exclude direct instant administrative requests from Oversight/Audit section (القسم الرقابي)
+  const auditableRequests = useMemo(
+    () => (requests || []).filter(r => r && !r.IsDirectInstantRequest),
+    [requests]
+  );
+
   // 1. Clan / Surname Statistics
   const clanStats = useMemo(() => {
     const map = new Map<string, { count: number; requestsCount: number; completedCount: number }>();
     citizens.forEach(c => {
       const clan = c.Surname?.trim() || 'عام / بدون لقب';
-      const citReqs = requests.filter(r => r.Citizen_ID === c.Citizen_ID);
+      const citReqs = auditableRequests.filter(r => r.Citizen_ID === c.Citizen_ID);
       const completed = citReqs.filter(r => r.ProcessingStatus === 'منجز').length;
       
       const current = map.get(clan) || { count: 0, requestsCount: 0, completedCount: 0 };
@@ -102,14 +108,14 @@ export const AuditModule: React.FC = () => {
         rate: data.requestsCount > 0 ? Math.round((data.completedCount / data.requestsCount) * 100) : 0
       }))
       .sort((a, b) => b.count - a.count);
-  }, [citizens, requests]);
+  }, [citizens, auditableRequests]);
 
   // 2. District / Regional Statistics
   const districtStats = useMemo(() => {
     const map = new Map<string, { count: number; requestsCount: number; completedCount: number }>();
     citizens.forEach(c => {
       const district = c.District?.trim() || 'غير محدد';
-      const citReqs = requests.filter(r => r.Citizen_ID === c.Citizen_ID);
+      const citReqs = auditableRequests.filter(r => r.Citizen_ID === c.Citizen_ID);
       const completed = citReqs.filter(r => r.ProcessingStatus === 'منجز').length;
 
       const current = map.get(district) || { count: 0, requestsCount: 0, completedCount: 0 };
@@ -127,14 +133,14 @@ export const AuditModule: React.FC = () => {
         rate: data.requestsCount > 0 ? Math.round((data.completedCount / data.requestsCount) * 100) : 0
       }))
       .sort((a, b) => b.count - a.count);
-  }, [citizens, requests]);
+  }, [citizens, auditableRequests]);
 
   // 3. Job / Occupation Statistics
   const jobStats = useMemo(() => {
     const map = new Map<string, { count: number; requestsCount: number }>();
     citizens.forEach(c => {
       const job = c.Job?.trim() || 'كاسب';
-      const citReqs = requests.filter(r => r.Citizen_ID === c.Citizen_ID);
+      const citReqs = auditableRequests.filter(r => r.Citizen_ID === c.Citizen_ID);
       const current = map.get(job) || { count: 0, requestsCount: 0 };
       map.set(job, {
         count: current.count + 1,
@@ -149,12 +155,12 @@ export const AuditModule: React.FC = () => {
         percent: citizens.length > 0 ? Math.round((data.count / citizens.length) * 100) : 0
       }))
       .sort((a, b) => b.count - a.count);
-  }, [citizens, requests]);
+  }, [citizens, auditableRequests]);
 
   // 4. Entity / Social Care & Ministry Statistics
   const entityStats = useMemo(() => {
     const map = new Map<string, { total: number; completed: number; inProgress: number; urgent: number }>();
-    requests.forEach(r => {
+    auditableRequests.forEach(r => {
       const ent = r.Entity?.trim() || 'جهات أخرى';
       const current = map.get(ent) || { total: 0, completed: 0, inProgress: 0, urgent: 0 };
       const isCompleted = r.ProcessingStatus === 'منجز';
@@ -175,11 +181,11 @@ export const AuditModule: React.FC = () => {
         rate: data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0
       }))
       .sort((a, b) => b.total - a.total);
-  }, [requests]);
+  }, [auditableRequests]);
 
   // Global totals
-  const totalCompleted = requests.filter(r => r.ProcessingStatus === 'منجز').length;
-  const totalUrgent = requests.filter(r => r.Priority === 'عاجل' || r.Priority === 'خاص جداً').length;
+  const totalCompleted = auditableRequests.filter(r => r.ProcessingStatus === 'منجز').length;
+  const totalUrgent = auditableRequests.filter(r => r.Priority === 'عاجل' || r.Priority === 'خاص جداً').length;
   const totalScheduledInterviews = interviews.filter(i => i.Status === 'مجدولة').length;
 
   // Filtered audit logs
@@ -287,7 +293,7 @@ export const AuditModule: React.FC = () => {
       XLSX.utils.book_append_sheet(wb, wsCit, 'سجل المراجعين المركزي');
 
       // Sheet 2: Requests (المعاملات والطلبات)
-      const reqData = requests.map(r => ({
+      const reqData = auditableRequests.map(r => ({
         'رقم المعاملة': r.Request_ID,
         'الرقم التعريفي للمواطن': r.Citizen_ID,
         'اسم المواطن': r.CitizenName,
@@ -640,7 +646,7 @@ export const AuditModule: React.FC = () => {
 
             <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-2xs text-right">
               <span className="text-[11px] font-bold text-slate-500 block mb-1">إجمالي المعاملات والطلبات</span>
-              <div className="text-2xl font-black text-blue-700">{requests.length} <span className="text-xs font-normal text-slate-400">معاملة</span></div>
+              <div className="text-2xl font-black text-blue-700">{auditableRequests.length} <span className="text-xs font-normal text-slate-400">معاملة</span></div>
               <div className="text-[10px] text-emerald-600 font-bold mt-1">{totalCompleted} معاملة منجزة بالكامل</div>
             </div>
 

@@ -37,7 +37,8 @@ import {
   ShieldAlert,
   Flame,
   Layers,
-  Briefcase
+  Briefcase,
+  Copy
 } from 'lucide-react';
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { AiRequestDrafterModal } from './AiRequestDrafterModal';
@@ -53,8 +54,8 @@ import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 import { SmartExcelImporterModal } from './SmartExcelImporterModal';
 import { SearchableSelect } from './SearchableSelect';
 import { PlusCircle, FileSpreadsheet, UploadCloud } from 'lucide-react';
-import { printImageIsolated } from '../utils/printReceiptHelper';
-import { computeNextOutgoingNumber, extractOutgoingSequence } from '../utils/outgoingNumberHelper';
+import { printImageIsolated, printSingleOutgoingReceipt } from '../utils/printReceiptHelper';
+import { computeNextOutgoingNumber, extractOutgoingSequence, MAX_VALID_OUTGOING_SEQ } from '../utils/outgoingNumberHelper';
 
 export const AdminModule: React.FC = () => {
   const { 
@@ -163,6 +164,47 @@ export const AdminModule: React.FC = () => {
   const [deputyNotes, setDeputyNotes] = useState('');
   const [editableCitizenName, setEditableCitizenName] = useState('');
   const [editableCitizenPhone, setEditableCitizenPhone] = useState('');
+
+  // Outgoing number & Official Outgoing Popup Card for "إنشاء طلب إداري فوري" (same experience as إكمال الطلب)
+  const [formOutgoingNumber, setFormOutgoingNumber] = useState('');
+  const [formOutgoingDate, setFormOutgoingDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [copiedInstantOutgoing, setCopiedInstantOutgoing] = useState(false);
+  const [savedInstantCard, setSavedInstantCard] = useState<{
+    outgoingNumber: string;
+    outgoingDate: string;
+    citizenName: string;
+    phone: string;
+    entity: string;
+    subject: string;
+    address: string;
+    status: string;
+    deliveryStatus: 'مستلم' | 'غير مستلم';
+    notes: string;
+    attachedImage?: string;
+  } | null>(null);
+
+  const openInstantDirectRequestModal = () => {
+    setEditingRequest(null);
+    setManualCitizenName('');
+    setManualCitizenPhone('');
+    setManualCitizenAddress('');
+    setCreateFormError(null);
+    setDetails('');
+    setCustomEntity('');
+    setAttachmentReq('');
+    setAttachmentResp('');
+    setDeputyNotes('');
+    setAttachedScanImage(null);
+    setScanUploadedBy('');
+    setScanUploadedAt('');
+    setProcessingStatus('منجز');
+    setRequestStatus('مستلم');
+    setSelectedCitizenId(citizens[0]?.Citizen_ID || '');
+    const computed = computeNextOutgoingNumber(requests, systemSettings, officialLetters);
+    setFormOutgoingNumber(computed.nextNumber);
+    setFormOutgoingDate(new Date().toISOString().split('T')[0]);
+    setShowAddModal(true);
+  };
 
   const entitiesList = getDropdownOptions('Entity');
   const requestStatusOptions = ['مستلم', 'غير مستلم', 'معاد', 'غير مستوفي للشروط', 'خاص'];
@@ -407,73 +449,108 @@ export const AdminModule: React.FC = () => {
 
       const nowStamp = new Date().toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
       const currentUploader = currentUser?.FullName || 'موظف الإدارة';
-      const nextOutgoing = computeNextOutgoingNumber(requests, systemSettings, officialLetters);
+      const computedNext = computeNextOutgoingNumber(requests, systemSettings, officialLetters);
       const todayIso = new Date().toISOString().split('T')[0];
+      const finalOutgoingNumber = formOutgoingNumber.trim() || computedNext.nextNumber;
+      const finalOutgoingDate = formOutgoingDate.trim() || todayIso;
       const deliveryVal: 'مستلم' | 'غير مستلم' = requestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم';
+      const resolvedPhone = cleanPhone || existingMatch?.Phone1 || '';
+      const resolvedAddress = manualCitizenAddress.trim() || existingMatch?.District || 'الناصرية';
 
-      addRequest({
-        Citizen_ID: resolvedCitizenId,
-        CitizenName: cleanName,
-        CitizenPhone: cleanPhone || existingMatch?.Phone1 || '',
-        CitizenAddress: manualCitizenAddress.trim() || existingMatch?.District || undefined,
-        Entity: finalEntity,
-        OutgoingNumber: nextOutgoing.nextNumber,
-        OutgoingDate: todayIso,
-        RequestStatus: requestStatus,
-        DeliveryStatus: deliveryVal,
-        DeliveredAt: deliveryVal === 'مستلم' ? todayIso : undefined,
-        DeliveredBy: deliveryVal === 'مستلم' ? currentUploader : undefined,
-        ProcessingStatus: processingStatus,
-        Priority: priority,
-        Details: details,
-        AttachmentRequest: attachmentReq || undefined,
-        AttachmentResponse: attachmentResp || undefined,
-        DeputyNotes: deputyNotes || undefined,
-        AttendanceType: attendanceType,
-        DependencyStatus: dependencyStatus,
-        CreatedBy: currentUser ? currentUser.FullName : 'قسم الإدارة',
-        AttachedRequestImage: attachedScanImage || undefined,
-        ScanUploadedBy: attachedScanImage ? currentUploader : undefined,
-        ScanUploadedAt: attachedScanImage ? nowStamp : undefined,
-        ScanAttachments: attachedScanImage ? [
-          {
-            id: `DOC-${Date.now()}`,
-            url: attachedScanImage,
-            fileName: `وثيقة مرفقة: ${details.slice(0, 30)}`,
-            uploadedBy: currentUploader,
-            uploadedAt: nowStamp
-          }
-        ] : []
-      });
+      // Direct instant administrative request:
+      // 1) Issues official outgoing number & date immediately
+      // 2) Does NOT trigger any notifications to Director or anyone (skipNotification: true)
+      // 3) Does NOT record in Oversight / Audit section (skipAuditLog: true, IsDirectInstantRequest: true)
+      addRequest(
+        {
+          Citizen_ID: resolvedCitizenId,
+          CitizenName: cleanName,
+          CitizenPhone: resolvedPhone,
+          CitizenAddress: manualCitizenAddress.trim() || existingMatch?.District || undefined,
+          Address: resolvedAddress,
+          Entity: finalEntity,
+          OutgoingNumber: finalOutgoingNumber,
+          OutgoingDate: finalOutgoingDate,
+          RequestStatus: requestStatus,
+          DeliveryStatus: deliveryVal,
+          DeliveredAt: deliveryVal === 'مستلم' ? finalOutgoingDate : undefined,
+          DeliveredBy: deliveryVal === 'مستلم' ? currentUploader : undefined,
+          ProcessingStatus: processingStatus || 'منجز',
+          Priority: priority,
+          Details: details,
+          AttachmentRequest: attachmentReq || undefined,
+          AttachmentResponse: attachmentResp || undefined,
+          DeputyNotes: deputyNotes || undefined,
+          AttendanceType: attendanceType,
+          DependencyStatus: dependencyStatus,
+          CurrentStage: 'مكتمل',
+          DirectorDecision: 'مؤرشف',
+          IsDirectInstantRequest: true,
+          RegisteredVia: 'إدارة',
+          CreatedBy: currentUser ? currentUser.FullName : 'قسم الإدارة',
+          AttachedRequestImage: attachedScanImage || undefined,
+          ScanUploadedBy: attachedScanImage ? currentUploader : undefined,
+          ScanUploadedAt: attachedScanImage ? nowStamp : undefined,
+          ScanAttachments: attachedScanImage ? [
+            {
+              id: `DOC-${Date.now()}`,
+              url: attachedScanImage,
+              fileName: `وثيقة مرفقة: ${details.slice(0, 30)}`,
+              uploadedBy: currentUploader,
+              uploadedAt: nowStamp
+            }
+          ] : []
+        },
+        { skipAuditLog: true, skipNotification: true }
+      );
 
-      const nextSeq = extractOutgoingSequence(nextOutgoing.nextNumber).seq;
-      if (nextSeq > 0) {
+      const nextSeq = extractOutgoingSequence(finalOutgoingNumber).seq;
+      if (nextSeq > 0 && nextSeq <= MAX_VALID_OUTGOING_SEQ) {
         if (systemSettings?.officeBranch === 'suq_al_shuyoukh') {
-          if (nextSeq > (systemSettings?.lastOutgoingNumberSuq || 0)) {
+          const cur = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
+          if (cur > MAX_VALID_OUTGOING_SEQ || nextSeq > cur) {
             updateSystemSettings({ lastOutgoingNumberSuq: nextSeq });
           }
         } else {
-          if (nextSeq > (systemSettings?.lastOutgoingNumberNasiriyah || 0)) {
+          const cur = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
+          if (cur > MAX_VALID_OUTGOING_SEQ || nextSeq > cur) {
             updateSystemSettings({ lastOutgoingNumberNasiriyah: nextSeq });
           }
         }
       }
 
-      // If document attached, archive automatically
+      // If document attached, archive silently (without logging in Oversight/Audit)
       if (attachmentReq) {
-        addDocument({
-          Citizen_ID: resolvedCitizenId,
-          CitizenName: cleanName,
-          Title: `مرفق طلب: ${details.slice(0, 30)}`,
-          Category: 'طلب مقدم',
-          FileUrl: 'https://images.unsplash.com/photo-1568667256549-094345857637?w=600&auto=format&fit=crop&q=80',
-          FileType: 'pdf',
-          FileSize: '1.5 MB',
-          UploadedBy: currentUser?.FullName || 'موظف الإدارة'
-        });
+        addDocument(
+          {
+            Citizen_ID: resolvedCitizenId,
+            CitizenName: cleanName,
+            Title: `مرفق طلب: ${details.slice(0, 30)}`,
+            Category: 'طلب مقدم',
+            FileUrl: 'https://images.unsplash.com/photo-1568667256549-094345857637?w=600&auto=format&fit=crop&q=80',
+            FileType: 'pdf',
+            FileSize: '1.5 MB',
+            UploadedBy: currentUser?.FullName || 'موظف الإدارة'
+          },
+          { skipAuditLog: true }
+        );
       }
 
       setShowAddModal(false);
+      setCopiedInstantOutgoing(false);
+      setSavedInstantCard({
+        outgoingNumber: finalOutgoingNumber,
+        outgoingDate: finalOutgoingDate,
+        citizenName: cleanName,
+        phone: resolvedPhone || 'غير مسجل',
+        entity: finalEntity,
+        subject: details,
+        address: resolvedAddress,
+        status: processingStatus || 'منجز',
+        deliveryStatus: deliveryVal,
+        notes: deputyNotes || '',
+        attachedImage: attachedScanImage || undefined
+      });
     }
 
     // Reset
@@ -536,11 +613,20 @@ export const AdminModule: React.FC = () => {
     setSelectedCitizenId(citId);
     setDetails('');
     const cit = citizenMap.get(citId);
+    setManualCitizenName(cit?.FullName || '');
+    setManualCitizenPhone(cit?.Phone1 || '');
+    setManualCitizenAddress(cit?.District || cit?.ResidentialArea || '');
+    setCreateFormError(null);
+    setProcessingStatus('منجز');
+    setRequestStatus('مستلم');
     setAttendanceType(cit?.AttendanceType || 'شخصياً');
     setDependencyStatus(cit?.DependencyStatus || 'مستقل');
     setAttachedScanImage(null);
     setScanUploadedBy('');
     setScanUploadedAt('');
+    const computed = computeNextOutgoingNumber(requests, systemSettings, officialLetters);
+    setFormOutgoingNumber(computed.nextNumber);
+    setFormOutgoingDate(new Date().toISOString().split('T')[0]);
     setShowAddModal(true);
   };
 
@@ -608,12 +694,7 @@ export const AdminModule: React.FC = () => {
               iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
               badge: 'فوري ⚡',
               badgeColor: 'bg-blue-600 text-white font-bold',
-              onClick: () => {
-                setEditingRequest(null);
-                setDetails('');
-                setSelectedCitizenId(citizens[0]?.Citizen_ID || '');
-                setShowAddModal(true);
-              }
+              onClick: openInstantDirectRequestModal
             },
             {
               id: 'adm_smart_excel_import',
@@ -2091,6 +2172,35 @@ export const AdminModule: React.FC = () => {
                 />
               </div>
 
+              {/* Official Outgoing Number & Date (when creating a direct instant administrative request) */}
+              {!editingRequest && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-amber-50/80 border border-amber-300">
+                  <div>
+                    <label className="block text-xs font-black text-amber-900 mb-1">
+                      رقم الصادر / العدد الرسمي (تلقائي وقابل للتعديل)
+                    </label>
+                    <input
+                      type="text"
+                      value={formOutgoingNumber}
+                      onChange={(e) => setFormOutgoingNumber(e.target.value)}
+                      placeholder="ن / 12 / 1344"
+                      className="w-full px-3 py-2 rounded-lg bg-white border border-amber-400 text-amber-950 text-xs font-mono font-black text-center focus:ring-2 focus:ring-amber-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-black text-amber-900 mb-1">
+                      تاريخ الصادر الرسمي
+                    </label>
+                    <input
+                      type="date"
+                      value={formOutgoingDate}
+                      onChange={(e) => setFormOutgoingDate(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg bg-white border border-amber-400 text-slate-900 text-xs font-mono font-bold focus:ring-2 focus:ring-amber-500 outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Statuses & Priority (ALL Searchable + Instant Add & Persist) */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
@@ -2337,13 +2447,176 @@ export const AdminModule: React.FC = () => {
                             : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer shadow-xs'
                         }`}
                       >
-                        {isBlocked ? '⛔ محظور بالقائمة السوداء - لا يمكن الإتمام' : (editingRequest ? 'حفظ التعديلات' : 'حفظ وإرسال التنبيه')}
+                        {isBlocked ? '⛔ محظور بالقائمة السوداء - لا يمكن الإتمام' : (editingRequest ? 'حفظ التعديلات' : 'حفظ وإصدار العدد الصادر الرسمي')}
                       </button>
                     );
                   })()}
                 </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Official Outgoing Card Popup Modal for Instant Direct Administrative Request (نفس بطاقة الصادر في إكمال الطلب) */}
+      {savedInstantCard && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border-2 border-amber-400 dark:border-amber-500 max-w-2xl w-full p-6 sm:p-7 shadow-2xl space-y-4 text-right relative animate-in zoom-in-95 my-8">
+            {/* Close button */}
+            <button
+              type="button"
+              onClick={() => setSavedInstantCard(null)}
+              className="absolute top-4 left-4 w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+            >
+              ✕
+            </button>
+
+            {/* Header with Crest */}
+            <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-amber-300 dark:border-amber-500/40 pb-4 text-center sm:text-right gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-2xl shadow-inner shrink-0">
+                  🦅
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+                    جمهورية العراق - مجلس النواب
+                  </h3>
+                  <p className="text-xs font-bold text-amber-800 dark:text-amber-400">
+                    {systemSettings.officeName || systemSettings.appName || 'مكتب مجلس النواب العراقي'} - قسم الإدارة والمتابعة
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-amber-100 dark:bg-amber-950/80 px-5 py-2.5 rounded-2xl border-2 border-amber-500 text-center shadow-xs">
+                <span className="block text-[11px] font-black text-amber-900 dark:text-amber-300">العدد الصادر الرسمي</span>
+                <span className="text-lg font-black font-mono text-amber-950 dark:text-amber-100 tracking-wider">
+                  {savedInstantCard.outgoingNumber}
+                </span>
+                <span className="block text-xs font-mono font-bold text-amber-800 dark:text-amber-400 mt-0.5">
+                  التاريخ: {savedInstantCard.outgoingDate}
+                </span>
+              </div>
+            </div>
+
+            {/* Highlighted Employee Paper Document Alert Badge */}
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-500/20 border-2 border-amber-400/80 dark:border-amber-500/70 text-slate-900 dark:text-amber-100 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-md">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl p-2 rounded-xl bg-amber-400/30 text-amber-900 dark:text-amber-200 shrink-0">✍️</span>
+                <div className="text-right">
+                  <strong className="block text-xs sm:text-sm font-black text-amber-950 dark:text-amber-200">
+                    تنبيه للموظف: يرجى تثبيت رقم الصادر والتاريخ على أصل المعاملة الورقية الآن
+                  </strong>
+                  <p className="text-[11px] font-medium text-slate-700 dark:text-slate-300 mt-0.5">
+                    قم بكتابة العدد الصادر وتاريخ اليوم بخط واضح في الترويسة المخصصة على الطلب الورقي قبل تسليمه للمراجع أو إرساله للجهة المعنية.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="px-3 py-1.5 bg-amber-400 text-slate-950 font-black rounded-xl text-xs shadow-xs font-mono border border-amber-500">
+                  العدد: {savedInstantCard.outgoingNumber}
+                </div>
+                <div className="px-3 py-1.5 bg-slate-900 text-white font-black rounded-xl text-xs shadow-xs font-mono border border-slate-700">
+                  التاريخ: {savedInstantCard.outgoingDate}
+                </div>
+              </div>
+            </div>
+
+            {/* Details Body */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-50 dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 text-xs">
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">اسم صاحب الطلب:</span>
+                <span className="font-black text-slate-900 dark:text-white text-sm">{savedInstantCard.citizenName}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">الجهة الموجه إليها الكتاب:</span>
+                <span className="font-bold text-blue-700 dark:text-blue-400">{savedInstantCard.entity}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">رقم الهاتف والتواصل:</span>
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-200" dir="ltr">{savedInstantCard.phone}</span>
+              </div>
+              <div className="md:col-span-2">
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">موضوع المعاملة:</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200">{savedInstantCard.subject}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 block text-[10px] mb-0.5 font-bold">عنوان السكن:</span>
+                <span className="font-medium text-slate-700 dark:text-slate-300">{savedInstantCard.address}</span>
+              </div>
+            </div>
+
+            {/* Attached Image if available */}
+            {savedInstantCard.attachedImage && (
+              <div className="p-3 bg-blue-50/70 dark:bg-blue-950/40 rounded-2xl border border-blue-200 dark:border-blue-800 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <img
+                    src={savedInstantCard.attachedImage}
+                    alt="صورة الطلب"
+                    className="w-12 h-12 object-cover rounded-xl border border-blue-300 shadow-2xs"
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-blue-950 dark:text-blue-200 block">صورة الطلب الورقي المرفق</span>
+                    <span className="text-[10px] text-emerald-600 font-bold">تمت الأرشفة والحفظ بنجاح</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(savedInstantCard.outgoingNumber);
+                    setCopiedInstantOutgoing(true);
+                    setTimeout(() => setCopiedInstantOutgoing(false), 2000);
+                  }}
+                  className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Copy className="w-4 h-4 text-slate-500" />
+                  <span>{copiedInstantOutgoing ? 'تم النسخ ✓' : 'نسخ الرقم'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    printSingleOutgoingReceipt({
+                      outgoingNumber: savedInstantCard.outgoingNumber,
+                      outgoingDate: savedInstantCard.outgoingDate,
+                      citizenName: savedInstantCard.citizenName,
+                      phone: savedInstantCard.phone,
+                      entity: savedInstantCard.entity,
+                      subject: savedInstantCard.subject,
+                      address: savedInstantCard.address,
+                      processingStatus: savedInstantCard.status,
+                      deliveryStatus: savedInstantCard.deliveryStatus,
+                      notes: savedInstantCard.notes,
+                      attachedImage: savedInstantCard.attachedImage,
+                      officeName: systemSettings.officeName || systemSettings.appName,
+                      deputyName: systemSettings.deputyName,
+                      emblemUrl: systemSettings.parliamentEmblemUrl || systemSettings.logoUrl
+                    });
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 transition-transform"
+                >
+                  <Printer className="w-4 h-4 text-amber-400" />
+                  <span>طباعة وصل الصادر الرسمي</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSavedInstantCard(null);
+                  openInstantDirectRequestModal();
+                }}
+                className="w-full sm:w-auto px-6 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-black flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/30 transition-transform active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+                <span>إنشاء طلب فوري آخر ⏎</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

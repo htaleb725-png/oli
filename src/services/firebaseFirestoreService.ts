@@ -551,25 +551,98 @@ export async function fsDeleteUser(userId: string): Promise<void> {
 }
 
 // 8. System Settings & Developer Passcode
+const stripUndefinedDeep = (input: any): any => {
+  if (input === null || input === undefined) return null;
+  if (Array.isArray(input)) {
+    return input.filter((v) => v !== undefined).map(stripUndefinedDeep);
+  }
+  if (typeof input === 'object') {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(input)) {
+      if (v === undefined) continue;
+      out[k] = stripUndefinedDeep(v);
+    }
+    return out;
+  }
+  return input;
+};
+
 export async function fsSaveSettings(settings: Partial<SystemSettings>): Promise<void> {
   const col = getFSCol(FS_COLLECTIONS.SETTINGS);
+  const nowIso = new Date().toISOString();
+
+  // Always save critical cloud linkage fields to a tiny dedicated document (<1 KB)
+  // so Drive Folder ID / Sheet ID / Apps Script URL NEVER fail Firestore's 1MB document limit!
+  const cloudPatch: Record<string, any> = { updatedAt: nowIso };
+  if (settings.googleDriveFolderId) cloudPatch.googleDriveFolderId = settings.googleDriveFolderId;
+  if (settings.googleSheetId) cloudPatch.googleSheetId = settings.googleSheetId;
+  if (settings.activeGoogleSheetId) cloudPatch.activeGoogleSheetId = settings.activeGoogleSheetId;
+  if (settings.appsScriptUrl) cloudPatch.appsScriptUrl = settings.appsScriptUrl;
+  if (settings.googleAppsScriptUrl) cloudPatch.googleAppsScriptUrl = settings.googleAppsScriptUrl;
+  if (typeof settings.allowAdminOpenDriveFolder === 'boolean') {
+    cloudPatch.allowAdminOpenDriveFolder = settings.allowAdminOpenDriveFolder;
+  }
+
+  if (Object.keys(cloudPatch).length > 1) {
+    try {
+      await setDoc(doc(db, col, 'cloud_config'), cloudPatch, { merge: true });
+    } catch (cloudErr) {
+      console.warn('Firestore cloud_config save warn:', cloudErr);
+    }
+  }
+
   const path = `${col}/general`;
   try {
-    await setDoc(doc(db, col, 'general'), {
+    const cleanPayload = stripUndefinedDeep({
       ...settings,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+      updatedAt: nowIso
+    });
+    await setDoc(doc(db, col, 'general'), cleanPayload, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
+export function fsWatchCloudConfig(
+  callback: (cfg: {
+    googleDriveFolderId?: string;
+    googleSheetId?: string;
+    activeGoogleSheetId?: string;
+    appsScriptUrl?: string;
+    googleAppsScriptUrl?: string;
+    allowAdminOpenDriveFolder?: boolean;
+  }) => void
+): () => void {
+  if (isFirestoreTemporarilyBlocked()) return () => {};
+  try {
+    const col = getFSCol(FS_COLLECTIONS.SETTINGS);
+    return onSnapshot(
+      doc(db, col, 'cloud_config'),
+      (snap) => {
+        if (snap.exists()) {
+          callback(snap.data() as any);
+        }
+      },
+      (err) => {
+        noteFirestoreFailure(err);
+      }
+    );
+  } catch {
+    return () => {};
+  }
+}
+
 export async function fsGetSettings(): Promise<Partial<SystemSettings> | null> {
   const col = getFSCol(FS_COLLECTIONS.SETTINGS);
-  const path = `${col}/general`;
   try {
-    const snap = await getDoc(doc(db, col, 'general'));
-    return snap.exists() ? (snap.data() as Partial<SystemSettings>) : null;
+    const [generalSnap, cloudSnap] = await Promise.all([
+      getDoc(doc(db, col, 'general')),
+      getDoc(doc(db, col, 'cloud_config'))
+    ]);
+    const generalData = generalSnap.exists() ? (generalSnap.data() as Partial<SystemSettings>) : {};
+    const cloudData = cloudSnap.exists() ? (cloudSnap.data() as Partial<SystemSettings>) : {};
+    const merged = { ...generalData, ...cloudData };
+    return Object.keys(merged).length > 0 ? merged : null;
   } catch (error) {
     console.warn('Firestore getSettings warn:', error);
     return null;
