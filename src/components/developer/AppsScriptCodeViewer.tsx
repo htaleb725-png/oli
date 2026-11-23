@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { APPS_SCRIPT_PRODUCTION_CODE, APPS_SCRIPT_SETUP_GUIDE } from '../../services/appsScriptTemplate';
+import { APPS_SCRIPT_PRODUCTION_CODE } from '../../services/appsScriptTemplate';
+import { DEPARTMENT_SHEETS_OVERVIEW } from '../../services/googleSheetsSchema';
+import { reorganizeGoogleSheetsNow } from '../../services/realtimeGoogleSync';
 import { 
   Code2, 
   Copy, 
@@ -12,7 +14,9 @@ import {
   AlertCircle,
   HelpCircle,
   Save,
-  Link2
+  Link2,
+  Database,
+  RefreshCw
 } from 'lucide-react';
 
 export const AppsScriptCodeViewer: React.FC = () => {
@@ -23,7 +27,15 @@ export const AppsScriptCodeViewer: React.FC = () => {
     syncAllToGoogleSheetsNow,
     addCitizen,
     addRequest,
-    citizens
+    citizens,
+    requests,
+    interviews,
+    organizationRecords,
+    officialLetters,
+    cheques,
+    customRecords,
+    users,
+    auditLogs
   } = useApp();
 
   const [copied, setCopied] = useState(false);
@@ -48,9 +60,34 @@ export const AppsScriptCodeViewer: React.FC = () => {
       } catch (e) {
         console.warn('Sheets sync note:', e);
       }
-      setBulkSyncResult(`✓ تمت المزامنة الشاملة بنجاح! تم تحديث ${fsRes.successCount} سجل في Firebase Firestore${sheetSuccess ? ' وإرسال الحزمة إلى Google Sheets' : ''}.`);
+      setBulkSyncResult(`✓ تمت المزامنة الشاملة بنجاح! تم تحديث ${fsRes.successCount} سجل في السحابة${sheetSuccess ? ' وإرسال الحزمة إلى أوراق Google Sheets الـ 8 (ورقة واحدة لكل قسم)' : ''}.`);
     } catch (err: any) {
       setBulkSyncResult(`تنبيه المزامنة: ${err.message || 'حدث خطأ أثناء المزامنة'}`);
+    } finally {
+      setIsBulkSyncing(false);
+    }
+  };
+
+  const handleReorganize8DepartmentsNow = async () => {
+    setIsBulkSyncing(true);
+    setBulkSyncResult(null);
+    try {
+      const res = await reorganizeGoogleSheetsNow({
+        appsScriptUrl: appsScriptUrl.trim() || systemSettings.appsScriptUrl,
+        sheetId: sheetId.trim() || systemSettings.googleSheetId,
+        citizens,
+        requests,
+        interviews,
+        organizationRecords,
+        officialLetters,
+        cheques,
+        customRecords,
+        users,
+        auditLogs
+      });
+      setBulkSyncResult(res.message);
+    } catch (err: any) {
+      setBulkSyncResult(`تعذر تنظيم الأوراق: ${err?.message || 'حدث خطأ'}`);
     } finally {
       setIsBulkSyncing(false);
     }
@@ -81,7 +118,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
         Priority: 'عاجل',
         Details: 'طلب شمول رسمي براتب الحماية الاجتماعية - فحص سحابي تجريبي'
       });
-      setBulkSyncResult(`✓ تم بنجاح إنشاء سجل مواطن وطلب رسمي وحفظهما فورياً في Firebase Firestore وجدول Google Sheets! تفقد Google Sheets الآن لرؤية البيانات.`);
+      setBulkSyncResult(`✓ تم بنجاح إنشاء سجل مواطن وطلب رسمي وحفظهما فورياً في السحابة وجدول Google Sheets! تفقد Google Sheets الآن لرؤية البيانات.`);
     } catch (err: any) {
       setBulkSyncResult(`تعذر حقن البيانات: ${err.message}`);
     } finally {
@@ -119,27 +156,23 @@ export const AppsScriptCodeViewer: React.FC = () => {
     setTestResult(null);
 
     try {
-      await fetch(appsScriptUrl.trim(), {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          action: 'appendRow',
-          sheetType: 'dropdowns',
-          record: {
-            Category: 'فحص_الاتصال',
-            Value: `اختبار المطور ${new Date().toLocaleTimeString('ar-IQ')}`
-          },
-          timestamp: new Date().toISOString(),
-          source: 'developer_console_test'
-        })
+      const res = await reorganizeGoogleSheetsNow({
+        appsScriptUrl: appsScriptUrl.trim(),
+        sheetId: sheetId.trim() || systemSettings.googleSheetId,
+        citizens,
+        requests,
+        interviews,
+        organizationRecords,
+        officialLetters,
+        cheques,
+        customRecords,
+        users,
+        auditLogs
       });
 
       setTestResult({
-        success: true,
-        message: 'تم إرسال حزمة الاختبار بنجاح إلى سكربت Google Sheets! تفقد جدولك للتأكد من ظهور سطر الفحص.'
+        success: res.success,
+        message: res.message
       });
     } catch (err: any) {
       setTestResult({
@@ -278,10 +311,20 @@ export const AppsScriptCodeViewer: React.FC = () => {
           <button
             type="button"
             disabled={isBulkSyncing}
+            onClick={handleReorganize8DepartmentsNow}
+            className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center gap-2 shadow-md shadow-emerald-600/20 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isBulkSyncing ? 'animate-spin' : ''}`} />
+            <span>{isBulkSyncing ? 'جاري التوحيد...' : 'توحيد وترتيب أوراق Google Sheets الـ 8 (ورقة واحدة لكل قسم)'}</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={isBulkSyncing}
             onClick={handleFullCloudSync}
             className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center gap-2 shadow-md shadow-amber-500/20 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
           >
-            <span>{isBulkSyncing ? 'جاري المزامنة السحابية...' : 'إرسال ومزامنة كافة البيانات السابقة إلى Firebase و Sheets الآن ☁️'}</span>
+            <span>{isBulkSyncing ? 'جاري المزامنة السحابية...' : 'إرسال ومزامنة كافة البيانات السابقة إلى السحابة و Sheets الآن'}</span>
           </button>
 
           <button
@@ -289,9 +332,9 @@ export const AppsScriptCodeViewer: React.FC = () => {
             disabled={isBulkSyncing}
             onClick={handleSeedOfficialTestData}
             className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 font-black text-xs flex items-center gap-2 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
-            title="إضافة مواطن ومعاملة تجريبية فورية للتأكد من نزول البيانات في Google Sheets و Firebase"
+            title="إضافة مواطن ومعاملة تجريبية فورية للتأكد من نزول البيانات في Google Sheets"
           >
-            <span>📋 إضافة سجلات تجريبية فورية للتأكد من وصولها للفايربيس والشيت</span>
+            <span>إضافة سجلات تجريبية فورية للتأكد من وصولها للشيت</span>
           </button>
         </div>
 
@@ -301,6 +344,47 @@ export const AppsScriptCodeViewer: React.FC = () => {
             <span>{bulkSyncResult}</span>
           </div>
         )}
+      </div>
+
+      {/* 8 Single-Sheet-Per-Department Schema Overview */}
+      <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
+        <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+          <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
+            <Database className="w-4 h-4 text-emerald-500" />
+            <span>هيكلة قاعدة البيانات المعتمدة في Google Sheets (8 أوراق رسمية - ورقة واحدة لكل قسم):</span>
+          </h4>
+          <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 text-[10px] font-black">
+            8 أوراق فقط بدون تكرار
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {DEPARTMENT_SHEETS_OVERVIEW.map((dept, idx) => (
+            <div key={dept.key} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-md bg-emerald-600 text-white text-[10px] font-black flex items-center justify-center shrink-0">
+                    {idx + 1}
+                  </span>
+                  <span className="text-xs font-black text-slate-900 dark:text-white">{dept.departmentTitle}</span>
+                </div>
+                <span className="text-[10px] font-mono font-bold bg-white dark:bg-slate-900 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-emerald-600 dark:text-emerald-400">
+                  {dept.sheetName}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {dept.headers.map((h, hIdx) => (
+                  <span
+                    key={h}
+                    className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[10px] font-bold text-slate-700 dark:text-slate-300"
+                  >
+                    {hIdx + 1}. {h}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Code Viewer Panel */}

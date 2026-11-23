@@ -272,7 +272,7 @@ export const MasterAdminModule: React.FC = () => {
 
       // 5. Initial Sync to Sheets
       if (sId) {
-        logs.push(`[${now}] جاري مزامنة السجلات الحالية إلى جداول Google Sheets الـ 10...`);
+        logs.push(`[${now}] جاري مزامنة السجلات الحالية إلى أوراق Google Sheets الـ 8 (ورقة واحدة لكل قسم)...`);
         const syncRes = await syncAllDataToGoogleSheets(token, sId, {
           citizens,
           requests,
@@ -280,12 +280,14 @@ export const MasterAdminModule: React.FC = () => {
           organizationRecords,
           officialLetters,
           auditLogs,
-          cheques
+          cheques,
+          customRecords,
+          users
         });
-        logs.push(`✓ تم بنجاح تحديث وتنسيق (${syncRes.updatedSheets}) جداول في Google Sheets.`);
+        logs.push(`✓ تم بنجاح تحديث وتنسيق (${syncRes.updatedSheets}) أوراق أقسام في Google Sheets.`);
       }
 
-      logs.push(`⚡ اكتملت منظومة الربط مع Google Sheets (قاعدة البيانات) و Google Drive (مجلد الصور) بنجاح!`);
+      logs.push(`⚡ اكتملت منظومة الربط مع Google Sheets (8 أوراق رسمية للأقسام) و Google Drive (مجلد الصور) بنجاح!`);
       setSyncLogs(logs);
       addAuditLog('تهيئة المزامنة السحابية للمطور', 'لوحة تحكم المطور', 'تم تفعيل ربط Google Sheets و Google Drive بنجاح');
     } catch (err: any) {
@@ -326,11 +328,13 @@ export const MasterAdminModule: React.FC = () => {
         organizationRecords,
         officialLetters,
         cheques,
+        customRecords,
+        users,
         auditLogs
       });
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ${res.message}`, ...prev]);
       if (res.success) {
-        addAuditLog('تنظيف وترتيب أعمدة Google Sheets', 'لوحة تحكم المطور', res.message);
+        addAuditLog('توحيد وتنظيم أوراق Google Sheets (8 أقسام)', 'لوحة تحكم المطور', res.message);
       }
     } catch (err: any) {
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ❌ خطأ أثناء ترتيب الأعمدة: ${err?.message || 'غير معروف'}`, ...prev]);

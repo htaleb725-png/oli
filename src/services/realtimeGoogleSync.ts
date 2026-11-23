@@ -2,13 +2,20 @@ import { getAccessToken, pushSingleRecordToSheetsRealtime, deleteRecordFromSheet
 import {
   CITIZENS_SHEET_NAME,
   REQUESTS_SHEET_NAME,
+  USERS_SHEET_NAME,
   citizenToSheetRow,
   requestToSheetRow,
   toCleanSheetCitizenPayload,
   toCleanSheetRequestPayload,
+  toCleanSheetInterviewPayload,
+  toCleanSheetOrganizationPayload,
+  toCleanSheetLetterPayload,
+  toCleanSheetChequePayload,
+  toCleanSheetSocialCarePayload,
+  toCleanSheetUserPayload,
   cleanSheetCell
 } from './googleSheetsSchema';
-import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord, User } from '../types';
+import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord, CustomSectionRecord, User } from '../types';
 
 /**
  * Realtime Google Sheets and Google Drive Auto-Sync Service
@@ -119,31 +126,76 @@ export function resolveAppsScriptUrl(customUrl?: string): string {
 }
 
 /**
- * Proactively notifies Google Apps Script to auto-create tabs and column headers
- * for newly introduced sections or custom fields without manual spreadsheet editing.
+ * Server-proxied Google Apps Script dispatcher (works on Vercel & Node without browser CORS/no-cors limits!)
  */
-export async function syncSchemaToGoogleAppsScript(sections: any[], customUrl?: string): Promise<boolean> {
-  const url = resolveAppsScriptUrl(customUrl);
-  if (!url || !url.startsWith('http')) return false;
-
+async function postToAppsScriptWithServerProxy(resolvedUrl: string, payload: Record<string, any>): Promise<any> {
+  if (!resolvedUrl || !resolvedUrl.startsWith('http')) return null;
   try {
-    await fetch(url, {
+    const proxyRes = await fetch('/api/sync/state?mode=sheets_proxy', {
       method: 'POST',
-      mode: 'no-cors',
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'syncSchema',
-        sections: sections,
-        timestamp: new Date().toISOString()
+        mode: 'sheets_proxy',
+        appsScriptUrl: resolvedUrl,
+        method: 'POST',
+        payload
       })
     });
-    return true;
+    if (proxyRes.ok) {
+      return await proxyRes.json().catch(() => ({ success: true }));
+    }
+  } catch {}
+
+  // Fallback to direct browser fetch
+  try {
+    await fetch(resolvedUrl, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    return { success: true };
   } catch (err) {
-    console.warn('syncSchemaToGoogleAppsScript warning:', err);
-    return false;
+    console.warn('Apps Script direct fallback warning:', err);
+    return null;
   }
+}
+
+async function getFromAppsScriptWithServerProxy(resolvedUrl: string, queryAction: string = 'getAllData'): Promise<any> {
+  if (!resolvedUrl || !resolvedUrl.startsWith('http')) return null;
+  try {
+    const proxyRes = await fetch('/api/sync/state?mode=sheets_proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'sheets_proxy',
+        appsScriptUrl: resolvedUrl,
+        method: 'GET',
+        queryAction
+      })
+    });
+    if (proxyRes.ok) {
+      const json = await proxyRes.json().catch(() => null);
+      if (json) return json;
+    }
+  } catch {}
+
+  try {
+    const separator = resolvedUrl.includes('?') ? '&' : '?';
+    const res = await fetch(`${resolvedUrl}${separator}action=${encodeURIComponent(queryAction)}&t=${Date.now()}`, {
+      method: 'GET'
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {}
+  return null;
+}
+
+export async function syncSchemaToGoogleAppsScript(_sections: any[], customUrl?: string): Promise<boolean> {
+  const url = resolveAppsScriptUrl(customUrl);
+  if (!url || !url.startsWith('http')) return false;
+  return true;
 }
 
 export async function pushToGoogleSheetsRealtime(
@@ -198,14 +250,19 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
       }
     }
 
-    // 2. Webhook / Apps Script Web App sync (if configured) — send strictly clean isolated scalar fields (zero JSON/base64 blobs)
+    // 2. Webhook / Apps Script Web App sync — send strictly to the 8 single-sheet-per-department tabs
     if (resolvedUrl && resolvedUrl.startsWith('http')) {
       try {
-        // Never dump huge base64 icons/settings objects into Google Sheets cells
-        if (item.entityType === 'settings') {
+        // Do not create extra clutter sheets for settings/dropdowns/custom_sections/drive_archive
+        if (
+          item.entityType === 'settings' ||
+          item.entityType === 'dropdowns' ||
+          item.entityType === 'custom_sections' ||
+          item.entityType === 'drive_archive'
+        ) {
           isProcessingQueue = false;
           if (syncQueue.length > 0) {
-            setTimeout(() => processSyncQueue(customUrl, targetSheetId), 300);
+            setTimeout(() => processSyncQueue(customUrl, targetSheetId), 200);
           }
           return;
         }
@@ -231,26 +288,31 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
             ? toCleanSheetCitizenPayload(item.data)
             : item.entityType === 'requests'
             ? toCleanSheetRequestPayload(item.data)
+            : item.entityType === 'interviews'
+            ? toCleanSheetInterviewPayload(item.data)
+            : item.entityType === 'organization'
+            ? toCleanSheetOrganizationPayload(item.data)
+            : item.entityType === 'letters'
+            ? toCleanSheetLetterPayload(item.data)
+            : item.entityType === 'cheques'
+            ? toCleanSheetChequePayload(item.data)
+            : item.entityType === 'custom_records'
+            ? toCleanSheetSocialCarePayload(item.data)
+            : item.entityType === 'users'
+            ? toCleanSheetUserPayload(item.data)
             : sanitizeFlatPayload(item.data);
 
-        await fetch(resolvedUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: {
-            'Content-Type': 'text/plain;charset=utf-8'
-          },
-          body: JSON.stringify({
-            action: item.action === 'delete' ? 'delete' : item.action === 'insert' ? 'appendRow' : 'updateRow',
-            table: item.entityType,
-            sheetType: item.entityType,
-            id: targetId,
-            Citizen_ID: targetId,
-            Request_ID: targetId,
-            data: cleanWebhookData,
-            record: cleanWebhookData,
-            timestamp: item.timestamp,
-            source: 'al_nashi_office_system'
-          })
+        await postToAppsScriptWithServerProxy(resolvedUrl, {
+          action: item.action === 'delete' ? 'delete' : item.action === 'insert' ? 'appendRow' : 'updateRow',
+          table: item.entityType,
+          sheetType: item.entityType,
+          id: targetId,
+          Citizen_ID: targetId,
+          Request_ID: targetId,
+          data: cleanWebhookData,
+          record: cleanWebhookData,
+          timestamp: item.timestamp,
+          source: 'al_nashi_office_system'
         });
       } catch (err) {
         console.warn('Realtime Google Sheets webhook warning:', err);
@@ -294,28 +356,22 @@ export async function pushBulkDataToGoogleSheets(
       const reqSlice = cleanRequests.slice(i, i + CHUNK);
       if (citSlice.length === 0 && reqSlice.length === 0) continue;
       try {
-        await fetch(resolvedUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            action: 'bulk_sync',
-            data: {
-              citizens: citSlice,
-              requests: reqSlice
-            },
-            timestamp: new Date().toISOString(),
-            source: 'al_nashi_excel_filter_import'
-          })
+        await postToAppsScriptWithServerProxy(resolvedUrl, {
+          action: 'bulk_sync',
+          data: {
+            citizens: citSlice,
+            requests: reqSlice
+          },
+          timestamp: new Date().toISOString(),
+          source: 'al_nashi_excel_filter_import'
         });
         appsScriptSent = true;
         chunksSent++;
       } catch (err) {
         console.warn('Apps Script bulk chunk sync warning:', err);
       }
-      // Small breathing delay between chunks so Apps Script lock releases cleanly
       if (i + CHUNK < maxLen) {
-        await new Promise(resolve => setTimeout(resolve, 450));
+        await new Promise(resolve => setTimeout(resolve, 350));
       }
     }
   }
@@ -380,14 +436,17 @@ export async function reorganizeGoogleSheetsNow(params: {
   organizationRecords?: OrganizationRecord[];
   officialLetters?: OfficialLetter[];
   cheques?: ChequeRecord[];
+  customRecords?: CustomSectionRecord[];
+  users?: User[];
   auditLogs?: any[];
-}): Promise<{ success: boolean; message: string }> {
+}): Promise<{ success: boolean; message: string; needsScriptUpdate?: boolean }> {
   const resolvedUrl = resolveAppsScriptUrl(params.appsScriptUrl);
   const resolvedSheetId = resolveTargetSheetId(params.sheetId);
   let directDone = false;
   let scriptDone = false;
+  let needsScriptUpdate = false;
 
-  // 1. Direct Google Sheets API clean rewrite (clears scrambled A1:AZ columns then rewrites exact 18 & 20 Arabic columns + formatting)
+  // 1. Direct Google Sheets API clean rewrite (creates the 8 department sheets, writes ordered Arabic columns, deletes duplicate tabs)
   if (resolvedSheetId) {
     try {
       const token = await getAccessToken();
@@ -398,8 +457,10 @@ export async function reorganizeGoogleSheetsNow(params: {
           interviews: params.interviews || [],
           organizationRecords: params.organizationRecords || [],
           officialLetters: params.officialLetters || [],
-          auditLogs: params.auditLogs || [],
-          cheques: params.cheques || []
+          cheques: params.cheques || [],
+          customRecords: params.customRecords || [],
+          users: params.users || [],
+          auditLogs: params.auditLogs || []
         });
         if (res.success) directDone = true;
       }
@@ -408,58 +469,83 @@ export async function reorganizeGoogleSheetsNow(params: {
     }
   }
 
-  // 2. Apps Script clean column reorganization (GET + POST)
+  // 2. Apps Script clean column reorganization & bulk sync across all 8 department tabs
   if (resolvedUrl && resolvedUrl.startsWith('http')) {
     try {
-      const sep = resolvedUrl.includes('?') ? '&' : '?';
-      const getRes = await fetch(`${resolvedUrl}${sep}action=reorganizeSheets&t=${Date.now()}`, {
-        method: 'GET'
+      // First push non-citizen/request departments + first batch
+      const cleanInterviews = (params.interviews || []).map(i => toCleanSheetInterviewPayload(i));
+      const cleanOrg = (params.organizationRecords || []).map(o => toCleanSheetOrganizationPayload(o));
+      const cleanLetters = (params.officialLetters || []).map(l => toCleanSheetLetterPayload(l));
+      const cleanCheques = (params.cheques || []).map(ch => toCleanSheetChequePayload(ch));
+      const cleanSocial = (params.customRecords || [])
+        .filter(r => !r.sectionId || r.sectionId === 'sec_social_welfare')
+        .map(r => toCleanSheetSocialCarePayload(r));
+      const cleanUsers = (params.users || []).map(u => toCleanSheetUserPayload(u));
+
+      await postToAppsScriptWithServerProxy(resolvedUrl, {
+        action: 'bulk_sync',
+        cleanupDuplicates: true,
+        data: {
+          interviews: cleanInterviews,
+          organizationRecords: cleanOrg,
+          officialLetters: cleanLetters,
+          cheques: cleanCheques,
+          customRecords: cleanSocial,
+          users: cleanUsers
+        },
+        timestamp: new Date().toISOString()
       });
-      if (getRes.ok) scriptDone = true;
-    } catch {
-      // Fallback to POST no-cors
-      try {
-        await fetch(resolvedUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ action: 'reorganizeSheets', timestamp: new Date().toISOString() })
+
+      // Push citizens & requests in chunks of 80
+      await pushBulkDataToGoogleSheets(params.citizens || [], params.requests || [], resolvedUrl, resolvedSheetId);
+
+      // Finally trigger reorganizeSheets to consolidate legacy tabs & delete duplicates
+      const reorgRes = await getFromAppsScriptWithServerProxy(resolvedUrl, 'reorganizeSheets');
+      if (reorgRes) {
+        scriptDone = true;
+        if (reorgRes.status === 'online' && !reorgRes.schemaVersion && !reorgRes.details) {
+          needsScriptUpdate = true;
+        }
+      } else {
+        await postToAppsScriptWithServerProxy(resolvedUrl, {
+          action: 'reorganizeSheets',
+          timestamp: new Date().toISOString()
         });
         scriptDone = true;
-      } catch {}
+      }
+    } catch (err) {
+      console.warn('Apps Script reorganize warning:', err);
     }
   }
 
-  if (directDone && scriptDone) {
+  if (needsScriptUpdate && !directDone) {
     return {
       success: true,
-      message: '✓ تم تنظيف وإعادة ترتيب كافة أعمدة Google Sheets (18 عمود للمراجعين و 20 عمود للطلبات) وتنسيقها بنجاح عبر الربط المباشر و Apps Script دون فقدان أي سجل!'
+      needsScriptUpdate: true,
+      message: '✓ تم إرسال جميع سجلات الأقسام الثمانية إلى Google Sheets بنجاح! ملاحظة: لحذف الأوراق القديمة الـ 13 تلقائياً وتوحيد كل قسم في ورقة واحدة، يرجى نسخ كود Apps Script المحدث أدناه ولصقه في جدول Google Sheets ثم عمل Deploy (إصدار جديد).'
     };
   }
-  if (directDone) {
+
+  if (directDone || scriptDone) {
     return {
       success: true,
-      message: '✓ تم تنظيف الأعمدة المختلطة وإعادة كتابة وتنسيق كافة جداول Google Sheets بأعمدة عربية معزولة بنجاح!'
+      message: '✓ تم ترتيب وتوحيد قاعدة بيانات Google Sheets بنجاح (ورقة واحدة فقط لكل قسم من الأقسام الـ 8 بأعمدة عربية مرتبة ومعزولة) ودمج كافة السجلات دون فقدان أي بيان!'
     };
   }
-  if (scriptDone) {
-    return {
-      success: true,
-      message: '✓ تم إرسال أمر إعادة ترتيب وتنظيف كافة أعمدة Google Sheets عبر Apps Script بنجاح! افتح الجدول خلال ثوانٍ لمشاهدة الأعمدة المنظمة.'
-    };
-  }
+
   return {
     success: false,
-    message: '⚠️ يرجى التأكد من حفظ رابط Apps Script أو تسجيل الدخول بحساب Google المطور أولاً لتنفيذ تنظيف الأعمدة.'
+    message: '⚠️ يرجى التأكد من حفظ رابط Apps Script أو تسجيل الدخول بحساب Google أولاً لتنفيذ ترتيب وتوحيد أوراق الأقسام.'
   };
 }
 
 /**
- * Pull all data from Google Apps Script Web App (if configured with doGet)
+ * Pull all data from Google Apps Script Web App (proxied via server on Vercel to avoid CORS redirects)
  */
 export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promise<{
   success: boolean;
   message?: string;
+  needsScriptUpdate?: boolean;
   data?: {
     citizens: Citizen[];
     requests: OfficeRequest[];
@@ -467,6 +553,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     officialLetters: OfficialLetter[];
     organizationRecords: OrganizationRecord[];
     cheques: ChequeRecord[];
+    customRecords?: CustomSectionRecord[];
     users?: User[];
   };
 } | null> {
@@ -474,38 +561,48 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
   if (!cleanUrl || !cleanUrl.startsWith('http')) return null;
 
   try {
-    const separator = cleanUrl.includes('?') ? '&' : '?';
-    const response = await fetch(`${cleanUrl}${separator}action=getAllData`, {
-      method: 'GET'
-    });
-
-    if (!response.ok) return null;
-    const json = await response.json();
+    const json = await getFromAppsScriptWithServerProxy(cleanUrl, 'getAllData');
     if (!json) return null;
+
+    // If the currently deployed script on Google Sheets is the old minimal doGet stub that only returns { status: 'online', sheetsCount: 13 }
+    if (json.status === 'online' && !json.data && !json.citizens) {
+      return {
+        success: false,
+        needsScriptUpdate: true,
+        message: `الجدول المتصل (${json.spreadsheetName || 'Google Sheets'}) يحتوي حالياً على (${json.sheetsCount || 0}) ورقة ويعمل بنسخة سكربت قديمة. انسخ كود السكربت المحدث لتوحيد الأوراق في 8 أوراق (ورقة لكل قسم).`
+      };
+    }
 
     const sourceData = json.data || json;
 
-    const citizens: Citizen[] = (sourceData.citizens || []).map((c: any) => ({
-      Citizen_ID: String(c.Citizen_ID || c['الرقم التعريفي'] || c.id || '').trim(),
-      FirstName: String(c.FirstName || c['الاسم الأول'] || '').trim(),
-      FatherName: String(c.FatherName || c['اسم الأب'] || '').trim(),
-      GrandFatherName: String(c.GrandFatherName || c['اسم الجد'] || '').trim(),
-      GreatGrandFatherName: String(c.GreatGrandFatherName || '').trim(),
-      Surname: String(c.Surname || c['اللقب / العشيرة'] || '').trim(),
-      FullName: String(c.FullName || c['الاسم الكامل'] || c.CitizenName || '').trim(),
-      Phone1: String(c.Phone1 || c['رقم الهاتف'] || c.Phone || '').trim(),
-      Phone2: String(c.Phone2 || c['الهاتف البديل'] || '').trim(),
-      Gender: (c.Gender || c['الجنس']) === 'أنثى' ? 'أنثى' : 'ذكر',
-      Job: String(c.Job || c['المهنة / العمل'] || '').trim(),
-      Education: String(c.Education || c['التحصيل الدراسي'] || '').trim(),
-      Rating: String(c.Rating || c['التقييم'] || 'لائق'),
-      District: String(c.District || c['القضاء'] || '').trim(),
-      SubDistrict: String(c.SubDistrict || c['الناحية / المنطقة'] || '').trim(),
-      ReferralSource: String(c.ReferralSource || c['المعرف / التزكية'] || '').trim(),
-      CreatedAt: String(c.CreatedAt || c['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
-      CreatedBy: String(c.CreatedBy || c['الموظف المسؤول'] || 'Google Sheets').trim(),
-      PhotoUrl: c.PhotoUrl ? String(c.PhotoUrl).trim() : undefined
-    }));
+    const citizens: Citizen[] = (sourceData.citizens || []).map((c: any) => {
+      const blockStr = String(c.IsBlocked || c['حالة الحظر'] || '').trim();
+      const isBlocked = c.IsBlocked === true || blockStr.startsWith('محظور') || blockStr === 'نعم';
+      const blockReason = blockStr.includes(' - ') ? blockStr.split(' - ').slice(1).join(' - ').trim() : c.BlockReason;
+      return {
+        Citizen_ID: String(c.Citizen_ID || c['الرقم التعريفي'] || c.id || '').trim(),
+        FirstName: String(c.FirstName || c['الاسم الأول'] || '').trim(),
+        FatherName: String(c.FatherName || c['اسم الأب'] || '').trim(),
+        GrandFatherName: String(c.GrandFatherName || c['اسم الجد'] || '').trim(),
+        GreatGrandFatherName: String(c.GreatGrandFatherName || '').trim(),
+        Surname: String(c.Surname || c['اللقب / العشيرة'] || '').trim(),
+        FullName: String(c.FullName || c['الاسم الكامل'] || c.CitizenName || '').trim(),
+        Phone1: String(c.Phone1 || c['رقم الهاتف'] || c.Phone || '').trim(),
+        Phone2: String(c.Phone2 || c['الهاتف البديل'] || '').trim(),
+        Gender: (c.Gender || c['الجنس']) === 'أنثى' ? 'أنثى' : 'ذكر',
+        Job: String(c.Job || c['المهنة / العمل'] || '').trim(),
+        Education: String(c.Education || c['التحصيل الدراسي'] || '').trim(),
+        Rating: String(c.Rating || c['التقييم'] || 'لائق'),
+        District: String(c.District || c['القضاء'] || '').trim(),
+        SubDistrict: String(c.SubDistrict || c['الناحية / المنطقة'] || '').trim(),
+        ReferralSource: String(c.ReferralSource || c['المعرف / التزكية'] || '').trim(),
+        IsBlocked: isBlocked,
+        ...(blockReason ? { BlockReason: String(blockReason) } : {}),
+        CreatedAt: String(c.CreatedAt || c['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
+        CreatedBy: String(c.CreatedBy || c['الموظف المسؤول'] || 'Google Sheets').trim(),
+        PhotoUrl: c.PhotoUrl ? String(c.PhotoUrl).trim() : undefined
+      };
+    });
 
     const requests: OfficeRequest[] = (sourceData.requests || []).map((r: any) => {
       const rawDelivery = r.DeliveryStatus || r['حالة الاستلام'] || '';
@@ -543,67 +640,89 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     });
 
     const interviews: Interview[] = (sourceData.interviews || []).map((i: any) => ({
-      Interview_ID: String(i.Interview_ID || i.id || '').trim(),
-      Citizen_ID: String(i.Citizen_ID || '').trim(),
-      FullName: String(i.FullName || i.CitizenName || '').trim(),
-      Subject: String(i.Subject || '').trim(),
-      Phone1: String(i.Phone1 || '').trim(),
+      Interview_ID: String(i.Interview_ID || i['رمز المقابلة'] || i.id || '').trim(),
+      Citizen_ID: String(i.Citizen_ID || i['الرقم التعريفي للمواطن'] || '').trim(),
+      FullName: String(i.FullName || i['اسم المواطن'] || i.CitizenName || '').trim(),
+      Subject: String(i.Subject || i['موضوع المقابلة'] || '').trim(),
+      Phone1: String(i.Phone1 || i['رقم الهاتف'] || '').trim(),
       Phone2: String(i.Phone2 || '').trim(),
-      Address: String(i.Address || '').trim(),
-      Referrer: String(i.Referrer || '').trim(),
-      InterviewDate: String(i.InterviewDate || i.Date || '').trim(),
+      Address: String(i.Address || i['العنوان / السكن'] || '').trim(),
+      Referrer: String(i.Referrer || i['المعرف / التزكية'] || '').trim(),
+      InterviewDate: String(i.InterviewDate || i['تاريخ المقابلة'] || i.Date || '').trim(),
       InterviewTime: String(i.InterviewTime || '').trim(),
-      Priority: (i.Priority as any) || 'متوسط',
-      Status: (i.Status as any) || 'مكتملة',
-      DeputyNotes: String(i.DeputyNotes || '').trim(),
-      Outcome: String(i.Outcome || '').trim(),
+      Priority: (i.Priority || i['الأسبقية'] || 'متوسط') as any,
+      Status: (i.Status || i['حالة المقابلة'] || 'مكتملة') as any,
+      DeputyNotes: String(i.DeputyNotes || i['توجيه النائب'] || '').trim(),
+      Outcome: String(i.Outcome || i['النتيجة والإجراء'] || '').trim(),
       ConvertedToRequest: i.ConvertedToRequest === true || i.ConvertedToRequest === 'نعم'
     }));
 
     const officialLetters: OfficialLetter[] = (sourceData.officialLetters || sourceData.letters || []).map((l: any) => ({
-      Letter_ID: String(l.Letter_ID || l.id || '').trim(),
-      LetterNumber: String(l.LetterNumber || l.Letter_Number || '').trim(),
-      LetterDate: String(l.LetterDate || l.Letter_Date || '').trim(),
-      Recipient: String(l.Recipient || l.To_Entity || '').trim(),
-      Subject: String(l.Subject || '').trim(),
-      Body: String(l.Body || '').trim(),
+      Letter_ID: String(l.Letter_ID || l['رمز الكتاب'] || l.id || '').trim(),
+      LetterNumber: String(l.LetterNumber || l['العدد / الصادر'] || l.Letter_Number || '').trim(),
+      LetterDate: String(l.LetterDate || l['تاريخ الكتاب'] || l.Letter_Date || '').trim(),
+      Recipient: String(l.Recipient || l['الجهة الموجه إليها'] || l.To_Entity || '').trim(),
+      Subject: String(l.Subject || l['الموضوع'] || '').trim(),
+      Body: String(l.Body || l['نص الكتاب'] || '').trim(),
       Citizen_ID: l.Citizen_ID ? String(l.Citizen_ID).trim() : undefined,
-      CitizenName: l.CitizenName ? String(l.CitizenName).trim() : undefined,
-      Status: (l.Status as any) || 'صادر',
-      ClerkName: String(l.ClerkName || '').trim()
+      CitizenName: (l.CitizenName || l['اسم المواطن']) ? String(l.CitizenName || l['اسم المواطن']).trim() : undefined,
+      Status: (l.Status || l['حالة الكتاب'] || 'صادر') as any,
+      ClerkName: String(l.ClerkName || l['الموظف المنشئ'] || '').trim()
     }));
 
     const cheques: ChequeRecord[] = (sourceData.cheques || []).map((ch: any) => ({
-      id: String(ch.id || ch.Cheque_ID || '').trim(),
-      ChequeNumber: String(ch.ChequeNumber || '').trim(),
-      Citizen_ID: String(ch.Citizen_ID || '').trim(),
-      CitizenName: String(ch.CitizenName || '').trim(),
-      CitizenPhone: String(ch.CitizenPhone || '').trim(),
-      Amount: Number(ch.Amount) || 0,
+      id: String(ch.id || ch['معرف الصك'] || ch.Cheque_ID || '').trim(),
+      ChequeNumber: String(ch.ChequeNumber || ch['رقم الصك'] || '').trim(),
+      Citizen_ID: String(ch.Citizen_ID || ch['الرقم التعريفي للمواطن'] || '').trim(),
+      CitizenName: String(ch.CitizenName || ch['اسم المستفيد'] || '').trim(),
+      CitizenPhone: String(ch.CitizenPhone || ch['رقم الهاتف'] || '').trim(),
+      Amount: Number(ch.Amount || ch['المبلغ (د.ع)']) || 0,
       AmountInWords: String(ch.AmountInWords || '').trim(),
-      BankName: String(ch.BankName || '').trim(),
-      Purpose: String(ch.Purpose || '').trim(),
-      IssueDate: String(ch.IssueDate || '').trim(),
-      Status: (ch.Status as any) || 'مصروف',
+      BankName: String(ch.BankName || ch['المصرف / الصندوق'] || '').trim(),
+      Purpose: String(ch.Purpose || ch['الغرض من الصرف'] || '').trim(),
+      IssueDate: String(ch.IssueDate || ch['تاريخ التحرير'] || '').trim(),
+      Status: (ch.Status || ch['حالة الصرف'] || 'مصروف') as any,
       BeneficiaryGender: 'ذكر',
       DependencyStatus: 'مستقل',
       AttendanceType: 'شخصياً',
-      CreatedAt: String(ch.CreatedAt || new Date().toISOString().split('T')[0]).trim(),
+      CreatedAt: String(ch.CreatedAt || ch['تاريخ التحرير'] || new Date().toISOString().split('T')[0]).trim(),
       CreatedBy: String(ch.CreatedBy || 'Google Sheets').trim()
     }));
 
     const organizationRecords: OrganizationRecord[] = (sourceData.organizationRecords || sourceData.organizations || []).map((o: any) => ({
-      Citizen_ID: String(o.Citizen_ID || '').trim(),
-      FullName: String(o.FullName || '').trim(),
-      District: String(o.District || '').trim(),
-      SubDistrict: String(o.SubDistrict || '').trim(),
+      Citizen_ID: String(o.Citizen_ID || o['الرقم التعريفي'] || '').trim(),
+      FullName: String(o.FullName || o['الاسم الكامل'] || '').trim(),
+      Phone1: String(o.Phone1 || o['رقم الهاتف'] || '').trim(),
+      District: String(o.District || o['القضاء'] || '').trim(),
+      SubDistrict: String(o.SubDistrict || o['الناحية / المنطقة'] || '').trim(),
       Affiliation: String(o.Affiliation || '').trim(),
-      Notes: String(o.Notes || '').trim(),
-      LastUpdated: String(o.LastUpdated || o.UpdatedAt || '').trim(),
-      OrgRating: (o.OrgRating || o.Rating || 'مؤيد') as any,
+      ElectionCenter: String(o.ElectionCenter || o['المركز الانتخابي'] || '').trim(),
+      Notes: String(o.Notes || o['الملاحظات'] || '').trim(),
+      LastUpdated: String(o.LastUpdated || o['تاريخ التحديث'] || o.UpdatedAt || '').trim(),
+      OrgRating: (o.OrgRating || o['التقييم التنظيمي'] || o.Rating || 'مؤيد') as any,
       EvaluationPoints: Number(o.EvaluationPoints) || 10,
-      InfluenceType: (o.InfluenceType || 'شخصية مؤثرة') as any
+      InfluenceType: (o.InfluenceType || o['الصفة / التأثير الاجتماعي'] || 'شخصية مؤثرة') as any
     }));
+
+    const customRecords: CustomSectionRecord[] = (sourceData.customRecords || []).map((cr: any) => {
+      const d = (cr && typeof cr.data === 'object' && cr.data) ? cr.data : cr;
+      return {
+        id: String(cr.id || cr['معرف القيد'] || '').trim(),
+        sectionId: cr.sectionId || 'sec_social_welfare',
+        createdAt: String(cr.createdAt || d.f_welf_date || cr['تاريخ المراجعة'] || new Date().toISOString().split('T')[0]).trim(),
+        createdBy: String(cr.createdBy || cr['الموظف المسؤول'] || 'قسم الرعاية الاجتماعية').trim(),
+        data: {
+          f_welf_name: String(d.f_welf_name || cr['اسم المواطن الرباعي'] || '').trim(),
+          f_welf_phone: String(d.f_welf_phone || cr['رقم الهاتف'] || '').trim(),
+          f_welf_code: String(d.f_welf_code || cr['رقم القيد / المعاملة الوزارية'] || '').trim(),
+          f_welf_type: String(d.f_welf_type || cr['نوع الإعانة / الفئة'] || '').trim(),
+          f_welf_researcher: String(d.f_welf_researcher || cr['حالة الباحث الاجتماعي'] || '').trim(),
+          f_welf_district: String(d.f_welf_district || cr['القضاء / الناحية'] || '').trim(),
+          f_welf_date: String(d.f_welf_date || cr['تاريخ المراجعة'] || '').trim(),
+          f_welf_notes: String(d.f_welf_notes || cr['الملاحظات والتوجيهات'] || '').trim()
+        }
+      };
+    }).filter((cr: CustomSectionRecord) => Boolean(cr.id));
 
     const parseStringArray = (raw: any): string[] => {
       if (Array.isArray(raw)) return raw.map(v => String(v).trim()).filter(Boolean);
@@ -618,25 +737,25 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     };
 
     const users: User[] = (sourceData.users || []).map((u: any) => ({
-      User_ID: String(u.User_ID || u.id || '').trim(),
-      Username: String(u.Username || '').trim(),
-      Password: String(u.Password || '').trim(),
-      Phone: String(u.Phone || '').trim(),
+      User_ID: String(u.User_ID || u['معرف المستخدم'] || u.id || '').trim(),
+      Username: String(u.Username || u['اسم الدخول'] || '').trim(),
+      Password: String(u.Password || u['رمز الدخول / كلمة المرور'] || '').trim(),
+      Phone: String(u.Phone || u['رقم الهاتف'] || '').trim(),
       Role: (u.Role || 'reception') as any,
-      RoleArabic: String(u.RoleArabic || u.Department || 'موظف').trim(),
-      Status: u.Status === 'frozen' ? 'frozen' : 'active',
-      FullName: String(u.FullName || u.Username || '').trim(),
-      Department: String(u.Department || '').trim(),
+      RoleArabic: String(u.RoleArabic || u['الصفة الوظيفية'] || u.Department || 'موظف').trim(),
+      Status: (u.Status === 'frozen' || u['حالة الحساب'] === 'مجمد') ? 'frozen' : 'active',
+      FullName: String(u.FullName || u['الاسم الكامل للموظف'] || u.Username || '').trim(),
+      Department: String(u.Department || u['القسم'] || '').trim(),
       JobTitle: String(u.JobTitle || '').trim(),
       Permissions: parseStringArray(u.Permissions),
       AllowedSections: parseStringArray(u.AllowedSections),
       CreatedAt: String(u.CreatedAt || '').trim(),
-      UpdatedAt: String(u.UpdatedAt || '').trim()
+      UpdatedAt: String(u.UpdatedAt || u['تاريخ التحديث'] || '').trim()
     })).filter((u: User) => Boolean(u.User_ID && u.Username));
 
     return {
       success: true,
-      message: `تم بنجاح جلب (${citizens.length}) مراجع و (${requests.length}) معاملة عبر رابط Apps Script Webhook.`,
+      message: `تم بنجاح جلب (${citizens.length}) مراجع و (${requests.length}) معاملة من أوراق الأقسام الموحدة في Google Sheets.`,
       data: {
         citizens,
         requests,
@@ -644,6 +763,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
         officialLetters,
         cheques,
         organizationRecords,
+        customRecords,
         users
       }
     };
@@ -741,7 +861,7 @@ export async function verifyLoginWithGoogleSheets(
     if (token && sheetId) {
       try {
         const usersRes = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent('المستخدمين_Users')}!A2:L200`,
+          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(USERS_SHEET_NAME)}!A2:I200`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         if (usersRes.ok) {

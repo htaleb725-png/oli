@@ -4,6 +4,25 @@ import * as XLSX from 'xlsx';
 import { APPS_SCRIPT_PRODUCTION_CODE } from '../services/appsScriptTemplate';
 import { extractDriveFolderId } from '../services/driveArchiveService';
 import { reorganizeGoogleSheetsNow } from '../services/realtimeGoogleSync';
+import {
+  DEPARTMENT_SHEETS_OVERVIEW,
+  CITIZENS_SHEET_NAME,
+  REQUESTS_SHEET_NAME,
+  INTERVIEWS_SHEET_NAME,
+  ORGANIZATION_SHEET_NAME,
+  LETTERS_SHEET_NAME,
+  CHEQUES_SHEET_NAME,
+  SOCIAL_CARE_SHEET_NAME,
+  USERS_SHEET_NAME,
+  toCleanSheetCitizenPayload,
+  toCleanSheetRequestPayload,
+  toCleanSheetInterviewPayload,
+  toCleanSheetOrganizationPayload,
+  toCleanSheetLetterPayload,
+  toCleanSheetChequePayload,
+  toCleanSheetSocialCarePayload,
+  toCleanSheetUserPayload
+} from '../services/googleSheetsSchema';
 import { 
   FileSpreadsheet, 
   Copy, 
@@ -44,6 +63,8 @@ export const AppsScriptSyncModule: React.FC = () => {
     updateSystemSettings,
     setGoogleDriveFolderId,
     cheques,
+    customRecords,
+    users,
     addAuditLog 
   } = useApp();
 
@@ -52,7 +73,7 @@ export const AppsScriptSyncModule: React.FC = () => {
   const [selectedSheetUrl, setSelectedSheetUrl] = useState<string>(systemSettings.activeGoogleSheetUrl || (systemSettings.googleSheetId ? `https://docs.google.com/spreadsheets/d/${systemSettings.googleSheetId}/edit` : ''));
 
   // Direct Link Settings State
-  const [customSheetId, setCustomSheetId] = useState(systemSettings.googleSheetId || '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms');
+  const [customSheetId, setCustomSheetId] = useState(systemSettings.googleSheetId || '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ');
   const [customDriveFolderId, setCustomDriveFolderId] = useState(systemSettings.googleDriveFolderId || '1cpO4KynQ524Or32Xg2Es8WYA3VrhlUMc');
   const [customAppsScriptUrl, setCustomAppsScriptUrl] = useState(systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl || '');
   const [saveSuccessMsg, setSaveSuccessMsg] = useState('');
@@ -132,123 +153,69 @@ export const AppsScriptSyncModule: React.FC = () => {
         organizationRecords,
         officialLetters,
         cheques,
+        customRecords,
+        users,
         auditLogs
       });
       setReorganizeResult(res);
       if (res.success) {
-        addAuditLog('تنظيف وترتيب أعمدة Google Sheets', 'إعدادات الإكسل', res.message);
+        addAuditLog('توحيد وتنظيم أوراق Google Sheets (8 أقسام)', 'إعدادات الإكسل', res.message);
       }
     } catch (err: any) {
-      setReorganizeResult({ success: false, message: err?.message || 'تعذر إعادة ترتيب الأعمدة حالياً.' });
+      setReorganizeResult({ success: false, message: err?.message || 'تعذر إعادة ترتيب الأوراق والأعمدة حالياً.' });
     } finally {
       setIsReorganizingSheets(false);
     }
   };
 
-  // Direct Multi-Sheet Full Excel Export
+  // Direct Multi-Sheet Full Excel Export (8 Single-Sheet-Per-Department Architecture)
   const handleExportFullWorkbook = () => {
     try {
       const wb = XLSX.utils.book_new();
 
-      // Sheet 1: Citizens
-      const citizensData = citizens.map(c => ({
-        'الرقم التعريفي': c.Citizen_ID,
-        'الاسم الرباعي واللقب': c.FullName,
-        'الهاتف 1': c.Phone1,
-        'الهاتف 2': c.Phone2 || '',
-        'العشيرة': c.Surname || '',
-        'القضاء': c.District,
-        'الناحية': c.SubDistrict,
-        'المهنة': c.Job || '',
-        'التحصيل': c.Education || '',
-        'التقييم الجماهيري': c.Rating || '',
-        'المعرّف': c.ReferralSource || '',
-        'تاريخ التسجيل': c.CreatedAt,
-        'الموظف المسجل': c.CreatedBy || 'الاستعلامات'
-      }));
-      const wsCitizens = XLSX.utils.json_to_sheet(citizensData);
-      XLSX.utils.book_append_sheet(wb, wsCitizens, 'المراجعين_Citizens');
+      // 1. قسم الاستعلامات والمراجعين
+      const citizensData = citizens.map(c => toCleanSheetCitizenPayload(c));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(citizensData), CITIZENS_SHEET_NAME);
 
-      // Sheet 2: Requests
-      const requestsData = requests.map(r => ({
-        'رقم المعاملة': r.Request_ID,
-        'الرقم التعريفي': r.Citizen_ID,
-        'اسم المواطن': r.CitizenName,
-        'الهاتف': r.CitizenPhone,
-        'الجهة المعنية': r.Entity,
-        'المسار الإداري': r.ProcessingStatus,
-        'الأولوية': r.Priority,
-        'التفاصيل': r.Details,
-        'توجيه النائب': r.DeputyNotes || '',
-        'المرحلة الحالية': r.CurrentStage || 'مدير الإدارة',
-        'تاريخ التسجيل': r.CreatedAt
-      }));
-      const wsRequests = XLSX.utils.json_to_sheet(requestsData);
-      XLSX.utils.book_append_sheet(wb, wsRequests, 'المعاملات_Requests');
+      // 2. قسم الإدارة والمعاملات
+      const requestsData = requests.map(r => toCleanSheetRequestPayload(r));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(requestsData), REQUESTS_SHEET_NAME);
 
-      // Sheet 3: Interviews
-      const interviewsData = interviews.map(i => ({
-        'رقم المقابلة': i.Interview_ID,
-        'اسم المواطن': i.FullName,
-        'الموضوع': i.Subject,
-        'الهاتف': i.Phone1,
-        'السكن': i.Address,
-        'التاريخ': i.InterviewDate,
-        'الوقت': i.InterviewTime || '',
-        'الموقف': i.Status,
-        'الأولوية': i.Priority,
-        'توجيه النائب': i.DeputyNotes || ''
-      }));
-      const wsInterviews = XLSX.utils.json_to_sheet(interviewsData);
-      XLSX.utils.book_append_sheet(wb, wsInterviews, 'المقابلات_Interviews');
+      // 3. قسم مقابلات النائب
+      const interviewsData = interviews.map(i => toCleanSheetInterviewPayload(i));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(interviewsData), INTERVIEWS_SHEET_NAME);
 
-      // Sheet 4: Organization
-      const orgData = organizationRecords.map(o => ({
-        'الرقم التعريفي': o.Citizen_ID,
-        'الاسم': o.FullName,
-        'القضاء': o.District,
-        'الموقف التنظيمي': o.OrgRating,
-        'الثقل الاجتماعي': o.InfluenceType,
-        'نقاط التقييم': o.EvaluationPoints,
-        'المركز الانتخابي': o.ElectionCenter || '',
-        'المحطة': o.StationNumber || '',
-        'ملاحظات': o.Notes || ''
-      }));
-      const wsOrg = XLSX.utils.json_to_sheet(orgData);
-      XLSX.utils.book_append_sheet(wb, wsOrg, 'التنظيم_Organization');
+      // 4. قسم التنظيم والجماهير
+      const orgData = organizationRecords.map(o => toCleanSheetOrganizationPayload(o));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(orgData), ORGANIZATION_SHEET_NAME);
 
-      // Sheet 5: Official Letters
-      const lettersData = officialLetters.map(l => ({
-        'الرقم الإشاري': l.Letter_Number,
-        'التاريخ': l.Letter_Date,
-        'الجهة الصادر إليها': l.To_Entity,
-        'الموضوع': l.Subject,
-        'المراجع المعني': l.Citizen_Name,
-        'معرّف المراجع': l.Citizen_ID || '',
-        'رقم المعاملة': l.Request_ID || '',
-        'الحالة': l.Status
-      }));
-      const wsLetters = XLSX.utils.json_to_sheet(lettersData);
-      XLSX.utils.book_append_sheet(wb, wsLetters, 'الكتب_الرسمية_Letters');
+      // 5. قسم المكنة والكتب الرسمية
+      const lettersData = officialLetters.map(l => toCleanSheetLetterPayload(l));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lettersData), LETTERS_SHEET_NAME);
 
-      // Sheet 6: Audit Logs
-      const auditData = auditLogs.map(a => ({
-        'معرف الحركة': a.Log_ID,
-        'الوقت': a.Timestamp,
-        'المستخدم': a.User,
-        'القسم': a.Section,
-        'الإجراء': a.Action,
-        'التفاصيل': a.Details
-      }));
-      const wsAudit = XLSX.utils.json_to_sheet(auditData);
-      XLSX.utils.book_append_sheet(wb, wsAudit, 'سجل_الرقابة_Audit');
+      // 6. قسم المساعدات والصكوك
+      const chequesData = cheques.map(c => toCleanSheetChequePayload(c));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(chequesData), CHEQUES_SHEET_NAME);
 
-      const fileName = `منظومة_مكتب_النائب_علا_الناشي_الكاملة_${new Date().toISOString().split('T')[0]}.xlsx`;
+      // 7. قسم الرعاية الاجتماعية
+      const socialCareRecords = (customRecords || []).filter(
+        r => !r?.sectionId || r.sectionId === 'sec-social-care-2026' || String(r.sectionId).includes('social')
+      );
+      const socialCareData = socialCareRecords.map(s => toCleanSheetSocialCarePayload(s));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(socialCareData), SOCIAL_CARE_SHEET_NAME);
+
+      // 8. قسم الرقابة والمستخدمين
+      const usersData = (users || []).map(u => toCleanSheetUserPayload(u));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(usersData), USERS_SHEET_NAME);
+
+      const fileName = `قاعدة_بيانات_مكتب_النائب_8_أقسام_${new Date().toISOString().split('T')[0]}.xlsx`;
       XLSX.writeFile(wb, fileName);
-      addAuditLog('تصدير إكسل شامل متعدد الأوراق', 'إدارة البيانات', `تصدير ملف ${fileName}`);
+      addAuditLog('تصدير إكسل شامل (8 أوراق رسمية للأقسام)', 'إدارة البيانات', `تصدير ملف ${fileName}`);
+      setSaveSuccessMsg(`تم تصدير مصنف الإكسل الشامل (8 أوراق مرتبة لكل قسم) بنجاح: ${fileName}`);
+      setTimeout(() => setSaveSuccessMsg(''), 4000);
     } catch (err: any) {
       console.error(err);
-      alert('حدث خطأ أثناء تصدير ملف الإكسل.');
+      setImportStatus('حدث خطأ أثناء تصدير ملف الإكسل.');
     }
   };
 
@@ -619,20 +586,20 @@ export const AppsScriptSyncModule: React.FC = () => {
               >
                 <div className="flex items-center gap-2">
                   <FileSpreadsheet className="w-4 h-4" />
-                  <span>تصدير المصنف الكامل (Multi-Sheet Workbook)</span>
+                  <span>تصدير المصنف الكامل (ورقة واحدة لكل قسم)</span>
                 </div>
-                <span className="text-[10px] bg-emerald-800 px-2 py-0.5 rounded">شامل 6 أقسام</span>
+                <span className="text-[10px] bg-emerald-800 px-2 py-0.5 rounded">شامل 8 أقسام</span>
               </button>
 
               <div className="pt-2 text-xs text-slate-500 space-y-1">
-                <p>الملف المصدر متوافق 100% مع كافة برامج Microsoft Excel و Google Sheets و LibreOffice.</p>
+                <p>الملف المصدر متوافق 100% مع كافة برامج Microsoft Excel و Google Sheets و LibreOffice ويحتوي على 8 أوراق رسمية (ورقة واحدة لكل قسم).</p>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 3: Apps Script & One-Click Google Sheets Column Cleanup */}
+      {/* TAB 3: Apps Script & One-Click Google Sheets 8-Department Reorganization */}
       {activeSubTab === 'apps_script' && (
         <div className="space-y-4 text-right">
           {/* One-Click Column Cleanup Banner */}
@@ -641,10 +608,10 @@ export const AppsScriptSyncModule: React.FC = () => {
               <div className="space-y-1">
                 <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
                   <TableProperties className="w-4 h-4 text-emerald-600" />
-                  <span>تنظيف وإعادة ترتيب أعمدة Google Sheets تلقائياً (كل معلومة في عمود مستقل)</span>
+                  <span>توحيد وترتيب أوراق وأعمدة Google Sheets (ورقة واحدة لكل قسم - 8 أقسام فقط)</span>
                 </h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  يعيد هذا الإجراء تنظيم الجداول المتداخلة إلى <strong>18 عمود عربي معزول للمراجعين</strong> و<strong>20 عمود عربي معزول للطلبات</strong> (الاسم، الهاتف، الوزارة، الموضوع، الصادر، التاريخ، حالة الإنجاز، حالة الاستلام، ...) دون حذف أي سجل.
+                  يدمج هذا الإجراء كافة الأوراق القديمة والمكررة في <strong>8 أوراق رسمية فقط (ورقة واحدة مستقلة لكل قسم)</strong> بأعمدة عربية مرتبة ومرقمة، ويحذف الأوراق الزائدة دون فقدان أي سجل.
                 </p>
               </div>
               <button
@@ -654,7 +621,7 @@ export const AppsScriptSyncModule: React.FC = () => {
                 className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-2 cursor-pointer shadow-xs transition-all shrink-0 disabled:opacity-60"
               >
                 <RefreshCw className={`w-4 h-4 ${isReorganizingSheets ? 'animate-spin' : ''}`} />
-                <span>{isReorganizingSheets ? 'جاري تنظيف وترتيب الأعمدة...' : 'تنظيف وإعادة ترتيب أعمدة Google Sheets الآن'}</span>
+                <span>{isReorganizingSheets ? 'جاري توحيد وترتيب الأوراق الـ 8...' : 'توحيد وترتيب أوراق Google Sheets الـ 8 الآن'}</span>
               </button>
             </div>
 
@@ -676,16 +643,62 @@ export const AppsScriptSyncModule: React.FC = () => {
             )}
           </div>
 
+          {/* 8 Single-Sheet-Per-Department Schema Overview */}
+          <div className="p-5 bg-white rounded-xl border border-slate-200 shadow-xs space-y-3">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <Database className="w-4 h-4 text-emerald-600" />
+                  <span>هيكلة قاعدة البيانات المعتمدة في Google Sheets (8 أوراق - ورقة واحدة لكل قسم)</span>
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  كل قسم في المنظومة مرتبط بورقة عمل واحدة فقط تحمل اسمه الرسمي وأعمدته العربية المرتبة:
+                </p>
+              </div>
+              <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-black">
+                8 أوراق رسمية
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {DEPARTMENT_SHEETS_OVERVIEW.map((dept, idx) => (
+                <div key={dept.key} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-md bg-emerald-600 text-white text-[11px] font-black flex items-center justify-center shrink-0">
+                        {idx + 1}
+                      </span>
+                      <span className="text-xs font-black text-slate-900">{dept.departmentTitle}</span>
+                    </div>
+                    <span className="text-[10px] font-mono font-bold bg-white px-2 py-0.5 rounded border border-slate-200 text-emerald-800">
+                      {dept.sheetName}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {dept.headers.map((h, hIdx) => (
+                      <span
+                        key={h}
+                        className="px-2 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold text-slate-700"
+                      >
+                        {hIdx + 1}. {h}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* Apps Script Production Code Card */}
           <div className="p-5 bg-white rounded-xl border border-slate-200 shadow-xs space-y-3">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
               <div>
                 <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
                   <FileCode className="w-4 h-4 text-sky-600" />
-                  <span>كود Google Apps Script المنظم (إصدار الأعمدة العربية المعزولة 2026)</span>
+                  <span>كود Google Apps Script الموحد (إصدار 8 أوراق رسمية - ورقة واحدة لكل قسم)</span>
                 </h3>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  في Google Sheets: الإضافات (Extensions) ← Apps Script ← استبدل الكود القديم بالكود أدناه ← نشر (Deploy) ← إدارة عمليات النشر ← إصدار جديد.
+                  في Google Sheets: الإضافات (Extensions) ← Apps Script ← الصق الكود أدناه ← اختر الدالة <strong>reorganizeAllSheetsCleanly</strong> واضغط <strong>Run (تشغيل)</strong> لدمج الأوراق القديمة فوراً، ثم <strong>Deploy ← Manage deployments ← Edit ← New version</strong>.
                 </p>
               </div>
               <button

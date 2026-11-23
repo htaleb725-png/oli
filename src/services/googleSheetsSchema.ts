@@ -1,11 +1,23 @@
-import { Citizen, OfficeRequest } from '../types';
+import {
+  Citizen,
+  OfficeRequest,
+  Interview,
+  OfficialLetter,
+  ChequeRecord,
+  OrganizationRecord,
+  CustomSectionRecord,
+  User
+} from '../types';
 
 /**
- * Unified, Strictly Isolated Google Sheets Column Schema
- * Guarantees EVERY single field (Name, Phone, Ministry, Subject, OutgoingNumber, OutgoingDate,
- * ProcessingStatus, DeliveryStatus, Address, Notes, etc.) lands in its OWN dedicated column
- * identically for BOTH normal registration AND Excel filter/import uploads — with ZERO column shifts,
- * ZERO line-breaks inside cells, and ZERO raw JSON dumps.
+ * ============================================================================
+ * هيكل قاعدة بيانات Google Sheets الموحد - (كل قسم له ورقة واحدة فقط بأعمدة مرتبة)
+ * Unified 1-Sheet-Per-Department Schema for Vercel, Direct Sheets API & Apps Script
+ * ============================================================================
+ * يضمن هذا الملف:
+ * 1. تخصيص ورقة واحدة فقط (Single Sheet Tab) لكل قسم من أقسام المنظومة.
+ * 2. أعمدة عربية مرتبة ومعزولة 100% (كل معلومة في عمودها المخصص بدون تداخل أو JSON).
+ * 3. توافق تام مع الأوراق القديمة ودمجها تلقائياً في الورقة الرسمية لكل قسم دون ضياع أي سجل.
  */
 
 export function cleanSheetCell(value: any): string {
@@ -27,7 +39,97 @@ export function cleanSheetCell(value: any): string {
   return trimmed.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').slice(0, 1500);
 }
 
-export const CITIZENS_SHEET_NAME = 'سجل_المراجعين_Citizens';
+// ============================================================================
+// أسماء الأوراق الرسمية الموحدة (ورقة واحدة فقط لكل قسم)
+// ============================================================================
+
+export const CITIZENS_SHEET_NAME = 'قسم_الاستعلامات_والمراجعين';
+export const REQUESTS_SHEET_NAME = 'قسم_الإدارة_والمعاملات';
+export const INTERVIEWS_SHEET_NAME = 'قسم_مقابلات_النائب';
+export const ORGANIZATION_SHEET_NAME = 'قسم_التنظيم_والجماهير';
+export const LETTERS_SHEET_NAME = 'قسم_المكنة_والكتب_الرسمية';
+export const CHEQUES_SHEET_NAME = 'قسم_المساعدات_والصكوك';
+export const SOCIAL_CARE_SHEET_NAME = 'قسم_الرعاية_الاجتماعية';
+export const USERS_SHEET_NAME = 'قسم_الرقابة_والمستخدمين';
+
+// خريطة الأوراق القديمة ليتم سحب بياناتها ودمجها وحذف المكرر منها تلقائياً
+export const LEGACY_SHEET_ALIASES: Record<string, string[]> = {
+  [CITIZENS_SHEET_NAME]: [
+    'سجل_المراجعين_Citizens',
+    'المراجعين_Citizens',
+    'سجل_المراجعين',
+    'المواطنين',
+    'citizens'
+  ],
+  [REQUESTS_SHEET_NAME]: [
+    'طلبات_المواطنين_Requests',
+    'طلبات_الإدارة_Requests',
+    'المعاملات_Requests',
+    'طلبات_المواطنين',
+    'requests'
+  ],
+  [INTERVIEWS_SHEET_NAME]: [
+    'مقابلات_النائب_Interviews',
+    'المقابلات_Interviews',
+    'مقابلات_النائب',
+    'interviews'
+  ],
+  [ORGANIZATION_SHEET_NAME]: [
+    'السجل_التنظيمي_Org',
+    'الموقف_الجماهيري_Organization',
+    'السجل_التنظيمي_الجماهيري_Org',
+    'التنظيم_Organization',
+    'organization',
+    'organizationRecords'
+  ],
+  [LETTERS_SHEET_NAME]: [
+    'الكتب_الرسمية_Letters',
+    'الكتب_الرسمية_OfficialLetters',
+    'الكتب_الرسمية',
+    'letters',
+    'officialLetters'
+  ],
+  [CHEQUES_SHEET_NAME]: [
+    'صكوك_المساعدات_Cheques',
+    'صكوك_المساعدات_المالية_Cheques',
+    'صكوك_المساعدات',
+    'cheques'
+  ],
+  [SOCIAL_CARE_SHEET_NAME]: [
+    'سجلات_الأقسام_Records',
+    'قسم_قسم_الرعاية_الاجتماعية_وشبكة_الحماية',
+    'قسم_الرعاية_الاجتماعية_وشبكة_الحماية',
+    'سجلات_قسم الرعاية الاجتماعية وشبكة الحماية',
+    'custom_records'
+  ],
+  [USERS_SHEET_NAME]: [
+    'المستخدمين_Users',
+    'إدارة_المستخدمين',
+    'users'
+  ]
+};
+
+// الأوراق الزائدة القديمة التي يتم حذفها بعد الترتيب حتى يبقى لكل قسم ورقة واحدة فقط
+export const OBSOLETE_CLUTTER_SHEETS: string[] = [
+  'لوحة_المعلومات_والإحصائيات',
+  'أرشيف_الصور_والمستندات_درايف',
+  'سجل_الرقابة_والأمان_AuditLogs',
+  'سجل_الرقابة_AuditLogs',
+  'سجل_الرقابة_والتدقيق_AuditLogs',
+  'سجل_الرقابة_Audit',
+  'إعدادات_القوائم_Dropdowns',
+  'إعدادات_النظام_Settings',
+  'الأقسام_المخصصة_Sections',
+  'أقسام_مخصصة_Sections',
+  'سجلات_مخصصة',
+  'Sheet1',
+  'الورقة1',
+  'الورقة 1'
+];
+
+// ============================================================================
+// 1. قسم الاستعلامات والمراجعين (18 عمود مرتب)
+// ============================================================================
 export const CITIZENS_SHEET_RANGE = `${CITIZENS_SHEET_NAME}!A1:R`;
 export const CITIZENS_SHEET_APPEND_RANGE = `${CITIZENS_SHEET_NAME}!A:R`;
 
@@ -47,12 +149,14 @@ export const CITIZENS_SHEET_HEADERS: string[] = [
   'التحصيل الدراسي',
   'التقييم',
   'المعرف / التزكية',
-  'مصدر التسجيل',
+  'حالة الحظر',
   'تاريخ التسجيل',
   'الموظف المسؤول'
 ];
 
-export const REQUESTS_SHEET_NAME = 'طلبات_المواطنين_Requests';
+// ============================================================================
+// 2. قسم الإدارة والمعاملات (20 عمود مرتب)
+// ============================================================================
 export const REQUESTS_SHEET_RANGE = `${REQUESTS_SHEET_NAME}!A1:T`;
 export const REQUESTS_SHEET_APPEND_RANGE = `${REQUESTS_SHEET_NAME}!A:T`;
 
@@ -79,6 +183,120 @@ export const REQUESTS_SHEET_HEADERS: string[] = [
   'الموظف المسؤول'
 ];
 
+// ============================================================================
+// 3. قسم مقابلات النائب (12 عمود مرتب)
+// ============================================================================
+export const INTERVIEWS_SHEET_RANGE = `${INTERVIEWS_SHEET_NAME}!A1:L`;
+export const INTERVIEWS_SHEET_HEADERS: string[] = [
+  'رمز المقابلة',
+  'الرقم التعريفي للمواطن',
+  'اسم المواطن',
+  'رقم الهاتف',
+  'العنوان / السكن',
+  'موضوع المقابلة',
+  'تاريخ المقابلة',
+  'الأسبقية',
+  'حالة المقابلة',
+  'توجيه النائب',
+  'النتيجة والإجراء',
+  'المعرف / التزكية'
+];
+
+// ============================================================================
+// 4. قسم التنظيم والجماهير (10 أعمدة مرتبة)
+// ============================================================================
+export const ORGANIZATION_SHEET_RANGE = `${ORGANIZATION_SHEET_NAME}!A1:J`;
+export const ORGANIZATION_SHEET_HEADERS: string[] = [
+  'الرقم التعريفي',
+  'الاسم الكامل',
+  'رقم الهاتف',
+  'القضاء',
+  'الناحية / المنطقة',
+  'التقييم التنظيمي',
+  'الصفة / التأثير الاجتماعي',
+  'المركز الانتخابي',
+  'الملاحظات',
+  'تاريخ التحديث'
+];
+
+// ============================================================================
+// 5. قسم المكنة والكتب الرسمية (9 أعمدة مرتبة)
+// ============================================================================
+export const LETTERS_SHEET_RANGE = `${LETTERS_SHEET_NAME}!A1:I`;
+export const LETTERS_SHEET_HEADERS: string[] = [
+  'رمز الكتاب',
+  'العدد / الصادر',
+  'تاريخ الكتاب',
+  'الجهة الموجه إليها',
+  'الموضوع',
+  'نص الكتاب',
+  'اسم المواطن',
+  'حالة الكتاب',
+  'الموظف المنشئ'
+];
+
+// ============================================================================
+// 6. قسم المساعدات والصكوك (10 أعمدة مرتبة)
+// ============================================================================
+export const CHEQUES_SHEET_RANGE = `${CHEQUES_SHEET_NAME}!A1:J`;
+export const CHEQUES_SHEET_HEADERS: string[] = [
+  'معرف الصك',
+  'رقم الصك',
+  'الرقم التعريفي للمواطن',
+  'اسم المستفيد',
+  'رقم الهاتف',
+  'المبلغ (د.ع)',
+  'المصرف / الصندوق',
+  'الغرض من الصرف',
+  'حالة الصرف',
+  'تاريخ التحرير'
+];
+
+// ============================================================================
+// 7. قسم الرعاية الاجتماعية (10 أعمدة مرتبة)
+// ============================================================================
+export const SOCIAL_CARE_SHEET_RANGE = `${SOCIAL_CARE_SHEET_NAME}!A1:J`;
+export const SOCIAL_CARE_SHEET_HEADERS: string[] = [
+  'معرف القيد',
+  'اسم المواطن الرباعي',
+  'رقم الهاتف',
+  'رقم القيد / المعاملة الوزارية',
+  'نوع الإعانة / الفئة',
+  'حالة الباحث الاجتماعي',
+  'القضاء / الناحية',
+  'تاريخ المراجعة',
+  'الملاحظات والتوجيهات',
+  'الموظف المسؤول'
+];
+
+// ============================================================================
+// 8. قسم الرقابة والمستخدمين (9 أعمدة مرتبة)
+// ============================================================================
+export const USERS_SHEET_RANGE = `${USERS_SHEET_NAME}!A1:I`;
+export const USERS_SHEET_HEADERS: string[] = [
+  'معرف المستخدم',
+  'الاسم الكامل للموظف',
+  'اسم الدخول',
+  'رمز الدخول / كلمة المرور',
+  'الصفة الوظيفية',
+  'القسم',
+  'رقم الهاتف',
+  'حالة الحساب',
+  'تاريخ التحديث'
+];
+
+// قائمة ملخص جميع أوراق الأقسام الثمانية لعرضها في الواجهة
+export const DEPARTMENT_SHEETS_OVERVIEW = [
+  { id: 'citizens', key: 'citizens', sheetName: CITIZENS_SHEET_NAME, title: 'قسم الاستعلامات والمراجعين', departmentTitle: 'قسم الاستعلامات والمراجعين', columns: CITIZENS_SHEET_HEADERS, headers: CITIZENS_SHEET_HEADERS },
+  { id: 'requests', key: 'requests', sheetName: REQUESTS_SHEET_NAME, title: 'قسم الإدارة والمعاملات', departmentTitle: 'قسم الإدارة والمعاملات', columns: REQUESTS_SHEET_HEADERS, headers: REQUESTS_SHEET_HEADERS },
+  { id: 'interviews', key: 'interviews', sheetName: INTERVIEWS_SHEET_NAME, title: 'قسم مقابلات النائب', departmentTitle: 'قسم مقابلات النائب', columns: INTERVIEWS_SHEET_HEADERS, headers: INTERVIEWS_SHEET_HEADERS },
+  { id: 'organization', key: 'organization', sheetName: ORGANIZATION_SHEET_NAME, title: 'قسم التنظيم والجماهير', departmentTitle: 'قسم التنظيم والجماهير', columns: ORGANIZATION_SHEET_HEADERS, headers: ORGANIZATION_SHEET_HEADERS },
+  { id: 'letters', key: 'letters', sheetName: LETTERS_SHEET_NAME, title: 'قسم المكنة والكتب الرسمية', departmentTitle: 'قسم المكنة والكتب الرسمية', columns: LETTERS_SHEET_HEADERS, headers: LETTERS_SHEET_HEADERS },
+  { id: 'cheques', key: 'cheques', sheetName: CHEQUES_SHEET_NAME, title: 'قسم المساعدات والصكوك', departmentTitle: 'قسم المساعدات والصكوك', columns: CHEQUES_SHEET_HEADERS, headers: CHEQUES_SHEET_HEADERS },
+  { id: 'social_care', key: 'social_care', sheetName: SOCIAL_CARE_SHEET_NAME, title: 'قسم الرعاية الاجتماعية', departmentTitle: 'قسم الرعاية الاجتماعية', columns: SOCIAL_CARE_SHEET_HEADERS, headers: SOCIAL_CARE_SHEET_HEADERS },
+  { id: 'users', key: 'users', sheetName: USERS_SHEET_NAME, title: 'قسم الرقابة والمستخدمين', departmentTitle: 'قسم الرقابة والمستخدمين', columns: USERS_SHEET_HEADERS, headers: USERS_SHEET_HEADERS }
+];
+
 function resolveDepartmentArabicLabel(raw?: string): string {
   const v = cleanSheetCell(raw);
   if (!v) return 'قسم الإدارة';
@@ -100,6 +318,10 @@ export function citizenToSheetRow(c: Partial<Citizen>): string[] {
         .join(' ')
   );
   const area = cleanSheetCell(c.ResidentialArea || c.SubDistrict || '');
+  const blockStatus = c.IsBlocked
+    ? `محظور${c.BlockReason ? ' - ' + cleanSheetCell(c.BlockReason) : ''}`
+    : 'نشط';
+
   return [
     cleanSheetCell(c.Citizen_ID),
     fullName,
@@ -116,7 +338,7 @@ export function citizenToSheetRow(c: Partial<Citizen>): string[] {
     cleanSheetCell(c.Education),
     cleanSheetCell(c.Rating || 'لائق'),
     cleanSheetCell(c.ReferralSource),
-    cleanSheetCell(c.RegisteredVia || 'الاستعلامات'),
+    blockStatus,
     cleanSheetCell(c.CreatedAt || new Date().toISOString().split('T')[0]),
     cleanSheetCell(c.CreatedBy || 'الاستعلامات')
   ];
@@ -156,38 +378,137 @@ export function requestToSheetRow(r: Partial<OfficeRequest>): string[] {
   ];
 }
 
-/**
- * Builds a strictly clean, flat object keyed by the EXACT Arabic headers from CITIZENS_SHEET_HEADERS
- * so BOTH legacy and updated Google Apps Script deployments map every field into its own isolated column
- * without EVER appending extra duplicate English columns to the right!
- */
+export function interviewToSheetRow(i: Partial<Interview>): string[] {
+  return [
+    cleanSheetCell(i.Interview_ID),
+    cleanSheetCell(i.Citizen_ID),
+    cleanSheetCell(i.FullName),
+    cleanSheetCell(i.Phone1),
+    cleanSheetCell(i.Address),
+    cleanSheetCell(i.Subject),
+    cleanSheetCell(i.InterviewDate),
+    cleanSheetCell(i.Priority || 'متوسط'),
+    cleanSheetCell(i.Status || 'مكتملة'),
+    cleanSheetCell(i.DeputyNotes),
+    cleanSheetCell(i.Outcome),
+    cleanSheetCell(i.Referrer)
+  ];
+}
+
+export function organizationToSheetRow(o: Partial<OrganizationRecord>): string[] {
+  return [
+    cleanSheetCell(o.Citizen_ID || o.Org_ID),
+    cleanSheetCell(o.FullName),
+    cleanSheetCell(o.Phone1),
+    cleanSheetCell(o.District),
+    cleanSheetCell(o.SubDistrict),
+    cleanSheetCell(o.OrgRating || 'مؤيد'),
+    cleanSheetCell(o.InfluenceType || 'شخصية مؤثرة'),
+    cleanSheetCell(o.ElectionCenter),
+    cleanSheetCell(o.Notes),
+    cleanSheetCell(o.UpdatedAt || (o as any).LastUpdated || new Date().toISOString().split('T')[0])
+  ];
+}
+
+export function letterToSheetRow(l: Partial<OfficialLetter>): string[] {
+  return [
+    cleanSheetCell(l.Letter_ID),
+    cleanSheetCell(l.LetterNumber || l.Letter_Number),
+    cleanSheetCell(l.LetterDate || l.Letter_Date),
+    cleanSheetCell(l.Recipient || l.To_Entity),
+    cleanSheetCell(l.Subject),
+    cleanSheetCell(l.Body),
+    cleanSheetCell(l.CitizenName || l.Citizen_Name),
+    cleanSheetCell(l.Status || 'صادر'),
+    cleanSheetCell(l.ClerkName || 'قسم المكنة')
+  ];
+}
+
+export function chequeToSheetRow(ch: Partial<ChequeRecord>): string[] {
+  return [
+    cleanSheetCell(ch.id),
+    cleanSheetCell(ch.ChequeNumber),
+    cleanSheetCell(ch.Citizen_ID),
+    cleanSheetCell(ch.CitizenName),
+    cleanSheetCell(ch.CitizenPhone),
+    cleanSheetCell(ch.Amount ?? 0),
+    cleanSheetCell(ch.BankName),
+    cleanSheetCell(ch.Purpose),
+    cleanSheetCell(ch.Status || 'مصروف'),
+    cleanSheetCell(ch.IssueDate || ch.CreatedAt || new Date().toISOString().split('T')[0])
+  ];
+}
+
+export function socialCareToSheetRow(rec: Partial<CustomSectionRecord> & Record<string, any>): string[] {
+  const d = (rec && typeof rec.data === 'object' && rec.data) ? rec.data : (rec || {});
+  return [
+    cleanSheetCell(rec.id || d.id),
+    cleanSheetCell(d.f_welf_name || d.citizen_name || d['اسم المواطن الرباعي'] || rec.CitizenName),
+    cleanSheetCell(d.f_welf_phone || d.phone || d['رقم الهاتف']),
+    cleanSheetCell(d.f_welf_code || d.welfare_code || d['رقم القيد / المعاملة الوزارية']),
+    cleanSheetCell(d.f_welf_type || d.case_type || d['نوع الإعانة / الفئة']),
+    cleanSheetCell(d.f_welf_researcher || d.researcher_status || d['حالة الباحث الاجتماعي']),
+    cleanSheetCell(d.f_welf_district || d.district || d['القضاء / الناحية']),
+    cleanSheetCell(d.f_welf_date || d.submission_date || d['تاريخ المراجعة'] || rec.createdAt),
+    cleanSheetCell(d.f_welf_notes || d.notes || d['الملاحظات والتوجيهات']),
+    cleanSheetCell(rec.createdBy || d['الموظف المسؤول'] || 'قسم الرعاية الاجتماعية')
+  ];
+}
+
+export function userToSheetRow(u: Partial<User>): string[] {
+  return [
+    cleanSheetCell(u.User_ID),
+    cleanSheetCell(u.FullName || u.Username),
+    cleanSheetCell(u.Username),
+    cleanSheetCell(u.Password),
+    cleanSheetCell(u.RoleArabic || u.Role),
+    cleanSheetCell(u.Department || u.RoleArabic),
+    cleanSheetCell(u.Phone),
+    cleanSheetCell(u.Status === 'frozen' ? 'مجمد' : 'نشط'),
+    cleanSheetCell(u.UpdatedAt || u.CreatedAt || new Date().toISOString().split('T')[0])
+  ];
+}
+
+function buildRowMap(headers: string[], row: string[]): Record<string, string> {
+  const payload: Record<string, string> = {};
+  for (let i = 0; i < headers.length; i++) {
+    payload[headers[i]] = row[i] ?? '';
+  }
+  return payload;
+}
+
 export function toCleanSheetCitizenPayload(c: Partial<Citizen>): Record<string, string> {
-  const row = citizenToSheetRow(c);
-  const payload: Record<string, string> = {};
-  for (let i = 0; i < CITIZENS_SHEET_HEADERS.length; i++) {
-    payload[CITIZENS_SHEET_HEADERS[i]] = row[i] ?? '';
-  }
-  return payload;
+  return buildRowMap(CITIZENS_SHEET_HEADERS, citizenToSheetRow(c));
 }
 
-/**
- * Builds a strictly clean, flat object keyed by the EXACT Arabic headers from REQUESTS_SHEET_HEADERS
- * so EVERY field (الاسم، الهاتف، الوزارة، الموضوع، الصادر، التاريخ، حالة الإنجاز، حالة الاستلام، ...)
- * lands in its OWN dedicated column identically on registration AND Excel filter uploads.
- */
 export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<string, string> {
-  const row = requestToSheetRow(r);
-  const payload: Record<string, string> = {};
-  for (let i = 0; i < REQUESTS_SHEET_HEADERS.length; i++) {
-    payload[REQUESTS_SHEET_HEADERS[i]] = row[i] ?? '';
-  }
-  return payload;
+  return buildRowMap(REQUESTS_SHEET_HEADERS, requestToSheetRow(r));
 }
 
-/**
- * Header-aware row reader: accurately maps a row from EITHER the new unified Arabic columns
- * OR legacy English/Arabic column orders back into a typed Citizen or OfficeRequest.
- */
+export function toCleanSheetInterviewPayload(i: Partial<Interview>): Record<string, string> {
+  return buildRowMap(INTERVIEWS_SHEET_HEADERS, interviewToSheetRow(i));
+}
+
+export function toCleanSheetOrganizationPayload(o: Partial<OrganizationRecord>): Record<string, string> {
+  return buildRowMap(ORGANIZATION_SHEET_HEADERS, organizationToSheetRow(o));
+}
+
+export function toCleanSheetLetterPayload(l: Partial<OfficialLetter>): Record<string, string> {
+  return buildRowMap(LETTERS_SHEET_HEADERS, letterToSheetRow(l));
+}
+
+export function toCleanSheetChequePayload(ch: Partial<ChequeRecord>): Record<string, string> {
+  return buildRowMap(CHEQUES_SHEET_HEADERS, chequeToSheetRow(ch));
+}
+
+export function toCleanSheetSocialCarePayload(rec: any): Record<string, string> {
+  return buildRowMap(SOCIAL_CARE_SHEET_HEADERS, socialCareToSheetRow(rec));
+}
+
+export function toCleanSheetUserPayload(u: Partial<User>): Record<string, string> {
+  return buildRowMap(USERS_SHEET_HEADERS, userToSheetRow(u));
+}
+
 export function mapSheetRowByHeaders(headers: string[], row: any[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < headers.length; i++) {

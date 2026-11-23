@@ -242,6 +242,55 @@ export default async function handler(req, res) {
     const body = req.body || {};
     const nowIso = new Date().toISOString();
 
+    // 0. Server-to-Server Google Apps Script Proxy (mode=sheets_proxy)
+    // Bypasses browser CORS/no-cors limitations on Vercel and desktop PWA
+    if (mode === 'sheets_proxy') {
+      const appsScriptUrl = String(body.appsScriptUrl || '').trim();
+      if (!appsScriptUrl || !appsScriptUrl.startsWith('https://script.google.com/')) {
+        return res.status(400).json({ success: false, error: 'Invalid Google Apps Script URL' });
+      }
+      const method = String(body.method || 'POST').toUpperCase();
+      try {
+        if (method === 'GET') {
+          const queryAction = String(body.queryAction || 'getAllData').trim();
+          const sep = appsScriptUrl.includes('?') ? '&' : '?';
+          const targetUrl = `${appsScriptUrl}${sep}action=${encodeURIComponent(queryAction)}&t=${Date.now()}`;
+          const upstream = await fetch(targetUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: { Accept: 'application/json' }
+          });
+          const text = await upstream.text();
+          try {
+            const parsed = JSON.parse(text);
+            return res.status(200).json(parsed);
+          } catch {
+            return res.status(200).json({ success: upstream.ok, raw: text.slice(0, 500) });
+          }
+        } else {
+          const payload = body.payload || {};
+          const upstream = await fetch(appsScriptUrl, {
+            method: 'POST',
+            redirect: 'follow',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload)
+          });
+          const text = await upstream.text();
+          try {
+            const parsed = JSON.parse(text);
+            return res.status(200).json(parsed);
+          } catch {
+            return res.status(200).json({ success: upstream.ok, status: 'proxied_ok' });
+          }
+        }
+      } catch (err) {
+        return res.status(502).json({
+          success: false,
+          error: err?.message || 'Failed to reach Google Apps Script'
+        });
+      }
+    }
+
     // 1. Single-entity real-time mutation (mode=mutate)
     if (mode === 'mutate' || (body.entity && body.op)) {
       const entity = String(body.entity || '').trim();

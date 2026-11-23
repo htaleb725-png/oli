@@ -8,14 +8,42 @@ import {
   User 
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { Citizen, OfficeRequest, Interview, OrganizationRecord, OfficialLetter, AuditLog, DropdownItem, ChequeRecord } from '../types';
+import { Citizen, OfficeRequest, Interview, OrganizationRecord, OfficialLetter, AuditLog, DropdownItem, ChequeRecord, CustomSectionRecord, User as AppUser } from '../types';
 import {
+  CITIZENS_SHEET_NAME,
   CITIZENS_SHEET_HEADERS,
   CITIZENS_SHEET_RANGE,
+  REQUESTS_SHEET_NAME,
   REQUESTS_SHEET_HEADERS,
   REQUESTS_SHEET_RANGE,
+  INTERVIEWS_SHEET_NAME,
+  INTERVIEWS_SHEET_HEADERS,
+  INTERVIEWS_SHEET_RANGE,
+  ORGANIZATION_SHEET_NAME,
+  ORGANIZATION_SHEET_HEADERS,
+  ORGANIZATION_SHEET_RANGE,
+  LETTERS_SHEET_NAME,
+  LETTERS_SHEET_HEADERS,
+  LETTERS_SHEET_RANGE,
+  CHEQUES_SHEET_NAME,
+  CHEQUES_SHEET_HEADERS,
+  CHEQUES_SHEET_RANGE,
+  SOCIAL_CARE_SHEET_NAME,
+  SOCIAL_CARE_SHEET_HEADERS,
+  SOCIAL_CARE_SHEET_RANGE,
+  USERS_SHEET_NAME,
+  USERS_SHEET_HEADERS,
+  USERS_SHEET_RANGE,
+  LEGACY_SHEET_ALIASES,
+  OBSOLETE_CLUTTER_SHEETS,
   citizenToSheetRow,
   requestToSheetRow,
+  interviewToSheetRow,
+  organizationToSheetRow,
+  letterToSheetRow,
+  chequeToSheetRow,
+  socialCareToSheetRow,
+  userToSheetRow,
   mapSheetRowByHeaders
 } from './googleSheetsSchema';
 
@@ -333,17 +361,16 @@ export const createOfficeGoogleSpreadsheet = async (
   token: string,
   title: string = 'قاعدة بيانات مكتب النائب علا الناشي - المركزية'
 ): Promise<{ spreadsheetId: string; spreadsheetUrl: string }> => {
+  // ورقة واحدة فقط لكل قسم من أقسام المنظومة الثمانية
   const sheetDefinitions = [
-    { title: 'لوحة_المعلومات_والإحصائيات' },
-    { title: 'سجل_المراجعين_Citizens' },
-    { title: 'طلبات_المواطنين_Requests' },
-    { title: 'مقابلات_النائب_Interviews' },
-    { title: 'الكتب_الرسمية_OfficialLetters' },
-    { title: 'صكوك_المساعدات_المالية_Cheques' },
-    { title: 'الموقف_الجماهيري_Organization' },
-    { title: 'أرشيف_الصور_والمستندات_درايف' },
-    { title: 'سجل_الرقابة_والأمان_AuditLogs' },
-    { title: 'إعدادات_القوائم_Dropdowns' }
+    { title: CITIZENS_SHEET_NAME },
+    { title: REQUESTS_SHEET_NAME },
+    { title: INTERVIEWS_SHEET_NAME },
+    { title: ORGANIZATION_SHEET_NAME },
+    { title: LETTERS_SHEET_NAME },
+    { title: CHEQUES_SHEET_NAME },
+    { title: SOCIAL_CARE_SHEET_NAME },
+    { title: USERS_SHEET_NAME }
   ];
 
   const requestBody = {
@@ -362,7 +389,7 @@ export const createOfficeGoogleSpreadsheet = async (
         title: s.title,
         rightToLeft: true,
         gridProperties: {
-          frozenRowCount: s.title === 'لوحة_المعلومات_والإحصائيات' ? 2 : 1
+          frozenRowCount: 1
         }
       }
     }))
@@ -588,214 +615,201 @@ export const syncAllDataToGoogleSheets = async (
     interviews: Interview[];
     organizationRecords: OrganizationRecord[];
     officialLetters: OfficialLetter[];
-    auditLogs: AuditLog[];
+    auditLogs?: AuditLog[];
     cheques?: ChequeRecord[];
+    customRecords?: CustomSectionRecord[];
+    users?: AppUser[];
     imageRecords?: any[];
     dropdowns?: DropdownItem[];
   }
 ): Promise<{ success: boolean; updatedSheets: number }> => {
   const chequesList = data.cheques || [];
-  const imageList = data.imageRecords || [];
-  const nowFormatted = new Date().toLocaleString('ar-IQ');
+  const socialCareList = (data.customRecords || []).filter(
+    r => !r.sectionId || r.sectionId === 'sec_social_welfare'
+  );
+  const usersList = data.users || [];
 
-  const sheetsPayload = [
-    // 1. Dashboard KPI Summary Tab
+  const canonicalPayloads = [
     {
-      range: 'لوحة_المعلومات_والإحصائيات!A1:E',
-      headers: [
-        'القسم / السجل الإداري', 'إجمالي السجلات المسجلة', 'حالة المزامنة السحابية', 'آخر تحديث لحظي', 'ملاحظات المنظومة'
-      ],
-      rows: [
-        ['سجل المواطنين والمراجعين', String(data.citizens.length), 'متزامن ومحفوظ سحابياً ✓', nowFormatted, 'قاعدة بيانات المواطنين المركزية'],
-        ['طلبات المواطنين والمعاملات', String(data.requests.length), 'متزامن ومحفوظ سحابياً ✓', nowFormatted, 'المتابعات والكتب المحالة للوزارات'],
-        ['مقابلات النائب المباشرة', String(data.interviews.length), 'متزامن ومحفوظ سحابياً ✓', nowFormatted, 'محاضر المقابلات واللقاءات الرسمية'],
-        ['الكتب الرسمية والمخاطبات', String(data.officialLetters.length), 'متزامن ومحفوظ سحابياً ✓', nowFormatted, 'الكتب الصادرة والواردة والمحررة'],
-        ['صكوك المساعدات المالية', String(chequesList.length), 'متزامن ومحفوظ سحابياً ✓', nowFormatted, 'المساعدات المالية والحالات الإنسانية'],
-        ['الموقف الجماهيري والتنظيم', String(data.organizationRecords.length), 'متزامن ومحفوظ سحابياً ✓', nowFormatted, 'مفارز ومراكز وأقضية ذي قار'],
-        ['أرشيف الصور والمستندات (Drive)', String(imageList.length || 'مفعل سحابياً'), 'مربوط ومخزن في Google Drive ✓', nowFormatted, 'مجلد التخزين السحابي الرسمي للصور'],
-        ['سجل الرقابة والأمان الإداري', String(data.auditLogs.length), 'محمي وغير قابل للتعديل ✓', nowFormatted, 'سجل النشاطات والحركات البرمجية']
-      ]
-    },
-    // 2. Citizens (Unified 18 Isolated Arabic Columns A1:R)
-    {
+      tabName: CITIZENS_SHEET_NAME,
       range: CITIZENS_SHEET_RANGE,
       headers: CITIZENS_SHEET_HEADERS,
-      rows: data.citizens.map(c => citizenToSheetRow(c))
+      rows: (data.citizens || []).map(c => citizenToSheetRow(c))
     },
-    // 3. Citizen Requests (Unified 20 Isolated Arabic Columns A1:T)
     {
+      tabName: REQUESTS_SHEET_NAME,
       range: REQUESTS_SHEET_RANGE,
       headers: REQUESTS_SHEET_HEADERS,
-      rows: data.requests.map(r => requestToSheetRow(r))
+      rows: (data.requests || []).map(r => requestToSheetRow(r))
     },
-    // 4. Interviews
     {
-      range: 'مقابلات_النائب_Interviews!A1:O',
-      headers: [
-        'رمز المقابلة', 'الرقم التعريفي', 'اسم المواطن', 'موضوع المقابلة', 'الهاتف 1', 'الهاتف 2',
-        'السكن / العنوان', 'جهة التزكية', 'تاريخ المقابلة', 'الوقت', 'الأسبقية', 'حالة المقابلة',
-        'توجيه النائب', 'النتيجة والإجراء المتخذ', 'تم تحويلها لطلب رسمي'
-      ],
-      rows: data.interviews.map(i => [
-        i.Interview_ID, i.Citizen_ID, i.FullName, i.Subject, i.Phone1, i.Phone2 || '',
-        i.Address, i.Referrer || '', i.InterviewDate, i.InterviewTime || '',
-        i.Priority, i.Status, i.DeputyNotes || '', i.Outcome || '', i.ConvertedToRequest ? 'نعم' : 'لا'
-      ])
+      tabName: INTERVIEWS_SHEET_NAME,
+      range: INTERVIEWS_SHEET_RANGE,
+      headers: INTERVIEWS_SHEET_HEADERS,
+      rows: (data.interviews || []).map(i => interviewToSheetRow(i))
     },
-    // 5. Official Letters
     {
-      range: 'الكتب_الرسمية_OfficialLetters!A1:J',
-      headers: [
-        'رمز الكتاب', 'العدد / الرقم الإداري', 'التاريخ', 'الجهة الموجه إليها',
-        'الموضوع', 'نص الكتاب والتوجيه', 'الرقم التعريفي للمواطن', 'اسم المواطن', 'الحالة', 'الطباع / المنشئ'
-      ],
-      rows: data.officialLetters.map(l => [
-        l.Letter_ID, l.LetterNumber, l.LetterDate, l.Recipient,
-        l.Subject, l.Body, l.Citizen_ID || '', l.CitizenName || '', l.Status, l.ClerkName
-      ])
+      tabName: ORGANIZATION_SHEET_NAME,
+      range: ORGANIZATION_SHEET_RANGE,
+      headers: ORGANIZATION_SHEET_HEADERS,
+      rows: (data.organizationRecords || []).map(o => organizationToSheetRow(o))
     },
-    // 6. Financial Assistance Cheques
     {
-      range: 'صكوك_المساعدات_المالية_Cheques!A1:L',
-      headers: [
-        'معرف القيد', 'رقم الصك', 'الرقم التعريفي للمواطن', 'اسم المستفيد', 'رقم الهاتف',
-        'المبلغ (د.ع)', 'تفقيط المبلغ', 'اسم المصرف / الصندوق', 'الغرض من الصرف',
-        'تاريخ التحرير', 'حالة الصرف', 'المسؤول المالي'
-      ],
-      rows: chequesList.map(ch => [
-        ch.id, ch.ChequeNumber, ch.Citizen_ID, ch.CitizenName, ch.CitizenPhone || '',
-        ch.Amount, ch.AmountInWords || '', ch.BankName, ch.Purpose,
-        ch.IssueDate, ch.Status, ch.CreatedBy || 'المالية'
-      ])
+      tabName: LETTERS_SHEET_NAME,
+      range: LETTERS_SHEET_RANGE,
+      headers: LETTERS_SHEET_HEADERS,
+      rows: (data.officialLetters || []).map(l => letterToSheetRow(l))
     },
-    // 7. Organization
     {
-      range: 'الموقف_الجماهيري_Organization!A1:L',
-      headers: [
-        'الرقم التعريفي', 'الاسم الكامل', 'القضاء', 'الناحية', 'رقم الهاتف',
-        'التقييم الجماهيري', 'نوع التأثير والشخصية', 'نقاط التقييم', 'المركز الانتخابي',
-        'رقم المحطة', 'ملاحظات المنسق', 'آخر تحديث'
-      ],
-      rows: data.organizationRecords.map(o => [
-        o.Citizen_ID, o.FullName, o.District, o.SubDistrict, o.Phone1,
-        o.OrgRating, o.InfluenceType, o.EvaluationPoints, o.ElectionCenter,
-        o.StationNumber, o.Notes || '', o.UpdatedAt
-      ])
+      tabName: CHEQUES_SHEET_NAME,
+      range: CHEQUES_SHEET_RANGE,
+      headers: CHEQUES_SHEET_HEADERS,
+      rows: chequesList.map(ch => chequeToSheetRow(ch))
     },
-    // 8. Google Drive Photos & Attachments Archive
     {
-      range: 'أرشيف_الصور_والمستندات_درايف!A1:I',
-      headers: [
-        'معرف الصورة / المستند', 'اسم المواطن', 'الرقم التعريفي للمواطن', 'اسم الملف', 'الحجم',
-        'صيغة الملف', 'رابط المشاهدة المباشر (Google Drive)', 'معرف الملف في Drive', 'تاريخ الأرشفة والرفع'
-      ],
-      rows: imageList.map(img => [
-        img.id, img.citizenName, img.citizenId || '', img.fileName, img.fileSize || '',
-        img.mimeType || 'image/jpeg', img.driveWebViewLink || '', img.driveFileId || '', img.uploadedAt || nowFormatted
-      ])
+      tabName: SOCIAL_CARE_SHEET_NAME,
+      range: SOCIAL_CARE_SHEET_RANGE,
+      headers: SOCIAL_CARE_SHEET_HEADERS,
+      rows: socialCareList.map(rec => socialCareToSheetRow(rec))
     },
-    // 9. Audit Logs
     {
-      range: 'سجل_الرقابة_والأمان_AuditLogs!A1:F',
-      headers: ['رمز القيد', 'التاريخ والوقت', 'اسم المستخدم', 'نوع الإجراء', 'القسم / الوحدة', 'التفاصيل'],
-      rows: data.auditLogs.map(a => [
-        a.Log_ID, a.Timestamp, a.UserName, a.ActionType, a.Department, a.Details
-      ])
-    },
-    // 10. Dropdowns
-    ...(data.dropdowns && data.dropdowns.length > 0 ? [{
-      range: 'إعدادات_القوائم_Dropdowns!A1:D',
-      headers: ['معرف القائمة', 'التصنيف والقسم', 'القيمة / الخيار المعتمد', 'تاريخ التحديث'],
-      rows: data.dropdowns.map((d: DropdownItem, idx: number) => [
-        `OPT-${idx + 1}`,
-        d.Category || 'عام',
-        d.ItemValue || (d as any).Value || '',
-        new Date().toLocaleDateString('ar-IQ')
-      ])
-    }] : [])
+      tabName: USERS_SHEET_NAME,
+      range: USERS_SHEET_RANGE,
+      headers: USERS_SHEET_HEADERS,
+      rows: usersList.map(u => userToSheetRow(u))
+    }
   ];
 
-  // Only rewrite tabs that have actual data (NEVER wipe an existing Google Sheet tab when local state is empty)
-  const nonEmptyPayloads = sheetsPayload.filter(sp => sp.rows.length > 0);
-  const clearRanges = nonEmptyPayloads.map(sp => {
-    const tabName = sp.range.split('!')[0];
-    return `${tabName}!A1:AZ`;
-  });
-
-  // Execute clean batch update of values (clear old shifted/extra columns A1:AZ first, then write strictly aligned columns)
-  const valueRanges = nonEmptyPayloads.map(sp => ({
-    range: sp.range,
-    values: [sp.headers, ...sp.rows]
-  }));
-
   try {
-    if (clearRanges.length > 0) {
-      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, {
+    // 1. Fetch existing tabs in the spreadsheet so we can create missing department tabs and delete old duplicate tabs
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties(sheetId,title)`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const existingSheets: { sheetId: number; title: string }[] = [];
+    if (metaRes.ok) {
+      const meta = await metaRes.json();
+      for (const s of meta.sheets || []) {
+        if (s?.properties?.title) {
+          existingSheets.push({ sheetId: s.properties.sheetId, title: s.properties.title });
+        }
+      }
+    }
+
+    const existingTitles = new Set(existingSheets.map(s => s.title));
+    const canonicalTitles = new Set(canonicalPayloads.map(p => p.tabName));
+
+    // Create any missing canonical department tab
+    const addSheetRequests: any[] = [];
+    for (const p of canonicalPayloads) {
+      if (!existingTitles.has(p.tabName)) {
+        addSheetRequests.push({
+          addSheet: {
+            properties: {
+              title: p.tabName,
+              rightToLeft: true,
+              gridProperties: {
+                frozenRowCount: 1,
+                columnCount: p.headers.length
+              }
+            }
+          }
+        });
+      }
+    }
+
+    if (addSheetRequests.length > 0) {
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ ranges: clearRanges })
+        body: JSON.stringify({ requests: addSheetRequests })
       }).catch(() => {});
     }
 
-    if (valueRanges.length > 0) {
-      const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+    // 2. Clear and rewrite all 8 canonical department tabs with their clean ordered Arabic columns
+    const clearRanges = canonicalPayloads.map(p => `${p.tabName}!A1:AZ`);
+    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ ranges: clearRanges })
+    }).catch(() => {});
+
+    const valueRanges = canonicalPayloads.map(p => ({
+      range: p.range,
+      values: [p.headers, ...p.rows]
+    }));
+
+    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        valueInputOption: 'USER_ENTERED',
+        data: valueRanges
+      })
+    });
+
+    // 3. Delete old duplicate/legacy tabs so ONLY 1 sheet per department remains
+    const allLegacyNames = new Set<string>(OBSOLETE_CLUTTER_SHEETS);
+    Object.values(LEGACY_SHEET_ALIASES).forEach(list => list.forEach(n => allLegacyNames.add(n)));
+
+    const deleteSheetRequests: any[] = [];
+    for (const s of existingSheets) {
+      if (!canonicalTitles.has(s.title) && allLegacyNames.has(s.title)) {
+        deleteSheetRequests.push({
+          deleteSheet: { sheetId: s.sheetId }
+        });
+      }
+    }
+
+    if (deleteSheetRequests.length > 0) {
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          valueInputOption: 'USER_ENTERED',
-          data: valueRanges
-        })
-      });
+        body: JSON.stringify({ requests: deleteSheetRequests })
+      }).catch(() => {});
+    }
 
-      if (!response.ok) {
-        console.warn(`Google Sheets batch update note: ${response.status}`);
-      } else {
-        // Re-apply crisp RTL + CLIP column styling so cells never overlap visually
-        await applyProfessionalStylingToSheets(token, spreadsheetId).catch(() => {});
-      }
+    if (response.ok) {
+      await applyProfessionalStylingToSheets(token, spreadsheetId).catch(() => {});
     }
   } catch (err: any) {
     console.warn('Google Sheets sync note:', err?.message || err);
   }
 
-  return { success: true, updatedSheets: nonEmptyPayloads.length };
+  return { success: true, updatedSheets: canonicalPayloads.length };
 };
 
 /**
- * Clear all data rows across all sheets in Google Sheets while preserving formatted headers
+ * Clear all data rows across all department sheets in Google Sheets while preserving formatted headers
  */
 export const clearAllGoogleSheetsData = async (
   token: string,
   spreadsheetId: string
 ): Promise<{ success: boolean; clearedRanges: number }> => {
   const sheetNames = [
-    'لوحة_المعلومات_والإحصائيات',
-    'سجل_المراجعين_Citizens',
-    'طلبات_المواطنين_Requests',
-    'طلبات_الإدارة_Requests',
-    'مقابلات_النائب_Interviews',
-    'الكتب_الرسمية_OfficialLetters',
-    'صكوك_المساعدات_المالية_Cheques',
-    'الموقف_الجماهيري_Organization',
-    'أرشيف_الصور_والمستندات_درايف',
-    'سجل_الرقابة_والأمان_AuditLogs',
-    'سجل_الرقابة_AuditLogs',
-    'إعدادات_القوائم_Dropdowns'
+    CITIZENS_SHEET_NAME,
+    REQUESTS_SHEET_NAME,
+    INTERVIEWS_SHEET_NAME,
+    ORGANIZATION_SHEET_NAME,
+    LETTERS_SHEET_NAME,
+    CHEQUES_SHEET_NAME,
+    SOCIAL_CARE_SHEET_NAME,
+    USERS_SHEET_NAME
   ];
 
-  const ranges = sheetNames.map(name => {
-    // For dashboard, clear below header (row 3 onwards), for other sheets clear A2:Z
-    if (name === 'لوحة_المعلومات_والإحصائيات') {
-      return `${name}!A2:Z`;
-    }
-    return `${name}!A2:Z`;
-  });
+  const ranges = sheetNames.map(name => `${name}!A2:Z`);
 
   const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, {
     method: 'POST',
@@ -1053,112 +1067,41 @@ export const pushSingleRecordToSheetsRealtime = async (
     let rowValues: any[] = [];
 
     switch (entityType) {
-      case 'custom_sections':
-        sheetName = 'أقسام_مخصصة_Sections';
-        rowValues = [
-          record.id,
-          record.title,
-          record.description || '',
-          record.icon || 'Folder',
-          record.color || 'blue',
-          record.createdAt || new Date().toISOString(),
-          record.createdBy || 'المطور'
-        ];
-        break;
-      case 'custom_records':
-        sheetName = `سجلات_${record.sectionTitle || record.sectionId || 'مخصصة'}`;
-        rowValues = [
-          record.id,
-          record.sectionId,
-          record.createdAt || new Date().toISOString(),
-          record.createdBy || 'المستخدم',
-          JSON.stringify(record.fieldValues || {}),
-          (record.imageAttachments || []).join(', ')
-        ];
-        break;
       case 'citizens':
-        sheetName = 'سجل_المراجعين_Citizens';
+        sheetName = CITIZENS_SHEET_NAME;
         rowValues = citizenToSheetRow(record);
         break;
       case 'requests':
-        sheetName = 'طلبات_المواطنين_Requests';
+        sheetName = REQUESTS_SHEET_NAME;
         rowValues = requestToSheetRow(record);
         break;
       case 'interviews':
-        sheetName = 'مقابلات_النائب_Interviews';
-        rowValues = [
-          record.Interview_ID, record.Citizen_ID, record.FullName, record.Subject, record.Phone1, record.Phone2 || '',
-          record.Address, record.Referrer || '', record.InterviewDate, record.InterviewTime || '',
-          record.Priority, record.Status, record.DeputyNotes || '', record.Outcome || '', record.ConvertedToRequest ? 'نعم' : 'لا'
-        ];
+        sheetName = INTERVIEWS_SHEET_NAME;
+        rowValues = interviewToSheetRow(record);
         break;
       case 'organization':
-        sheetName = 'الموقف_الجماهيري_Organization';
-        rowValues = [
-          record.Citizen_ID, record.FullName, record.District, record.SubDistrict, record.Phone1,
-          record.OrgRating, record.InfluenceType, record.EvaluationPoints, record.ElectionCenter,
-          record.StationNumber, record.Notes || '', record.UpdatedAt
-        ];
+        sheetName = ORGANIZATION_SHEET_NAME;
+        rowValues = organizationToSheetRow(record);
         break;
       case 'letters':
-        sheetName = 'الكتب_الرسمية_OfficialLetters';
-        rowValues = [
-          record.Letter_ID, record.LetterNumber, record.LetterDate, record.Recipient,
-          record.Subject, record.Body, record.Citizen_ID || '', record.CitizenName || '', record.Status, record.ClerkName
-        ];
+        sheetName = LETTERS_SHEET_NAME;
+        rowValues = letterToSheetRow(record);
         break;
       case 'cheques':
-        sheetName = 'صكوك_المساعدات_المالية_Cheques';
-        rowValues = [
-          record.id, record.ChequeNumber, record.Citizen_ID, record.CitizenName, record.CitizenPhone || '',
-          record.Amount, record.AmountInWords || '', record.BankName, record.Purpose,
-          record.IssueDate, record.Status, record.CreatedBy || 'المالية'
-        ];
+        sheetName = CHEQUES_SHEET_NAME;
+        rowValues = chequeToSheetRow(record);
         break;
-      case 'drive_archive':
-        sheetName = 'أرشيف_الصور_والمستندات_درايف';
-        rowValues = [
-          record.id, record.citizenName, record.citizenId || '', record.fileName, record.fileSize || '',
-          record.mimeType || 'image/jpeg', record.driveWebViewLink || '', record.driveFileId || '',
-          record.uploadedAt || new Date().toLocaleString('ar-IQ')
-        ];
-        break;
-      case 'dropdowns':
-        sheetName = 'إعدادات_القوائم_Dropdowns';
-        rowValues = [
-          `OPT-${Date.now().toString().slice(-4)}`,
-          record.Category || 'عام',
-          record.Value || '',
-          new Date().toLocaleDateString('ar-IQ')
-        ];
+      case 'custom_records':
+        sheetName = SOCIAL_CARE_SHEET_NAME;
+        rowValues = socialCareToSheetRow(record);
         break;
       case 'users':
-        sheetName = 'المستخدمين_Users';
-        rowValues = [
-          record.User_ID || '',
-          record.Username || '',
-          record.Password || '',
-          record.Role || 'reception',
-          record.FullName || '',
-          record.RoleArabic || '',
-          record.Department || '',
-          record.Status || 'active',
-          typeof record.Permissions === 'string' ? record.Permissions : JSON.stringify(record.Permissions || []),
-          typeof record.AllowedSections === 'string' ? record.AllowedSections : JSON.stringify(record.AllowedSections || []),
-          record.UpdatedAt || new Date().toISOString()
-        ];
+        sheetName = USERS_SHEET_NAME;
+        rowValues = userToSheetRow(record);
         break;
-      case 'settings':
-        sheetName = 'إعدادات_النظام_Settings';
-        rowValues = [
-          record.id || 'main_settings',
-          record.appName || '',
-          record.officeName || '',
-          record.deputyName || '',
-          record.province || '',
-          new Date().toISOString()
-        ];
-        break;
+      default:
+        // Do not create extra clutter sheets for dropdowns/settings/drive_archive
+        return true;
     }
 
     if (!sheetName || rowValues.length === 0) return false;
@@ -1182,15 +1125,14 @@ export const deleteRecordFromSheetsRealtime = async (
   try {
     let sheetName = '';
     switch (entityType) {
-      case 'citizens': sheetName = 'سجل_المراجعين_Citizens'; break;
-      case 'requests': sheetName = 'طلبات_المواطنين_Requests'; break;
-      case 'interviews': sheetName = 'مقابلات_النائب_Interviews'; break;
-      case 'letters': sheetName = 'الكتب_الرسمية_OfficialLetters'; break;
-      case 'cheques': sheetName = 'صكوك_المساعدات_المالية_Cheques'; break;
-      case 'organization': sheetName = 'الموقف_الجماهيري_Organization'; break;
-      case 'users': sheetName = 'المستخدمين_Users'; break;
-      case 'custom_sections': sheetName = 'الأقسام_المخصصة_Sections'; break;
-      case 'custom_records': sheetName = 'سجلات_الأقسام_Records'; break;
+      case 'citizens': sheetName = CITIZENS_SHEET_NAME; break;
+      case 'requests': sheetName = REQUESTS_SHEET_NAME; break;
+      case 'interviews': sheetName = INTERVIEWS_SHEET_NAME; break;
+      case 'letters': sheetName = LETTERS_SHEET_NAME; break;
+      case 'cheques': sheetName = CHEQUES_SHEET_NAME; break;
+      case 'organization': sheetName = ORGANIZATION_SHEET_NAME; break;
+      case 'custom_records': sheetName = SOCIAL_CARE_SHEET_NAME; break;
+      case 'users': sheetName = USERS_SHEET_NAME; break;
       default: return false;
     }
 
@@ -1210,9 +1152,8 @@ export const deleteRecordFromSheetsRealtime = async (
     }
 
     if (targetRowIndex > 0) {
-      // Clear this row completely
       await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!A${targetRowIndex}:S${targetRowIndex}:clear`,
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!A${targetRowIndex}:T${targetRowIndex}:clear`,
         {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` }
@@ -1309,13 +1250,35 @@ export const fetchAllDataFromGoogleSheets = async (
   };
 }> => {
   try {
+    // Discover actual tab names in the spreadsheet (supports both new 1-sheet-per-department tabs and legacy tabs)
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const availableTabs = new Set<string>();
+    if (metaRes.ok) {
+      const meta = await metaRes.json();
+      for (const s of meta.sheets || []) {
+        if (s?.properties?.title) availableTabs.add(s.properties.title);
+      }
+    }
+
+    const pickTab = (canonical: string): string => {
+      if (availableTabs.size === 0 || availableTabs.has(canonical)) return canonical;
+      const aliases = LEGACY_SHEET_ALIASES[canonical] || [];
+      for (const a of aliases) {
+        if (availableTabs.has(a)) return a;
+      }
+      return canonical;
+    };
+
     const ranges = [
-      'سجل_المراجعين_Citizens!A1:Z',
-      'طلبات_المواطنين_Requests!A1:Z',
-      'مقابلات_النائب_Interviews!A2:O',
-      'الكتب_الرسمية_OfficialLetters!A2:J',
-      'صكوك_المساعدات_المالية_Cheques!A2:L',
-      'الموقف_الجماهيري_Organization!A2:L'
+      `${pickTab(CITIZENS_SHEET_NAME)}!A1:Z`,
+      `${pickTab(REQUESTS_SHEET_NAME)}!A1:Z`,
+      `${pickTab(INTERVIEWS_SHEET_NAME)}!A2:O`,
+      `${pickTab(LETTERS_SHEET_NAME)}!A2:J`,
+      `${pickTab(CHEQUES_SHEET_NAME)}!A2:L`,
+      `${pickTab(ORGANIZATION_SHEET_NAME)}!A2:L`
     ];
     const encodedRanges = ranges.map(r => `ranges=${encodeURIComponent(r)}`).join('&');
     const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${encodedRanges}`, {
