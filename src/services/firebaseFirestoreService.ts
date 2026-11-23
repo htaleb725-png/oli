@@ -1341,17 +1341,24 @@ export async function fsWipeAllCollections(): Promise<{ success: boolean; error?
       try {
         const snap = await getDocs(collection(db, colName));
         if (snap.empty) continue;
-        const batch = writeBatch(db);
+        
+        // Process in batches of 400
+        let currentBatch = writeBatch(db);
         let count = 0;
-        snap.forEach(d => {
-          batch.delete(d.ref);
+        for (const d of snap.docs) {
+          currentBatch.delete(d.ref);
           count++;
           if (count >= 400) {
-            // commit batch
+            await currentBatch.commit().catch(() => {});
+            currentBatch = writeBatch(db);
+            count = 0;
           }
-        });
-        await batch.commit().catch(() => {});
-        // Also delete documents individually if batch commit had issues
+        }
+        if (count > 0) {
+          await currentBatch.commit().catch(() => {});
+        }
+
+        // Also delete documents individually to guarantee 100% removal
         for (const d of snap.docs) {
           await deleteDoc(d.ref).catch(() => {});
         }
