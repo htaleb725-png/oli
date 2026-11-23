@@ -215,16 +215,11 @@ export async function pushToGoogleSheetsRealtime(
 }
 
 async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
-  if (isProcessingQueue || syncQueue.length === 0) return;
-  isProcessingQueue = true;
+  if (syncQueue.length === 0) return;
+  const itemsToProcess = syncQueue.splice(0, syncQueue.length);
 
-  try {
-    const item = syncQueue.shift();
-    if (!item) {
-      isProcessingQueue = false;
-      return;
-    }
-
+  for (const item of itemsToProcess) {
+    if (!item) continue;
     const resolvedSheetId = resolveTargetSheetId(targetSheetId);
     const resolvedUrl = resolveAppsScriptUrl(customUrl);
 
@@ -232,94 +227,79 @@ async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
 
     // 1. Direct Google Sheets REST API sync via Developer Google OAuth token
     if (resolvedSheetId) {
-      try {
-        const token = await getAccessToken();
+      getAccessToken().then(token => {
         if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
           if (item.action === 'delete') {
             if (targetId) {
-              await deleteRecordFromSheetsRealtime(token, resolvedSheetId, item.entityType, targetId);
+              deleteRecordFromSheetsRealtime(token, resolvedSheetId, item.entityType, targetId).catch(() => {});
             }
           } else {
-            await pushSingleRecordToSheetsRealtime(token, resolvedSheetId, item.entityType, item.data);
+            pushSingleRecordToSheetsRealtime(token, resolvedSheetId, item.entityType, item.data).catch(() => {});
           }
         }
-      } catch (e) {
-        console.warn('Realtime Direct Google Sheets sync notification:', e);
-      }
+      }).catch(() => {});
     }
 
-    // 2. Webhook / Apps Script Web App sync — send strictly to the 8 single-sheet-per-department tabs
+    // 2. Webhook / Apps Script Web App sync — send strictly to the 8 single-sheet-per-department tabs immediately
     if (resolvedUrl && resolvedUrl.startsWith('http')) {
-      try {
-        // Do not create extra clutter sheets for settings/dropdowns/custom_sections/drive_archive
-        if (
-          item.entityType === 'settings' ||
-          item.entityType === 'dropdowns' ||
-          item.entityType === 'custom_sections' ||
-          item.entityType === 'drive_archive'
-        ) {
-          isProcessingQueue = false;
-          if (syncQueue.length > 0) {
-            setTimeout(() => processSyncQueue(customUrl, targetSheetId), 200);
-          }
-          return;
-        }
-
-        const sanitizeFlatPayload = (obj: any): Record<string, string> => {
-          if (!obj || typeof obj !== 'object') return {};
-          const out: Record<string, string> = {};
-          for (const k of Object.keys(obj)) {
-            const v = obj[k];
-            if (v === null || v === undefined || typeof v === 'object') continue;
-            const cleaned = cleanSheetCell(v);
-            if (cleaned !== '' || k === 'id') {
-              out[k] = cleaned;
-            }
-          }
-          return out;
-        };
-
-        const cleanWebhookData =
-          item.action === 'delete'
-            ? item.data
-            : item.entityType === 'citizens'
-            ? toCleanSheetCitizenPayload(item.data)
-            : item.entityType === 'requests'
-            ? toCleanSheetRequestPayload(item.data)
-            : item.entityType === 'interviews'
-            ? toCleanSheetInterviewPayload(item.data)
-            : item.entityType === 'organization'
-            ? toCleanSheetOrganizationPayload(item.data)
-            : item.entityType === 'letters'
-            ? toCleanSheetLetterPayload(item.data)
-            : item.entityType === 'cheques'
-            ? toCleanSheetChequePayload(item.data)
-            : item.entityType === 'custom_records'
-            ? toCleanSheetSocialCarePayload(item.data)
-            : item.entityType === 'users'
-            ? toCleanSheetUserPayload(item.data)
-            : sanitizeFlatPayload(item.data);
-
-        await postToAppsScriptWithServerProxy(resolvedUrl, {
-          action: item.action === 'delete' ? 'delete' : item.action === 'insert' ? 'appendRow' : 'updateRow',
-          table: item.entityType,
-          sheetType: item.entityType,
-          id: targetId,
-          Citizen_ID: targetId,
-          Request_ID: targetId,
-          data: cleanWebhookData,
-          record: cleanWebhookData,
-          timestamp: item.timestamp,
-          source: 'al_nashi_office_system'
-        });
-      } catch (err) {
-        console.warn('Realtime Google Sheets webhook warning:', err);
+      if (
+        item.entityType === 'settings' ||
+        item.entityType === 'dropdowns' ||
+        item.entityType === 'custom_sections' ||
+        item.entityType === 'drive_archive'
+      ) {
+        continue;
       }
-    }
-  } finally {
-    isProcessingQueue = false;
-    if (syncQueue.length > 0) {
-      setTimeout(() => processSyncQueue(customUrl, targetSheetId), 300);
+
+      const sanitizeFlatPayload = (obj: any): Record<string, string> => {
+        if (!obj || typeof obj !== 'object') return {};
+        const out: Record<string, string> = {};
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          if (v === null || v === undefined || typeof v === 'object') continue;
+          const cleaned = cleanSheetCell(v);
+          if (cleaned !== '' || k === 'id') {
+            out[k] = cleaned;
+          }
+        }
+        return out;
+      };
+
+      const cleanWebhookData =
+        item.action === 'delete'
+          ? item.data
+          : item.entityType === 'citizens'
+          ? toCleanSheetCitizenPayload(item.data)
+          : item.entityType === 'requests'
+          ? toCleanSheetRequestPayload(item.data)
+          : item.entityType === 'interviews'
+          ? toCleanSheetInterviewPayload(item.data)
+          : item.entityType === 'organization'
+          ? toCleanSheetOrganizationPayload(item.data)
+          : item.entityType === 'letters'
+          ? toCleanSheetLetterPayload(item.data)
+          : item.entityType === 'cheques'
+          ? toCleanSheetChequePayload(item.data)
+          : item.entityType === 'custom_records'
+          ? toCleanSheetSocialCarePayload(item.data)
+          : item.entityType === 'users'
+          ? toCleanSheetUserPayload(item.data)
+          : sanitizeFlatPayload(item.data);
+
+      postToAppsScriptWithServerProxy(resolvedUrl, {
+        action: item.action === 'delete' ? 'delete' : item.action === 'insert' ? 'appendRow' : 'updateRow',
+        table: item.entityType,
+        sheetType: item.entityType,
+        id: targetId,
+        Citizen_ID: targetId,
+        Request_ID: targetId,
+        data: cleanWebhookData,
+        record: cleanWebhookData,
+        timestamp: item.timestamp,
+        source: 'al_nashi_office_system'
+      }).catch(err => {
+        console.warn('Realtime Google Sheets webhook warning:', err);
+      });
     }
   }
 }
