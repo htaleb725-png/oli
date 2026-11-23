@@ -81,20 +81,38 @@ export function getRuntimeCloudConfig() {
 
 // Helper to reliably resolve Google Sheet ID from Cloud Firestore config, Vercel env, or legacy fallback
 export function resolveTargetSheetId(customSheetId?: string): string {
-  if (customSheetId && customSheetId.trim()) return stripQuotes(customSheetId);
-  if (_runtimeCloudConfig.googleSheetId) return _runtimeCloudConfig.googleSheetId;
+  if (customSheetId && customSheetId.trim()) {
+    const cleaned = stripQuotes(customSheetId);
+    if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
+  }
+  if (_runtimeCloudConfig.googleSheetId) {
+    const cleaned = stripQuotes(_runtimeCloudConfig.googleSheetId);
+    if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
+  }
   const envSheetId = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID;
-  if (envSheetId && envSheetId.trim()) return stripQuotes(envSheetId);
+  if (envSheetId && envSheetId.trim()) {
+    const cleaned = stripQuotes(envSheetId);
+    if (!cleaned.startsWith('(') && !cleaned.includes('معرف') && !cleaned.includes('الشيت')) return cleaned;
+  }
 
   if (typeof window !== 'undefined') {
     const direct = localStorage.getItem('al_nashi_sheet_id');
-    if (direct && direct.trim()) return stripQuotes(direct);
+    if (direct && direct.trim()) {
+      const cleaned = stripQuotes(direct);
+      if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
+    }
     try {
       const savedSettings = localStorage.getItem('al_nashi_office_settings');
       if (savedSettings) {
         const parsed = JSON.parse(savedSettings);
-        if (parsed.googleSheetId && parsed.googleSheetId.trim()) return stripQuotes(parsed.googleSheetId);
-        if (parsed.activeGoogleSheetId && parsed.activeGoogleSheetId.trim()) return stripQuotes(parsed.activeGoogleSheetId);
+        if (parsed.googleSheetId && parsed.googleSheetId.trim()) {
+          const cleaned = stripQuotes(parsed.googleSheetId);
+          if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
+        }
+        if (parsed.activeGoogleSheetId && parsed.activeGoogleSheetId.trim()) {
+          const cleaned = stripQuotes(parsed.activeGoogleSheetId);
+          if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
+        }
       }
     } catch {}
   }
@@ -103,20 +121,38 @@ export function resolveTargetSheetId(customSheetId?: string): string {
 
 // Helper to reliably resolve Apps Script Webhook URL from Cloud Firestore config, Vercel env, or legacy fallback
 export function resolveAppsScriptUrl(customUrl?: string): string {
-  if (customUrl && customUrl.trim()) return stripQuotes(customUrl);
-  if (_runtimeCloudConfig.appsScriptUrl) return _runtimeCloudConfig.appsScriptUrl;
+  if (customUrl && customUrl.trim()) {
+    const cleaned = stripQuotes(customUrl);
+    if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
+  }
+  if (_runtimeCloudConfig.appsScriptUrl) {
+    const cleaned = stripQuotes(_runtimeCloudConfig.appsScriptUrl);
+    if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
+  }
   const envUrl = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL;
-  if (envUrl && envUrl.trim()) return stripQuotes(envUrl);
+  if (envUrl && envUrl.trim()) {
+    const cleaned = stripQuotes(envUrl);
+    if (!cleaned.startsWith('(') && !cleaned.includes('الرابط') && !cleaned.includes('ضع')) return cleaned;
+  }
 
   if (typeof window !== 'undefined') {
     const direct = localStorage.getItem('al_nashi_apps_script_url');
-    if (direct && direct.trim()) return stripQuotes(direct);
+    if (direct && direct.trim()) {
+      const cleaned = stripQuotes(direct);
+      if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
+    }
     try {
       const savedSettings = localStorage.getItem('al_nashi_office_settings');
       if (savedSettings) {
         const parsed = JSON.parse(savedSettings);
-        if (parsed.appsScriptUrl && parsed.appsScriptUrl.trim()) return stripQuotes(parsed.appsScriptUrl);
-        if (parsed.googleAppsScriptUrl && parsed.googleAppsScriptUrl.trim()) return stripQuotes(parsed.googleAppsScriptUrl);
+        if (parsed.appsScriptUrl && parsed.appsScriptUrl.trim()) {
+          const cleaned = stripQuotes(parsed.appsScriptUrl);
+          if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
+        }
+        if (parsed.googleAppsScriptUrl && parsed.googleAppsScriptUrl.trim()) {
+          const cleaned = stripQuotes(parsed.googleAppsScriptUrl);
+          if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
+        }
       }
     } catch {}
   }
