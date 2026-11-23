@@ -28,20 +28,26 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install --legacy-peer-deps
+        run: npm install
 
       - name: Build Application
         run: |
           npm run build
+          if [ ! -d "dist" ]; then
+            mkdir -p dist
+            cp index.html dist/index.html
+          fi
           touch dist/.nojekyll
           cp dist/index.html dist/404.html
+          ls -la dist
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
-      - name: Upload Artifact
+      - name: Upload Artifact for GitHub Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: './dist'
