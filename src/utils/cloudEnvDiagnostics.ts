@@ -25,6 +25,7 @@ const cleanVal = (raw?: string | null): string =>
 
 export function isPlaceholderOrInvalidValue(val: string): boolean {
   if (!val) return true;
+  if (val.trim() === '(default)') return false;
   const lower = val.toLowerCase();
   return (
     val.startsWith('(') ||

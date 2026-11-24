@@ -12,30 +12,80 @@ try {
   // Ignore
 }
 
+// Default production Firebase config for ola-aap-5fa57 (used only if VITE_FIREBASE_* env vars are absent)
+const DEFAULT_FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyB3yeS0tmdvi9-hhB0QixqUhKUW_eCyLMA',
+  authDomain: 'ola-aap-5fa57.firebaseapp.com',
+  projectId: 'ola-aap-5fa57',
+  storageBucket: 'ola-aap-5fa57.firebasestorage.app',
+  messagingSenderId: '364353645300',
+  appId: '1:364353645300:web:230b3299331d7271accca1',
+  measurementId: 'G-56LXF989SM',
+  firestoreDatabaseId: '(default)'
+} as const;
+
 // Helper to strip accidental quotes pasted into Vercel environment variables
 const cleanEnv = (val?: string) => (val || '').replace(/^["']|["']$/g, '').trim();
 
-const resolveEnvOrFallback = (envVal: string | undefined, fallbackVal: string | undefined): string => {
+const resolveEnvOrFallback = (
+  envVal: string | undefined,
+  localJsonVal: string | undefined,
+  defaultVal: string
+): string => {
   const cleanedEnv = cleanEnv(envVal);
   if (cleanedEnv && !isPlaceholderOrInvalidValue(cleanedEnv)) {
     return cleanedEnv;
   }
-  return cleanEnv(fallbackVal);
+  const cleanedLocal = cleanEnv(localJsonVal);
+  if (cleanedLocal && !isPlaceholderOrInvalidValue(cleanedLocal)) {
+    return cleanedLocal;
+  }
+  return defaultVal;
 };
 
-// 1. Universal Environment Variable Resolution for Vercel, GitHub, and AI Studio
-// Prioritizes Vercel VITE_FIREBASE_* environment variables with safe fallback to firebase-applet-config.json
+// 1. Universal Environment Variable Resolution for Vercel, GitHub, and Local/AI Studio
+// Strictly prioritizes Vercel VITE_FIREBASE_* env vars, then falls back to firebase-applet-config.json / DEFAULT_FIREBASE_CONFIG
 export const activeFirebaseConfig = {
-  apiKey: resolveEnvOrFallback(import.meta.env.VITE_FIREBASE_API_KEY, (localFirebaseConfig as any).apiKey),
-  authDomain: resolveEnvOrFallback(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN, (localFirebaseConfig as any).authDomain),
-  projectId: resolveEnvOrFallback(import.meta.env.VITE_FIREBASE_PROJECT_ID, (localFirebaseConfig as any).projectId),
-  storageBucket: resolveEnvOrFallback(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET, (localFirebaseConfig as any).storageBucket),
-  messagingSenderId: resolveEnvOrFallback(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID, (localFirebaseConfig as any).messagingSenderId),
-  appId: resolveEnvOrFallback(import.meta.env.VITE_FIREBASE_APP_ID, (localFirebaseConfig as any).appId),
+  apiKey: resolveEnvOrFallback(
+    import.meta.env.VITE_FIREBASE_API_KEY,
+    (localFirebaseConfig as any).apiKey,
+    DEFAULT_FIREBASE_CONFIG.apiKey
+  ),
+  authDomain: resolveEnvOrFallback(
+    import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    (localFirebaseConfig as any).authDomain,
+    DEFAULT_FIREBASE_CONFIG.authDomain
+  ),
+  projectId: resolveEnvOrFallback(
+    import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    (localFirebaseConfig as any).projectId,
+    DEFAULT_FIREBASE_CONFIG.projectId
+  ),
+  storageBucket: resolveEnvOrFallback(
+    import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    (localFirebaseConfig as any).storageBucket,
+    DEFAULT_FIREBASE_CONFIG.storageBucket
+  ),
+  messagingSenderId: resolveEnvOrFallback(
+    import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    (localFirebaseConfig as any).messagingSenderId,
+    DEFAULT_FIREBASE_CONFIG.messagingSenderId
+  ),
+  appId: resolveEnvOrFallback(
+    import.meta.env.VITE_FIREBASE_APP_ID,
+    (localFirebaseConfig as any).appId,
+    DEFAULT_FIREBASE_CONFIG.appId
+  ),
+  measurementId: resolveEnvOrFallback(
+    import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+    (localFirebaseConfig as any).measurementId,
+    DEFAULT_FIREBASE_CONFIG.measurementId
+  ),
   firestoreDatabaseId:
     resolveEnvOrFallback(
       import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID,
-      (localFirebaseConfig as any).firestoreDatabaseId
+      (localFirebaseConfig as any).firestoreDatabaseId,
+      DEFAULT_FIREBASE_CONFIG.firestoreDatabaseId
     ) || '(default)'
 };
 
@@ -46,30 +96,26 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(activeFirebas
 export const auth = getAuth(app);
 export const googleAuthProvider = new GoogleAuthProvider();
 
-// Target database ID
-const dbId =
-  activeFirebaseConfig.firestoreDatabaseId && activeFirebaseConfig.firestoreDatabaseId !== '(default)'
-    ? activeFirebaseConfig.firestoreDatabaseId
-    : '(default)';
+// Target Firestore database ID — omit custom DB arg when targeting "(default)"
+const rawDbId = cleanEnv(activeFirebaseConfig.firestoreDatabaseId) || '(default)';
+const customNamedDbId = rawDbId !== '(default)' ? rawDbId : undefined;
+const firestoreSettings = {
+  ignoreUndefinedProperties: true,
+  ...(typeof window !== 'undefined' ? { experimentalAutoDetectLongPolling: true } : {})
+};
 
-// Initialize Cloud Firestore with auto-detect long polling for optimal connection across Vercel & browsers
 let firestoreInstance: Firestore;
 try {
-  firestoreInstance = initializeFirestore(
-    app,
-    {
-      ignoreUndefinedProperties: true,
-      ...(typeof window !== 'undefined' ? { experimentalAutoDetectLongPolling: true } : {})
-    },
-    dbId
-  );
+  firestoreInstance = customNamedDbId
+    ? initializeFirestore(app, firestoreSettings, customNamedDbId)
+    : initializeFirestore(app, firestoreSettings);
 } catch {
-  firestoreInstance = dbId === '(default)' ? getFirestore(app) : getFirestore(app, dbId);
+  firestoreInstance = customNamedDbId ? getFirestore(app, customNamedDbId) : getFirestore(app);
 }
 
 export const db = firestoreInstance;
 
-// Startup connection validation per Firebase Integration Skill — surfaces real config/offline/permission errors in UI
+// Startup connection validation — surfaces real config/offline/permission errors in UI
 export async function testFirestoreConnection(): Promise<{ ok: boolean; error?: string }> {
   const envCheck = inspectCloudEnvironment();
   if (!envCheck.firebaseReady) {
@@ -103,7 +149,7 @@ export async function testFirestoreConnection(): Promise<{ ok: boolean; error?: 
       return { ok: true };
     }
     if (rawMsg.includes('permission-denied') || rawMsg.includes('Missing or insufficient permissions')) {
-      const msg = 'تم رفض الاتصال بقاعدة بيانات Firebase بسبب قواعد الأمان (PERMISSION_DENIED). يرجى التحقق من نشر firestore.rules.';
+      const msg = 'تم رفض الاتصال بقاعدة بيانات Firebase بسبب قواعد الأمان (PERMISSION_DENIED). يرجى التحقق من قواعد Firestore Rules لمشروع ola-aap-5fa57.';
       updateFirebaseHealth('error', msg);
       pushCloudSyncAlert({
         severity: 'error',
@@ -115,14 +161,14 @@ export async function testFirestoreConnection(): Promise<{ ok: boolean; error?: 
       return { ok: false, error: msg };
     }
     if (rawMsg.includes('the client is offline') || rawMsg.includes('backend') || rawMsg.includes('unavailable')) {
-      const msg = 'تعذر الوصول إلى خادم Firebase Firestore حالياً (قد يكون الاتصال مقطوعاً أو معرف قاعدة البيانات غير مطابق).';
+      const msg = 'تعذر الوصول إلى خادم Firebase Firestore حالياً (تحقق من الاتصال أو من تفعيل قاعدة (default) في مشروع ola-aap-5fa57).';
       updateFirebaseHealth('error', msg);
       pushCloudSyncAlert({
         severity: 'warning',
         target: 'firebase',
         title: 'تعثر الاتصال بـ Firebase Firestore',
         message: msg,
-        details: `Database ID: ${dbId} | ${rawMsg}`
+        details: `Project: ${activeFirebaseConfig.projectId} | Database ID: ${rawDbId} | ${rawMsg}`
       });
       return { ok: false, error: msg };
     }

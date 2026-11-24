@@ -1429,7 +1429,7 @@ export const MasterAdminModule: React.FC = () => {
                       <span>إضافة النطاق في Firebase Console (حل دائم):</span>
                     </div>
                     <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-relaxed pr-6">
-                      ادخل إلى <strong>Firebase Console</strong> لمشروع <code>gen-lang-client-0883156493</code> &gt; <strong>Authentication</strong> &gt; <strong>Settings</strong> &gt; <strong>Authorized domains</strong> &gt; انقر <strong>Add domain</strong> والصق النطاق المنسوخ أعلاه.
+                      ادخل إلى <strong>Firebase Console</strong> لمشروع <code>{firebaseConfig.projectId}</code> &gt; <strong>Authentication</strong> &gt; <strong>Settings</strong> &gt; <strong>Authorized domains</strong> &gt; انقر <strong>Add domain</strong> والصق النطاق المنسوخ أعلاه.
                     </p>
                   </div>
 

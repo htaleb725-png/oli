@@ -1,6 +1,4 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
-  getAuth, 
   signInWithPopup, 
   GoogleAuthProvider, 
   onAuthStateChanged, 
@@ -8,6 +6,7 @@ import {
   User 
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { auth } from '../lib/firebase';
 import { Citizen, OfficeRequest, Interview, OrganizationRecord, OfficialLetter, AuditLog, DropdownItem, ChequeRecord, CustomSectionRecord, User as AppUser } from '../types';
 import {
   CITIZENS_SHEET_NAME,
@@ -47,9 +46,8 @@ import {
   mapSheetRowByHeaders
 } from './googleSheetsSchema';
 
-// Initialize Firebase App singleton
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+// Re-export unified Firebase Auth singleton initialized in src/lib/firebase.ts
+export { auth };
 
 // Provider with workspace scopes
 const provider = new GoogleAuthProvider();
@@ -102,7 +100,10 @@ export interface GoogleSignInResult {
 export const signInWithGoogleIdentityServices = async (): Promise<GoogleSignInResult> => {
   return new Promise((resolve) => {
     try {
-      const clientId = (firebaseConfig as any).oAuthClientId || '680800492968-pj6vg0fc9916cck5uqb4irkv7cnk2r5m.apps.googleusercontent.com';
+      const clientId =
+        import.meta.env.VITE_GOOGLE_OAUTH_CLIENT_ID ||
+        (firebaseConfig as any).oAuthClientId ||
+        '680800492968-pj6vg0fc9916cck5uqb4irkv7cnk2r5m.apps.googleusercontent.com';
 
       const executeGis = () => {
         const googleObj = (window as any).google;
