@@ -14,6 +14,7 @@ import {
   Unsubscribe 
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
+import { updateFirebaseHealth } from './cloudSyncAlerts';
 import { 
   Citizen, 
   OfficeRequest, 
@@ -286,6 +287,7 @@ export async function fsSaveCitizen(citizen: Citizen): Promise<void> {
   const path = `${col}/${clean.Citizen_ID}`;
   try {
     await setDoc(doc(db, col, clean.Citizen_ID), clean, { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -310,6 +312,7 @@ export async function fsSaveRequest(req: OfficeRequest): Promise<void> {
   const path = `${col}/${clean.Request_ID}`;
   try {
     await setDoc(doc(db, col, clean.Request_ID), clean, { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -387,8 +390,12 @@ export async function fsBulkSaveCitizensAndRequests(
     }
   }
 
+  const ok = savedCitizens + savedRequests > 0 || entries.length === 0;
+  if (ok && savedCitizens + savedRequests > 0) {
+    updateFirebaseHealth('connected', null);
+  }
   return {
-    success: savedCitizens + savedRequests > 0 || entries.length === 0,
+    success: ok,
     savedCitizens,
     savedRequests,
     error: lastError
@@ -406,6 +413,7 @@ export async function fsSaveInterview(interview: Interview): Promise<void> {
       UpdatedAt: nowIso,
       updatedAt: nowIso
     }), { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -433,6 +441,7 @@ export async function fsSaveOfficialLetter(letter: OfficialLetter): Promise<void
       UpdatedAt: nowIso,
       updatedAt: nowIso
     }), { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -460,6 +469,7 @@ export async function fsSaveCheque(cheque: ChequeRecord): Promise<void> {
       UpdatedAt: nowIso,
       updatedAt: nowIso
     }), { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -489,6 +499,7 @@ export async function fsSaveOrgRecord(record: OrganizationRecord): Promise<void>
       UpdatedAt: nowIso,
       updatedAt: nowIso
     }), { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -542,6 +553,7 @@ export async function fsSaveUser(user: User): Promise<void> {
         'Firestore root user mirror'
       ).catch(() => {});
     }
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -569,9 +581,14 @@ export async function fsSyncAllUsers(usersList: User[]): Promise<{ success: bool
 export async function fsCheckConnection(): Promise<{ connected: boolean; error?: string }> {
   try {
     await withTimeout(getDocFromServer(doc(db, 'test', 'connection')), 4000, 'Firestore connection test');
+    updateFirebaseHealth('connected', null);
     return { connected: true };
   } catch (err: any) {
     const msg = err?.message || String(err);
+    if (msg.includes('not-found')) {
+      updateFirebaseHealth('connected', null);
+      return { connected: true };
+    }
     return { connected: false, error: msg };
   }
 }
@@ -661,6 +678,7 @@ export async function fsSaveSettings(settings: Partial<SystemSettings>): Promise
       updatedAt: nowIso
     });
     await setDoc(doc(db, col, 'general'), cleanPayload, { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -877,6 +895,7 @@ export async function fsSaveCustomSection(section: CustomSection): Promise<void>
       ...section,
       updatedAt: new Date().toISOString()
     }, { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -913,6 +932,7 @@ export async function fsSaveCustomRecord(record: CustomSectionRecord): Promise<v
       ...record,
       updatedAt: new Date().toISOString()
     }, { merge: true });
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -1146,6 +1166,9 @@ export async function fsBulkPushAll(data: {
       }
     }
 
+    if (total > 0) {
+      updateFirebaseHealth('connected', null);
+    }
     return { success: true, count: total };
   } catch (err: any) {
     console.error('fsBulkPushAll error:', err);
@@ -1266,6 +1289,7 @@ export async function fsBulkPullAll(): Promise<{
     const systemSettings = settingsSnap && settingsSnap.exists() ? (settingsSnap.data() as Partial<SystemSettings>) : undefined;
     const developerPasscode = passcodeSnap && passcodeSnap.exists() ? (passcodeSnap.data()?.developerPasscode as string) : undefined;
 
+    updateFirebaseHealth('connected', null);
     return {
       success: true,
       citizens,
@@ -1400,6 +1424,9 @@ export function fsWatchCollection<T>(
     return onSnapshot(
       collection(db, dynamicCol),
       (snapshot) => {
+        if (!snapshot.metadata.fromCache) {
+          updateFirebaseHealth('connected', null);
+        }
         const list = snapshot.docs.map(d => d.data() as T);
         const removedIds = snapshot
           .docChanges()

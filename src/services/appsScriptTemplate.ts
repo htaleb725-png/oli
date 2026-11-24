@@ -999,10 +999,57 @@ function doPost(e) {
 }
 
 /**
- * إدخال وتحديث منظم غير تدميري (ID-Based Upsert) يحافظ على جميع القيم والأعمدة الموجودة مسبقاً
+ * تطبيع النصوص العربية والأرقام لمطابقة الأسماء والقيود بدقة ومنع التكرار
+ */
+function normalizeArabicKeyForSheet(str) {
+  return String(str || '')
+    .replace(/[\\u064B-\\u065F\\u0670]/g, '')
+    .replace(/[إأآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[٠-٩]/g, function(d) { return String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)); })
+    .replace(/^(السيد|السيدة|المواطن|المواطنة|الحاج|الحاجة|المهندس|المهندسة|الدكتور|الدكتورة|الشيخ)\\s+/i, '')
+    .replace(/\\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * فحص ما إذا كانت الخلية فارغة أو تحتوي على قيمة افتراضية ناقصة تحتاج إكمالاً
+ */
+function isMissingOrPlaceholderCell(val) {
+  var s = String(val === undefined || val === null ? '' : val).trim();
+  if (!s) return true;
+  var lower = s.toLowerCase();
+  if (
+    s === '-' ||
+    s === '—' ||
+    s === '–' ||
+    s === 'غير محدد' ||
+    s === 'غير مسجل' ||
+    s === 'غير معروف' ||
+    s === 'لا يوجد' ||
+    s === 'جهة حكومية غير محددة' ||
+    s === '07800000000' ||
+    s === '07700000000' ||
+    lower === 'null' ||
+    lower === 'undefined' ||
+    lower === 'n/a'
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * مزامنة ذكية غير تدميرية (Smart 3-Way Upsert):
+ * 1) إذا كان الاسم/القيد موجوداً مسبقاً وجميع بياناته مكتملة وصحيحة -> يُبقى كما هو دون تعديل أو تكرار.
+ * 2) إذا كان موجوداً وبه نقص في بعض الحقول -> تُكمَل الحقول الناقصة فقط دون مسح أو تغيير أي حقل صحيح.
+ * 3) إذا لم يكن موجوداً -> يُضاف كسجل جديد في نهاية الورقة.
  */
 function handleStructuredUpsertBatch(sheet, schema, items) {
-  if (!Array.isArray(items) || items.length === 0) return;
+  var stats = { inserted: 0, gapFilled: 0, unchanged: 0 };
+  if (!Array.isArray(items) || items.length === 0) return stats;
 
   var standardHeaders = schema.columns.map(function(c) { return c.header; });
   var existingHeaders = ensureNonDestructiveHeaders(sheet, standardHeaders, schema.headerBg, schema.headerFg);
@@ -1017,16 +1064,110 @@ function handleStructuredUpsertBatch(sheet, schema, items) {
     return null;
   });
 
-  var lastRow = sheet.getLastRow();
-  var idRowMap = {};
-  if (lastRow > 1) {
-    var existingIds = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-    for (var r = 0; r < existingIds.length; r++) {
-      var key = String(existingIds[r][0] || '').trim();
-      if (key) idRowMap[key] = r + 2;
+  // تحديد أعمدة المطابقة الدلالية (الاسم، رقم الكتاب/العدد، الجهة/الوزارة، الموضوع) لمنع التكرار عند اختلاف المعرف
+  var nameColIdx = -1;
+  var outgoingColIdx = -1;
+  var entityColIdx = -1;
+  var subjectColIdx = -1;
+
+  for (var hIdx = 0; hIdx < existingHeaders.length; hIdx++) {
+    var hdr = String(existingHeaders[hIdx] || '').trim();
+    var sc = colToSchema[hIdx];
+    var keyName = sc ? String(sc.key || '') : '';
+    if (
+      nameColIdx === -1 &&
+      (keyName === 'FullName' ||
+        keyName === 'CitizenName' ||
+        keyName === 'f_welf_name' ||
+        keyName === 'citizenName' ||
+        keyName === 'fullName' ||
+        hdr.indexOf('الاسم') !== -1 ||
+        hdr.indexOf('اسم المواطن') !== -1 ||
+        hdr.indexOf('اسم صاحب الطلب') !== -1 ||
+        hdr.indexOf('اسم المراجع') !== -1)
+    ) {
+      nameColIdx = hIdx;
+    }
+    if (
+      outgoingColIdx === -1 &&
+      (keyName === 'OutgoingNumber' ||
+        keyName === 'LetterNumber' ||
+        keyName === 'outgoingNumber' ||
+        hdr.indexOf('رقم الكتاب') !== -1 ||
+        hdr.indexOf('العدد الصادر') !== -1)
+    ) {
+      outgoingColIdx = hIdx;
+    }
+    if (
+      entityColIdx === -1 &&
+      (keyName === 'Entity' ||
+        keyName === 'Destination' ||
+        keyName === 'entity' ||
+        hdr.indexOf('الوزارة') !== -1 ||
+        hdr.indexOf('الجهة') !== -1 ||
+        hdr.indexOf('الدائرة') !== -1)
+    ) {
+      entityColIdx = hIdx;
+    }
+    if (
+      subjectColIdx === -1 &&
+      (keyName === 'Details' ||
+        keyName === 'Subject' ||
+        keyName === 'subject' ||
+        hdr.indexOf('تفاصيل') !== -1 ||
+        hdr.indexOf('الموضوع') !== -1)
+    ) {
+      subjectColIdx = hIdx;
     }
   }
 
+  var isCompositeRecordSheet = outgoingColIdx !== -1 || entityColIdx !== -1 || subjectColIdx !== -1;
+
+  function buildSemanticKeys(rowArr) {
+    var keys = [];
+    if (nameColIdx === -1) return keys;
+    var normName = normalizeArabicKeyForSheet(rowArr[nameColIdx]);
+    if (!normName || normName.length < 2) return keys;
+
+    if (isCompositeRecordSheet) {
+      var normOut = outgoingColIdx !== -1 ? normalizeArabicKeyForSheet(rowArr[outgoingColIdx]) : '';
+      var normEnt = entityColIdx !== -1 ? normalizeArabicKeyForSheet(rowArr[entityColIdx]) : '';
+      var normSub = subjectColIdx !== -1 ? normalizeArabicKeyForSheet(rowArr[subjectColIdx]) : '';
+      if (normOut && !isMissingOrPlaceholderCell(normOut)) {
+        keys.push('name_out::' + normName + '|' + normOut);
+      }
+      if (normEnt || normSub) {
+        keys.push('name_ent_sub::' + normName + '|' + normEnt + '|' + normSub);
+      }
+    } else {
+      keys.push('name::' + normName);
+    }
+    return keys;
+  }
+
+  var lastRow = sheet.getLastRow();
+  var existingGrid = [];
+  var idRowMap = {};
+  var semanticRowMap = {};
+
+  if (lastRow > 1) {
+    existingGrid = sheet.getRange(2, 1, lastRow - 1, existingHeaders.length).getValues();
+    for (var r = 0; r < existingGrid.length; r++) {
+      var rowArr = existingGrid[r];
+      var idKey = String(rowArr[0] || '').trim();
+      if (idKey && idRowMap[idKey] === undefined) {
+        idRowMap[idKey] = { type: 'existing', index: r };
+      }
+      var sKeys = buildSemanticKeys(rowArr);
+      for (var sk = 0; sk < sKeys.length; sk++) {
+        if (semanticRowMap[sKeys[sk]] === undefined) {
+          semanticRowMap[sKeys[sk]] = { type: 'existing', index: r };
+        }
+      }
+    }
+  }
+
+  var dirtyExistingIndices = {};
   var rowsToAppend = [];
 
   items.forEach(function(item) {
@@ -1045,19 +1186,79 @@ function handleStructuredUpsertBatch(sheet, schema, items) {
       return cleanCellVal(rawDirect);
     });
 
-    var existingRowNum = idRowMap[idVal];
-    if (existingRowNum) {
-      var prevRow = sheet.getRange(existingRowNum, 1, 1, existingHeaders.length).getValues()[0];
-      var merged = rowVals.map(function(v, idx) {
-        return v !== '' ? v : (prevRow[idx] !== undefined ? prevRow[idx] : '');
-      });
-      sheet.getRange(existingRowNum, 1, 1, merged.length).setValues([merged]);
+    var incomingSemanticKeys = buildSemanticKeys(rowVals);
+    var matchRef = idRowMap[idVal];
+    if (!matchRef) {
+      for (var kIdx = 0; kIdx < incomingSemanticKeys.length; kIdx++) {
+        if (semanticRowMap[incomingSemanticKeys[kIdx]] !== undefined) {
+          matchRef = semanticRowMap[incomingSemanticKeys[kIdx]];
+          break;
+        }
+      }
+    }
+
+    if (matchRef) {
+      var targetRow = matchRef.type === 'existing' ? existingGrid[matchRef.index] : rowsToAppend[matchRef.index];
+      var hasGapFilled = false;
+
+      for (var c = 0; c < existingHeaders.length; c++) {
+        var prevVal = targetRow[c] !== undefined && targetRow[c] !== null ? String(targetRow[c]).trim() : '';
+        var incVal = rowVals[c] !== undefined && rowVals[c] !== null ? String(rowVals[c]).trim() : '';
+
+        // العمود الأول (المعرف الفريد): نبقيه كما هو إن كان موجوداً ولا نغيره أبداً
+        if (c === 0) {
+          if (!prevVal && incVal) {
+            targetRow[0] = incVal;
+            hasGapFilled = true;
+          }
+          continue;
+        }
+
+        // نُكمل الحقول الناقصة أو الافتراضية فقط دون مسح أو تعديل أي قيمة صحيحة موجودة مسبقاً
+        if (isMissingOrPlaceholderCell(prevVal) && !isMissingOrPlaceholderCell(incVal)) {
+          targetRow[c] = incVal;
+          hasGapFilled = true;
+        }
+      }
+
+      if (hasGapFilled) {
+        if (matchRef.type === 'existing') {
+          dirtyExistingIndices[matchRef.index] = true;
+        }
+        stats.gapFilled++;
+        // تسجيل المفاتيح الجديدة بعد إكمال النقص
+        var updatedKeys = buildSemanticKeys(targetRow);
+        for (var uk = 0; uk < updatedKeys.length; uk++) {
+          if (semanticRowMap[updatedKeys[uk]] === undefined) {
+            semanticRowMap[updatedKeys[uk]] = matchRef;
+          }
+        }
+      } else {
+        // السجل موجود وجميع بياناته صحيحة ومكتملة -> لا تغيير ولا تكرار
+        stats.unchanged++;
+      }
     } else {
-      idRowMap[idVal] = lastRow + rowsToAppend.length + 1;
+      var appendIdx = rowsToAppend.length;
       rowsToAppend.push(rowVals);
+      var newRef = { type: 'append', index: appendIdx };
+      idRowMap[idVal] = newRef;
+      for (var nk = 0; nk < incomingSemanticKeys.length; nk++) {
+        if (semanticRowMap[incomingSemanticKeys[nk]] === undefined) {
+          semanticRowMap[incomingSemanticKeys[nk]] = newRef;
+        }
+      }
+      stats.inserted++;
     }
   });
 
+  // تحديث الصفوف التي تم إكمال النقص فيها فقط دون المساس ببقية الصفوف
+  var dirtyKeys = Object.keys(dirtyExistingIndices);
+  for (var d = 0; d < dirtyKeys.length; d++) {
+    var rowIdx = Number(dirtyKeys[d]);
+    sheet.getRange(rowIdx + 2, 1, 1, existingHeaders.length).setValues([existingGrid[rowIdx]]);
+  }
+
+  // إضافة السجلات الجديدة فقط في نهاية الورقة
   if (rowsToAppend.length > 0) {
     var startRow = sheet.getLastRow() + 1;
     sheet.getRange(startRow, 1, rowsToAppend.length, existingHeaders.length).setValues(rowsToAppend);
@@ -1067,6 +1268,8 @@ function handleStructuredUpsertBatch(sheet, schema, items) {
       addedRange.setVerticalAlignment('middle');
     } catch (e) {}
   }
+
+  return stats;
 }
 
 function handleDelete(sheet, id) {

@@ -762,8 +762,68 @@ export const syncAllDataToGoogleSheets = async (
         }
       }
 
-      // Index existing rows by unique ID (Column A) so no existing cloud record is ever wiped
+      // Smart 3-Way Non-Destructive Merge:
+      // 1) Existing & complete -> keep untouched without duplication
+      // 2) Existing & missing fields -> fill ONLY missing/placeholder fields
+      // 3) New record -> append
+      const normalizeAr = (val: any): string =>
+        String(val ?? '')
+          .replace(/[\u064B-\u065F\u0670]/g, '')
+          .replace(/[إأآ]/g, 'ا')
+          .replace(/ة/g, 'ه')
+          .replace(/ى/g, 'ي')
+          .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+          .replace(/^(السيد|السيدة|المواطن|المواطنة|الحاج|الحاجة|المهندس|المهندسة|الدكتور|الدكتورة|الشيخ)\s+/i, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase();
+
+      const isMissingCell = (val: any): boolean => {
+        const s = String(val ?? '').trim();
+        if (!s) return true;
+        const lower = s.toLowerCase();
+        return (
+          s === '-' ||
+          s === '—' ||
+          s === '–' ||
+          s === 'غير محدد' ||
+          s === 'غير مسجل' ||
+          s === 'غير معروف' ||
+          s === 'لا يوجد' ||
+          s === 'جهة حكومية غير محددة' ||
+          s === '07800000000' ||
+          s === '07700000000' ||
+          lower === 'null' ||
+          lower === 'undefined'
+        );
+      };
+
+      const nameColIdx = mergedHeaders.findIndex(
+        (h) => h.includes('الاسم') || h.includes('اسم المواطن') || h.includes('اسم صاحب الطلب') || h.includes('اسم المراجع')
+      );
+      const outgoingColIdx = mergedHeaders.findIndex((h) => h.includes('رقم الكتاب') || h.includes('العدد الصادر'));
+      const entityColIdx = mergedHeaders.findIndex((h) => h.includes('الوزارة') || h.includes('الجهة') || h.includes('الدائرة'));
+      const subjectColIdx = mergedHeaders.findIndex((h) => h.includes('تفاصيل') || h.includes('الموضوع'));
+      const isCompositeSheet = outgoingColIdx !== -1 || entityColIdx !== -1 || subjectColIdx !== -1;
+
+      const buildSemanticKeys = (rowArr: any[]): string[] => {
+        if (nameColIdx === -1) return [];
+        const normName = normalizeAr(rowArr[nameColIdx]);
+        if (!normName || normName.length < 2) return [];
+        if (isCompositeSheet) {
+          const keys: string[] = [];
+          const normOut = outgoingColIdx !== -1 ? normalizeAr(rowArr[outgoingColIdx]) : '';
+          const normEnt = entityColIdx !== -1 ? normalizeAr(rowArr[entityColIdx]) : '';
+          const normSub = subjectColIdx !== -1 ? normalizeAr(rowArr[subjectColIdx]) : '';
+          if (normOut && !isMissingCell(normOut)) keys.push(`name_out::${normName}|${normOut}`);
+          if (normEnt || normSub) keys.push(`name_ent_sub::${normName}|${normEnt}|${normSub}`);
+          return keys;
+        }
+        return [`name::${normName}`];
+      };
+
       const rowById = new Map<string, string[]>();
+      const idBySemanticKey = new Map<string, string>();
       const orderedIds: string[] = [];
 
       for (let i = 1; i < existingRows.length; i++) {
@@ -777,28 +837,66 @@ export const syncAllDataToGoogleSheets = async (
         });
         rowById.set(id, normalized);
         orderedIds.push(id);
-      }
-
-      // Upsert incoming rows non-destructively (keep existing non-empty cell when incoming cell is empty)
-      for (const incomingRow of p.rows) {
-        const id = String(incomingRow[0] || '').trim();
-        if (!id) continue;
-        const prev = rowById.get(id);
-        if (prev) {
-          const mergedRow = mergedHeaders.map((_, idx) => {
-            const incVal = idx < incomingRow.length ? String(incomingRow[idx] ?? '').trim() : '';
-            const prevVal = prev[idx] !== undefined ? String(prev[idx]).trim() : '';
-            return incVal !== '' ? incVal : prevVal;
-          });
-          rowById.set(id, mergedRow);
-        } else {
-          const padded = mergedHeaders.map((_, idx) =>
-            idx < incomingRow.length ? String(incomingRow[idx] ?? '') : ''
-          );
-          rowById.set(id, padded);
-          orderedIds.push(id);
+        for (const sk of buildSemanticKeys(normalized)) {
+          if (!idBySemanticKey.has(sk)) idBySemanticKey.set(sk, id);
         }
       }
+
+      let tabChanged = existingRows.length === 0;
+
+      for (const incomingRow of p.rows) {
+        const incomingId = String(incomingRow[0] || '').trim();
+        if (!incomingId) continue;
+
+        const paddedIncoming = mergedHeaders.map((_, idx) =>
+          idx < incomingRow.length && incomingRow[idx] !== undefined && incomingRow[idx] !== null
+            ? String(incomingRow[idx]).trim()
+            : ''
+        );
+
+        let matchedId = rowById.has(incomingId) ? incomingId : undefined;
+        const incomingKeys = buildSemanticKeys(paddedIncoming);
+        if (!matchedId) {
+          for (const sk of incomingKeys) {
+            const foundId = idBySemanticKey.get(sk);
+            if (foundId) {
+              matchedId = foundId;
+              break;
+            }
+          }
+        }
+
+        if (matchedId) {
+          const prev = rowById.get(matchedId)!;
+          let hasGapFilled = false;
+          const mergedRow = mergedHeaders.map((_, idx) => {
+            const prevVal = prev[idx] !== undefined ? String(prev[idx]).trim() : '';
+            const incVal = paddedIncoming[idx] || '';
+            if (idx === 0) return prevVal || incVal;
+            if (isMissingCell(prevVal) && !isMissingCell(incVal)) {
+              hasGapFilled = true;
+              return incVal;
+            }
+            return prevVal;
+          });
+          if (hasGapFilled) {
+            rowById.set(matchedId, mergedRow);
+            tabChanged = true;
+            for (const sk of buildSemanticKeys(mergedRow)) {
+              if (!idBySemanticKey.has(sk)) idBySemanticKey.set(sk, matchedId);
+            }
+          }
+        } else {
+          rowById.set(incomingId, paddedIncoming);
+          orderedIds.push(incomingId);
+          for (const sk of incomingKeys) {
+            if (!idBySemanticKey.has(sk)) idBySemanticKey.set(sk, incomingId);
+          }
+          tabChanged = true;
+        }
+      }
+
+      if (!tabChanged) continue;
 
       const finalRows = [mergedHeaders, ...orderedIds.map((id) => rowById.get(id)!)];
       const endColLetter =
@@ -809,6 +907,10 @@ export const syncAllDataToGoogleSheets = async (
         range: `${p.tabName}!A1:${endColLetter}${finalRows.length}`,
         values: finalRows
       });
+    }
+
+    if (valueRanges.length === 0) {
+      return { success: true, updatedSheets: 0 };
     }
 
     const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
@@ -830,7 +932,7 @@ export const syncAllDataToGoogleSheets = async (
     }
 
     await applyProfessionalStylingToSheets(token, spreadsheetId).catch(() => {});
-    return { success: true, updatedSheets: canonicalPayloads.length };
+    return { success: true, updatedSheets: valueRanges.length };
   } catch (err: any) {
     const errMsg = err?.message || String(err);
     console.error('Google Sheets non-destructive sync error:', errMsg);
@@ -1152,6 +1254,112 @@ export const pushSingleRecordToSheetsRealtime = async (
     }
 
     if (!sheetName || rowValues.length === 0) return false;
+
+    // Smart 3-way check before appending: skip if complete, fill missing fields if partial, append if new
+    try {
+      const readRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`${sheetName}!A1:AZ`)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (readRes.ok) {
+        const readJson = await readRes.json();
+        const existingRows: any[][] = Array.isArray(readJson.values) ? readJson.values : [];
+        if (existingRows.length > 1) {
+          const headers = existingRows[0].map((h: any) => String(h || '').trim());
+          const normalizeAr = (val: any) =>
+            String(val ?? '')
+              .replace(/[\u064B-\u065F\u0670]/g, '')
+              .replace(/[إأآ]/g, 'ا')
+              .replace(/ة/g, 'ه')
+              .replace(/ى/g, 'ي')
+              .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+              .replace(/\s+/g, ' ')
+              .trim()
+              .toLowerCase();
+          const isMissing = (val: any) => {
+            const s = String(val ?? '').trim();
+            return (
+              !s ||
+              s === '-' ||
+              s === '—' ||
+              s === 'غير محدد' ||
+              s === 'غير مسجل' ||
+              s === 'جهة حكومية غير محددة' ||
+              s === '07800000000'
+            );
+          };
+
+          const incomingId = String(rowValues[0] || '').trim();
+          const nameIdx = headers.findIndex(
+            (h) => h.includes('الاسم') || h.includes('اسم المواطن') || h.includes('اسم صاحب الطلب')
+          );
+          const outIdx = headers.findIndex((h) => h.includes('رقم الكتاب') || h.includes('العدد الصادر'));
+          const entIdx = headers.findIndex((h) => h.includes('الوزارة') || h.includes('الجهة') || h.includes('الدائرة'));
+          const subIdx = headers.findIndex((h) => h.includes('تفاصيل') || h.includes('الموضوع'));
+          const isComposite = outIdx !== -1 || entIdx !== -1 || subIdx !== -1;
+
+          const incName = nameIdx >= 0 ? normalizeAr(rowValues[nameIdx]) : '';
+          const incOut = outIdx >= 0 ? normalizeAr(rowValues[outIdx]) : '';
+          const incEnt = entIdx >= 0 ? normalizeAr(rowValues[entIdx]) : '';
+          const incSub = subIdx >= 0 ? normalizeAr(rowValues[subIdx]) : '';
+
+          let matchRowIdx = -1;
+          for (let r = 1; r < existingRows.length; r++) {
+            const ex = existingRows[r] || [];
+            if (incomingId && String(ex[0] || '').trim() === incomingId) {
+              matchRowIdx = r;
+              break;
+            }
+            if (incName && incName.length >= 2 && nameIdx >= 0 && normalizeAr(ex[nameIdx]) === incName) {
+              if (!isComposite) {
+                matchRowIdx = r;
+                break;
+              }
+              const exOut = outIdx >= 0 ? normalizeAr(ex[outIdx]) : '';
+              const exEnt = entIdx >= 0 ? normalizeAr(ex[entIdx]) : '';
+              const exSub = subIdx >= 0 ? normalizeAr(ex[subIdx]) : '';
+              if ((incOut && exOut && incOut === exOut) || ((incEnt || incSub) && exEnt === incEnt && exSub === incSub)) {
+                matchRowIdx = r;
+                break;
+              }
+            }
+          }
+
+          if (matchRowIdx !== -1) {
+            const prevRow = existingRows[matchRowIdx] || [];
+            const colCount = Math.max(headers.length, rowValues.length, prevRow.length);
+            let hasGapFilled = false;
+            const merged = Array.from({ length: colCount }, (_, idx) => {
+              const prevVal = prevRow[idx] !== undefined ? String(prevRow[idx]).trim() : '';
+              const incVal = rowValues[idx] !== undefined && rowValues[idx] !== null ? String(rowValues[idx]).trim() : '';
+              if (idx === 0) return prevVal || incVal;
+              if (isMissing(prevVal) && !isMissing(incVal)) {
+                hasGapFilled = true;
+                return incVal;
+              }
+              return prevVal;
+            });
+            if (!hasGapFilled) return true;
+            const endCol = colCount <= 26 ? String.fromCharCode(64 + colCount) : 'AZ';
+            const rowNum = matchRowIdx + 1;
+            const updRes = await fetch(
+              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`${sheetName}!A${rowNum}:${endCol}${rowNum}`)}?valueInputOption=USER_ENTERED`,
+              {
+                method: 'PUT',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ values: [merged] })
+              }
+            );
+            return updRes.ok;
+          }
+        }
+      }
+    } catch {
+      // Fallback to append below if sheet read is unavailable
+    }
 
     return await appendRowToGoogleSheet(token, spreadsheetId, sheetName, rowValues);
   } catch (error) {

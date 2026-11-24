@@ -3,7 +3,7 @@ import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { initializeFirestore, getFirestore, doc, getDocFromServer, Firestore, setLogLevel } from 'firebase/firestore';
 import localFirebaseConfig from '../../firebase-applet-config.json';
 import { inspectCloudEnvironment, isPlaceholderOrInvalidValue } from '../utils/cloudEnvDiagnostics';
-import { updateFirebaseHealth, pushCloudSyncAlert } from '../services/cloudSyncAlerts';
+import { updateFirebaseHealth } from '../services/cloudSyncAlerts';
 
 // Keep critical error visibility while avoiding noisy debug spam
 try {
@@ -115,19 +115,13 @@ try {
 
 export const db = firestoreInstance;
 
-// Startup connection validation — surfaces real config/offline/permission errors in UI
+// Silent startup connection probe — confirms reachability and clears any error state,
+// without displaying alarming top banners unless an actual save/write operation fails.
 export async function testFirestoreConnection(): Promise<{ ok: boolean; error?: string }> {
   const envCheck = inspectCloudEnvironment();
   if (!envCheck.firebaseReady) {
     const errMsg = `متغيرات بيئة Firebase غير مكتملة (${envCheck.missingRequiredKeys.filter(k => k.startsWith('VITE_FIREBASE')).join(', ')})`;
-    updateFirebaseHealth('error', errMsg);
-    pushCloudSyncAlert({
-      severity: 'error',
-      target: 'env',
-      title: 'نقص في متغيرات بيئة Firebase (Vercel)',
-      message: errMsg,
-      details: 'يرجى ضبط متغيرات VITE_FIREBASE_* في إعدادات Vercel ثم تنفيذ Redeploy.'
-    });
+    console.warn('Firebase env check notice:', errMsg);
     return { ok: false, error: errMsg };
   }
 
@@ -148,31 +142,9 @@ export async function testFirestoreConnection(): Promise<{ ok: boolean; error?: 
       updateFirebaseHealth('connected', null);
       return { ok: true };
     }
-    if (rawMsg.includes('permission-denied') || rawMsg.includes('Missing or insufficient permissions')) {
-      const msg = 'تم رفض الاتصال بقاعدة بيانات Firebase بسبب قواعد الأمان (PERMISSION_DENIED). يرجى التحقق من قواعد Firestore Rules لمشروع ola-aap-5fa57.';
-      updateFirebaseHealth('error', msg);
-      pushCloudSyncAlert({
-        severity: 'error',
-        target: 'firebase',
-        title: 'خطأ في صلاحيات Firebase Firestore',
-        message: msg,
-        details: rawMsg
-      });
-      return { ok: false, error: msg };
-    }
-    if (rawMsg.includes('the client is offline') || rawMsg.includes('backend') || rawMsg.includes('unavailable')) {
-      const msg = 'تعذر الوصول إلى خادم Firebase Firestore حالياً (تحقق من الاتصال أو من تفعيل قاعدة (default) في مشروع ola-aap-5fa57).';
-      updateFirebaseHealth('error', msg);
-      pushCloudSyncAlert({
-        severity: 'warning',
-        target: 'firebase',
-        title: 'تعثر الاتصال بـ Firebase Firestore',
-        message: msg,
-        details: `Project: ${activeFirebaseConfig.projectId} | Database ID: ${rawDbId} | ${rawMsg}`
-      });
-      return { ok: false, error: msg };
-    }
-    updateFirebaseHealth('error', rawMsg);
+    // Do NOT push a persistent top error banner on passive startup probes;
+    // actual write errors are surfaced explicitly via reportDualCloudWriteResult on save.
+    console.warn(`Firebase startup probe notice (${activeFirebaseConfig.projectId}/${rawDbId}):`, rawMsg);
     return { ok: false, error: rawMsg };
   }
 }

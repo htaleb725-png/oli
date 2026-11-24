@@ -12,6 +12,8 @@ import {
 import {
   CloudHealthSnapshot,
   CloudSyncAlert,
+  clearFirebaseHealthError,
+  clearSheetsHealthError,
   dismissCloudSyncAlert,
   subscribeCloudHealth
 } from '../services/cloudSyncAlerts';
@@ -19,8 +21,8 @@ import {
 /**
  * Transparent Cloud Persistence Alert Banner & Toast Stack
  * --------------------------------------------------------
- * Surfaces real Firebase Firestore, Google Sheets / Apps Script, and Vercel Env
- * errors immediately to the user so no failure is ever hidden behind silent Chrome caching.
+ * Surfaces real Firebase Firestore and Google Sheets write failures
+ * immediately and clears automatically as soon as connection or saving succeeds.
  */
 export const CloudSyncStatusBanner: React.FC = () => {
   const [health, setHealth] = useState<CloudHealthSnapshot>(() => ({
@@ -56,20 +58,20 @@ export const CloudSyncStatusBanner: React.FC = () => {
 
   return (
     <div className="no-print w-full" dir="rtl">
-      {/* Persistent Top Health Strip ONLY when Firebase or Google Sheets has an active error */}
+      {/* Top Health Strip ONLY shown when an actual cloud save failed; clears immediately on next successful connection/save */}
       {hasConnectionIssue && (
         <div className="bg-rose-950/95 text-rose-50 border-b border-rose-500/40 px-4 py-2 text-xs">
           <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 font-bold">
               <CloudOff className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>تنبيه اتصال قاعدة البيانات السحابية (تم منع التخزين المؤقت في متصفح Chrome):</span>
+              <span>تعثر حفظ سحابي (يختفي هذا التنبيه تلقائياً بمجرد نجاح الاتصال أو الحفظ):</span>
             </div>
-            <div className="flex flex-wrap items-center gap-3 text-[11px]">
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
               {health.firebaseStatus === 'error' && (
                 <span className="inline-flex items-center gap-1.5 bg-rose-900/80 border border-rose-500/40 px-2.5 py-0.5 rounded-lg">
                   <Database className="w-3.5 h-3.5 text-rose-300" />
                   <strong>Firebase:</strong>
-                  <span className="text-rose-200">{health.firebaseError || 'خطأ في الاتصال'}</span>
+                  <span className="text-rose-200">{health.firebaseError || 'فشل الحفظ'}</span>
                 </span>
               )}
               {health.sheetsStatus === 'error' && (
@@ -79,6 +81,17 @@ export const CloudSyncStatusBanner: React.FC = () => {
                   <span className="text-amber-200">{health.sheetsError || 'تعذر المزامنة'}</span>
                 </span>
               )}
+              <button
+                type="button"
+                onClick={() => {
+                  clearFirebaseHealthError();
+                  clearSheetsHealthError();
+                }}
+                className="p-1 rounded-lg hover:bg-white/15 text-rose-200 hover:text-white transition-colors cursor-pointer"
+                title="إغلاق الشريط"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>

@@ -67,23 +67,78 @@ export function getCloudHealthSnapshot(): CloudHealthSnapshot {
 }
 
 export function updateFirebaseHealth(status: 'connecting' | 'connected' | 'error', errorMessage: string | null = null): void {
+  const cleanedError = status === 'error' ? errorMessage : null;
+  const nextAlerts =
+    status === 'connected'
+      ? state.activeAlerts.filter(a => {
+          if (a.severity === 'success') return true;
+          if (a.target === 'firebase' || a.target === 'env') return false;
+          if (a.target === 'both' && state.sheetsStatus !== 'error') return false;
+          return true;
+        })
+      : state.activeAlerts;
+
+  // Avoid unnecessary re-renders when already connected cleanly with no stale alerts
+  if (
+    status === 'connected' &&
+    state.firebaseStatus === 'connected' &&
+    state.firebaseError === null &&
+    nextAlerts.length === state.activeAlerts.length
+  ) {
+    return;
+  }
+
   state = {
     ...state,
     firebaseStatus: status,
-    firebaseError: errorMessage,
+    firebaseError: cleanedError,
+    activeAlerts: nextAlerts,
     ...(status === 'connected' ? { lastSuccessfulSyncAt: new Date().toISOString() } : {})
   };
   emit();
 }
 
+export function clearFirebaseHealthError(): void {
+  if (state.firebaseStatus === 'error' || state.firebaseError) {
+    updateFirebaseHealth('connected', null);
+  }
+}
+
 export function updateSheetsHealth(status: 'idle' | 'connected' | 'error', errorMessage: string | null = null): void {
+  const cleanedError = status === 'error' ? errorMessage : null;
+  const nextAlerts =
+    status === 'connected'
+      ? state.activeAlerts.filter(a => {
+          if (a.severity === 'success') return true;
+          if (a.target === 'google_sheets') return false;
+          if (a.target === 'both' && state.firebaseStatus !== 'error') return false;
+          return true;
+        })
+      : state.activeAlerts;
+
+  if (
+    status === 'connected' &&
+    state.sheetsStatus === 'connected' &&
+    state.sheetsError === null &&
+    nextAlerts.length === state.activeAlerts.length
+  ) {
+    return;
+  }
+
   state = {
     ...state,
     sheetsStatus: status,
-    sheetsError: errorMessage,
+    sheetsError: cleanedError,
+    activeAlerts: nextAlerts,
     ...(status === 'connected' ? { lastSuccessfulSyncAt: new Date().toISOString() } : {})
   };
   emit();
+}
+
+export function clearSheetsHealthError(): void {
+  if (state.sheetsStatus === 'error' || state.sheetsError) {
+    updateSheetsHealth('idle', null);
+  }
 }
 
 export function pushCloudSyncAlert(alert: Omit<CloudSyncAlert, 'id' | 'timestamp'>): string {
