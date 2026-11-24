@@ -3,7 +3,9 @@ import { useApp } from '../context/AppContext';
 import * as XLSX from 'xlsx';
 import { APPS_SCRIPT_PRODUCTION_CODE } from '../services/appsScriptTemplate';
 import { extractDriveFolderId } from '../services/driveArchiveService';
-import { reorganizeGoogleSheetsNow } from '../services/realtimeGoogleSync';
+import { reorganizeGoogleSheetsNow, testAppsScriptConnection, AppsScriptPingResult } from '../services/realtimeGoogleSync';
+import { inspectCloudEnvironment } from '../utils/cloudEnvDiagnostics';
+import { subscribeCloudHealth, CloudHealthSnapshot } from '../services/cloudSyncAlerts';
 import {
   DEPARTMENT_SHEETS_OVERVIEW,
   CITIZENS_SHEET_NAME,
@@ -63,13 +65,38 @@ export const AppsScriptSyncModule: React.FC = () => {
     updateSystemSettings,
     setGoogleDriveFolderId,
     cheques,
+    customSections,
     customRecords,
     users,
     addAuditLog 
   } = useApp();
 
-  const envSheetId = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID || '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
-  const envScriptUrl = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec';
+  const envSheetId = import.meta.env?.VITE_GOOGLE_SHEET_ID || '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
+  const envScriptUrl = import.meta.env?.VITE_GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec';
+
+  // Live Env Diagnostics & Cloud Health
+  const envReport = inspectCloudEnvironment({
+    appsScriptUrl: systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl,
+    googleSheetId: systemSettings.googleSheetId || systemSettings.activeGoogleSheetId
+  });
+  const [cloudHealth, setCloudHealth] = useState<CloudHealthSnapshot | null>(null);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [pingResult, setPingResult] = useState<AppsScriptPingResult | null>(null);
+
+  useEffect(() => {
+    return subscribeCloudHealth(setCloudHealth);
+  }, []);
+
+  const handleTestAppsScriptConnection = async () => {
+    setIsTestingConnection(true);
+    setPingResult(null);
+    try {
+      const result = await testAppsScriptConnection(customAppsScriptUrl || systemSettings.appsScriptUrl);
+      setPingResult(result);
+    } finally {
+      setIsTestingConnection(false);
+    }
+  };
 
   // Sheets & Drive State
   const [selectedSheetId, setSelectedSheetId] = useState<string>(systemSettings.activeGoogleSheetId || systemSettings.googleSheetId || envSheetId);
@@ -156,6 +183,7 @@ export const AppsScriptSyncModule: React.FC = () => {
         organizationRecords,
         officialLetters,
         cheques,
+        customSections,
         customRecords,
         users,
         auditLogs
@@ -368,6 +396,94 @@ export const AppsScriptSyncModule: React.FC = () => {
             <span>Apps Script</span>
           </button>
         </div>
+      </div>
+
+      {/* Live Cloud Health, Vercel Env Diagnostics & Real Apps Script CORS Test */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Database className="w-4 h-4 text-blue-600" />
+            <h3 className="text-xs font-extrabold text-slate-900">
+              تشخيص الاتصال السحابي الفعلي (Firebase Firestore + Google Apps Script + متغيرات Vercel)
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={handleTestAppsScriptConnection}
+            disabled={isTestingConnection}
+            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isTestingConnection ? 'animate-spin' : ''}`} />
+            <span>{isTestingConnection ? 'جاري فحص الاتصال و CORS...' : 'فحص الاتصال الفعلي مع Apps Script'}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+          <div className={`p-3 rounded-lg border ${cloudHealth?.firebaseStatus === 'error' ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-emerald-50 border-emerald-200 text-emerald-900'}`}>
+            <div className="font-bold flex items-center gap-1.5">
+              {cloudHealth?.firebaseStatus === 'error' ? <XCircle className="w-4 h-4 text-rose-600" /> : <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
+              <span>قاعدة بيانات Firebase Firestore</span>
+            </div>
+            <p className="text-[11px] mt-1 opacity-90">
+              {cloudHealth?.firebaseStatus === 'error'
+                ? (cloudHealth.firebaseError || 'فشل الاتصال بـ Firestore')
+                : 'متصل فعلياً — الحفظ المباشر مفعّل (بدون تخزين سجلات في Chrome).'}
+            </p>
+          </div>
+
+          <div className={`p-3 rounded-lg border ${cloudHealth?.sheetsStatus === 'error' ? 'bg-amber-50 border-amber-200 text-amber-950' : 'bg-sky-50 border-sky-200 text-sky-950'}`}>
+            <div className="font-bold flex items-center gap-1.5">
+              {cloudHealth?.sheetsStatus === 'error' ? <AlertTriangle className="w-4 h-4 text-amber-600" /> : <FileSpreadsheet className="w-4 h-4 text-sky-600" />}
+              <span>الربط المزدوج مع Google Sheets</span>
+            </div>
+            <p className="text-[11px] mt-1 opacity-90">
+              {cloudHealth?.sheetsStatus === 'error'
+                ? (cloudHealth.sheetsError || 'تعذر التحقق من Apps Script')
+                : 'جاهز للترحيل الفوري وإنشاء أوراق الأقسام المخصصة تلقائياً.'}
+            </p>
+          </div>
+
+          <div className={`p-3 rounded-lg border ${envReport.allReady ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-950'}`}>
+            <div className="font-bold flex items-center gap-1.5">
+              {envReport.allReady ? <CheckCircle2 className="w-4 h-4 text-emerald-600" /> : <AlertTriangle className="w-4 h-4 text-amber-600" />}
+              <span>متغيرات البيئة في Vercel</span>
+            </div>
+            <p className="text-[11px] mt-1 opacity-90">
+              {envReport.allReady
+                ? envReport.summaryMessage
+                : `${envReport.summaryMessage} ${[...envReport.missingRequiredKeys, ...envReport.placeholderKeys].join(', ')}`}
+            </p>
+          </div>
+        </div>
+
+        {pingResult && (
+          <div className={`p-3 rounded-lg border text-xs ${pingResult.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-900'}`}>
+            {pingResult.ok ? (
+              <div className="space-y-1">
+                <div className="font-extrabold flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>نجح الاتصال الفعلي بـ Google Apps Script عبر ({pingResult.via === 'proxy' ? 'وكيل الخادم الآمن /api/sync/state بدون CORS' : 'الاتصال المباشر'})!</span>
+                </div>
+                <p className="text-[11px]">
+                  الجدول المتصل: <strong>{pingResult.spreadsheetName || selectedSheetId}</strong> | عدد الأوراق: <strong>{pingResult.sheetsCount ?? '—'}</strong> | إصدار السكربت: <span className="font-mono">{pingResult.version || 'إصدار قديم'}</span>
+                </p>
+                {pingResult.needsScriptUpdate && (
+                  <p className="text-[11px] font-bold text-amber-800 bg-amber-100 px-2.5 py-1.5 rounded-md mt-1">
+                    تنبيه مهم: نسخة كود Apps Script المنشورة حالياً قديمة ولا تحتوي على ميزة إنشاء أوراق الأقسام المخصصة تلقائياً. افتح تبويب «Apps Script» بالأعلى وانسخ الكود المحدث ثم انشره كإصدار جديد (New Version).
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <div className="font-extrabold flex items-center gap-1.5">
+                  <XCircle className="w-4 h-4 text-rose-600" />
+                  <span>فشل الاتصال بـ Google Apps Script {pingResult.corsError ? '(حظر CORS أو صلاحية النشر)' : ''}</span>
+                </div>
+                <p className="text-[11px]">{pingResult.error}</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* TAB 1: Edit Connection Settings */}

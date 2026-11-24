@@ -284,57 +284,240 @@ function styleSheetProfessionally(sheet, headersCount, totalRows, headerBg, head
   for (var colIdx = 1; colIdx <= headersCount; colIdx++) {
     try { sheet.setColumnWidth(colIdx, 175); } catch (e) {}
   }
+  // حماية غير تدميرية: لا يتم حذف أي أعمدة إضافية موجودة مسبقاً في الورقة حفاظاً على البيانات
+}
 
-  // حذف أي أعمدة زائدة خارج نطاق أعمدة القسم لمنع التشوه البصري
+// =========================================================================
+// مخزن المخططات الديناميكي للأقسام والأيقونات المخصصة (Auto-Sheet Engine)
+// ينشئ ورقة مخصصة مرتبة الأعمدة فور إضافة أي قسم أو أيقونة جديدة دون المساس بالأوراق القديمة
+// =========================================================================
+var DYNAMIC_SECTIONS_PROP_KEY = 'AL_NASHI_DYNAMIC_SECTIONS_V2';
+
+function loadDynamicSectionRegistry() {
   try {
-    var maxCols = sheet.getMaxColumns();
-    if (maxCols > headersCount) {
-      sheet.deleteColumns(headersCount + 1, maxCols - headersCount);
+    var raw = PropertiesService.getDocumentProperties().getProperty(DYNAMIC_SECTIONS_PROP_KEY);
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
     }
+  } catch (e) {}
+  return {};
+}
+
+function saveDynamicSectionRegistry(registry) {
+  try {
+    PropertiesService.getDocumentProperties().setProperty(DYNAMIC_SECTIONS_PROP_KEY, JSON.stringify(registry || {}));
   } catch (e) {}
 }
 
-function ensureCleanStructuredHeaders(sheet, headers, headerBg, headerFg) {
-  var lastRow = sheet.getLastRow();
-  var lastCol = sheet.getLastColumn();
-  if (lastRow === 0 || lastCol === 0) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    styleSheetProfessionally(sheet, headers.length, 1, headerBg, headerFg);
-    return headers;
+function sanitizeCustomSheetName(rawTitle, subTitle) {
+  var clean = function(v) {
+    return String(v || '')
+      .trim()
+      .replace(/[:\\\\\\/?*\\[\\]'"]+/g, '')
+      .replace(/\\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  };
+  var base = clean(rawTitle) || 'قسم_مخصص';
+  if (base.indexOf('قسم_') !== 0) base = 'قسم_' + base;
+  if (subTitle) {
+    var sub = clean(subTitle);
+    if (sub) return (base + '_' + sub).slice(0, 90);
   }
-  var currentRow1 = sheet.getRange(1, 1, 1, Math.max(lastCol, headers.length)).getValues()[0].map(function(h) {
-    return String(h || '').trim();
-  });
-  // إذا كانت الترويسة الأولى مطابقة نُرجعها، وإلا نقوم بتحديث الترويسة القياسية
-  var isExact = currentRow1.length === headers.length;
-  if (isExact) {
-    for (var i = 0; i < headers.length; i++) {
-      if (currentRow1[i] !== headers[i]) {
-        isExact = false;
-        break;
-      }
-    }
-  }
-  if (!isExact && lastRow === 1) {
-    sheet.clearContents();
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    styleSheetProfessionally(sheet, headers.length, 1, headerBg, headerFg);
-    return headers;
-  }
-  return currentRow1;
+  return base.slice(0, 90);
 }
 
 /**
- * أداة إعادة تنظيم وتوحيد جميع أوراق Google Sheets:
- * 1. تسحب البيانات من الأوراق القديمة والمكررة وتدمجها في الورقة الرسمية الواحدة لكل قسم بدون ضياع أي سجل.
- * 2. ترتب الأعمدة العربية وتلغي أي أعمدة إنجليزية أو زائدة.
- * 3. تحذف الأوراق المكررة والقديمة ليبقى في الملف ورقة واحدة فقط لكل قسم!
+ * ضمان وجود الأعمدة المطلوبة دون مسح الأعمدة القديمة أو البيانات الموجودة مسبقاً (Non-Destructive)
+ */
+function ensureNonDestructiveHeaders(sheet, requiredHeaders, headerBg, headerFg) {
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+
+  if (lastRow === 0 || lastCol === 0) {
+    sheet.getRange(1, 1, 1, requiredHeaders.length).setValues([requiredHeaders]);
+    styleSheetProfessionally(sheet, requiredHeaders.length, 1, headerBg, headerFg);
+    return requiredHeaders.slice();
+  }
+
+  var currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
+    return String(h || '').trim();
+  });
+
+  var mergedHeaders = currentHeaders.slice();
+  var addedCount = 0;
+  for (var i = 0; i < requiredHeaders.length; i++) {
+    var reqH = String(requiredHeaders[i] || '').trim();
+    if (!reqH) continue;
+    if (mergedHeaders.indexOf(reqH) === -1) {
+      mergedHeaders.push(reqH);
+      addedCount++;
+    }
+  }
+
+  if (addedCount > 0) {
+    sheet.getRange(1, 1, 1, mergedHeaders.length).setValues([mergedHeaders]);
+    styleSheetProfessionally(sheet, mergedHeaders.length, lastRow, headerBg, headerFg);
+  }
+  return mergedHeaders;
+}
+
+function ensureCleanStructuredHeaders(sheet, headers, headerBg, headerFg) {
+  return ensureNonDestructiveHeaders(sheet, headers, headerBg, headerFg);
+}
+
+/**
+ * تسجيل وتجهيز ورقة عمل مخصصة لأي قسم جديد أو أيقونة أو قسم فرعي تلقائياً
+ */
+function registerDynamicCustomSection(ss, secDef) {
+  if (!secDef || typeof secDef !== 'object') return null;
+  var secId = String(secDef.id || secDef.sectionId || '').trim();
+  if (!secId || secId === 'sec_social_welfare') return null;
+
+  var registry = loadDynamicSectionRegistry();
+  var results = [];
+
+  var registerSingle = function(idKey, title, sheetNameCandidate, fieldsArr) {
+    var finalSheetName = sheetNameCandidate ? sanitizeCustomSheetName(sheetNameCandidate) : sanitizeCustomSheetName(title);
+    // منع التعارض مع الأوراق الثمانية الأساسية
+    if (CORE_SCHEMAS[finalSheetName]) {
+      finalSheetName = (finalSheetName + '_مخصص').slice(0, 90);
+    }
+
+    var columns = [{ key: 'id', header: 'معرف القيد' }];
+    var seenHeaders = { 'معرف القيد': true, 'تاريخ الإنشاء': true, 'الموظف المسؤول': true };
+
+    if (Array.isArray(fieldsArr)) {
+      for (var i = 0; i < fieldsArr.length; i++) {
+        var f = fieldsArr[i];
+        if (!f) continue;
+        var fKey = String(f.id || f.key || f.name || ('field_' + i)).trim();
+        var fLabel = cleanCellVal(f.label || f.header || f.name || fKey);
+        if (!fLabel || seenHeaders[fLabel]) continue;
+        seenHeaders[fLabel] = true;
+        columns.push({ key: fKey, header: fLabel });
+      }
+    }
+    columns.push({ key: 'createdAt', header: 'تاريخ الإنشاء' });
+    columns.push({ key: 'createdBy', header: 'الموظف المسؤول' });
+
+    var sheet = ss.getSheetByName(finalSheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(finalSheetName);
+      try { sheet.setRightToLeft(true); } catch (e) {}
+    }
+
+    var headers = columns.map(function(c) { return c.header; });
+    ensureNonDestructiveHeaders(sheet, headers, '#1d4ed8', '#ffffff');
+
+    var meta = {
+      sectionId: idKey,
+      title: String(title || finalSheetName),
+      sheetName: finalSheetName,
+      columns: columns,
+      updatedAt: new Date().toISOString()
+    };
+    registry[idKey] = meta;
+    results.push(meta);
+  };
+
+  if (secDef.isMultiSectionHub && Array.isArray(secDef.subSections) && secDef.subSections.length > 0) {
+    for (var sIdx = 0; sIdx < secDef.subSections.length; sIdx++) {
+      var sub = secDef.subSections[sIdx];
+      if (!sub || sub.targetBuiltInSection) continue;
+      var compositeId = secId + '__' + sub.id;
+      var subSheetName = sanitizeCustomSheetName(secDef.title || secDef.name, sub.title);
+      registerSingle(compositeId, (secDef.title || '') + ' - ' + sub.title, subSheetName, sub.fields || []);
+    }
+  } else {
+    registerSingle(secId, secDef.title || secDef.name, secDef.sheetName || secDef.name, secDef.fields || secDef.columns || []);
+  }
+
+  saveDynamicSectionRegistry(registry);
+  return results;
+}
+
+/**
+ * إدخال وتحديث غير تدميري لسجلات الأقسام المخصصة داخل ورقة القسم الخاصة بها
+ */
+function handleDynamicCustomRecordUpsert(ss, contents, record) {
+  if (!record || typeof record !== 'object') return null;
+  var secId = String(contents.sectionId || record.sectionId || '').trim();
+  if (!secId || secId === 'sec_social_welfare') {
+    var socialSheet = ss.getSheetByName('قسم_الرعاية_الاجتماعية') || ss.insertSheet('قسم_الرعاية_الاجتماعية');
+    handleStructuredUpsertBatch(socialSheet, CORE_SCHEMAS['قسم_الرعاية_الاجتماعية'], [record]);
+    return 'قسم_الرعاية_الاجتماعية';
+  }
+
+  var registry = loadDynamicSectionRegistry();
+  var meta = registry[secId];
+
+  // في حال لم يُسجّل القسم مسبقاً، ننشئ ورقته وأعمدته تلقائياً من بيانات الحقول المرفقة
+  if (!meta) {
+    var autoColumns = Array.isArray(contents.sectionColumns) ? contents.sectionColumns : [];
+    var sheetTitle = contents.sectionTitle || contents.sheetName || secId;
+    registerDynamicCustomSection(ss, {
+      id: secId,
+      title: sheetTitle,
+      sheetName: contents.sheetName || sheetTitle,
+      fields: autoColumns
+    });
+    registry = loadDynamicSectionRegistry();
+    meta = registry[secId];
+  }
+
+  var targetSheetName = (meta && meta.sheetName) ? meta.sheetName : sanitizeCustomSheetName(contents.sheetName || secId);
+  var sheet = ss.getSheetByName(targetSheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(targetSheetName);
+    try { sheet.setRightToLeft(true); } catch (e) {}
+  }
+
+  var dynamicColumns = (meta && Array.isArray(meta.columns) && meta.columns.length > 0)
+    ? meta.columns
+    : [{ key: 'id', header: 'معرف القيد' }, { key: 'createdAt', header: 'تاريخ الإنشاء' }, { key: 'createdBy', header: 'الموظف المسؤول' }];
+
+  // إذا وردت أعمدة جديدة في الطلب نضيفها غير تدميرياً
+  if (Array.isArray(contents.sectionColumns)) {
+    var existingHeaderSet = {};
+    dynamicColumns.forEach(function(c) { existingHeaderSet[c.header] = true; });
+    contents.sectionColumns.forEach(function(sc) {
+      if (sc && sc.header && !existingHeaderSet[sc.header]) {
+        dynamicColumns.splice(Math.max(1, dynamicColumns.length - 2), 0, { key: sc.key || sc.header, header: sc.header });
+        existingHeaderSet[sc.header] = true;
+      }
+    });
+  }
+
+  var schemaObj = {
+    idKey: 'id',
+    headerBg: '#1d4ed8',
+    headerFg: '#ffffff',
+    columns: dynamicColumns.map(function(c) {
+      return { header: c.header, key: c.key, aliases: [c.key, c.header] };
+    })
+  };
+
+  handleStructuredUpsertBatch(sheet, schemaObj, [record]);
+  return targetSheetName;
+}
+
+/**
+ * أداة إعادة تنظيم وتوحيد جميع أوراق Google Sheets (غير تدميرية وتحافظ على جميع أوراق الأقسام المخصصة):
  */
 function reorganizeAllSheetsCleanly() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var canonicalSheetNames = Object.keys(CORE_SCHEMAS);
+  var dynamicRegistry = loadDynamicSectionRegistry();
+  var protectedDynamicSheets = {};
+  Object.keys(dynamicRegistry).forEach(function(secId) {
+    if (dynamicRegistry[secId] && dynamicRegistry[secId].sheetName) {
+      protectedDynamicSheets[dynamicRegistry[secId].sheetName] = true;
+    }
+  });
 
-  // 1. إنشاء جميع أوراق الأقسام الثمانية أولاً ودمج البيانات من الأوراق القديمة فيها
+  // 1. دمج السجلات في أوراق الأقسام الثمانية مع الحفاظ الكامل على البيانات والأعمدة
   canonicalSheetNames.forEach(function(sheetName) {
     var schema = CORE_SCHEMAS[sheetName];
     var targetSheet = ss.getSheetByName(sheetName);
@@ -342,30 +525,24 @@ function reorganizeAllSheetsCleanly() {
       targetSheet = ss.insertSheet(sheetName);
     }
 
-    // جمع السجلات من الورقة الرسمية + كافة الأوراق القديمة المكررة التابعة لنفس القسم
     var combinedRecords = getDepartmentRecordsWithLegacies(ss, sheetName);
-
-    targetSheet.clearContents();
     var headers = schema.columns.map(function(c) { return c.header; });
-    var rows = [headers];
+    var existingHeaders = ensureNonDestructiveHeaders(targetSheet, headers, schema.headerBg, schema.headerFg);
 
-    combinedRecords.forEach(function(rec) {
-      rows.push(schema.columns.map(function(col) {
-        return cleanCellVal(extractFieldBySchemaColumn(rec, col));
-      }));
-    });
-
-    targetSheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
-    styleSheetProfessionally(targetSheet, headers.length, rows.length, schema.headerBg, schema.headerFg);
+    if (combinedRecords.length > 0) {
+      handleStructuredUpsertBatch(targetSheet, schema, combinedRecords);
+    } else {
+      styleSheetProfessionally(targetSheet, existingHeaders.length, targetSheet.getLastRow(), schema.headerBg, schema.headerFg);
+    }
   });
 
-  // 2. حذف كافة الأوراق القديمة المكررة والأوراق الزائدة حتى يبقى لكل قسم ورقة واحدة فقط
+  // 2. تنظيف الأوراق القديمة المكررة فقط (دون المساس بأي ورقة قسم مخصص!)
   var allSheets = ss.getSheets();
   for (var sIdx = 0; sIdx < allSheets.length; sIdx++) {
     var sh = allSheets[sIdx];
     var shName = sh.getName();
-    if (canonicalSheetNames.indexOf(shName) !== -1) {
-      continue; // هذه ورقة رسمية لقسم، نحافظ عليها
+    if (canonicalSheetNames.indexOf(shName) !== -1 || protectedDynamicSheets[shName]) {
+      continue;
     }
     var shouldDelete = OBSOLETE_CLUTTER_SHEETS.indexOf(shName) !== -1;
     if (!shouldDelete) {
@@ -385,7 +562,8 @@ function reorganizeAllSheetsCleanly() {
   return {
     success: true,
     sheetsCount: ss.getSheets().length,
-    departments: canonicalSheetNames
+    departments: canonicalSheetNames,
+    customSheets: Object.keys(protectedDynamicSheets)
   };
 }
 
@@ -440,7 +618,7 @@ function getSingleSheetRawRecords(ss, sheetName, schema) {
       if (schema) {
         for (var c = 0; c < schema.columns.length; c++) {
           var col = schema.columns[c];
-          if (h === col.header || h === col.key || col.aliases.indexOf(h) !== -1) {
+          if (h === col.header || h === col.key || (col.aliases && col.aliases.indexOf(h) !== -1)) {
             if (item[col.key] === undefined || item[col.key] === '') {
               item[col.key] = cell;
             }
@@ -476,7 +654,6 @@ function getDepartmentRecordsWithLegacies(ss, canonicalSheetName) {
         seenMap[idVal] = rec;
         orderedIds.push(idVal);
       } else {
-        // دمج أي حقول غير فارغة من الورقة الأقدم
         var existing = seenMap[idVal];
         Object.keys(rec).forEach(function(k) {
           if ((existing[k] === undefined || existing[k] === '') && rec[k] !== undefined && rec[k] !== '') {
@@ -519,15 +696,45 @@ function buildAllDepartmentsPayload(ss) {
     };
   });
 
+  // قراءة سجلات جميع الأقسام المخصصة المسجلة ديناميكياً من أوراقها المستقلة
+  var dynamicRegistry = loadDynamicSectionRegistry();
+  Object.keys(dynamicRegistry).forEach(function(secId) {
+    var meta = dynamicRegistry[secId];
+    if (!meta || !meta.sheetName) return;
+    var dynSchema = {
+      columns: (meta.columns || []).map(function(c) {
+        return { key: c.key, header: c.header, aliases: [c.key, c.header] };
+      })
+    };
+    var rows = getSingleSheetRawRecords(ss, meta.sheetName, dynSchema);
+    rows.forEach(function(rowObj) {
+      var recId = String(rowObj.id || rowObj['معرف القيد'] || '').trim();
+      if (!recId) return;
+      var dataMap = {};
+      (meta.columns || []).forEach(function(col) {
+        if (col.key === 'id' || col.key === 'createdAt' || col.key === 'createdBy') return;
+        dataMap[col.key] = String(rowObj[col.key] || rowObj[col.header] || '');
+      });
+      customRecords.push({
+        id: recId,
+        sectionId: secId,
+        createdAt: String(rowObj.createdAt || rowObj['تاريخ الإنشاء'] || ''),
+        createdBy: String(rowObj.createdBy || rowObj['الموظف المسؤول'] || meta.title || ''),
+        data: dataMap
+      });
+    });
+  });
+
   return {
     status: 'online',
     success: true,
-    schemaVersion: '2026-ONE-SHEET-PER-DEPARTMENT',
+    schemaVersion: '2026-DYNAMIC-ONE-SHEET-PER-DEPARTMENT',
     appName: 'منظومة مكتب النائب علا الناشي',
     spreadsheetName: ss.getName(),
     sheetsCount: ss.getSheets().length,
     departmentSheets: Object.keys(CORE_SCHEMAS),
-    message: 'تم جلب كافة بيانات الأقسام الثمانية بنجاح من Google Sheets',
+    customSectionSheets: Object.keys(dynamicRegistry).map(function(k) { return dynamicRegistry[k].sheetName; }),
+    message: 'تم جلب كافة بيانات الأقسام الأساسية والمخصصة بنجاح من Google Sheets',
     data: {
       citizens: citizens,
       requests: requests,
@@ -555,11 +762,22 @@ function doGet(e) {
     var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'getAllData';
     var ss = SpreadsheetApp.getActiveSpreadsheet();
 
+    if (action === 'ping' || action === 'health') {
+      return jsonResponse({
+        success: true,
+        status: 'online',
+        spreadsheetId: ss.getId(),
+        spreadsheetName: ss.getName(),
+        sheetsCount: ss.getSheets().length,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     if (action === 'reorganizeSheets') {
       var reorgInfo = reorganizeAllSheetsCleanly();
       return jsonResponse({
         success: true,
-        message: 'تم ترتيب وتوحيد جميع أوراق Google Sheets بنجاح (ورقة واحدة لكل قسم بأعمدة عربية مرتبة)',
+        message: 'تم ترتيب وتوحيد جميع أوراق Google Sheets بنجاح مع الحفاظ الكامل على الأقسام المخصصة',
         details: reorgInfo
       });
     }
@@ -581,7 +799,6 @@ function doGet(e) {
       });
     }
 
-    // الافتراضي: إرجاع جميع بيانات الأقسام الثمانية + حالة الاتصال
     return jsonResponse(buildAllDepartmentsPayload(ss));
   } catch (err) {
     return jsonResponse({ success: false, error: err.toString() });
@@ -603,8 +820,40 @@ function doPost(e) {
     var data = contents.data || contents.record || {};
     var ss = SpreadsheetApp.getActiveSpreadsheet();
 
+    if (action === 'ping' || action === 'health') {
+      return jsonResponse({
+        success: true,
+        status: 'online',
+        spreadsheetId: ss.getId(),
+        spreadsheetName: ss.getName(),
+        sheetsCount: ss.getSheets().length,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     if (action === 'getAllData') {
       return jsonResponse(buildAllDepartmentsPayload(ss));
+    }
+
+    if (action === 'wipeAll') {
+      // تصفير الصفوف فقط (A2:AZ) مع الحفاظ الكامل على الأوراق وترويساتها - محصور بصلاحية المطور
+      var allWipeSheets = ss.getSheets();
+      var clearedCount = 0;
+      for (var w = 0; w < allWipeSheets.length; w++) {
+        var wsh = allWipeSheets[w];
+        var lastR = wsh.getLastRow();
+        var lastC = wsh.getLastColumn();
+        if (lastR > 1 && lastC > 0) {
+          wsh.getRange(2, 1, lastR - 1, lastC).clearContent();
+          clearedCount++;
+        }
+      }
+      return jsonResponse({
+        success: true,
+        message: 'تم تصفير بيانات كافة الأوراق مع الحفاظ على الترويسات',
+        clearedSheets: clearedCount,
+        timestamp: new Date().toISOString()
+      });
     }
 
     if (action === 'reorganizeSheets') {
@@ -615,25 +864,57 @@ function doPost(e) {
       var reorgRes = reorganizeAllSheetsCleanly();
       return jsonResponse({
         success: true,
-        message: 'تم توحيد وترتيب كافة أوراق الأقسام في Google Sheets وحذف الأوراق المكررة بنجاح',
+        message: 'تم توحيد وترتيب كافة أوراق الأقسام في Google Sheets مع الحفاظ على الأقسام المخصصة بنجاح',
         details: reorgRes
       });
     }
 
     setupSpreadsheet();
 
-    if (action === 'syncSchema' || action === 'registerSection') {
-      return jsonResponse({ success: true, message: 'جميع أوراق الأقسام الثمانية جاهزة ومنظمة بأعمدتها العربية' });
+    // إنشاء وترتيب ورقة مخصصة تلقائياً فور إضافة أي قسم أو أيقونة جديدة
+    if (action === 'registerSection' || table === 'custom_sections') {
+      if (action === 'delete') {
+        return jsonResponse({ success: true, message: 'تم الحفاظ على ورقة القسم في الأرشيف دون حذف بياناتها' });
+      }
+      var createdMeta = registerDynamicCustomSection(ss, contents.section || data);
+      return jsonResponse({
+        success: true,
+        message: 'تم إنشاء وتنظيم ورقة القسم المخصص وأعمدتها تلقائياً في Google Sheets بنجاح',
+        registered: createdMeta,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (action === 'syncSchema') {
+      var list = Array.isArray(contents.sections) ? contents.sections : (Array.isArray(data) ? data : []);
+      var allRegistered = [];
+      list.forEach(function(sec) {
+        if (sec && (sec.isCustom || sec.fields || sec.subSections)) {
+          var res = registerDynamicCustomSection(ss, sec);
+          if (Array.isArray(res)) allRegistered = allRegistered.concat(res);
+        }
+      });
+      return jsonResponse({
+        success: true,
+        message: 'تمت مزامنة وتنظيم كافة أوراق الأقسام الأساسية والمخصصة تلقائياً',
+        registeredCount: allRegistered.length,
+        timestamp: new Date().toISOString()
+      });
     }
 
     if (action === 'bulk_sync' || action === 'syncAll') {
+      if (Array.isArray(contents.customSections)) {
+        contents.customSections.forEach(function(sec) {
+          registerDynamicCustomSection(ss, sec);
+        });
+      }
       handleBulkSync(ss, data);
       if (contents.cleanupDuplicates) {
         reorganizeAllSheetsCleanly();
       }
       return jsonResponse({
         success: true,
-        message: 'تم بنجاح حفظ وتحديث كافة البيانات في أوراق الأقسام الموحدة في Google Sheets',
+        message: 'تم بنجاح حفظ وتحديث كافة البيانات بشكل غير تدميري في Google Sheets',
         timestamp: new Date().toISOString()
       });
     }
@@ -654,11 +935,30 @@ function doPost(e) {
       return jsonResponse(handleDriveDelete(contents.fileId));
     }
 
-    // تجاهل الكتابة العشوائية في قوائم dropdowns أو settings حتى لا تنشأ أوراق إضافية غير مرغوبة
-    if (table === 'dropdowns' || table === 'settings' || table === 'custom_sections' || table === 'drive_archive') {
+    if (table === 'dropdowns' || table === 'settings' || table === 'drive_archive') {
       return jsonResponse({
         success: true,
-        message: 'تم تجاهل إنشاء ورقة فرعية للحفاظ على ورقة واحدة لكل قسم فقط',
+        message: 'تم الحفاظ على هيكل الأوراق المنظم',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // توجيه سجلات الأقسام المخصصة تلقائياً إلى ورقة القسم المخصصة لها
+    if (table === 'custom_records') {
+      var targetCustomId = contents.id || data.id;
+      if (action === 'delete') {
+        var reg = loadDynamicSectionRegistry();
+        var secIdDel = String(contents.sectionId || data.sectionId || '').trim();
+        var delSheetName = (secIdDel && reg[secIdDel]) ? reg[secIdDel].sheetName : (contents.sheetName || 'قسم_الرعاية_الاجتماعية');
+        var delSheet = ss.getSheetByName(delSheetName);
+        if (delSheet) handleDelete(delSheet, targetCustomId);
+        return jsonResponse({ success: true, message: 'تم حذف السجل من ورقة القسم المخصص', sheet: delSheetName });
+      }
+      var writtenSheet = handleDynamicCustomRecordUpsert(ss, contents, data);
+      return jsonResponse({
+        success: true,
+        message: 'تم حفظ سجل القسم المخصص في ورقته المستقلة بنجاح',
+        sheet: writtenSheet,
         timestamp: new Date().toISOString()
       });
     }
@@ -675,7 +975,6 @@ function doPost(e) {
 
     if (action === 'delete') {
       handleDelete(sheet, targetId);
-      // حذف السجل أيضاً من أي ورقة قديمة إن وجدت
       if (schema && schema.legacyNames) {
         schema.legacyNames.forEach(function(legName) {
           var legSheet = ss.getSheetByName(legName);
@@ -700,18 +999,18 @@ function doPost(e) {
 }
 
 /**
- * إدخال وتحديث منظم (Single + Bulk) لأوراق الأقسام الثمانية بدون إضافة أي أعمدة عشوائية
+ * إدخال وتحديث منظم غير تدميري (ID-Based Upsert) يحافظ على جميع القيم والأعمدة الموجودة مسبقاً
  */
 function handleStructuredUpsertBatch(sheet, schema, items) {
   if (!Array.isArray(items) || items.length === 0) return;
 
   var standardHeaders = schema.columns.map(function(c) { return c.header; });
-  var existingHeaders = ensureCleanStructuredHeaders(sheet, standardHeaders, schema.headerBg, schema.headerFg);
+  var existingHeaders = ensureNonDestructiveHeaders(sheet, standardHeaders, schema.headerBg, schema.headerFg);
 
   var colToSchema = existingHeaders.map(function(h) {
     for (var cIdx = 0; cIdx < schema.columns.length; cIdx++) {
       var col = schema.columns[cIdx];
-      if (h === col.header || h === col.key || col.aliases.indexOf(h) !== -1) {
+      if (h === col.header || h === col.key || (col.aliases && col.aliases.indexOf(h) !== -1)) {
         return col;
       }
     }
@@ -736,10 +1035,14 @@ function handleStructuredUpsertBatch(sheet, schema, items) {
     var idVal = cleanCellVal(extractFieldBySchemaColumn(item, idCol));
     if (!idVal) return;
 
-    var rowVals = existingHeaders.map(function(_h, colIdx) {
+    var rowVals = existingHeaders.map(function(h, colIdx) {
       var matchedCol = colToSchema[colIdx];
-      if (!matchedCol) return '';
-      return cleanCellVal(extractFieldBySchemaColumn(item, matchedCol));
+      if (matchedCol) {
+        return cleanCellVal(extractFieldBySchemaColumn(item, matchedCol));
+      }
+      // الحفاظ على أي حقل يطابق اسم عمود مضاف يدوياً في الورقة
+      var rawDirect = item[h] !== undefined ? item[h] : (item.data && item.data[h]);
+      return cleanCellVal(rawDirect);
     });
 
     var existingRowNum = idRowMap[idVal];
@@ -781,6 +1084,14 @@ function handleDelete(sheet, id) {
 
 function handleBulkSync(ss, allData) {
   if (!allData || typeof allData !== 'object') return;
+
+  // 1. تسجيل أي أقسام مخصصة أولاً لضمان إنشاء أوراقها وأعمدتها قبل إدراج السجلات
+  if (Array.isArray(allData.customSections) && allData.customSections.length > 0) {
+    allData.customSections.forEach(function(sec) {
+      if (sec) registerDynamicCustomSection(ss, sec);
+    });
+  }
+
   var mapping = [
     { key: 'citizens', name: 'قسم_الاستعلامات_والمراجعين' },
     { key: 'requests', name: 'قسم_الإدارة_والمعاملات' },
@@ -788,7 +1099,6 @@ function handleBulkSync(ss, allData) {
     { key: 'organizationRecords', name: 'قسم_التنظيم_والجماهير' },
     { key: 'officialLetters', name: 'قسم_المكنة_والكتب_الرسمية' },
     { key: 'cheques', name: 'قسم_المساعدات_والصكوك' },
-    { key: 'customRecords', name: 'قسم_الرعاية_الاجتماعية' },
     { key: 'users', name: 'قسم_الرقابة_والمستخدمين' }
   ];
   mapping.forEach(function(m) {
@@ -802,6 +1112,39 @@ function handleBulkSync(ss, allData) {
       handleStructuredUpsertBatch(sheet, CORE_SCHEMAS[m.name], items);
     }
   });
+
+  // 2. توجيه سجلات الأقسام المخصصة حسب sectionId (الرعاية الاجتماعية أو ورقة كل قسم مخصص)
+  if (Array.isArray(allData.customRecords) && allData.customRecords.length > 0) {
+    var socialItems = [];
+    var dynamicItems = [];
+    allData.customRecords.forEach(function(rec) {
+      if (!rec) return;
+      var secId = String(rec.sectionId || '').trim();
+      if (!secId || secId === 'sec_social_welfare') {
+        socialItems.push(rec);
+      } else {
+        dynamicItems.push(rec);
+      }
+    });
+
+    if (socialItems.length > 0) {
+      var socialSheet = ss.getSheetByName('قسم_الرعاية_الاجتماعية');
+      if (!socialSheet) {
+        socialSheet = ss.insertSheet('قسم_الرعاية_الاجتماعية');
+        try { socialSheet.setRightToLeft(true); } catch (e) {}
+      }
+      handleStructuredUpsertBatch(socialSheet, CORE_SCHEMAS['قسم_الرعاية_الاجتماعية'], socialItems);
+    }
+
+    dynamicItems.forEach(function(dRec) {
+      handleDynamicCustomRecordUpsert(ss, {
+        sectionId: dRec.sectionId,
+        sheetName: dRec.sheetName,
+        sectionTitle: dRec.sectionTitle,
+        sectionColumns: dRec.sectionColumns
+      }, dRec.payload || dRec);
+    });
+  }
 }
 
 function handleDriveUpload(contents) {

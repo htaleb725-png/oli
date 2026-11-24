@@ -30,6 +30,8 @@ import { AppUpdateNotification } from './components/AppUpdateNotification';
 import { SessionLoadingOverlay } from './components/SessionLoadingOverlay';
 import { MobileAppBottomNav } from './components/MobileAppBottomNav';
 import { AdminLogoutExportModal } from './components/AdminLogoutExportModal';
+import { CloudSyncStatusBanner } from './components/CloudSyncStatusBanner';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { playUiClickSound } from './utils/audio';
 import {
   canUserAccessSection,
@@ -368,6 +370,9 @@ const MainAppLayout: React.FC = () => {
       {/* Top Header / Navbar */}
       <Navbar />
 
+      {/* Live Cloud Sync Health & Transparent Error Alerts */}
+      <CloudSyncStatusBanner />
+
       {/* Department Entry Welcome Greeting Toast / Notification */}
       {departmentGreeting && (
         <div className="fixed top-20 right-4 sm:right-6 z-50 max-w-md animate-in fade-in slide-in-from-top-4 duration-300">
@@ -406,7 +411,9 @@ const MainAppLayout: React.FC = () => {
       <div className="flex-1 w-full min-w-0 pb-16 md:pb-0">
         <main className="w-full p-3 sm:p-4 md:p-6 overflow-y-auto bg-[#F1F5F9] dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
           <div className="max-w-7xl mx-auto w-full">
-            {renderActiveModule()}
+            <ErrorBoundary key={activeSection} sectionName={activeSection} compact={true}>
+              {renderActiveModule()}
+            </ErrorBoundary>
           </div>
         </main>
       </div>

@@ -75,9 +75,19 @@ function getRecordTimestamp(item) {
 function mergeTwoRecords(older, newer) {
   const out = { ...older };
   for (const [k, v] of Object.entries(newer)) {
-    if (v !== undefined) {
-      out[k] = v;
+    if (v === undefined || v === null) continue;
+    const prev = out[k];
+    if (typeof v === 'string' && v.trim() === '' && typeof prev === 'string' && prev.trim() !== '') {
+      continue;
     }
+    if (Array.isArray(v) && v.length === 0 && Array.isArray(prev) && prev.length > 0) {
+      continue;
+    }
+    if (k === 'data' && typeof v === 'object' && !Array.isArray(v) && prev && typeof prev === 'object' && !Array.isArray(prev)) {
+      out[k] = mergeTwoRecords(prev, v);
+      continue;
+    }
+    out[k] = v;
   }
   if (newer.IsBlocked === false) {
     out.IsBlocked = false;

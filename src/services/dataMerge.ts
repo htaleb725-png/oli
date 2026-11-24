@@ -18,17 +18,56 @@ import {
 } from '../types';
 
 /**
- * Merges two objects where `incoming` is the newer/winning record and `existing` is the older record.
- * Every defined property on `incoming` (including empty string '', false, 0, null) overwrites `existing`,
- * while preserving any extra fields on `existing` that are undefined on `incoming`.
+ * Non-Destructive Field-Preserving Object Merger
+ * ----------------------------------------------
+ * Merges two versions of the same record (keyed by unique ID) where `incoming` is newer:
+ * - Never overwrites an existing populated string with an empty string "" or null from a partial payload
+ * - Never overwrites an existing populated array with an empty array [] from a partial payload
+ * - Recursively preserves nested `data` fields (for CustomSectionRecord)
+ * - Explicitly honors `IsBlocked === false` to clear block metadata when unblocking a citizen
  */
 export function smartMergeObject<T extends Record<string, any>>(existing: T, incoming: T): T {
   const result: any = { ...existing };
   for (const [key, value] of Object.entries(incoming)) {
-    if (value !== undefined) {
+    if (value === undefined || value === null) continue;
+
+    const prevVal = result[key];
+
+    // Preserve populated existing strings against accidental blank overwrites from sparse sync payloads
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed === '' && typeof prevVal === 'string' && prevVal.trim() !== '') {
+        continue;
+      }
       result[key] = value;
+      continue;
     }
+
+    // Preserve populated arrays against accidental empty array overwrites
+    if (Array.isArray(value)) {
+      if (value.length === 0 && Array.isArray(prevVal) && prevVal.length > 0) {
+        continue;
+      }
+      result[key] = value;
+      continue;
+    }
+
+    // Deep non-destructive merge for nested record maps (e.g. CustomSectionRecord.data)
+    if (
+      key === 'data' &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      prevVal &&
+      typeof prevVal === 'object' &&
+      !Array.isArray(prevVal)
+    ) {
+      result[key] = smartMergeObject(prevVal, value);
+      continue;
+    }
+
+    result[key] = value;
   }
+
   if (incoming.IsBlocked === false) {
     result.IsBlocked = false;
     result.BlockReason = '';

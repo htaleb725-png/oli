@@ -729,21 +729,86 @@ export const syncAllDataToGoogleSheets = async (
       }).catch(() => {});
     }
 
-    // 2. Clear and rewrite all 8 canonical department tabs with their clean ordered Arabic columns
-    const clearRanges = canonicalPayloads.map(p => `${p.tabName}!A1:AZ`);
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ ranges: clearRanges })
-    }).catch(() => {});
+    // 2. NON-DESTRUCTIVE ID-BASED MERGE SYNC across all canonical department tabs
+    // Never run batchClear! Read existing rows first, preserve existing records & extra columns,
+    // update matching IDs non-destructively, and append only missing records.
+    const valueRanges: { range: string; values: any[][] }[] = [];
 
-    const valueRanges = canonicalPayloads.map(p => ({
-      range: p.range,
-      values: [p.headers, ...p.rows]
-    }));
+    for (const p of canonicalPayloads) {
+      let existingRows: any[][] = [];
+      if (existingTitles.has(p.tabName)) {
+        try {
+          const readRes = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(`${p.tabName}!A1:AZ`)}`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (readRes.ok) {
+            const readJson = await readRes.json();
+            if (Array.isArray(readJson.values)) {
+              existingRows = readJson.values;
+            }
+          }
+        } catch {}
+      }
+
+      // Preserve existing headers + any extra custom columns already in the sheet
+      const existingHeaderRow =
+        existingRows.length > 0 ? existingRows[0].map((h: any) => String(h || '').trim()) : [];
+      const mergedHeaders = [...p.headers];
+      for (const eh of existingHeaderRow) {
+        if (eh && !mergedHeaders.includes(eh)) {
+          mergedHeaders.push(eh);
+        }
+      }
+
+      // Index existing rows by unique ID (Column A) so no existing cloud record is ever wiped
+      const rowById = new Map<string, string[]>();
+      const orderedIds: string[] = [];
+
+      for (let i = 1; i < existingRows.length; i++) {
+        const rawRow = existingRows[i] || [];
+        const id = String(rawRow[0] || '').trim();
+        if (!id) continue;
+        const normalized = mergedHeaders.map((h, idx) => {
+          const prevIdx = existingHeaderRow.indexOf(h);
+          const sourceIdx = prevIdx >= 0 ? prevIdx : idx;
+          return rawRow[sourceIdx] !== undefined && rawRow[sourceIdx] !== null ? String(rawRow[sourceIdx]) : '';
+        });
+        rowById.set(id, normalized);
+        orderedIds.push(id);
+      }
+
+      // Upsert incoming rows non-destructively (keep existing non-empty cell when incoming cell is empty)
+      for (const incomingRow of p.rows) {
+        const id = String(incomingRow[0] || '').trim();
+        if (!id) continue;
+        const prev = rowById.get(id);
+        if (prev) {
+          const mergedRow = mergedHeaders.map((_, idx) => {
+            const incVal = idx < incomingRow.length ? String(incomingRow[idx] ?? '').trim() : '';
+            const prevVal = prev[idx] !== undefined ? String(prev[idx]).trim() : '';
+            return incVal !== '' ? incVal : prevVal;
+          });
+          rowById.set(id, mergedRow);
+        } else {
+          const padded = mergedHeaders.map((_, idx) =>
+            idx < incomingRow.length ? String(incomingRow[idx] ?? '') : ''
+          );
+          rowById.set(id, padded);
+          orderedIds.push(id);
+        }
+      }
+
+      const finalRows = [mergedHeaders, ...orderedIds.map((id) => rowById.get(id)!)];
+      const endColLetter =
+        mergedHeaders.length <= 26
+          ? String.fromCharCode(64 + mergedHeaders.length)
+          : 'AZ';
+      valueRanges.push({
+        range: `${p.tabName}!A1:${endColLetter}${finalRows.length}`,
+        values: finalRows
+      });
+    }
 
     const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, {
       method: 'POST',
@@ -757,38 +822,19 @@ export const syncAllDataToGoogleSheets = async (
       })
     });
 
-    // 3. Delete old duplicate/legacy tabs so ONLY 1 sheet per department remains
-    const allLegacyNames = new Set<string>(OBSOLETE_CLUTTER_SHEETS);
-    Object.values(LEGACY_SHEET_ALIASES).forEach(list => list.forEach(n => allLegacyNames.add(n)));
-
-    const deleteSheetRequests: any[] = [];
-    for (const s of existingSheets) {
-      if (!canonicalTitles.has(s.title) && allLegacyNames.has(s.title)) {
-        deleteSheetRequests.push({
-          deleteSheet: { sheetId: s.sheetId }
-        });
-      }
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      const errMsg = errBody?.error?.message || `فشل تحديث Google Sheets (HTTP ${response.status})`;
+      throw new Error(errMsg);
     }
 
-    if (deleteSheetRequests.length > 0) {
-      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ requests: deleteSheetRequests })
-      }).catch(() => {});
-    }
-
-    if (response.ok) {
-      await applyProfessionalStylingToSheets(token, spreadsheetId).catch(() => {});
-    }
+    await applyProfessionalStylingToSheets(token, spreadsheetId).catch(() => {});
+    return { success: true, updatedSheets: canonicalPayloads.length };
   } catch (err: any) {
-    console.warn('Google Sheets sync note:', err?.message || err);
+    const errMsg = err?.message || String(err);
+    console.error('Google Sheets non-destructive sync error:', errMsg);
+    throw new Error(errMsg);
   }
-
-  return { success: true, updatedSheets: canonicalPayloads.length };
 };
 
 /**

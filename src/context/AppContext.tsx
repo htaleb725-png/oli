@@ -84,7 +84,7 @@ import {
 } from '../data/initialData';
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
-import { pushToGoogleSheetsRealtime, pushBulkDataToGoogleSheets, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets, setRuntimeCloudConfig } from '../services/realtimeGoogleSync';
+import { pushToGoogleSheetsRealtime, pushBulkDataToGoogleSheets, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets, setRuntimeCloudConfig, setRuntimeCustomSections } from '../services/realtimeGoogleSync';
 import { sheetsIntegration } from '../services/sheetsIntegrationLayer';
 import { 
   loginAndSetupDeveloperCloud, 
@@ -98,8 +98,8 @@ import {
   deleteRecordFromSheetsRealtime,
   ensureSheetTabExists
 } from '../services/googleSheetsService';
-import { safeLocalStorageSet, scheduleSafeLocalStorageSet, sanitizeRequestsForStorage, cleanBloatedLocalStorage } from '../utils/safeStorage';
-import { idbGetJSON, idbSetJSON } from '../utils/persistentStorage';
+import { safeLocalStorageSet, scheduleSafeLocalStorageSet, sanitizeRequestsForStorage, cleanBloatedLocalStorage, purgeLegacyBrowserBusinessData } from '../utils/safeStorage';
+import { clearBusinessRecordsFromIDB, idbSetJSON } from '../utils/persistentStorage';
 import {
   mergeCitizens,
   mergeRequests,
@@ -112,9 +112,20 @@ import {
   mergeUsers
 } from '../services/dataMerge';
 import { autoSyncAllSchemas } from '../services/schemaAutoDiscovery';
+import {
+  receptionDomain,
+  adminRequestsDomain,
+  interviewsDomain,
+  organizationDomain,
+  lettersDomain,
+  chequesDomain,
+  customSectionsDomain
+} from '../services/domainControllers';
 
-// Run storage cleanup immediately on module evaluation to fix any existing quota issue
+// Purge any legacy business records from Chrome localStorage immediately on module load
+// (only login session & UI appearance/theme preferences remain allowed in browser storage)
 cleanBloatedLocalStorage();
+purgeLegacyBrowserBusinessData();
 
 // Unique per-tab client ID to avoid echoing our own SSE/BroadcastChannel mutations back to ourselves
 const LIVE_SYNC_CLIENT_ID = `cli_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -556,71 +567,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     ];
 
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'custom_sections');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const hasWelfare = parsed.some((s: CustomSection) => s.id === 'sec_social_welfare');
-          return hasWelfare ? parsed : [...defaultSections, ...parsed];
-        }
-      }
-      return defaultSections;
-    } catch {
-      return defaultSections;
-    }
+    // Cloud-First: hydrate customSections exclusively from Firebase Firestore / Server API (never Chrome localStorage)
+    return defaultSections;
   });
 
-  const [customRecords, setCustomRecords] = useState<CustomSectionRecord[]>(() => {
-    const defaultRecords: CustomSectionRecord[] = [
-      {
-        id: 'REC-WELF-101',
-        sectionId: 'sec_social_welfare',
-        createdAt: '2026-03-01',
-        createdBy: 'مسؤول الرعاية الاجتماعية',
-        data: {
-          f_welf_name: 'كاظم هاشم جبر الشمري',
-          f_welf_phone: '07812345678',
-          f_welf_code: 'رع/ذي/2026/894',
-          f_welf_type: 'راتب المعين المتفرغ (هيئة رعاية ذوي الإعاقة)',
-          f_welf_researcher: 'تمت زيارة الباحث الاجتماعي بنجاح',
-          f_welf_district: 'الناصرية (المركز)',
-          f_welf_date: '2026-03-01',
-          f_welf_notes: 'المعاملة مستوفية الشروط الطبية وحاصلة على نسبة عجز 75% وبانتظار إصدار بطاقة الماستر كارد.'
-        }
-      },
-      {
-        id: 'REC-WELF-102',
-        sectionId: 'sec_social_welfare',
-        createdAt: '2026-03-02',
-        createdBy: 'مسؤول الرعاية الاجتماعية',
-        data: {
-          f_welf_name: 'أم غسان سعدون علي الخفاجي',
-          f_welf_phone: '07898765432',
-          f_welf_code: 'رع/شط/2026/512',
-          f_welf_type: 'شبكة الحماية الاجتماعية (نساء وأرامل ومطلقات)',
-          f_welf_researcher: 'ملف مدقق ومكتمل بانتظار التخصيص المالي',
-          f_welf_district: 'الشطرة',
-          f_welf_date: '2026-03-02',
-          f_welf_notes: 'تم إكمال البيان السنوي ورفع القيد للوزارة لإطلاق الإعانة ضمن الوجبة القادمة.'
-        }
-      }
-    ];
-
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'custom_records');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const hasRecs = parsed.some((r: CustomSectionRecord) => r.sectionId === 'sec_social_welfare');
-          return hasRecs ? parsed : [...defaultRecords, ...parsed];
-        }
-      }
-      return defaultRecords;
-    } catch {
-      return defaultRecords;
-    }
-  });
+  // Cloud-First: business customRecords come strictly from Firebase Firestore & Google Sheets (zero Chrome caching)
+  const [customRecords, setCustomRecords] = useState<CustomSectionRecord[]>([]);
 
   const [isFirestoreSyncing, setIsFirestoreSyncing] = useState<boolean>(false);
 
@@ -687,59 +639,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const systemSettingsRef = useRef<SystemSettings>(systemSettings);
   systemSettingsRef.current = systemSettings;
 
-  const [users, setUsers] = useState<User[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'users');
-    if (!saved) return INITIAL_USERS;
-    try {
-      const parsed: User[] = JSON.parse(saved);
-      if (!Array.isArray(parsed) || parsed.length === 0) return INITIAL_USERS;
-
-      // Deduplicate strictly by User_ID and prevent any key collisions
-      const userMap = new Map<string, User>();
-
-      // First seed with INITIAL_USERS
-      for (const u of INITIAL_USERS) {
-        if (u && u.User_ID) {
-          userMap.set(u.User_ID, u);
-        }
-      }
-
-      // Merge saved users by User_ID with permissions
-      for (const u of parsed) {
-        if (u && u.User_ID) {
-          const existing = userMap.get(u.User_ID);
-          userMap.set(u.User_ID, {
-            ...existing,
-            ...u,
-            Permissions: (u.Permissions && u.Permissions.length > 0) ? u.Permissions : (existing?.Permissions || ['scan_upload', 'requests_create', 'view_archive'])
-          });
-        }
-      }
-
-      // Ensure that all User_IDs are completely unique
-      const cleanUsers: User[] = [];
-      const seenIds = new Set<string>();
-
-      for (const u of userMap.values()) {
-        if (!u || !u.User_ID) continue;
-        if (!seenIds.has(u.User_ID)) {
-          seenIds.add(u.User_ID);
-          cleanUsers.push(u);
-        }
-      }
-
-      // Overwrite corrupt/duplicated localStorage data with cleaned list
-      try {
-        localStorage.setItem(STORAGE_KEY_PREFIX + 'users', JSON.stringify(cleanUsers));
-      } catch {
-        // ignore
-      }
-
-      return cleanUsers.length > 0 ? cleanUsers : INITIAL_USERS;
-    } catch {
-      return INITIAL_USERS;
-    }
-  });
+  // Cloud-First: staff accounts hydrate live from Firebase Firestore & Google Sheets (never cached in Chrome localStorage)
+  const [users, setUsers] = useState<User[]>(() => [...INITIAL_USERS]);
 
   const [departmentGreeting, setDepartmentGreeting] = useState<{ title: string; message: string; date: string } | null>(null);
 
@@ -794,222 +695,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
   const [globalSearchQuery, setGlobalSearchQuery] = useState<string>('');
 
-  const [citizens, setCitizens] = useState<Citizen[]>(() => {
-    const deletedIds = getStoredDeletedIds();
-    try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens') : null;
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const existingIds = new Set<string>();
-          const uniqueParsedCitizens: Citizen[] = [];
-          for (const c of parsed) {
-            if (!c || typeof c !== 'object') continue;
-            if (!isStrictValidCitizen(c)) continue;
-            const cid = String(c.Citizen_ID || '').trim();
-            if (cid && !existingIds.has(cid) && !deletedIds.has(cid)) {
-              existingIds.add(cid);
-              const cleanFullName = String(c.FullName).trim();
-              const parts = cleanFullName.split(/\s+/);
-              const firstName = c.FirstName || parts[0] || '';
-              const fatherName = c.FatherName || parts[1] || '';
-              const grandFatherName = c.GrandFatherName || parts[2] || '';
-              const greatGrandFatherName = c.GreatGrandFatherName || parts[3] || '';
-              const surname = c.Surname || (parts.length > 4 ? parts.slice(4).join(' ') : 'عام');
-              uniqueParsedCitizens.push({
-                ...c,
-                Citizen_ID: cid,
-                FirstName: firstName,
-                FatherName: fatherName,
-                GrandFatherName: grandFatherName,
-                GreatGrandFatherName: greatGrandFatherName,
-                Surname: surname,
-                FullName: c.FullName || `${firstName} ${fatherName} ${grandFatherName} ${greatGrandFatherName} ${surname}`.replace(/\s+/g, ' ').trim(),
-                Phone1: c.Phone1 || '07800000000',
-                Rating: c.Rating || 'مؤيد',
-                District: c.District || 'الناصرية',
-                SubDistrict: c.SubDistrict || 'المركز',
-                CreatedAt: c.CreatedAt || new Date().toISOString()
-              } as Citizen);
-            }
-          }
-          if (uniqueParsedCitizens.length > 0) {
-            return uniqueParsedCitizens;
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Failed parsing citizens from localStorage', err);
-    }
-    return [];
-  });
-
-  const [requests, setRequests] = useState<OfficeRequest[]>(() => {
-    const deletedIds = getStoredDeletedIds();
-    try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'requests') : null;
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const seenIds = new Set<string>();
-          const uniqueParsed: OfficeRequest[] = [];
-
-          for (const r of parsed) {
-            if (!r || typeof r !== 'object') continue;
-            const rid = String(r.Request_ID || '').trim();
-            if (rid && !seenIds.has(rid) && !deletedIds.has(rid)) {
-              if (r.Citizen_ID && deletedIds.has(String(r.Citizen_ID).trim())) continue;
-              seenIds.add(rid);
-              uniqueParsed.push({ ...r, Request_ID: rid });
-            }
-          }
-
-          if (uniqueParsed.length > 0) {
-            return uniqueParsed;
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Failed parsing requests', err);
-    }
-    return [];
-  });
-
-  const [cheques, setCheques] = useState<ChequeRecord[]>(() => {
-    const deletedIds = getStoredDeletedIds();
-    try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'cheques') : null;
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.filter((c: ChequeRecord) => c && c.id && !deletedIds.has(String(c.id).trim()));
-        }
-      }
-    } catch (err) {
-      console.error('Failed parsing cheques', err);
-    }
-    return [];
-  });
-
-  const [interviews, setInterviews] = useState<Interview[]>(() => {
-    const deletedIds = getStoredDeletedIds();
-    try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'interviews') : null;
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.filter((i: Interview) => i && i.Interview_ID && !deletedIds.has(String(i.Interview_ID).trim()));
-        }
-      }
-    } catch {}
-    return [];
-  });
-
-  const [organizationRecords, setOrganizationRecords] = useState<OrganizationRecord[]>(() => {
-    const deletedIds = getStoredDeletedIds();
-    try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'org') : null;
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.filter((o: OrganizationRecord) => o && (o.Org_ID ? !deletedIds.has(String(o.Org_ID).trim()) : true) && (o.Citizen_ID ? !deletedIds.has(String(o.Citizen_ID).trim()) : true));
-        }
-      }
-    } catch {}
-    return [];
-  });
-
-  const [dropdowns, setDropdowns] = useState<DropdownItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'dropdowns');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const existingKeys = new Set(parsed.map((d: DropdownItem) => `${d.Category}:${d.ItemValue}`));
-          return [...parsed, ...INITIAL_DROPDOWNS.filter(d => !existingKeys.has(`${d.Category}:${d.ItemValue}`))];
-        }
-      }
-    } catch (err) {
-      console.error('Failed parsing dropdowns', err);
-    }
-    return INITIAL_DROPDOWNS;
-  });
-
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'audit');
-      const rawList: AuditLog[] = saved ? JSON.parse(saved) : INITIAL_AUDIT_LOGS;
-      const seen = new Set<string>();
-      return rawList.map((log, idx) => {
-        let id = log.Log_ID || `LOG-${Date.now()}-${idx}`;
-        if (seen.has(id)) {
-          id = `${id}_${idx}_${Math.floor(1000 + Math.random() * 9000)}`;
-        }
-        seen.add(id);
-        return { ...log, Log_ID: id };
-      });
-    } catch {
-      return INITIAL_AUDIT_LOGS;
-    }
-  });
-
-  const [dynamicFields, setDynamicFields] = useState<DynamicField[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'dynamic_fields');
-      return saved ? JSON.parse(saved) : INITIAL_DYNAMIC_FIELDS;
-    } catch {
-      return INITIAL_DYNAMIC_FIELDS;
-    }
-  });
-
-  const [documents, setDocuments] = useState<DocumentArchiveItem[]>(() => {
-    if (localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') === 'true') {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'documents');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) return parsed;
-        }
-      } catch {}
-      return [];
-    }
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'documents');
-      return saved ? JSON.parse(saved) : INITIAL_DOCUMENTS;
-    } catch {
-      return INITIAL_DOCUMENTS;
-    }
-  });
-
-  const [officialLetters, setOfficialLetters] = useState<OfficialLetter[]>(() => {
-    const deletedIds = getStoredDeletedIds();
-    try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'letters') : null;
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.filter((l: OfficialLetter) => l && l.Letter_ID && !deletedIds.has(String(l.Letter_ID).trim()));
-        }
-      }
-    } catch {}
-
-    const defaultLetters: OfficialLetter[] = [
-      {
-        Letter_ID: 'LET-001',
-        LetterNumber: '241/ن/2026',
-        LetterDate: '2026-03-01',
-        Recipient: 'معالي وزير النفط المحترم',
-        Subject: 'طلب تعيين وتدوير كفاءات هندسية من أبناء ذي قار',
-        Body: 'نرجو تفضل معاليكم بالموافقة الكريمة على شمول الأسماء المرفقة طياً بفرص التدريب والتطوير في شركة نفط ذي قار، نظراً لتميزهم الأكاديمي واحتياج المحافظة لدعم الكوادر الشابة. مع فائق التقدير والاحترام.',
-        Citizen_ID: 'ONA-10001',
-        CitizenName: 'أحمد جاسم محمد علي الخفاجي',
-        Status: 'تمت الطباعة والتوقيع',
-        ClerkName: 'حيدر الكعبي'
-      }
-    ];
-
-    return defaultLetters.filter(l => !deletedIds.has(l.Letter_ID));
-  });
+  // Strict Cloud-First State Initialization:
+  // Zero office business records are read from or cached in Chrome localStorage/IndexedDB.
+  // All collections hydrate live from Firebase Firestore + Google Sheets + Server API.
+  const [citizens, setCitizens] = useState<Citizen[]>([]);
+  const [requests, setRequests] = useState<OfficeRequest[]>([]);
+  const [cheques, setCheques] = useState<ChequeRecord[]>([]);
+  const [interviews, setInterviews] = useState<Interview[]>([]);
+  const [organizationRecords, setOrganizationRecords] = useState<OrganizationRecord[]>([]);
+  const [dropdowns, setDropdowns] = useState<DropdownItem[]>(() => [...INITIAL_DROPDOWNS]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [dynamicFields, setDynamicFields] = useState<DynamicField[]>(() => [...INITIAL_DYNAMIC_FIELDS]);
+  const [documents, setDocuments] = useState<DocumentArchiveItem[]>([]);
+  const [officialLetters, setOfficialLetters] = useState<OfficialLetter[]>([]);
 
   const [whatsappTemplates] = useState<WhatsAppTemplate[]>(INITIAL_WHATSAPP_TEMPLATES);
 
@@ -1075,104 +773,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const usersRef = useRef<User[]>(users);
   usersRef.current = users;
 
-  // High-capacity dual persistence (localStorage + IndexedDB) so large Excel imports (1,343+ rows),
-  // settings, and custom logos survive page reloads, Desktop PWA launches, and offline operation.
+  // Keep runtime customSections registry in sync so every custom_record knows its exact Google Sheet tab & columns
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const deletedSet = getStoredDeletedIds();
-      const [idbCitizens, idbRequests, idbSettings, idbUsers, idbDropdowns] = await Promise.all([
-        idbGetJSON<Citizen[]>(STORAGE_KEY_PREFIX + 'citizens'),
-        idbGetJSON<OfficeRequest[]>(STORAGE_KEY_PREFIX + 'requests'),
-        idbGetJSON<SystemSettings>(STORAGE_KEY_PREFIX + 'settings'),
-        idbGetJSON<User[]>(STORAGE_KEY_PREFIX + 'users'),
-        idbGetJSON<DropdownItem[]>(STORAGE_KEY_PREFIX + 'dropdowns')
-      ]);
-      if (cancelled) return;
-      let hasIdbDataToPush = false;
-      const bulkPayload: Record<string, any> = {};
+    setRuntimeCustomSections(customSections);
+  }, [customSections]);
 
-      if (Array.isArray(idbCitizens) && idbCitizens.length > 0) {
-        const cleanCit = idbCitizens.filter(c => c && c.Citizen_ID && !deletedSet.has(c.Citizen_ID));
-        setCitizens(prev => mergeCitizens(prev, cleanCit, deletedSet));
-        if (cleanCit.length > 0) {
-          bulkPayload.citizens = cleanCit;
-          hasIdbDataToPush = true;
-        }
-      }
-      if (Array.isArray(idbRequests) && idbRequests.length > 0) {
-        const cleanReq = idbRequests.filter(r => r && r.Request_ID && !deletedSet.has(r.Request_ID));
-        setRequests(prev => mergeRequests(prev, cleanReq, deletedSet));
-        if (cleanReq.length > 0) {
-          bulkPayload.requests = sanitizeRequestsForStorage(cleanReq);
-          hasIdbDataToPush = true;
-        }
-      }
-      if (idbSettings && typeof idbSettings === 'object') {
-        setSystemSettings(prev => {
-          const next = normalizeSystemSettings({ ...idbSettings, ...prev });
-          systemSettingsRef.current = next;
-          return next;
-        });
-      }
-      if (Array.isArray(idbUsers) && idbUsers.length > 0) {
-        setUsers(prev => mergeUsers(prev, idbUsers, deletedSet));
-      }
-      if (Array.isArray(idbDropdowns) && idbDropdowns.length > 0) {
-        setDropdowns(prev => {
-          const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
-          const added = idbDropdowns.filter(d => d && d.Category && d.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
-          return added.length > 0 ? [...prev, ...added] : prev;
-        });
-      }
-
-      // Immediately push any IndexedDB records to the unified server store so all other open browsers receive them!
-      if (hasIdbDataToPush) {
-        emitServerBulk({
-          ...bulkPayload,
-          deletedIds: Array.from(deletedSet)
-        });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  // Strict Chrome Storage Policy: purge legacy business data from Chrome localStorage & IndexedDB on mount
+  useEffect(() => {
+    purgeLegacyBrowserBusinessData();
+    clearBusinessRecordsFromIDB().catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (citizens.length > 0) {
-      scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', () => JSON.stringify(citizens));
-      idbSetJSON(STORAGE_KEY_PREFIX + 'citizens', citizens).catch(() => {});
-    }
-  }, [citizens]);
-
-  useEffect(() => {
-    if (requests.length > 0) {
-      const cleanReqs = sanitizeRequestsForStorage(requests);
-      scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', () => JSON.stringify(cleanReqs));
-      idbSetJSON(STORAGE_KEY_PREFIX + 'requests', cleanReqs).catch(() => {});
-    }
-  }, [requests]);
-
+  // Only UI appearance / theme / workstation preferences are persisted locally; NEVER office business records
   useEffect(() => {
     const normalized = normalizeSystemSettings(systemSettings);
     scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', () => JSON.stringify(normalized));
     idbSetJSON(STORAGE_KEY_PREFIX + 'settings', normalized).catch(() => {});
   }, [systemSettings]);
 
-  useEffect(() => {
-    if (users.length > 0) {
-      scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', () => JSON.stringify(users));
-      idbSetJSON(STORAGE_KEY_PREFIX + 'users', users).catch(() => {});
-    }
-  }, [users]);
-
-  useEffect(() => {
-    if (dropdowns.length > 0) {
-      scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', () => JSON.stringify(dropdowns));
-      idbSetJSON(STORAGE_KEY_PREFIX + 'dropdowns', dropdowns).catch(() => {});
-    }
-  }, [dropdowns]);
+  const getCloudCtx = () => ({
+    appsScriptUrl: systemSettingsRef.current.appsScriptUrl || systemSettingsRef.current.googleAppsScriptUrl,
+    googleSheetId: systemSettingsRef.current.googleSheetId || systemSettingsRef.current.activeGoogleSheetId,
+    customSections: customSectionsRef.current
+  });
 
   // Real-Time Firestore & Shared Server Synchronization Listeners
   // Runs immediately on mount so Vercel, AI Studio, and Desktop PWA stay synced live (<100ms) across all computers & browsers
@@ -2802,14 +2425,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('citizens', 'upsert', { item: newCitizen });
 
-    // Direct write to Google Sheets & Firestore
-    fsSaveCitizen(newCitizen).catch((err) => {
-      console.warn('Firestore citizen insert:', err);
-    });
-    sheetsIntegration.citizens.insert(newCitizen).catch((err) => {
-      console.warn('Sheets Integration Layer citizen insert:', err);
-    });
-    pushToGoogleSheetsRealtime('citizens', newCitizen, 'insert', systemSettings.appsScriptUrl);
+    // Dual Cloud Save (Firebase Firestore + Google Sheets) with transparent failure reporting
+    receptionDomain.saveCitizen(newCitizen, 'insert', getCloudCtx()).catch(() => {});
+    sheetsIntegration.citizens.insert(newCitizen).catch(() => {});
 
     return newCitizen;
   };
@@ -2845,25 +2463,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCitizens(prev => {
       const targetId = (citizen.Citizen_ID || '').trim().toLowerCase();
       const exists = prev.some(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === targetId);
-      const next = exists
+      return exists
         ? prev.map(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === targetId ? updatedCitizen : c)
         : [updatedCitizen, ...prev];
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
-      return next;
     });
     addAuditLog('تحديث بيانات مواطن', 'الاستعلامات', `تعديل السجل التعريفي للمواطن ${fullName} (${citizen.Citizen_ID})`);
     
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('citizens', 'upsert', { item: updatedCitizen });
 
-    // Direct update to Google Sheets & Firestore
-    fsSaveCitizen(updatedCitizen).catch((err) => {
-      console.warn('Firestore citizen update:', err);
-    });
-    sheetsIntegration.citizens.update(updatedCitizen).catch((err) => {
-      console.warn('Sheets Integration Layer citizen update:', err);
-    });
-    pushToGoogleSheetsRealtime('citizens', updatedCitizen, 'update', systemSettings.appsScriptUrl);
+    // Dual Cloud Save (Firebase Firestore + Google Sheets) with transparent failure reporting
+    receptionDomain.saveCitizen(updatedCitizen, 'update', getCloudCtx()).catch(() => {});
+    sheetsIntegration.citizens.update(updatedCitizen).catch(() => {});
   };
 
   const deleteCitizen = (citizenId: string) => {
@@ -2902,15 +2513,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setOfficialLetters(nextLetters);
       setDocuments(nextDocs);
 
-      // 3. Immediately commit clean lists to localStorage
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(nextCitizens));
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(nextRequests));
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'interviews', JSON.stringify(nextInterviews));
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(nextCheques));
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'org', JSON.stringify(nextOrgs));
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'letters', JSON.stringify(nextLetters));
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'documents', JSON.stringify(nextDocs));
-
       addAuditLog(
         'حذف نهائي شامل لسجل مراجع',
         'الإدارة / الاستعلامات',
@@ -2924,36 +2526,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       matchingChequeIds.forEach(chqId => emitServerMutation('cheques', 'delete', { id: chqId }));
       matchingLetterIds.forEach(letId => emitServerMutation('officialLetters', 'delete', { id: letId }));
 
-      // 5. Delete in Firestore (with tombstones)
-      fsDeleteCitizen(citizenId).catch((err) => {
-        console.warn('Firestore citizen delete:', err);
-      });
+      // 5. Dual Cloud Cascade Delete (Firebase Firestore + Google Sheets)
+      const cloudCtx = getCloudCtx();
+      receptionDomain.deleteCitizen(citizenId, cloudCtx).catch(() => {});
       matchingReqIds.forEach(reqId => {
-        fsDeleteRequest(reqId).catch(() => {});
+        adminRequestsDomain.deleteRequest(reqId, cloudCtx).catch(() => {});
       });
       matchingInterviewIds.forEach(intId => {
-        fsDeleteInterview(intId).catch(() => {});
+        interviewsDomain.deleteInterview(intId, cloudCtx).catch(() => {});
       });
       matchingChequeIds.forEach(chId => {
-        fsDeleteCheque(chId).catch(() => {});
+        chequesDomain.deleteCheque(chId, cloudCtx).catch(() => {});
       });
       matchingLetterIds.forEach(letId => {
-        fsDeleteOfficialLetter(letId).catch(() => {});
+        lettersDomain.deleteLetter(letId, cloudCtx).catch(() => {});
       });
 
-      // 5. Delete in Google Sheets (direct REST clear + Sheets Integration + Webhook)
-      try {
-        const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-        const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-        if (token && sheetId) {
-          deleteRecordFromSheetsRealtime(token, sheetId, 'citizens', citizenId).catch(() => {});
-        }
-      } catch {}
-
-      sheetsIntegration.citizens.delete(citizenId).catch((err) => {
-        console.warn('Sheets Integration Layer citizen delete:', err);
-      });
-      pushToGoogleSheetsRealtime('citizens', { Citizen_ID: citizenId, id: citizenId }, 'delete', systemSettings.appsScriptUrl);
+      sheetsIntegration.citizens.delete(citizenId).catch(() => {});
     }
   };
 
@@ -3378,14 +2967,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([newRequest])[0] || newRequest });
 
-    // Direct write to Google Sheets & Firestore
-    fsSaveRequest(newRequest).catch((err) => {
-      console.warn('Firestore request insert:', err);
-    });
-    sheetsIntegration.requests.insert(newRequest).catch((err) => {
-      console.warn('Sheets Integration Layer request insert:', err);
-    });
-    pushToGoogleSheetsRealtime('requests', newRequest, 'insert', systemSettings.appsScriptUrl);
+    // Dual Cloud Save (Firebase Firestore + Google Sheets) with transparent failure reporting
+    adminRequestsDomain.saveRequest(newRequest, 'insert', getCloudCtx()).catch(() => {});
+    sheetsIntegration.requests.insert(newRequest).catch(() => {});
 
     return newRequest;
   };
@@ -3437,14 +3021,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
     
-    // Direct update to Google Sheets & Firestore
-    fsSaveRequest(updatedReq).catch((err) => {
-      console.warn('Firestore request update:', err);
-    });
-    sheetsIntegration.requests.update(updatedReq).catch((err) => {
-      console.warn('Sheets Integration Layer request update:', err);
-    });
-    pushToGoogleSheetsRealtime('requests', updatedReq, 'update', systemSettings.appsScriptUrl);
+    // Dual Cloud Save (Firebase Firestore + Google Sheets) with transparent failure reporting
+    adminRequestsDomain.saveRequest(updatedReq, 'update', getCloudCtx()).catch(() => {});
+    sheetsIntegration.requests.update(updatedReq).catch(() => {});
   };
 
   const deleteRequest = (requestId: string) => {
@@ -3452,20 +3031,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setRequests(prev => prev.filter(r => r.Request_ID !== requestId));
     emitServerMutation('requests', 'delete', { id: requestId });
     addAuditLog('حذف نهائي لطلب إداري', 'قسم الإدارة', `تم حذف الطلب ${requestId} نهائياً من قاعدة البيانات`);
-    fsDeleteRequest(requestId).catch((err) => {
-      console.warn('Firestore request delete:', err);
-    });
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-      const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-      if (token && sheetId) {
-        deleteRecordFromSheetsRealtime(token, sheetId, 'requests', requestId).catch(() => {});
-      }
-    } catch {}
-    sheetsIntegration.requests.delete(requestId).catch((err) => {
-      console.warn('Sheets Integration Layer request delete:', err);
-    });
-    pushToGoogleSheetsRealtime('requests', { Request_ID: requestId, id: requestId }, 'delete', systemSettings.appsScriptUrl);
+    adminRequestsDomain.deleteRequest(requestId, getCloudCtx()).catch(() => {});
+    sheetsIntegration.requests.delete(requestId).catch(() => {});
   };
 
   const addCheque = (newChequeData: Omit<ChequeRecord, 'id' | 'CreatedAt'>): ChequeRecord => {
@@ -3476,15 +3043,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: newId,
       CreatedAt: new Date().toISOString().slice(0, 16).replace('T', ' ')
     };
-    setCheques(prev => {
-      const next = [newCheque, ...prev];
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'cheques', JSON.stringify(next));
-      return next;
-    });
+    setCheques(prev => [newCheque, ...prev]);
     addAuditLog('إصدار شيك مالي', 'قسم الشيكات', `تم إصدار الشيك رقم ${newCheque.ChequeNumber} للمستفيد ${newCheque.CitizenName} بمبلغ ${newCheque.Amount} د.ع`);
     emitServerMutation('cheques', 'upsert', { item: newCheque });
-    fsSaveCheque(newCheque).catch(err => console.warn('Firestore cheque save:', err));
-    pushToGoogleSheetsRealtime('cheques', newCheque, 'insert', systemSettings.appsScriptUrl);
+    chequesDomain.saveCheque(newCheque, 'insert', getCloudCtx()).catch(() => {});
     return newCheque;
   };
 
@@ -3493,8 +3055,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCheques(prev => prev.map(c => c.id === updated.id ? updatedCheque : c));
     addAuditLog('تعديل بيانات شيك', 'قسم الشيكات', `تم تحديث الشيك رقم ${updated.ChequeNumber} للمستفيد ${updated.CitizenName}`);
     emitServerMutation('cheques', 'upsert', { item: updatedCheque });
-    fsSaveCheque(updatedCheque).catch(err => console.warn('Firestore cheque update:', err));
-    pushToGoogleSheetsRealtime('cheques', updatedCheque, 'update', systemSettings.appsScriptUrl);
+    chequesDomain.saveCheque(updatedCheque, 'update', getCloudCtx()).catch(() => {});
   };
 
   const deleteCheque = (id: string) => {
@@ -3502,15 +3063,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     recordDeletedId(id);
     setCheques(prev => prev.filter(c => c.id !== id));
     emitServerMutation('cheques', 'delete', { id });
-    fsDeleteCheque(id).catch(err => console.warn('Firestore cheque delete:', err));
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-      const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-      if (token && sheetId) {
-        deleteRecordFromSheetsRealtime(token, sheetId, 'cheques', id).catch(() => {});
-      }
-    } catch {}
-    pushToGoogleSheetsRealtime('cheques', { id, Cheque_ID: id }, 'delete', systemSettings.appsScriptUrl);
+    chequesDomain.deleteCheque(id, getCloudCtx()).catch(() => {});
     addAuditLog('حذف شيك مالي', 'قسم الشيكات', `تم حذف الشيك رقم ${chq?.ChequeNumber || id}`);
   };
 
@@ -3600,8 +3153,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     emitServerMutation('interviews', 'upsert', { item: newInterview });
-    pushToGoogleSheetsRealtime('interviews', newInterview, 'insert', systemSettings.appsScriptUrl);
-    fsSaveInterview(newInterview).catch(err => console.warn('Firestore interview save:', err));
+    interviewsDomain.saveInterview(newInterview, 'insert', getCloudCtx()).catch(() => {});
 
     return newInterview;
   };
@@ -3611,23 +3163,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setInterviews(prev => prev.map(i => i.Interview_ID === interview.Interview_ID ? updatedInt : i));
     addAuditLog('تحديث بيانات المقابلة', 'مقابلات النائب', `تم تعديل موقف المقابلة ${interview.Interview_ID} وتوجيه النائب: ${interview.DeputyNotes || 'لا توجد ملاحظات'}`);
     emitServerMutation('interviews', 'upsert', { item: updatedInt });
-    fsSaveInterview(updatedInt).catch(err => console.warn('Firestore interview update:', err));
-    pushToGoogleSheetsRealtime('interviews', updatedInt, 'update', systemSettings.appsScriptUrl);
+    interviewsDomain.saveInterview(updatedInt, 'update', getCloudCtx()).catch(() => {});
   };
 
   const deleteInterview = (interviewId: string) => {
     recordDeletedId(interviewId);
     setInterviews(prev => prev.filter(i => i.Interview_ID !== interviewId));
     emitServerMutation('interviews', 'delete', { id: interviewId });
-    fsDeleteInterview(interviewId).catch(err => console.warn('Firestore interview delete:', err));
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-      const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-      if (token && sheetId) {
-        deleteRecordFromSheetsRealtime(token, sheetId, 'interviews', interviewId).catch(() => {});
-      }
-    } catch {}
-    pushToGoogleSheetsRealtime('interviews', { Interview_ID: interviewId, id: interviewId }, 'delete', systemSettings.appsScriptUrl);
+    interviewsDomain.deleteInterview(interviewId, getCloudCtx()).catch(() => {});
     addAuditLog('حذف موعد مقابلة', 'مقابلات النائب', `تم حذف المقابلة ${interviewId} نهائياً`);
   };
 
@@ -3675,8 +3218,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setOrganizationRecords(prev => prev.map((o, idx) => idx === existingIndex ? updated : o));
       addAuditLog('تحديث التقييم التنظيمي', 'قسم التنظيم', `تحديث تقييم المواطن ${recordData.FullName} إلى (${recordData.OrgRating})`);
       emitServerMutation('organizationRecords', 'upsert', { item: updated });
-      fsSaveOrgRecord(updated).catch(err => console.warn('Firestore org update:', err));
-      pushToGoogleSheetsRealtime('organization', updated, 'update', systemSettings.appsScriptUrl);
+      organizationDomain.saveRecord(updated, 'update', getCloudCtx()).catch(() => {});
     } else {
       const newOrg: OrganizationRecord = {
         ...recordData,
@@ -3686,8 +3228,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setOrganizationRecords(prev => [newOrg, ...prev]);
       addAuditLog('إضافة سجل تنظيمي جديد', 'قسم التنظيم', `تسجيل تقييم تنظيمي للمواطن ${recordData.FullName} (${recordData.OrgRating})`);
       emitServerMutation('organizationRecords', 'upsert', { item: newOrg });
-      fsSaveOrgRecord(newOrg).catch(err => console.warn('Firestore org insert:', err));
-      pushToGoogleSheetsRealtime('organization', newOrg, 'insert', systemSettings.appsScriptUrl);
+      organizationDomain.saveRecord(newOrg, 'insert', getCloudCtx()).catch(() => {});
     }
   };
 
@@ -3747,8 +3288,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setOfficialLetters(prev => [newLetter, ...prev]);
     emitServerMutation('officialLetters', 'upsert', { item: newLetter });
     addAuditLog('إنشاء كتاب رسمي', 'قسم المكنة والطباعة', `تم تحرير الكتاب ذي العدد (${newLetter.LetterNumber}) الموجه إلى ${newLetter.Recipient}`);
-    fsSaveOfficialLetter(newLetter).catch(err => console.warn('Firestore letter save:', err));
-    pushToGoogleSheetsRealtime('letters', newLetter, 'insert', systemSettings.appsScriptUrl);
+    lettersDomain.saveLetter(newLetter, 'insert', getCloudCtx()).catch(() => {});
   };
 
   const updateOfficialLetter = (letter: OfficialLetter) => {
@@ -3756,8 +3296,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setOfficialLetters(prev => prev.map(l => l.Letter_ID === letter.Letter_ID ? updatedLetter : l));
     emitServerMutation('officialLetters', 'upsert', { item: updatedLetter });
     addAuditLog('تحديث كتاب رسمي', 'قسم المكنة والطباعة', `تعديل بيانات الكتاب ذي العدد (${letter.LetterNumber})`);
-    fsSaveOfficialLetter(updatedLetter).catch(err => console.warn('Firestore letter update:', err));
-    pushToGoogleSheetsRealtime('letters', updatedLetter, 'update', systemSettings.appsScriptUrl);
+    lettersDomain.saveLetter(updatedLetter, 'update', getCloudCtx()).catch(() => {});
   };
 
   const deleteOfficialLetter = (letterId: string) => {
@@ -3765,15 +3304,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setOfficialLetters(prev => prev.filter(l => l.Letter_ID !== letterId));
     emitServerMutation('officialLetters', 'delete', { id: letterId });
     addAuditLog('حذف كتاب رسمي', 'قسم المكنة والطباعة', `تم حذف الكتاب الرسمي ${letterId} نهائياً من المنظومة`);
-    fsDeleteOfficialLetter(letterId).catch(err => console.warn('Firestore letter delete:', err));
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-      const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-      if (token && sheetId) {
-        deleteRecordFromSheetsRealtime(token, sheetId, 'letters', letterId).catch(() => {});
-      }
-    } catch {}
-    pushToGoogleSheetsRealtime('letters', { Letter_ID: letterId, id: letterId }, 'delete', systemSettings.appsScriptUrl);
+    lettersDomain.deleteLetter(letterId, getCloudCtx()).catch(() => {});
   };
 
   const updateSettings = (newSettings: Partial<SystemSettings>) => {
@@ -4320,7 +3851,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('استعادة ضبط المصنع', 'لوحة التحكم', 'تمت استعادة كافة البيانات الافتراضية للنظام');
   };
 
-  // Dynamic Custom Sections (الأقسام المخصصة وتطوير المنظومة ديناميكياً)
+  // Dynamic Custom Sections (الأقسام المخصصة وتطوير المنظومة ديناميكياً + إنشاء ورقة Google Sheet تلقائياً)
   const addCustomSection = (secData: Omit<CustomSection, 'id' | 'createdAt'>): CustomSection => {
     const newSection: CustomSection = {
       ...secData,
@@ -4330,22 +3861,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const nextSections = [...customSections, newSection];
     setCustomSections(nextSections);
-    safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(nextSections));
-    emitServerMutation('customSections', 'upsert', { item: newSection });
-    fsSaveCustomSection(newSection).catch(err => console.warn('Firestore section save:', err));
-    pushToGoogleSheetsRealtime('custom_sections', newSection, 'insert', systemSettings.appsScriptUrl);
+    customSectionsRef.current = nextSections;
+    setRuntimeCustomSections(nextSections);
 
-    // Dynamic Google Sheet Tab Creation for the new department & any sub-sections!
+    emitServerMutation('customSections', 'upsert', { item: newSection });
+
+    // Dual Cloud Save + Automatic Google Sheet Creation & Column Ordering via Apps Script!
+    customSectionsDomain
+      .saveSectionAndProvisionSheet(newSection, nextSections, {
+        ...getCloudCtx(),
+        customSections: nextSections
+      })
+      .catch(() => {});
+
+    // Optional Direct Sheets API tab creation if Developer Google OAuth token is also active
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
       const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
       if (token && sheetId) {
-        const headerCols = ['معرف_السجل_ID', 'عنوان_المعاملة', 'تاريخ_الإنشاء', 'المسؤول', ...(newSection.fields || []).map(f => f.label)];
+        const headerCols = ['معرف القيد', ...(newSection.fields || []).map(f => f.label), 'تاريخ الإنشاء', 'الموظف المسؤول'];
         ensureSheetTabExists(token, sheetId, `قسم_${newSection.title}`, headerCols).catch(() => {});
         if (newSection.isMultiSectionHub && Array.isArray(newSection.subSections)) {
           for (const sub of newSection.subSections) {
             if (!sub.targetBuiltInSection) {
-              const subHeaders = ['معرف_السجل_ID', 'عنوان_المعاملة', 'تاريخ_الإنشاء', 'المسؤول', ...(sub.fields || []).map(f => f.label)];
+              const subHeaders = ['معرف القيد', ...(sub.fields || []).map(f => f.label), 'تاريخ الإنشاء', 'الموظف المسؤول'];
               ensureSheetTabExists(token, sheetId, `قسم_${newSection.title}_${sub.title}`, subHeaders).catch(() => {});
             }
           }
@@ -4353,8 +3892,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } catch {}
 
-    addAuditLog('إضافة قسم مخصص جديد', 'لوحة التحكم والعمليات', `تم إنشاء القسم في قاعدة البيانات والمنظومة: ${newSection.title}`);
-    // Broadcast new custom section + icon to all users
+    addAuditLog('إضافة قسم مخصص جديد', 'لوحة التحكم والعمليات', `تم إنشاء القسم وتخصيص ورقة Google Sheet تلقائياً: ${newSection.title}`);
     const broadcastVer = Math.max(Date.now(), (systemSettings.settingsVersion || 0) + 1);
     try {
       sessionStorage.setItem('al_nashi_local_initiated_settings_ver', String(broadcastVer));
@@ -4372,7 +3910,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedBy: currentUser?.FullName || 'المطور'
       })
     }).catch(() => {});
-    autoSyncAllSchemas(nextSections).catch(() => {});
     return newSection;
   };
 
@@ -4380,10 +3917,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updated = { ...section, updatedAt: new Date().toISOString() };
     const nextSections = customSections.map(s => s.id === section.id ? updated : s);
     setCustomSections(nextSections);
-    safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(nextSections));
+    customSectionsRef.current = nextSections;
+    setRuntimeCustomSections(nextSections);
+
     emitServerMutation('customSections', 'upsert', { item: updated });
-    fsSaveCustomSection(updated).catch(err => console.warn('Firestore section update:', err));
-    pushToGoogleSheetsRealtime('custom_sections', updated, 'upsert', systemSettings.appsScriptUrl);
+
+    // Dual Cloud Save + Non-destructive column update in the section's dedicated Google Sheet tab!
+    customSectionsDomain
+      .saveSectionAndProvisionSheet(updated, nextSections, {
+        ...getCloudCtx(),
+        customSections: nextSections
+      })
+      .catch(() => {});
+
     const broadcastVer = Math.max(Date.now(), (systemSettings.settingsVersion || 0) + 1);
     try {
       sessionStorage.setItem('al_nashi_local_initiated_settings_ver', String(broadcastVer));
@@ -4401,8 +3947,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedBy: currentUser?.FullName || 'المطور'
       })
     }).catch(() => {});
-    autoSyncAllSchemas(nextSections).catch(() => {});
-    addAuditLog('تعديل قسم مخصص', 'لوحة التحكم والعمليات', `تم تحديث القسم: ${section.title}`);
+    addAuditLog('تعديل قسم مخصص', 'لوحة التحكم والعمليات', `تم تحديث القسم وتنظيم أعمدة ورقته تلقائياً: ${section.title}`);
   };
 
   const deleteCustomSection = (sectionId: string) => {
@@ -4411,19 +3956,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nextSections = customSections.filter(s => s.id !== sectionId);
     const nextRecords = customRecords.filter(r => r.sectionId !== sectionId);
     setCustomSections(nextSections);
+    customSectionsRef.current = nextSections;
+    setRuntimeCustomSections(nextSections);
     setCustomRecords(nextRecords);
-    safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(nextSections));
-    safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_records', JSON.stringify(nextRecords));
     emitServerMutation('customSections', 'delete', { id: sectionId });
-    fsDeleteCustomSection(sectionId).catch(err => console.warn('Firestore section delete:', err));
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-      const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-      if (token && sheetId) {
-        deleteRecordFromSheetsRealtime(token, sheetId, 'custom_sections', sectionId).catch(() => {});
-      }
-    } catch {}
-    pushToGoogleSheetsRealtime('custom_sections', { id: sectionId }, 'delete', systemSettings.appsScriptUrl);
+    customSectionsDomain.deleteSection(sectionId).catch(() => {});
     const broadcastVer = Math.max(Date.now(), (systemSettings.settingsVersion || 0) + 1);
     try {
       sessionStorage.setItem('al_nashi_local_initiated_settings_ver', String(broadcastVer));
@@ -4441,10 +3978,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedBy: currentUser?.FullName || 'المطور'
       })
     }).catch(() => {});
-    addAuditLog('حذف قسم مخصص وبياناته', 'لوحة التحكم والعمليات', `تم حذف القسم: ${target?.title || sectionId} وكافة سجلاته المرتبطة نهائياً`);
+    addAuditLog('حذف قسم مخصص', 'لوحة التحكم والعمليات', `تم إزالة القسم (${target?.title || sectionId}) من الواجهة مع الحفاظ غير التدميري على أرشيف الورقة في Google Sheets`);
   };
 
-  // Dynamic Custom Records (سجلات الأقسام المخصصة)
+  // Dynamic Custom Records (سجلات الأقسام المخصصة -> تُوجّه مباشرة إلى ورقة القسم الخاصة بها)
   const addCustomRecord = (recData: Omit<CustomSectionRecord, 'id' | 'createdAt'>): CustomSectionRecord => {
     const newRec: CustomSectionRecord = {
       ...recData,
@@ -4454,8 +3991,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setCustomRecords(prev => [newRec, ...prev]);
     emitServerMutation('customRecords', 'upsert', { item: newRec });
-    fsSaveCustomRecord(newRec).catch(err => console.warn('Firestore record save:', err));
-    pushToGoogleSheetsRealtime('custom_records', newRec, 'insert', systemSettings.appsScriptUrl);
+    customSectionsDomain.saveRecord(newRec, 'insert', getCloudCtx()).catch(() => {});
     return newRec;
   };
 
@@ -4463,23 +3999,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updated = { ...record, updatedAt: new Date().toISOString() };
     setCustomRecords(prev => prev.map(r => r.id === record.id ? updated : r));
     emitServerMutation('customRecords', 'upsert', { item: updated });
-    fsSaveCustomRecord(updated).catch(err => console.warn('Firestore record update:', err));
-    pushToGoogleSheetsRealtime('custom_records', updated, 'upsert', systemSettings.appsScriptUrl);
+    customSectionsDomain.saveRecord(updated, 'upsert', getCloudCtx()).catch(() => {});
   };
 
   const deleteCustomRecord = (recordId: string) => {
+    const existing = customRecords.find(r => r.id === recordId);
     recordDeletedId(recordId);
     setCustomRecords(prev => prev.filter(r => r.id !== recordId));
     emitServerMutation('customRecords', 'delete', { id: recordId });
-    fsDeleteCustomRecord(recordId).catch(err => console.warn('Firestore record delete:', err));
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-      const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-      if (token && sheetId) {
-        deleteRecordFromSheetsRealtime(token, sheetId, 'custom_records', recordId).catch(() => {});
-      }
-    } catch {}
-    pushToGoogleSheetsRealtime('custom_records', { id: recordId }, 'delete', systemSettings.appsScriptUrl);
+    customSectionsDomain.deleteRecord(existing || recordId, getCloudCtx()).catch(() => {});
   };
 
   // Dynamic Reception Fields (تخصيص وإدارة حقول قسم الاستعلامات والمراجعين)

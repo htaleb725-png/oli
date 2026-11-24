@@ -1,9 +1,11 @@
 import React, { ErrorInfo, ReactNode } from 'react';
-import { AlertTriangle, RefreshCw, Trash2, ShieldAlert } from 'lucide-react';
-import { cleanBloatedLocalStorage } from '../utils/safeStorage';
+import { AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
+import { purgeLegacyBrowserBusinessData } from '../utils/safeStorage';
 
 interface Props {
   children: ReactNode;
+  sectionName?: string;
+  compact?: boolean;
 }
 
 interface State {
@@ -24,34 +26,73 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('Uncaught error caught by ErrorBoundary:', error, errorInfo);
-    // If the error was caused by storage quota exceeded, immediately clean bloated items
+    console.error(
+      `Uncaught error caught by ErrorBoundary${this.props.sectionName ? ` [${this.props.sectionName}]` : ''}:`,
+      error,
+      errorInfo
+    );
     if (error && (error.message?.includes('quota') || error.name === 'QuotaExceededError')) {
       try {
-        cleanBloatedLocalStorage();
+        purgeLegacyBrowserBusinessData();
       } catch {}
     }
     this.setState({ errorInfo });
   }
 
+  private handleResetSection = () => {
+    this.setState({ hasError: false, error: null, errorInfo: null });
+  };
+
   private handleReload = () => {
     window.location.reload();
   };
 
-  private handleResetCache = () => {
-    if (window.confirm('هل تريد مسح الذاكرة المؤقتة وإعادة تشغيل المنظومة بالوضع الآمن؟')) {
-      try {
-        localStorage.clear();
-        sessionStorage.clear();
-      } catch (e) {
-        console.error(e);
-      }
-      window.location.reload();
-    }
-  };
-
   public render() {
     if (this.state.hasError) {
+      if (this.props.compact) {
+        return (
+          <div className="max-w-2xl mx-auto my-8 bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-500/40 rounded-2xl p-6 shadow-lg text-center space-y-4" dir="rtl">
+            <div className="w-12 h-12 rounded-xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/70 text-rose-700 dark:text-rose-300 text-[11px] font-bold">
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>عزل الأعطال المستقل للأقسام</span>
+              </div>
+              <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                حدث خطأ معزول داخل هذا القسم فقط ({this.props.sectionName || 'القسم النشط'})
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                باقي أقسام المنظومة وبيانات قاعدة البيانات السحابية آمنة تماماً ولم تتأثر. يمكنك إعادة تحميل هذا القسم أو الانتقال لأي قسم آخر من القائمة العلوية.
+              </p>
+            </div>
+            {this.state.error && (
+              <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-right text-[11px] font-mono text-rose-600 dark:text-rose-300 overflow-x-auto max-h-28">
+                {this.state.error.toString()}
+              </div>
+            )}
+            <div className="flex items-center justify-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={this.handleResetSection}
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>إعادة تشغيل هذا القسم</span>
+              </button>
+              <button
+                type="button"
+                onClick={this.handleReload}
+                className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold transition-colors cursor-pointer"
+              >
+                تحديث الصفحة بالكامل
+              </button>
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6" dir="rtl">
           <div className="max-w-lg w-full bg-slate-900/90 backdrop-blur-xl border border-rose-500/30 rounded-3xl p-8 shadow-2xl text-center space-y-6">
@@ -60,7 +101,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             </div>
 
             <div className="space-y-2">
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-950/60 border border-rose-500/20 text-rose-300 text-xs font-bold">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-rose-950/60 border border-rose-500/20 text-rose-300 text-xs font-bold">
                 <ShieldAlert className="w-3.5 h-3.5" />
                 <span>نظام الحماية من الشاشة البيضاء والانهيار</span>
               </div>
@@ -68,7 +109,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
                 تم استعادة تشغيل المنظومة بأمان
               </h2>
               <p className="text-xs text-slate-400 leading-relaxed">
-                حدث خطأ في تحميل بعض المكونات أو الذاكرة المؤقتة. لقد قامت المنظومة بحماية البيانات ومنع الشاشة البيضاء من الظهور.
+                حدث خطأ غير متوقع في عرض الواجهة. جميع السجلات محفوظة بأمان في قاعدة البيانات السحابية.
               </p>
             </div>
 
@@ -86,15 +127,6 @@ export class ErrorBoundary extends React.Component<Props, State> {
               >
                 <RefreshCw className="w-4 h-4" />
                 <span>إعادة تحديث الصفحة</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={this.handleResetCache}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer"
-              >
-                <Trash2 className="w-4 h-4 text-rose-400" />
-                <span>إعادة ضبط الذاكرة المؤقتة</span>
               </button>
             </div>
           </div>

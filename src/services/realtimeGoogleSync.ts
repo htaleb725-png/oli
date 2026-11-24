@@ -13,25 +13,42 @@ import {
   toCleanSheetChequePayload,
   toCleanSheetSocialCarePayload,
   toCleanSheetUserPayload,
+  toCleanCustomSectionRecordPayload,
+  buildCustomSectionSheetName,
+  buildCustomSectionHeaders,
   cleanSheetCell
 } from './googleSheetsSchema';
-import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord, CustomSectionRecord, User } from '../types';
+import {
+  Citizen,
+  OfficeRequest,
+  Interview,
+  OfficialLetter,
+  OrganizationRecord,
+  ChequeRecord,
+  CustomSection,
+  CustomSectionRecord,
+  User
+} from '../types';
+import { updateSheetsHealth } from './cloudSyncAlerts';
 
 /**
  * Realtime Google Sheets and Google Drive Auto-Sync Service
- * Automatically pushes records as they are saved in the system
- * and supports reliable bidirectional fetching.
+ * ---------------------------------------------------------
+ * - Never fakes `{ success: true }` when Apps Script / server proxy fails.
+ * - Detects CORS, HTML rewrite misconfigurations, and missing env variables explicitly.
+ * - Automatically registers new Custom Sections / Icons as dedicated Sheet tabs.
+ * - Routes every CustomSectionRecord strictly to its own section's Sheet tab.
  */
 
-export type RealtimeEntityType = 
-  | 'citizens' 
-  | 'requests' 
-  | 'interviews' 
-  | 'organization' 
-  | 'letters' 
-  | 'cheques' 
+export type RealtimeEntityType =
+  | 'citizens'
+  | 'requests'
+  | 'interviews'
+  | 'organization'
+  | 'letters'
+  | 'cheques'
   | 'users'
-  | 'drive_archive' 
+  | 'drive_archive'
   | 'dropdowns'
   | 'custom_sections'
   | 'custom_records'
@@ -39,25 +56,43 @@ export type RealtimeEntityType =
 
 export type RealtimeActionType = 'insert' | 'update' | 'upsert' | 'delete';
 
-export interface SyncPayload {
-  entityType: RealtimeEntityType;
-  action: RealtimeActionType;
-  data: any;
-  timestamp: string;
+export interface RealtimePushResult {
+  success: boolean;
+  via?: 'proxy' | 'direct' | 'oauth_rest' | 'skipped';
+  sheet?: string;
+  error?: string;
+  corsBlocked?: boolean;
 }
 
-// Queue for resilience
-const syncQueue: SyncPayload[] = [];
-let isProcessingQueue = false;
+export interface AppsScriptPingResult {
+  ok: boolean;
+  via: 'proxy' | 'direct' | 'none';
+  status?: string;
+  spreadsheetName?: string;
+  sheetsCount?: number;
+  version?: string;
+  needsScriptUpdate?: boolean;
+  corsError?: boolean;
+  error?: string;
+}
 
 const stripQuotes = (val?: string) => (val || '').replace(/^["']|["']$/g, '').trim();
 
-// Runtime cloud config hydrated directly from Firestore settings/general (works cleanly on Vercel without Chrome localStorage)
+// Runtime cloud config hydrated directly from Firestore settings/general (never relies on Chrome business storage)
 let _runtimeCloudConfig: {
   appsScriptUrl?: string;
   googleSheetId?: string;
   googleDriveFolderId?: string;
 } = {};
+
+// Live registry of custom sections hydrated by AppContext so custom_records always know their exact Sheet & Columns
+let _runtimeCustomSections: CustomSection[] = [];
+
+export function setRuntimeCustomSections(sections: CustomSection[]): void {
+  if (Array.isArray(sections)) {
+    _runtimeCustomSections = sections;
+  }
+}
 
 export function setRuntimeCloudConfig(cfg: {
   appsScriptUrl?: string;
@@ -79,7 +114,6 @@ export function getRuntimeCloudConfig() {
   return { ..._runtimeCloudConfig };
 }
 
-// Helper to reliably resolve Google Sheet ID from Cloud Firestore config, Vercel env, or legacy fallback
 export function resolveTargetSheetId(customSheetId?: string): string {
   if (customSheetId && customSheetId.trim()) {
     const cleaned = stripQuotes(customSheetId);
@@ -89,7 +123,7 @@ export function resolveTargetSheetId(customSheetId?: string): string {
     const cleaned = stripQuotes(_runtimeCloudConfig.googleSheetId);
     if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
   }
-  const envSheetId = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID;
+  const envSheetId = import.meta.env?.VITE_GOOGLE_SHEET_ID;
   if (envSheetId && envSheetId.trim()) {
     const cleaned = stripQuotes(envSheetId);
     if (!cleaned.startsWith('(') && !cleaned.includes('معرف') && !cleaned.includes('الشيت')) return cleaned;
@@ -105,12 +139,9 @@ export function resolveTargetSheetId(customSheetId?: string): string {
       const savedSettings = localStorage.getItem('al_nashi_office_settings');
       if (savedSettings) {
         const parsed = JSON.parse(savedSettings);
-        if (parsed.googleSheetId && parsed.googleSheetId.trim()) {
-          const cleaned = stripQuotes(parsed.googleSheetId);
-          if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
-        }
-        if (parsed.activeGoogleSheetId && parsed.activeGoogleSheetId.trim()) {
-          const cleaned = stripQuotes(parsed.activeGoogleSheetId);
+        const candidate = parsed.googleSheetId || parsed.activeGoogleSheetId;
+        if (candidate && String(candidate).trim()) {
+          const cleaned = stripQuotes(String(candidate));
           if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
         }
       }
@@ -119,7 +150,6 @@ export function resolveTargetSheetId(customSheetId?: string): string {
   return '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
 }
 
-// Helper to reliably resolve Apps Script Webhook URL from Cloud Firestore config, Vercel env, or legacy fallback
 export function resolveAppsScriptUrl(customUrl?: string): string {
   if (customUrl && customUrl.trim()) {
     const cleaned = stripQuotes(customUrl);
@@ -129,7 +159,7 @@ export function resolveAppsScriptUrl(customUrl?: string): string {
     const cleaned = stripQuotes(_runtimeCloudConfig.appsScriptUrl);
     if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
   }
-  const envUrl = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL;
+  const envUrl = import.meta.env?.VITE_GOOGLE_APPS_SCRIPT_URL;
   if (envUrl && envUrl.trim()) {
     const cleaned = stripQuotes(envUrl);
     if (!cleaned.startsWith('(') && !cleaned.includes('الرابط') && !cleaned.includes('ضع')) return cleaned;
@@ -145,12 +175,9 @@ export function resolveAppsScriptUrl(customUrl?: string): string {
       const savedSettings = localStorage.getItem('al_nashi_office_settings');
       if (savedSettings) {
         const parsed = JSON.parse(savedSettings);
-        if (parsed.appsScriptUrl && parsed.appsScriptUrl.trim()) {
-          const cleaned = stripQuotes(parsed.appsScriptUrl);
-          if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
-        }
-        if (parsed.googleAppsScriptUrl && parsed.googleAppsScriptUrl.trim()) {
-          const cleaned = stripQuotes(parsed.googleAppsScriptUrl);
+        const candidate = parsed.appsScriptUrl || parsed.googleAppsScriptUrl;
+        if (candidate && String(candidate).trim()) {
+          const cleaned = stripQuotes(String(candidate));
           if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
         }
       }
@@ -160,21 +187,31 @@ export function resolveAppsScriptUrl(customUrl?: string): string {
 }
 
 /**
- * Server-proxied Google Apps Script dispatcher (works on Vercel & Node without browser CORS/no-cors limits!)
+ * Reliable, honest Google Apps Script dispatcher:
+ * 1) Sends via Vercel/Node server proxy (`/api/sync/state?mode=sheets_proxy`) so CORS & 302 redirects are handled server-side.
+ * 2) Verifies the response is genuinely JSON (catches misconfigured SPA rewrites returning HTML).
+ * 3) Falls back to direct readable browser fetch (text/plain CORS-simple POST) ONLY if proxy is unavailable.
+ * 4) NEVER returns fake `{ success: true }` when both routes fail!
  */
-async function postToAppsScriptWithServerProxy(resolvedUrl: string, payload: Record<string, any>): Promise<any> {
-  if (!resolvedUrl || !resolvedUrl.startsWith('http')) return null;
-
-  // Fire direct browser fetch (no-cors) immediately so Google Apps Script receives the update instantly in browser without CORS/redirect blocks
-  if (typeof window !== 'undefined') {
-    fetch(resolvedUrl, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    }).catch(() => {});
+async function postToAppsScriptWithServerProxy(
+  resolvedUrl: string,
+  payload: Record<string, any>
+): Promise<{
+  success: boolean;
+  via?: 'proxy' | 'direct';
+  data?: any;
+  error?: string;
+  corsBlocked?: boolean;
+}> {
+  if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
+    const errMsg = 'رابط Google Apps Script غير مضبوط. يرجى تعيين VITE_GOOGLE_APPS_SCRIPT_URL في إعدادات Vercel.';
+    updateSheetsHealth('error', errMsg);
+    return { success: false, error: errMsg };
   }
 
+  let proxyFailureReason = '';
+
+  // Route 1: Server-side proxy (zero CORS issues on Vercel / Node)
   try {
     const proxyRes = await fetch('/api/sync/state?mode=sheets_proxy', {
       method: 'POST',
@@ -186,16 +223,79 @@ async function postToAppsScriptWithServerProxy(resolvedUrl: string, payload: Rec
         payload
       })
     });
-    if (proxyRes.ok) {
-      return await proxyRes.json().catch(() => ({ success: true }));
-    }
-  } catch {}
 
-  return { success: true };
+    const contentType = proxyRes.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await proxyRes.json().catch(() => null);
+      if (proxyRes.ok && json && json.success !== false) {
+        updateSheetsHealth('connected', null);
+        return { success: true, via: 'proxy', data: json };
+      }
+      proxyFailureReason = json?.error || `رفض وكيل المزامنة الطلب (HTTP ${proxyRes.status})`;
+    } else {
+      proxyFailureReason = `وكيل الخادم (/api/sync/state) أعاد استجابة غير صالحة (${contentType || proxyRes.status}) — تأكد من vercel.json`;
+    }
+  } catch (err: any) {
+    proxyFailureReason = err?.message || 'تعذر الوصول إلى وكيل المزامنة (/api/sync/state)';
+  }
+
+  // Route 2: Direct CORS-simple POST (text/plain avoids preflight OPTIONS; Apps Script with "Anyone" returns readable JSON)
+  try {
+    const directRes = await fetch(resolvedUrl, {
+      method: 'POST',
+      mode: 'cors',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+
+    const rawText = await directRes.text();
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      parsed = null;
+    }
+
+    if (directRes.ok && parsed && parsed.success !== false) {
+      updateSheetsHealth('connected', null);
+      return { success: true, via: 'direct', data: parsed };
+    }
+
+    const directErr =
+      parsed?.error ||
+      (rawText.includes('<!DOCTYPE') || rawText.includes('<html')
+        ? 'رابط Google Apps Script أعاد صفحة HTML (تحقق من صلاحية النشر: Anyone - أي شخص لديه الرابط، وأعد النشر كإصدار جديد).'
+        : `استجابة غير متوقعة من Apps Script (HTTP ${directRes.status})`);
+
+    updateSheetsHealth('error', directErr);
+    return { success: false, via: 'direct', error: directErr };
+  } catch (directErr: any) {
+    const errText = String(directErr?.message || directErr || '');
+    const isCors =
+      errText.includes('Failed to fetch') ||
+      errText.includes('CORS') ||
+      errText.includes('NetworkError') ||
+      errText.includes('Load failed');
+
+    const fullErr = isCors
+      ? `حظر CORS أو انقطاع الشبكة أثناء الاتصال بـ Google Apps Script. (${proxyFailureReason || 'تأكد من نشر السكربت بصلاحية Anyone وتحديث vercel.json'})`
+      : `فشل الترحيل إلى Google Sheets: ${errText} (${proxyFailureReason})`;
+
+    updateSheetsHealth('error', fullErr);
+    return { success: false, corsBlocked: isCors, error: fullErr };
+  }
 }
 
-async function getFromAppsScriptWithServerProxy(resolvedUrl: string, queryAction: string = 'getAllData'): Promise<any> {
-  if (!resolvedUrl || !resolvedUrl.startsWith('http')) return null;
+async function getFromAppsScriptWithServerProxy(
+  resolvedUrl: string,
+  queryAction: string = 'getAllData'
+): Promise<{ ok: boolean; via: 'proxy' | 'direct' | 'none'; data?: any; error?: string; corsError?: boolean }> {
+  if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
+    return { ok: false, via: 'none', error: 'رابط Google Apps Script غير مضبوط.' };
+  }
+
+  let proxyErr = '';
   try {
     const proxyRes = await fetch('/api/sync/state?mode=sheets_proxy', {
       method: 'POST',
@@ -207,156 +307,391 @@ async function getFromAppsScriptWithServerProxy(resolvedUrl: string, queryAction
         queryAction
       })
     });
-    if (proxyRes.ok) {
+    const contentType = proxyRes.headers.get('content-type') || '';
+    if (proxyRes.ok && contentType.includes('application/json')) {
       const json = await proxyRes.json().catch(() => null);
-      if (json) return json;
+      if (json && json.success !== false) {
+        updateSheetsHealth('connected', null);
+        return { ok: true, via: 'proxy', data: json };
+      }
+      proxyErr = json?.error || `HTTP ${proxyRes.status}`;
+    } else {
+      proxyErr = `استجابة غير صالحة من وكيل الخادم (${proxyRes.status})`;
     }
-  } catch {}
+  } catch (e: any) {
+    proxyErr = e?.message || 'فشل الاتصال بوكيل الخادم';
+  }
 
   try {
     const separator = resolvedUrl.includes('?') ? '&' : '?';
     const res = await fetch(`${resolvedUrl}${separator}action=${encodeURIComponent(queryAction)}&t=${Date.now()}`, {
-      method: 'GET'
+      method: 'GET',
+      mode: 'cors',
+      redirect: 'follow'
     });
-    if (res.ok) {
-      return await res.json();
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
     }
-  } catch {}
-  return null;
+    if (res.ok && json) {
+      updateSheetsHealth('connected', null);
+      return { ok: true, via: 'direct', data: json };
+    }
+    const errMsg = text.includes('<html')
+      ? 'السكربت أعاد صفحة HTML بدل JSON — تأكد من ضبط صلاحية النشر على Anyone.'
+      : `فشل قراءة Apps Script (HTTP ${res.status})`;
+    updateSheetsHealth('error', errMsg);
+    return { ok: false, via: 'direct', error: errMsg };
+  } catch (err: any) {
+    const msg = String(err?.message || err || '');
+    const isCors = msg.includes('Failed to fetch') || msg.includes('CORS') || msg.includes('NetworkError');
+    const errMsg = isCors
+      ? `حظر CORS عند القراءة المباشرة وفشل وكيل الخادم (${proxyErr})`
+      : `${msg} (${proxyErr})`;
+    updateSheetsHealth('error', errMsg);
+    return { ok: false, via: 'none', corsError: isCors, error: errMsg };
+  }
 }
 
-export async function syncSchemaToGoogleAppsScript(_sections: any[], customUrl?: string): Promise<boolean> {
+/**
+ * Live diagnostic check for Apps Script + CORS + Sheet ID
+ */
+export async function testAppsScriptConnection(customUrl?: string): Promise<AppsScriptPingResult> {
   const url = resolveAppsScriptUrl(customUrl);
-  if (!url || !url.startsWith('http')) return false;
-  return true;
+  if (!url || !url.startsWith('http')) {
+    const err = 'لم يتم تعيين رابط Google Apps Script (VITE_GOOGLE_APPS_SCRIPT_URL).';
+    updateSheetsHealth('error', err);
+    return { ok: false, via: 'none', error: err };
+  }
+
+  const res = await getFromAppsScriptWithServerProxy(url, 'ping');
+  if (!res.ok || !res.data) {
+    return {
+      ok: false,
+      via: res.via,
+      corsError: res.corsError,
+      error: res.error || 'تعذر الاتصال بخادم Google Apps Script.'
+    };
+  }
+
+  const d = res.data;
+  const needsScriptUpdate = !d.version || (!String(d.version).includes('2026.5') && !d.spreadsheetId);
+  return {
+    ok: true,
+    via: res.via,
+    status: d.status || 'online',
+    spreadsheetName: d.spreadsheetName,
+    sheetsCount: d.sheetsCount,
+    version: d.version,
+    needsScriptUpdate
+  };
 }
 
+/**
+ * Immediately creates & organizes a dedicated Sheet tab and ordered Arabic columns
+ * for a newly created or updated Custom Section / Icon (and its Sub-Sections).
+ */
+export async function registerCustomSectionInGoogleSheets(
+  section: CustomSection,
+  customUrl?: string,
+  _customSheetId?: string
+): Promise<{ success: boolean; sheets?: any[]; error?: string }> {
+  const url = resolveAppsScriptUrl(customUrl);
+  if (!url || !url.startsWith('http')) {
+    return { success: false, error: 'رابط Google Apps Script غير مضبوط لإنشاء ورقة القسم الجديد.' };
+  }
+
+  const sheetName = buildCustomSectionSheetName(section.title);
+  const headers = buildCustomSectionHeaders(section.fields || []);
+
+  const sectionPayload = {
+    id: section.id,
+    title: section.title,
+    sheetName,
+    headers,
+    isMultiSectionHub: Boolean(section.isMultiSectionHub),
+    fields: (section.fields || []).map(f => ({
+      id: f.id,
+      name: f.name || f.id,
+      label: f.label,
+      type: f.type
+    })),
+    subSections: (section.subSections || []).map(sub => ({
+      id: sub.id,
+      title: sub.title,
+      targetBuiltInSection: sub.targetBuiltInSection,
+      sheetName: buildCustomSectionSheetName(section.title, sub.title),
+      fields: (sub.fields || []).map(f => ({
+        id: f.id,
+        name: f.name || f.id,
+        label: f.label,
+        type: f.type
+      }))
+    }))
+  };
+
+  const res = await postToAppsScriptWithServerProxy(url, {
+    action: 'registerSection',
+    table: 'custom_sections',
+    section: sectionPayload,
+    timestamp: new Date().toISOString(),
+    source: 'al_nashi_custom_section_auto_sheet'
+  });
+
+  if (!res.success) {
+    return { success: false, error: res.error || 'تعذر إنشاء ورقة القسم الجديد في Google Sheets.' };
+  }
+
+  return {
+    success: true,
+    sheets: res.data?.sheets || [{ sectionId: section.id, sheetName, headers }]
+  };
+}
+
+/**
+ * Syncs ALL custom section schemas with Apps Script so every custom section / icon
+ * has an organized, non-destructive Sheet tab in Google Sheets.
+ */
+export async function syncSchemaToGoogleAppsScript(
+  sections: CustomSection[],
+  customUrl?: string
+): Promise<{ success: boolean; count?: number; error?: string }> {
+  const url = resolveAppsScriptUrl(customUrl);
+  if (!url || !url.startsWith('http')) {
+    return { success: false, error: 'رابط Google Apps Script غير مضبوط.' };
+  }
+
+  const normalizedSections = (sections || [])
+    .filter(s => s && s.id && s.id !== 'sec_social_welfare')
+    .map(section => ({
+      id: section.id,
+      title: section.title,
+      sheetName: buildCustomSectionSheetName(section.title),
+      isMultiSectionHub: Boolean(section.isMultiSectionHub),
+      fields: (section.fields || []).map(f => ({
+        id: f.id,
+        name: f.name || f.id,
+        label: f.label,
+        type: f.type
+      })),
+      subSections: (section.subSections || []).map(sub => ({
+        id: sub.id,
+        title: sub.title,
+        targetBuiltInSection: sub.targetBuiltInSection,
+        sheetName: buildCustomSectionSheetName(section.title, sub.title),
+        fields: (sub.fields || []).map(f => ({
+          id: f.id,
+          name: f.name || f.id,
+          label: f.label,
+          type: f.type
+        }))
+      }))
+    }));
+
+  if (normalizedSections.length === 0) {
+    return { success: true, count: 0 };
+  }
+
+  const res = await postToAppsScriptWithServerProxy(url, {
+    action: 'syncSchema',
+    table: 'custom_sections',
+    sections: normalizedSections,
+    timestamp: new Date().toISOString(),
+    source: 'al_nashi_schema_auto_discovery'
+  });
+
+  if (!res.success) {
+    return { success: false, error: res.error };
+  }
+  return { success: true, count: normalizedSections.length };
+}
+
+/**
+ * Pushes a single record (or custom section definition) immediately to Google Sheets
+ * and returns a genuine `RealtimePushResult` reflecting real cloud delivery status.
+ */
 export async function pushToGoogleSheetsRealtime(
   entityType: RealtimeEntityType,
   data: any,
   action: RealtimeActionType = 'insert',
   appsScriptUrl?: string,
-  sheetId?: string
-): Promise<void> {
-  const payload: SyncPayload = {
-    entityType,
-    action,
-    data,
-    timestamp: new Date().toISOString()
-  };
+  sheetId?: string,
+  options?: { customSections?: CustomSection[] }
+): Promise<RealtimePushResult> {
+  const resolvedSheetId = resolveTargetSheetId(sheetId);
+  const resolvedUrl = resolveAppsScriptUrl(appsScriptUrl);
+  const timestamp = new Date().toISOString();
 
-  syncQueue.push(payload);
-  processSyncQueue(appsScriptUrl, sheetId);
-}
+  // Skip purely local/non-sheet metadata entities
+  if (entityType === 'settings' || entityType === 'dropdowns' || entityType === 'drive_archive') {
+    return { success: true, via: 'skipped' };
+  }
 
-async function processSyncQueue(customUrl?: string, targetSheetId?: string) {
-  if (syncQueue.length === 0) return;
-  const itemsToProcess = syncQueue.splice(0, syncQueue.length);
-
-  for (const item of itemsToProcess) {
-    if (!item) continue;
-    const resolvedSheetId = resolveTargetSheetId(targetSheetId);
-    const resolvedUrl = resolveAppsScriptUrl(customUrl);
-
-    const targetId = item.data?.id || item.data?.User_ID || item.data?.Citizen_ID || item.data?.Request_ID || item.data?.Interview_ID || item.data?.Letter_ID || (typeof item.data === 'string' ? item.data : '');
-
-    // 1. Direct Google Sheets REST API sync via Developer Google OAuth token
-    if (resolvedSheetId) {
-      getAccessToken().then(token => {
-        if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
-          if (item.action === 'delete') {
-            if (targetId) {
-              deleteRecordFromSheetsRealtime(token, resolvedSheetId, item.entityType, targetId).catch(() => {});
-            }
-          } else {
-            pushSingleRecordToSheetsRealtime(token, resolvedSheetId, item.entityType, item.data).catch(() => {});
-          }
-        }
-      }).catch(() => {});
+  // Handle Custom Section creation/update -> auto-create dedicated Google Sheet tab!
+  if (entityType === 'custom_sections') {
+    if (action === 'delete') {
+      // Non-destructive policy: deleting a UI section tile NEVER deletes its historical Google Sheet data
+      return { success: true, via: 'skipped' };
     }
+    const reg = await registerCustomSectionInGoogleSheets(data as CustomSection, resolvedUrl, resolvedSheetId);
+    return {
+      success: reg.success,
+      via: reg.success ? 'proxy' : undefined,
+      sheet: reg.sheets?.[0]?.sheetName,
+      error: reg.error
+    };
+  }
 
-    // 2. Webhook / Apps Script Web App sync — send strictly to the 8 single-sheet-per-department tabs immediately
-    if (resolvedUrl && resolvedUrl.startsWith('http')) {
-      if (
-        item.entityType === 'settings' ||
-        item.entityType === 'dropdowns' ||
-        item.entityType === 'custom_sections' ||
-        item.entityType === 'drive_archive'
-      ) {
-        continue;
-      }
+  const targetId =
+    data?.id ||
+    data?.User_ID ||
+    data?.Citizen_ID ||
+    data?.Request_ID ||
+    data?.Interview_ID ||
+    data?.Letter_ID ||
+    (typeof data === 'string' ? data : '');
 
-      const sanitizeFlatPayload = (obj: any): Record<string, string> => {
-        if (!obj || typeof obj !== 'object') return {};
-        const out: Record<string, string> = {};
-        for (const k of Object.keys(obj)) {
-          const v = obj[k];
-          if (v === null || v === undefined || typeof v === 'object') continue;
-          const cleaned = cleanSheetCell(v);
-          if (cleaned !== '' || k === 'id') {
-            out[k] = cleaned;
+  let oauthRestOk = false;
+
+  // 1. Optional Direct Google Sheets REST API sync if OAuth token is active
+  if (resolvedSheetId && entityType !== 'custom_records') {
+    try {
+      const token = await getAccessToken();
+      if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
+        if (action === 'delete') {
+          if (targetId) {
+            oauthRestOk = await deleteRecordFromSheetsRealtime(token, resolvedSheetId, entityType, targetId);
           }
+        } else {
+          oauthRestOk = await pushSingleRecordToSheetsRealtime(token, resolvedSheetId, entityType, data);
         }
-        return out;
-      };
-
-      const cleanWebhookData =
-        item.action === 'delete'
-          ? item.data
-          : item.entityType === 'citizens'
-          ? toCleanSheetCitizenPayload(item.data)
-          : item.entityType === 'requests'
-          ? toCleanSheetRequestPayload(item.data)
-          : item.entityType === 'interviews'
-          ? toCleanSheetInterviewPayload(item.data)
-          : item.entityType === 'organization'
-          ? toCleanSheetOrganizationPayload(item.data)
-          : item.entityType === 'letters'
-          ? toCleanSheetLetterPayload(item.data)
-          : item.entityType === 'cheques'
-          ? toCleanSheetChequePayload(item.data)
-          : item.entityType === 'custom_records'
-          ? toCleanSheetSocialCarePayload(item.data)
-          : item.entityType === 'users'
-          ? toCleanSheetUserPayload(item.data)
-          : sanitizeFlatPayload(item.data);
-
-      postToAppsScriptWithServerProxy(resolvedUrl, {
-        action: item.action === 'delete' ? 'delete' : item.action === 'insert' ? 'appendRow' : 'updateRow',
-        table: item.entityType,
-        sheetType: item.entityType,
-        id: targetId,
-        Citizen_ID: targetId,
-        Request_ID: targetId,
-        data: cleanWebhookData,
-        record: cleanWebhookData,
-        timestamp: item.timestamp,
-        source: 'al_nashi_office_system'
-      }).catch(err => {
-        console.warn('Realtime Google Sheets webhook warning:', err);
-      });
+      }
+    } catch {
+      oauthRestOk = false;
     }
   }
+
+  // 2. Primary Webhook / Apps Script Web App sync
+  if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
+    if (oauthRestOk) {
+      updateSheetsHealth('connected', null);
+      return { success: true, via: 'oauth_rest' };
+    }
+    const errMsg = 'رابط Google Apps Script غير مضبوط (VITE_GOOGLE_APPS_SCRIPT_URL).';
+    updateSheetsHealth('error', errMsg);
+    return { success: false, error: errMsg };
+  }
+
+  const sanitizeFlatPayload = (obj: any): Record<string, string> => {
+    if (!obj || typeof obj !== 'object') return {};
+    const out: Record<string, string> = {};
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      if (v === null || v === undefined || typeof v === 'object') continue;
+      const cleaned = cleanSheetCell(v);
+      if (cleaned !== '' || k === 'id') {
+        out[k] = cleaned;
+      }
+    }
+    return out;
+  };
+
+  let extraWebhookMeta: Record<string, any> = {};
+  let cleanWebhookData: any;
+
+  if (action === 'delete') {
+    cleanWebhookData = data;
+    if (entityType === 'custom_records' && data && typeof data === 'object') {
+      const activeSections = options?.customSections || _runtimeCustomSections;
+      const resolvedCustom = toCleanCustomSectionRecordPayload(data, activeSections);
+      extraWebhookMeta = {
+        sectionId: resolvedCustom.sectionId,
+        sheetName: resolvedCustom.sheetName,
+        sectionTitle: resolvedCustom.title
+      };
+    }
+  } else if (entityType === 'custom_records') {
+    const activeSections = options?.customSections || _runtimeCustomSections;
+    const resolvedCustom = toCleanCustomSectionRecordPayload(data, activeSections);
+    cleanWebhookData = resolvedCustom.payload;
+    extraWebhookMeta = {
+      sectionId: resolvedCustom.sectionId,
+      sheetName: resolvedCustom.sheetName,
+      sectionTitle: resolvedCustom.title,
+      sectionColumns: resolvedCustom.columns
+    };
+  } else {
+    cleanWebhookData =
+      entityType === 'citizens'
+        ? toCleanSheetCitizenPayload(data)
+        : entityType === 'requests'
+        ? toCleanSheetRequestPayload(data)
+        : entityType === 'interviews'
+        ? toCleanSheetInterviewPayload(data)
+        : entityType === 'organization'
+        ? toCleanSheetOrganizationPayload(data)
+        : entityType === 'letters'
+        ? toCleanSheetLetterPayload(data)
+        : entityType === 'cheques'
+        ? toCleanSheetChequePayload(data)
+        : entityType === 'users'
+        ? toCleanSheetUserPayload(data)
+        : sanitizeFlatPayload(data);
+  }
+
+  const res = await postToAppsScriptWithServerProxy(resolvedUrl, {
+    action: action === 'delete' ? 'delete' : action === 'insert' ? 'appendRow' : 'updateRow',
+    table: entityType,
+    sheetType: entityType,
+    id: targetId,
+    Citizen_ID: targetId,
+    Request_ID: targetId,
+    ...extraWebhookMeta,
+    data: cleanWebhookData,
+    record: cleanWebhookData,
+    timestamp,
+    source: 'al_nashi_office_system'
+  });
+
+  if (res.success) {
+    return {
+      success: true,
+      via: res.via,
+      sheet: res.data?.sheet || extraWebhookMeta.sheetName
+    };
+  }
+
+  if (oauthRestOk) {
+    updateSheetsHealth('connected', null);
+    return { success: true, via: 'oauth_rest' };
+  }
+
+  return {
+    success: false,
+    corsBlocked: res.corsBlocked,
+    error: res.error || 'فشل إرسال السجل إلى Google Sheets عبر Apps Script.'
+  };
 }
 
 /**
- * Chunked non-blocking bulk push to Google Sheets (supports both Apps Script Web App & Direct Google Sheets REST API).
- * Used by Excel Filter/Import so all filtered citizens and requests are persisted to Google Sheets automatically
- * without hitting Apps Script payload limits or freezing the browser.
+ * Chunked non-destructive bulk push to Google Sheets (supports Apps Script Web App & Direct Google Sheets REST API).
  */
 export async function pushBulkDataToGoogleSheets(
   citizensList: Citizen[],
   requestsList: OfficeRequest[],
   customAppsScriptUrl?: string,
   customSheetId?: string
-): Promise<{ appsScriptSent: boolean; directSheetsSent: boolean; chunksSent: number }> {
+): Promise<{ appsScriptSent: boolean; directSheetsSent: boolean; chunksSent: number; error?: string }> {
   const resolvedUrl = resolveAppsScriptUrl(customAppsScriptUrl);
   const resolvedSheetId = resolveTargetSheetId(customSheetId);
   let appsScriptSent = false;
   let directSheetsSent = false;
   let chunksSent = 0;
+  let lastError: string | undefined;
 
-  // Sanitize into strictly flat, isolated single-cell objects (zero raw JSON/base64, identical to manual registration!)
   const cleanCitizens = (citizensList || []).map(c => toCleanSheetCitizenPayload(c));
   const cleanRequests = (requestsList || []).map(r => toCleanSheetRequestPayload(r));
 
@@ -368,20 +703,20 @@ export async function pushBulkDataToGoogleSheets(
       const citSlice = cleanCitizens.slice(i, i + CHUNK);
       const reqSlice = cleanRequests.slice(i, i + CHUNK);
       if (citSlice.length === 0 && reqSlice.length === 0) continue;
-      try {
-        await postToAppsScriptWithServerProxy(resolvedUrl, {
-          action: 'bulk_sync',
-          data: {
-            citizens: citSlice,
-            requests: reqSlice
-          },
-          timestamp: new Date().toISOString(),
-          source: 'al_nashi_excel_filter_import'
-        });
+      const res = await postToAppsScriptWithServerProxy(resolvedUrl, {
+        action: 'bulk_sync',
+        data: {
+          citizens: citSlice,
+          requests: reqSlice
+        },
+        timestamp: new Date().toISOString(),
+        source: 'al_nashi_excel_filter_import'
+      });
+      if (res.success) {
         appsScriptSent = true;
         chunksSent++;
-      } catch (err) {
-        console.warn('Apps Script bulk chunk sync warning:', err);
+      } else {
+        lastError = res.error;
       }
       if (i + CHUNK < maxLen) {
         await new Promise(resolve => setTimeout(resolve, 350));
@@ -389,7 +724,7 @@ export async function pushBulkDataToGoogleSheets(
     }
   }
 
-  // 2. Also append directly via Google Sheets REST API anchored strictly to A1 (never drifting right!)
+  // 2. Optional direct Google Sheets REST API append
   if (resolvedSheetId && (citizensList.length > 0 || requestsList.length > 0)) {
     try {
       const token = await getAccessToken();
@@ -427,18 +762,16 @@ export async function pushBulkDataToGoogleSheets(
           if (resReq.ok) directSheetsSent = true;
         }
       }
-    } catch (err) {
-      console.warn('Direct Sheets bulk append warning:', err);
+    } catch (err: any) {
+      lastError = lastError || err?.message;
     }
   }
 
-  return { appsScriptSent, directSheetsSent, chunksSent };
+  return { appsScriptSent, directSheetsSent, chunksSent, error: lastError };
 }
 
 /**
- * One-click Google Sheets column cleanup & reorganization (without losing any data!):
- * 1) If Google OAuth token + Sheet ID exist, clears messy legacy columns (A1:AZ) and rewrites all non-empty tables cleanly with RTL + CLIP formatting.
- * 2) If Apps Script URL is configured, triggers `reorganizeSheets` (GET + POST) and syncs clean Arabic-column data.
+ * One-click NON-DESTRUCTIVE Google Sheets column cleanup & reorganization (preserves all records & custom section sheets!).
  */
 export async function reorganizeGoogleSheetsNow(params: {
   appsScriptUrl?: string;
@@ -449,6 +782,7 @@ export async function reorganizeGoogleSheetsNow(params: {
   organizationRecords?: OrganizationRecord[];
   officialLetters?: OfficialLetter[];
   cheques?: ChequeRecord[];
+  customSections?: CustomSection[];
   customRecords?: CustomSectionRecord[];
   users?: User[];
   auditLogs?: any[];
@@ -458,8 +792,11 @@ export async function reorganizeGoogleSheetsNow(params: {
   let directDone = false;
   let scriptDone = false;
   let needsScriptUpdate = false;
+  let lastErr = '';
 
-  // 1. Direct Google Sheets API clean rewrite (creates the 8 department sheets, writes ordered Arabic columns, deletes duplicate tabs)
+  const activeSections = params.customSections || _runtimeCustomSections;
+
+  // 1. Direct Google Sheets API non-destructive merge (if Google OAuth token is active)
   if (resolvedSheetId) {
     try {
       const token = await getAccessToken();
@@ -477,57 +814,83 @@ export async function reorganizeGoogleSheetsNow(params: {
         });
         if (res.success) directDone = true;
       }
-    } catch (err) {
-      console.warn('Direct Sheets reorganize warning:', err);
+    } catch (err: any) {
+      lastErr = err?.message || 'فشل الترتيب عبر واجهة Google Sheets المباشرة';
     }
   }
 
-  // 2. Apps Script clean column reorganization & bulk sync across all 8 department tabs
+  // 2. Apps Script non-destructive organization + dynamic custom sections registration & sync
   if (resolvedUrl && resolvedUrl.startsWith('http')) {
-    try {
-      // First push non-citizen/request departments + first batch
-      const cleanInterviews = (params.interviews || []).map(i => toCleanSheetInterviewPayload(i));
-      const cleanOrg = (params.organizationRecords || []).map(o => toCleanSheetOrganizationPayload(o));
-      const cleanLetters = (params.officialLetters || []).map(l => toCleanSheetLetterPayload(l));
-      const cleanCheques = (params.cheques || []).map(ch => toCleanSheetChequePayload(ch));
-      const cleanSocial = (params.customRecords || [])
-        .filter(r => !r.sectionId || r.sectionId === 'sec_social_welfare')
-        .map(r => toCleanSheetSocialCarePayload(r));
-      const cleanUsers = (params.users || []).map(u => toCleanSheetUserPayload(u));
+    const cleanInterviews = (params.interviews || []).map(i => toCleanSheetInterviewPayload(i));
+    const cleanOrg = (params.organizationRecords || []).map(o => toCleanSheetOrganizationPayload(o));
+    const cleanLetters = (params.officialLetters || []).map(l => toCleanSheetLetterPayload(l));
+    const cleanCheques = (params.cheques || []).map(ch => toCleanSheetChequePayload(ch));
+    const cleanUsers = (params.users || []).map(u => toCleanSheetUserPayload(u));
 
-      await postToAppsScriptWithServerProxy(resolvedUrl, {
-        action: 'bulk_sync',
-        cleanupDuplicates: true,
-        data: {
-          interviews: cleanInterviews,
-          organizationRecords: cleanOrg,
-          officialLetters: cleanLetters,
-          cheques: cleanCheques,
-          customRecords: cleanSocial,
-          users: cleanUsers
-        },
+    // Prepare both built-in Social Care records and dynamic Custom Section records
+    const preparedCustomRecords = (params.customRecords || []).map(r => {
+      if (!r.sectionId || r.sectionId === 'sec_social_welfare') {
+        return { ...toCleanSheetSocialCarePayload(r), sectionId: 'sec_social_welfare' };
+      }
+      const resolved = toCleanCustomSectionRecordPayload(r, activeSections);
+      return {
+        sectionId: resolved.sectionId,
+        sheetName: resolved.sheetName,
+        sectionTitle: resolved.title,
+        sectionColumns: resolved.columns,
+        payload: resolved.payload
+      };
+    });
+
+    const bulkRes = await postToAppsScriptWithServerProxy(resolvedUrl, {
+      action: 'bulk_sync',
+      cleanupDuplicates: true,
+      data: {
+        customSections: activeSections.filter(s => s.id !== 'sec_social_welfare'),
+        interviews: cleanInterviews,
+        organizationRecords: cleanOrg,
+        officialLetters: cleanLetters,
+        cheques: cleanCheques,
+        customRecords: preparedCustomRecords,
+        users: cleanUsers
+      },
+      timestamp: new Date().toISOString()
+    });
+
+    if (!bulkRes.success) {
+      lastErr = bulkRes.error || lastErr;
+    } else {
+      scriptDone = true;
+    }
+
+    // Push citizens & requests in chunks of 80
+    const bulkCitReq = await pushBulkDataToGoogleSheets(
+      params.citizens || [],
+      params.requests || [],
+      resolvedUrl,
+      resolvedSheetId
+    );
+    if (bulkCitReq.error) {
+      lastErr = bulkCitReq.error;
+    }
+
+    // Trigger reorganizeSheets
+    const reorgRes = await getFromAppsScriptWithServerProxy(resolvedUrl, 'reorganizeSheets');
+    if (reorgRes.ok && reorgRes.data) {
+      scriptDone = true;
+      if (reorgRes.data.status === 'online' && !reorgRes.data.schemaVersion && !reorgRes.data.details) {
+        needsScriptUpdate = true;
+      }
+    } else {
+      const postReorg = await postToAppsScriptWithServerProxy(resolvedUrl, {
+        action: 'reorganizeSheets',
         timestamp: new Date().toISOString()
       });
-
-      // Push citizens & requests in chunks of 80
-      await pushBulkDataToGoogleSheets(params.citizens || [], params.requests || [], resolvedUrl, resolvedSheetId);
-
-      // Finally trigger reorganizeSheets to consolidate legacy tabs & delete duplicates
-      const reorgRes = await getFromAppsScriptWithServerProxy(resolvedUrl, 'reorganizeSheets');
-      if (reorgRes) {
+      if (postReorg.success) {
         scriptDone = true;
-        if (reorgRes.status === 'online' && !reorgRes.schemaVersion && !reorgRes.details) {
-          needsScriptUpdate = true;
-        }
       } else {
-        await postToAppsScriptWithServerProxy(resolvedUrl, {
-          action: 'reorganizeSheets',
-          timestamp: new Date().toISOString()
-        });
-        scriptDone = true;
+        lastErr = postReorg.error || lastErr;
       }
-    } catch (err) {
-      console.warn('Apps Script reorganize warning:', err);
     }
   }
 
@@ -535,20 +898,20 @@ export async function reorganizeGoogleSheetsNow(params: {
     return {
       success: true,
       needsScriptUpdate: true,
-      message: '✓ تم إرسال جميع سجلات الأقسام الثمانية إلى Google Sheets بنجاح! ملاحظة: لحذف الأوراق القديمة الـ 13 تلقائياً وتوحيد كل قسم في ورقة واحدة، يرجى نسخ كود Apps Script المحدث أدناه ولصقه في جدول Google Sheets ثم عمل Deploy (إصدار جديد).'
+      message: 'تم إرسال السجلات إلى Google Sheets، لكن نسخة كود Apps Script قديمة. يرجى نسخ الكود المحدث أدناه ولصقه في Apps Script ثم النشر كإصدار جديد (New Version).'
     };
   }
 
   if (directDone || scriptDone) {
     return {
       success: true,
-      message: '✓ تم ترتيب وتوحيد قاعدة بيانات Google Sheets بنجاح (ورقة واحدة فقط لكل قسم من الأقسام الـ 8 بأعمدة عربية مرتبة ومعزولة) ودمج كافة السجلات دون فقدان أي بيان!'
+      message: 'تم ترتيب وتوحيد قاعدة بيانات Google Sheets غير تدميرياً بنجاح (أوراق الأقسام الرئيسية + أوراق الأقسام المخصصة بأعمدة عربية مرتبة) دون حذف أو مسح أي سجل!'
     };
   }
 
   return {
     success: false,
-    message: '⚠️ يرجى التأكد من حفظ رابط Apps Script أو تسجيل الدخول بحساب Google أولاً لتنفيذ ترتيب وتوحيد أوراق الأقسام.'
+    message: lastErr || 'تعذر الاتصال بـ Google Sheets لتنفيذ الترتيب. يرجى فحص رابط Apps Script ومتغيرات البيئة في Vercel.'
   };
 }
 
@@ -559,6 +922,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
   success: boolean;
   message?: string;
   needsScriptUpdate?: boolean;
+  error?: string;
   data?: {
     citizens: Citizen[];
     requests: OfficeRequest[];
@@ -574,15 +938,22 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
   if (!cleanUrl || !cleanUrl.startsWith('http')) return null;
 
   try {
-    const json = await getFromAppsScriptWithServerProxy(cleanUrl, 'getAllData');
-    if (!json) return null;
+    const fetchResult = await getFromAppsScriptWithServerProxy(cleanUrl, 'getAllData');
+    if (!fetchResult.ok || !fetchResult.data) {
+      return {
+        success: false,
+        error: fetchResult.error || 'تعذر جلب البيانات من Google Apps Script.',
+        message: fetchResult.error || 'تعذر جلب البيانات من Google Apps Script.'
+      };
+    }
 
-    // If the currently deployed script on Google Sheets is the old minimal doGet stub that only returns { status: 'online', sheetsCount: 13 }
+    const json = fetchResult.data;
+
     if (json.status === 'online' && !json.data && !json.citizens) {
       return {
         success: false,
         needsScriptUpdate: true,
-        message: `الجدول المتصل (${json.spreadsheetName || 'Google Sheets'}) يحتوي حالياً على (${json.sheetsCount || 0}) ورقة ويعمل بنسخة سكربت قديمة. انسخ كود السكربت المحدث لتوحيد الأوراق في 8 أوراق (ورقة لكل قسم).`
+        message: `الجدول المتصل (${json.spreadsheetName || 'Google Sheets'}) يحتوي حالياً على (${json.sheetsCount || 0}) ورقة ويعمل بنسخة سكربت قديمة. انسخ كود السكربت المحدث لتفعيل المزامنة الكاملة.`
       };
     }
 
@@ -717,25 +1088,52 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       InfluenceType: (o.InfluenceType || o['الصفة / التأثير الاجتماعي'] || 'شخصية مؤثرة') as any
     }));
 
-    const customRecords: CustomSectionRecord[] = (sourceData.customRecords || []).map((cr: any) => {
-      const d = (cr && typeof cr.data === 'object' && cr.data) ? cr.data : cr;
-      return {
-        id: String(cr.id || cr['معرف القيد'] || '').trim(),
-        sectionId: cr.sectionId || 'sec_social_welfare',
-        createdAt: String(cr.createdAt || d.f_welf_date || cr['تاريخ المراجعة'] || new Date().toISOString().split('T')[0]).trim(),
-        createdBy: String(cr.createdBy || cr['الموظف المسؤول'] || 'قسم الرعاية الاجتماعية').trim(),
-        data: {
-          f_welf_name: String(d.f_welf_name || cr['اسم المواطن الرباعي'] || '').trim(),
-          f_welf_phone: String(d.f_welf_phone || cr['رقم الهاتف'] || '').trim(),
-          f_welf_code: String(d.f_welf_code || cr['رقم القيد / المعاملة الوزارية'] || '').trim(),
-          f_welf_type: String(d.f_welf_type || cr['نوع الإعانة / الفئة'] || '').trim(),
-          f_welf_researcher: String(d.f_welf_researcher || cr['حالة الباحث الاجتماعي'] || '').trim(),
-          f_welf_district: String(d.f_welf_district || cr['القضاء / الناحية'] || '').trim(),
-          f_welf_date: String(d.f_welf_date || cr['تاريخ المراجعة'] || '').trim(),
-          f_welf_notes: String(d.f_welf_notes || cr['الملاحظات والتوجيهات'] || '').trim()
+    // Preserve BOTH Social Care records AND any dynamic Custom Section records with all their dynamic fields!
+    const customRecords: CustomSectionRecord[] = (sourceData.customRecords || [])
+      .map((cr: any) => {
+        const secId = String(cr.sectionId || 'sec_social_welfare').trim();
+        const d = (cr && typeof cr.data === 'object' && cr.data) ? cr.data : cr;
+
+        if (secId === 'sec_social_welfare') {
+          return {
+            id: String(cr.id || cr['معرف القيد'] || '').trim(),
+            sectionId: 'sec_social_welfare',
+            createdAt: String(cr.createdAt || d.f_welf_date || cr['تاريخ المراجعة'] || new Date().toISOString().split('T')[0]).trim(),
+            createdBy: String(cr.createdBy || cr['الموظف المسؤول'] || 'قسم الرعاية الاجتماعية').trim(),
+            data: {
+              f_welf_name: String(d.f_welf_name || cr['اسم المواطن الرباعي'] || '').trim(),
+              f_welf_phone: String(d.f_welf_phone || cr['رقم الهاتف'] || '').trim(),
+              f_welf_code: String(d.f_welf_code || cr['رقم القيد / المعاملة الوزارية'] || '').trim(),
+              f_welf_type: String(d.f_welf_type || cr['نوع الإعانة / الفئة'] || '').trim(),
+              f_welf_researcher: String(d.f_welf_researcher || cr['حالة الباحث الاجتماعي'] || '').trim(),
+              f_welf_district: String(d.f_welf_district || cr['القضاء / الناحية'] || '').trim(),
+              f_welf_date: String(d.f_welf_date || cr['تاريخ المراجعة'] || '').trim(),
+              f_welf_notes: String(d.f_welf_notes || cr['الملاحظات والتوجيهات'] || '').trim()
+            }
+          };
         }
-      };
-    }).filter((cr: CustomSectionRecord) => Boolean(cr.id));
+
+        // Dynamic custom section record: keep every dynamic key intact without dropping fields!
+        const preservedData: Record<string, any> = {};
+        if (d && typeof d === 'object') {
+          for (const [k, v] of Object.entries(d)) {
+            if (k === 'id' || k === 'sectionId' || k === 'createdAt' || k === 'createdBy' || k === 'معرف القيد' || k === 'تاريخ الإنشاء' || k === 'الموظف المسؤول') {
+              continue;
+            }
+            if (v !== undefined && v !== null) {
+              preservedData[k] = typeof v === 'string' ? v.trim() : v;
+            }
+          }
+        }
+        return {
+          id: String(cr.id || cr['معرف القيد'] || '').trim(),
+          sectionId: secId,
+          createdAt: String(cr.createdAt || cr['تاريخ الإنشاء'] || new Date().toISOString().split('T')[0]).trim(),
+          createdBy: String(cr.createdBy || cr['الموظف المسؤول'] || 'Google Sheets').trim(),
+          data: preservedData
+        };
+      })
+      .filter((cr: CustomSectionRecord) => Boolean(cr.id));
 
     const parseStringArray = (raw: any): string[] => {
       if (Array.isArray(raw)) return raw.map(v => String(v).trim()).filter(Boolean);
@@ -749,26 +1147,28 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       return [];
     };
 
-    const users: User[] = (sourceData.users || []).map((u: any) => ({
-      User_ID: String(u.User_ID || u['معرف المستخدم'] || u.id || '').trim(),
-      Username: String(u.Username || u['اسم الدخول'] || '').trim(),
-      Password: String(u.Password || u['رمز الدخول / كلمة المرور'] || '').trim(),
-      Phone: String(u.Phone || u['رقم الهاتف'] || '').trim(),
-      Role: (u.Role || 'reception') as any,
-      RoleArabic: String(u.RoleArabic || u['الصفة الوظيفية'] || u.Department || 'موظف').trim(),
-      Status: (u.Status === 'frozen' || u['حالة الحساب'] === 'مجمد') ? 'frozen' : 'active',
-      FullName: String(u.FullName || u['الاسم الكامل للموظف'] || u.Username || '').trim(),
-      Department: String(u.Department || u['القسم'] || '').trim(),
-      JobTitle: String(u.JobTitle || '').trim(),
-      Permissions: parseStringArray(u.Permissions),
-      AllowedSections: parseStringArray(u.AllowedSections),
-      CreatedAt: String(u.CreatedAt || '').trim(),
-      UpdatedAt: String(u.UpdatedAt || u['تاريخ التحديث'] || '').trim()
-    })).filter((u: User) => Boolean(u.User_ID && u.Username));
+    const users: User[] = (sourceData.users || [])
+      .map((u: any) => ({
+        User_ID: String(u.User_ID || u['معرف المستخدم'] || u.id || '').trim(),
+        Username: String(u.Username || u['اسم الدخول'] || '').trim(),
+        Password: String(u.Password || u['رمز الدخول / كلمة المرور'] || '').trim(),
+        Phone: String(u.Phone || u['رقم الهاتف'] || '').trim(),
+        Role: (u.Role || 'reception') as any,
+        RoleArabic: String(u.RoleArabic || u['الصفة الوظيفية'] || u.Department || 'موظف').trim(),
+        Status: (u.Status === 'frozen' || u['حالة الحساب'] === 'مجمد') ? 'frozen' : 'active',
+        FullName: String(u.FullName || u['الاسم الكامل للموظف'] || u.Username || '').trim(),
+        Department: String(u.Department || u['القسم'] || '').trim(),
+        JobTitle: String(u.JobTitle || '').trim(),
+        Permissions: parseStringArray(u.Permissions),
+        AllowedSections: parseStringArray(u.AllowedSections),
+        CreatedAt: String(u.CreatedAt || '').trim(),
+        UpdatedAt: String(u.UpdatedAt || u['تاريخ التحديث'] || '').trim()
+      }))
+      .filter((u: User) => Boolean(u.User_ID && u.Username));
 
     return {
       success: true,
-      message: `تم بنجاح جلب (${citizens.length}) مراجع و (${requests.length}) معاملة من أوراق الأقسام الموحدة في Google Sheets.`,
+      message: `تم بنجاح جلب (${citizens.length}) مراجع و (${requests.length}) معاملة و (${customRecords.length}) سجل مخصص من Google Sheets.`,
       data: {
         citizens,
         requests,
@@ -782,7 +1182,8 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     };
   } catch (err: any) {
     console.warn('pullDataFromGoogleAppsScript error:', err);
-    return null;
+    updateSheetsHealth('error', err?.message || 'فشل سحب البيانات من Google Sheets');
+    return { success: false, error: err?.message || 'فشل سحب البيانات من Google Sheets' };
   }
 }
 
@@ -834,7 +1235,6 @@ export async function verifyLoginWithGoogleSheets(
       return { success: false };
     };
 
-    // 1. If Apps Script URL is provided or saved
     const scriptUrl = resolveAppsScriptUrl(customAppsScriptUrl);
     if (scriptUrl && scriptUrl.startsWith('http')) {
       try {
@@ -857,7 +1257,6 @@ export async function verifyLoginWithGoogleSheets(
         console.warn('Apps Script login verify error:', e);
       }
 
-      // Fallback: pull users from getAllData if Apps Script does not implement verifyLogin directly
       try {
         const pulled = await pullDataFromGoogleAppsScript(scriptUrl);
         if (pulled?.success && pulled.data?.users && pulled.data.users.length > 0) {
@@ -867,7 +1266,6 @@ export async function verifyLoginWithGoogleSheets(
       } catch {}
     }
 
-    // 2. If Google Sheets Access Token is cached
     const token = typeof window !== 'undefined' ? (sessionStorage.getItem('al_nashi_google_token') || localStorage.getItem('al_nashi_google_token')) : null;
     const sheetId = resolveTargetSheetId(customSheetId);
 

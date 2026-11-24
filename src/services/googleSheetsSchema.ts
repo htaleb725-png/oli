@@ -624,3 +624,159 @@ export function mapSheetRowByHeaders(headers: string[], row: any[]): Record<stri
   }
   return out;
 }
+
+/**
+ * Generates a clean, valid, Arabic Google Sheet tab name for any custom section or sub-section.
+ * Guarantees unique safe naming without ever colliding with legacy or invalid spreadsheet characters.
+ */
+export function buildCustomSectionSheetName(title: string, subTitle?: string): string {
+  const sanitizePart = (raw: string) =>
+    String(raw || '')
+      .trim()
+      .replace(/[:\\/?*\[\]'"]+/g, '')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+  const cleanTitle = sanitizePart(title) || 'قسم_مخصص';
+  const baseName = cleanTitle.startsWith('قسم_') ? cleanTitle : `قسم_${cleanTitle}`;
+  if (subTitle && subTitle.trim()) {
+    const cleanSub = sanitizePart(subTitle);
+    if (cleanSub) {
+      return `${baseName}_${cleanSub}`.slice(0, 90);
+    }
+  }
+  return baseName.slice(0, 90);
+}
+
+/**
+ * Builds ordered Arabic headers for any dynamic custom section sheet.
+ */
+export function buildCustomSectionHeaders(
+  fields: { id: string; label: string; name?: string }[] = []
+): string[] {
+  const seen = new Set<string>(['معرف القيد', 'تاريخ الإنشاء', 'الموظف المسؤول']);
+  const dynamicLabels: string[] = [];
+  for (const f of fields) {
+    const lbl = cleanSheetCell(f.label || f.name || f.id);
+    if (lbl && !seen.has(lbl)) {
+      seen.add(lbl);
+      dynamicLabels.push(lbl);
+    }
+  }
+  return ['معرف القيد', ...dynamicLabels, 'تاريخ الإنشاء', 'الموظف المسؤول'];
+}
+
+/**
+ * Resolves a CustomSectionRecord to its exact custom sheet tab, ordered column definitions,
+ * and flat payload keyed by both Arabic column labels and internal field IDs.
+ */
+export function toCleanCustomSectionRecordPayload(
+  rec: Partial<CustomSectionRecord> & { sectionTitle?: string; sheetName?: string },
+  customSections: {
+    id: string;
+    title: string;
+    fields?: { id: string; name?: string; label: string; type?: string }[];
+    isMultiSectionHub?: boolean;
+    subSections?: { id: string; title: string; fields?: { id: string; name?: string; label: string; type?: string }[] }[];
+  }[] = []
+): {
+  sectionId: string;
+  sheetName: string;
+  title: string;
+  headers: string[];
+  columns: { key: string; header: string }[];
+  payload: Record<string, string>;
+} {
+  const sectionId = String(rec.sectionId || 'sec_social_welfare').trim();
+
+  // Built-in Social Care standalone custom section keeps its canonical sheet name
+  if (sectionId === 'sec_social_welfare') {
+    const payload = toCleanSheetSocialCarePayload(rec);
+    return {
+      sectionId,
+      sheetName: SOCIAL_CARE_SHEET_NAME,
+      title: 'قسم الرعاية الاجتماعية',
+      headers: SOCIAL_CARE_SHEET_HEADERS,
+      columns: SOCIAL_CARE_SHEET_HEADERS.map((h) => ({ key: h, header: h })),
+      payload
+    };
+  }
+
+  let matchedSection: any = null;
+  let matchedSub: any = null;
+
+  if (sectionId.includes('__')) {
+    const [parentId, subId] = sectionId.split('__');
+    matchedSection = customSections.find((s) => s.id === parentId);
+    if (matchedSection && Array.isArray(matchedSection.subSections)) {
+      matchedSub = matchedSection.subSections.find((sub: any) => sub.id === subId);
+    }
+  } else {
+    matchedSection = customSections.find((s) => s.id === sectionId);
+  }
+
+  const effectiveFields = matchedSub
+    ? (matchedSub.fields || [])
+    : (matchedSection?.fields || []);
+
+  const title = matchedSub
+    ? `${matchedSection?.title || ''} - ${matchedSub.title}`.trim()
+    : (matchedSection?.title || rec.sectionTitle || sectionId);
+
+  const sheetName =
+    rec.sheetName ||
+    (matchedSection
+      ? buildCustomSectionSheetName(matchedSection.title, matchedSub?.title)
+      : buildCustomSectionSheetName(title));
+
+  const d = (rec && typeof rec.data === 'object' && rec.data) ? rec.data : {};
+  const columns: { key: string; header: string }[] = [
+    { key: 'id', header: 'معرف القيد' }
+  ];
+
+  const payload: Record<string, string> = {
+    id: cleanSheetCell(rec.id),
+    sectionId: cleanSheetCell(sectionId),
+    'معرف القيد': cleanSheetCell(rec.id),
+    createdAt: cleanSheetCell(rec.createdAt || new Date().toISOString().split('T')[0]),
+    'تاريخ الإنشاء': cleanSheetCell(rec.createdAt || new Date().toISOString().split('T')[0]),
+    createdBy: cleanSheetCell(rec.createdBy || 'موظف النظام'),
+    'الموظف المسؤول': cleanSheetCell(rec.createdBy || 'موظف النظام')
+  };
+
+  const addedHeaders = new Set<string>(['معرف القيد', 'تاريخ الإنشاء', 'الموظف المسؤول']);
+
+  for (const field of effectiveFields) {
+    const label = cleanSheetCell(field.label || field.name || field.id);
+    if (!label || addedHeaders.has(label)) continue;
+    addedHeaders.add(label);
+    const val = cleanSheetCell(d[field.id] ?? d[field.name] ?? d[label] ?? '');
+    columns.push({ key: field.id, header: label });
+    payload[label] = val;
+    payload[field.id] = val;
+  }
+
+  // Also include any extra keys on rec.data not in field definitions (non-destructive preservation)
+  for (const [k, rawVal] of Object.entries(d)) {
+    if (payload[k] !== undefined) continue;
+    const cleaned = cleanSheetCell(rawVal);
+    if (!cleaned) continue;
+    payload[k] = cleaned;
+  }
+
+  columns.push(
+    { key: 'createdAt', header: 'تاريخ الإنشاء' },
+    { key: 'createdBy', header: 'الموظف المسؤول' }
+  );
+
+  return {
+    sectionId,
+    sheetName,
+    title,
+    headers: columns.map((c) => c.header),
+    columns,
+    payload
+  };
+}
+
