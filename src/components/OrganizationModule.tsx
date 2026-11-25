@@ -22,7 +22,8 @@ import {
   ClipboardCheck,
   Award,
   Sparkles,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Archive
 } from 'lucide-react';
 import {
   BarChart,
@@ -41,6 +42,7 @@ import { OrgFinalEvaluationModal } from './OrgFinalEvaluationModal';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
 import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
+import { isCitizenArchivedOrRestored, isRequestArchivedOrRestored } from '../utils/archiveHelper';
 
 const COLORS = ['#10b981', '#f59e0b', '#3b82f6', '#ef4444'];
 
@@ -69,6 +71,7 @@ export const OrganizationModule: React.FC = () => {
     addOrganizationRecord,
     updateOrganizationRecord,
     setSelectedCitizenForHistory,
+    archiveDailyWorkItems,
     addAuditLog
   } = useApp();
 
@@ -81,6 +84,8 @@ export const OrganizationModule: React.FC = () => {
   // Daily Work (العمل اليومي) search, filter & lightweight pagination (prevents Chrome Crashpad on large datasets)
   const [dailySearch, setDailySearch] = useState('');
   const [dailyFilter, setDailyFilter] = useState<'pending' | 'completed' | 'all'>('pending');
+  const [showArchivedDaily, setShowArchivedDaily] = useState(false);
+  const [confirmArchiveOrgDaily, setConfirmArchiveOrgDaily] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(40);
 
   // Team Members (سجل فريق العمل) search & add modal
@@ -141,6 +146,16 @@ export const OrganizationModule: React.FC = () => {
     sortTs: number;
   }
 
+  const archivedOrgDailyCount = useMemo(() => {
+    let count = 0;
+    (citizens || []).forEach(cit => {
+      if (!cit?.Citizen_ID) return;
+      const allReqs = requestsByCitizenId.get(cit.Citizen_ID) || [];
+      if (isCitizenArchivedOrRestored(cit, allReqs)) count++;
+    });
+    return count;
+  }, [citizens, requestsByCitizenId]);
+
   const allDailyWorkEntries = useMemo<DailyWorkEntry[]>(() => {
     const entries: DailyWorkEntry[] = [];
     const seen = new Set<string>();
@@ -149,13 +164,14 @@ export const OrganizationModule: React.FC = () => {
       if (!cit?.Citizen_ID || seen.has(cit.Citizen_ID)) return;
       seen.add(cit.Citizen_ID);
 
-      const citReqs = (requestsByCitizenId.get(cit.Citizen_ID) || []).filter(
-        r => !r.IsHistoricalImported && !r.IsArchived && r.DirectorDecision !== 'مؤرشف'
-      );
-      const orgRec = orgRecordByCitizenId.get(cit.Citizen_ID);
+      const allCitReqs = requestsByCitizenId.get(cit.Citizen_ID) || [];
+      const archived = isCitizenArchivedOrRestored(cit, allCitReqs);
+      if (showArchivedDaily ? !archived : archived) return;
 
-      // Exclude purely historical Excel archive citizens who have no active request & no org record
-      if (cit.IsHistoricalImported && citReqs.length === 0 && !orgRec) return;
+      const citReqs = showArchivedDaily
+        ? allCitReqs
+        : allCitReqs.filter(r => !isRequestArchivedOrRestored(r));
+      const orgRec = orgRecordByCitizenId.get(cit.Citizen_ID);
 
       const latestReq = citReqs[0];
       const sortTs = Math.max(
@@ -176,7 +192,7 @@ export const OrganizationModule: React.FC = () => {
 
     entries.sort((a, b) => b.sortTs - a.sortTs);
     return entries;
-  }, [citizens, requestsByCitizenId, orgRecordByCitizenId]);
+  }, [citizens, requestsByCitizenId, orgRecordByCitizenId, showArchivedDaily]);
 
   const dailyStats = useMemo(() => {
     let pending = 0;
@@ -626,8 +642,8 @@ export const OrganizationModule: React.FC = () => {
             </button>
           </div>
 
-          {/* Search Bar */}
-          <div className="bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+          {/* Search Bar & Non-Destructive Archive Controls */}
+          <div className="bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 flex-wrap">
             <div className="relative w-full sm:w-96">
               <input
                 type="text"
@@ -638,8 +654,71 @@ export const OrganizationModule: React.FC = () => {
               />
               <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
             </div>
-            <div className="text-xs font-bold text-slate-500 dark:text-slate-400">
-              المعروض: <span className="font-mono text-slate-800 dark:text-slate-200">{filteredDailyWork.length}</span> اسم
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowArchivedDaily(prev => !prev);
+                  setConfirmArchiveOrgDaily(false);
+                }}
+                className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border cursor-pointer transition-all ${
+                  showArchivedDaily
+                    ? 'bg-amber-500 text-slate-950 border-amber-400'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                <Archive className="w-3.5 h-3.5" />
+                <span>
+                  {showArchivedDaily ? 'إخفاء المؤرشف' : `عرض المؤرشف (${archivedOrgDailyCount.toLocaleString()})`}
+                </span>
+              </button>
+
+              {!showArchivedDaily && dailyStats.completed > 0 && (
+                confirmArchiveOrgDaily ? (
+                  <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px]">
+                    <span className="font-bold text-emerald-900 dark:text-emerald-200">
+                      أرشفة ({dailyStats.completed}) مكتمل بدون حذف؟
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const completedIds = allDailyWorkEntries
+                          .filter(e => e.isCompleted)
+                          .map(e => e.citizen.Citizen_ID);
+                        archiveDailyWorkItems({
+                          citizenIds: completedIds,
+                          reason: 'أرشفة وإخفاء المكتمل من العمل اليومي لقسم التنظيم (بدون حذف من قاعدة البيانات)'
+                        });
+                        setConfirmArchiveOrgDaily(false);
+                      }}
+                      className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
+                    >
+                      تأكيد
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmArchiveOrgDaily(false)}
+                      className="px-2 py-0.5 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmArchiveOrgDaily(true)}
+                    className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                  >
+                    <Archive className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>إخفاء المكتمل للأرشيف ({dailyStats.completed})</span>
+                  </button>
+                )
+              )}
+
+              <div className="text-xs font-bold text-slate-500 dark:text-slate-400">
+                المعروض: <span className="font-mono text-slate-800 dark:text-slate-200">{filteredDailyWork.length}</span> اسم
+              </div>
             </div>
           </div>
 

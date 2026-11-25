@@ -1156,6 +1156,12 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
 
     const sourceData = json.data || json;
 
+    const isTruthyArchive = (val: any): boolean => {
+      if (val === true || val === 1) return true;
+      const s = String(val || '').trim().toLowerCase();
+      return s === 'true' || s === '1' || s === 'yes' || s === 'نعم' || s === 'مؤرشف' || s === 'مؤرشفة' || s === 'archived';
+    };
+
     const citizens: Citizen[] = (sourceData.citizens || []).map((c: any) => {
       const blockStr = String(c.IsBlocked || c['حالة الحظر'] || '').trim();
       const isBlocked = c.IsBlocked === true || blockStr.startsWith('محظور') || blockStr === 'نعم';
@@ -1167,6 +1173,15 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       const surname = String(c.Surname || c['اللقب / العشيرة'] || '').trim();
       const rawFullName = String(c.FullName || c['الاسم الكامل'] || c.CitizenName || '').trim();
       const fullName = rawFullName || [firstName, fatherName, grandFatherName, surname].filter(Boolean).join(' ').trim();
+      const isArchived =
+        isTruthyArchive(c.IsArchived) ||
+        isTruthyArchive(c.archived) ||
+        isTruthyArchive(c['الأرشفة']) ||
+        isTruthyArchive(c['حالة الأرشفة']) ||
+        isTruthyArchive(dynamicExtras?.archived) ||
+        isTruthyArchive(dynamicExtras?.['الأرشفة']) ||
+        Boolean(c.ArchiveCode && String(c.ArchiveCode).trim());
+      const isHistoricalImported = isTruthyArchive(c.IsHistoricalImported);
       return {
         ...(dynamicExtras ? { CustomFields: dynamicExtras } : {}),
         Citizen_ID: String(c.Citizen_ID || c['الرقم التعريفي'] || c.id || '').trim(),
@@ -1187,6 +1202,10 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
         ReferralSource: String(c.ReferralSource || c['المعرف / التزكية'] || '').trim(),
         IsBlocked: isBlocked,
         ...(blockReason ? { BlockReason: String(blockReason) } : {}),
+        ...(isArchived ? { IsArchived: true } : {}),
+        ...(isHistoricalImported ? { IsHistoricalImported: true } : {}),
+        ...(c.ArchivedAt ? { ArchivedAt: String(c.ArchivedAt).trim() } : {}),
+        ...(c.ArchiveCode ? { ArchiveCode: String(c.ArchiveCode).trim() } : {}),
         CreatedAt: String(c.CreatedAt || c['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
         CreatedBy: String(c.CreatedBy || c['الموظف المسؤول'] || 'Google Sheets').trim(),
         PhotoUrl: c.PhotoUrl ? String(c.PhotoUrl).trim() : undefined
@@ -1209,8 +1228,15 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       const registeredVia = String(r.RegisteredVia || r['مصدر التسجيل'] || '').trim();
       const receptionNotes = String(r.ReceptionNotes || r['ملاحظات الاستعلامات'] || '').trim();
       const rejectionReason = String(r.RejectionReason || r['سبب الرفض'] || '').trim();
-      const rawArchived = r.IsArchived;
-      const isArchived = rawArchived === true || rawArchived === 'true' || rawArchived === 'نعم';
+      const isArchived =
+        isTruthyArchive(r.IsArchived) ||
+        isTruthyArchive(r.archived) ||
+        isTruthyArchive(r['الأرشفة']) ||
+        isTruthyArchive(r['حالة الأرشفة']) ||
+        isTruthyArchive(dynamicExtras?.archived) ||
+        isTruthyArchive(dynamicExtras?.['الأرشفة']) ||
+        directorDecision === 'مؤرشف' ||
+        Boolean(r.ArchiveCode && String(r.ArchiveCode).trim());
       const rawDirect = r.IsDirectInstantRequest;
       const isDirectInstant = rawDirect === true || rawDirect === 'true' || rawDirect === 'نعم';
 
@@ -1249,13 +1275,15 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
         ...(receptionNotes ? { ReceptionNotes: receptionNotes } : {}),
         ...(rejectionReason ? { RejectionReason: rejectionReason } : {}),
         ...(isArchived ? { IsArchived: true } : {}),
+        ...(r.ArchivedAt ? { ArchivedAt: String(r.ArchivedAt).trim() } : {}),
+        ...(r.ArchiveCode ? { ArchiveCode: String(r.ArchiveCode).trim() } : {}),
         ...(isDirectInstant ? { IsDirectInstantRequest: true } : {}),
         ...(r.AttendanceType ? { AttendanceType: String(r.AttendanceType).trim() as OfficeRequest['AttendanceType'] } : {}),
         ...(r.DependencyStatus ? { DependencyStatus: String(r.DependencyStatus).trim() as OfficeRequest['DependencyStatus'] } : {}),
         ...(r.ProxyName ? { ProxyName: String(r.ProxyName).trim() } : {}),
         ...(r.ProxyPhone ? { ProxyPhone: String(r.ProxyPhone).trim() } : {}),
         ...(r.ProxyAddress ? { ProxyAddress: String(r.ProxyAddress).trim() } : {}),
-        IsHistoricalImported: r.IsHistoricalImported === true || r.IsHistoricalImported === 'true',
+        IsHistoricalImported: isTruthyArchive(r.IsHistoricalImported),
         CreatedAt: String(r.CreatedAt || r['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
         CreatedBy: String(r.CreatedBy || r['الموظف المسؤول'] || 'Google Sheets').trim(),
         UpdatedAt: r.UpdatedAt ? String(r.UpdatedAt).trim() : undefined

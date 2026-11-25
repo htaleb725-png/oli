@@ -36,13 +36,16 @@ import {
   ClipboardPaste,
   Hash,
   ListPlus,
-  FolderKanban
+  FolderKanban,
+  Archive,
+  RotateCcw
 } from 'lucide-react';
 import { SearchableSelect } from './SearchableSelect';
 import { DHI_QAR_DISTRICTS, IRAQI_MINISTRIES, DEFAULT_CLANS } from './ReceptionModule';
 import { printSingleOutgoingReceipt, printCollectiveOutgoingReceipt } from '../utils/printReceiptHelper';
 import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
 import { computeNextOutgoingNumber, extractOutgoingSequence, MAX_VALID_OUTGOING_SEQ } from '../utils/outgoingNumberHelper';
+import { isCitizenArchivedOrRestored } from '../utils/archiveHelper';
 
 interface DailyWorkAdminSectionProps {
   onOpenSmartArchive?: () => void;
@@ -55,6 +58,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     citizens,
     requests,
     officialLetters,
+    customRecords,
     addCitizen,
     updateCitizen,
     deleteCitizen,
@@ -64,6 +68,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     blockCitizen,
     unblockCitizen,
     checkIfCitizenBlocked,
+    archiveDailyWorkItems,
+    restoreDailyWorkItem,
     currentUser,
     systemSettings,
     updateSystemSettings,
@@ -75,6 +81,10 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'special' | 'general' | 'rejected' | 'completed'>('all');
   const [districtFilter, setDistrictFilter] = useState('all');
+  const [showArchivedInDaily, setShowArchivedInDaily] = useState(false);
+  const [archiveConfirmMode, setArchiveConfirmMode] = useState<'none' | 'completed' | 'all_visible'>('none');
+  const [isEditingManualCounter, setIsEditingManualCounter] = useState(false);
+  const [manualCounterInput, setManualCounterInput] = useState('');
 
   // High-performance pagination state
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -88,7 +98,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   // Auto-reset page when filter or search changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, districtFilter]);
+  }, [searchTerm, statusFilter, districtFilter, showArchivedInDaily]);
 
   // Modals state
   const [completingTarget, setCompletingTarget] = useState<{ citizen: Citizen; request?: OfficeRequest } | null>(null);
@@ -146,7 +156,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   // Nasiriyah: ن / 12 / <next>, Suq Al-Shuyoukh: س / 14 / <next>
   // Automatically reflects all archived/imported Excel files and manual outgoings
   const generateOutgoingNumber = () => {
-    return computeNextOutgoingNumber(requests, systemSettings, officialLetters).nextNumber;
+    return computeNextOutgoingNumber(requests, systemSettings, officialLetters, customRecords).nextNumber;
   };
 
   const advanceOutgoingBaseline = (outgoingNumberStr: string) => {
@@ -199,13 +209,39 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return null;
   }, [requests, citizens]);
 
-  // Real-time detection of last outgoing number and date recorded in requests (outlier-proof & supports archived Excel files)
+  // Real-time detection of last outgoing number and date recorded across ALL requests, official letters & custom sections
   const outgoingComputed = useMemo(() => {
-    return computeNextOutgoingNumber(requests, systemSettings, officialLetters);
-  }, [requests, officialLetters, systemSettings?.officeBranch, systemSettings?.lastOutgoingNumberNasiriyah, systemSettings?.lastOutgoingNumberSuq]);
+    return computeNextOutgoingNumber(requests, systemSettings, officialLetters, customRecords);
+  }, [
+    requests,
+    officialLetters,
+    customRecords,
+    systemSettings?.officeBranch,
+    systemSettings?.lastOutgoingNumberNasiriyah,
+    systemSettings?.lastOutgoingNumberSuq,
+    systemSettings?.outgoingBaselineSetAt,
+    systemSettings?.outgoingBaselineLabel
+  ]);
 
   const lastOutgoingRecord = outgoingComputed.lastOutgoingRecord || null;
   const nextAutoOutgoingNumber = outgoingComputed.nextNumber;
+
+  const handleSaveManualCounter = () => {
+    const parsed = extractOutgoingSequence(manualCounterInput);
+    if (parsed.seq <= 0 || parsed.seq > MAX_VALID_OUTGOING_SEQ) {
+      showBlockBanner('error', 'يرجى إدخال رقم صادر صحيح (مثلاً 4256 أو 4256/1125) لضبط العداد.');
+      return;
+    }
+    const isSuq = systemSettings?.officeBranch === 'suq_al_shuyoukh';
+    updateSystemSettings({
+      ...(isSuq ? { lastOutgoingNumberSuq: parsed.seq } : { lastOutgoingNumberNasiriyah: parsed.seq }),
+      outgoingBaselineSetAt: new Date().toISOString(),
+      outgoingBaselineLabel: `تعديل يدوي (${manualCounterInput.trim()})`
+    });
+    setIsEditingManualCounter(false);
+    setManualCounterInput('');
+    showBlockBanner('success', `✓ تم تحديث آخر عدد صادر يدوياً إلى (${parsed.seq}) — العدد القادم المقترح أصبح (${parsed.seq + 1}).`);
+  };
 
   // Collective Outgoing (صادر موحد لمجموعة مراجعين)
   const [isBulkOutgoingModalOpen, setIsBulkOutgoingModalOpen] = useState(false);
@@ -641,14 +677,40 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return map;
   }, [citizens]);
 
-  // Aggregate daily records: Citizens with their requests
-  // Exclude historical imported or archived records from the daily pending queue unless searching
+  // Group requests by Citizen_ID once for fast O(1) lookup
+  const requestsByCitizenMap = useMemo(() => {
+    const map = new Map<string, OfficeRequest[]>();
+    (requests || []).forEach(r => {
+      if (!r?.Citizen_ID) return;
+      const list = map.get(r.Citizen_ID);
+      if (list) list.push(r);
+      else map.set(r.Citizen_ID, [r]);
+    });
+    return map;
+  }, [requests]);
+
+  // Count how many archived/restored citizens exist (kept 100% intact in Firestore, Google Sheet & Archive)
+  const archivedDailyCount = useMemo(() => {
+    let count = 0;
+    (citizens || []).forEach(cit => {
+      const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
+      if (isCitizenArchivedOrRestored(cit, citRequests)) count++;
+    });
+    return count;
+  }, [citizens, requestsByCitizenMap]);
+
+  // Aggregate daily records: strictly exclude archived/restored records from default "العمل اليومي"
+  // while keeping an optional toggle (showArchivedInDaily) to inspect archived items without deleting anything
   const dailyRecords = useMemo(() => {
-    const isSearching = Boolean(searchTerm.trim());
-    return citizens
-      .filter(cit => isSearching || (!cit.IsHistoricalImported && !cit.IsArchived))
+    return (citizens || [])
+      .filter(cit => {
+        const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
+        const archived = isCitizenArchivedOrRestored(cit, citRequests);
+        return showArchivedInDaily ? archived : !archived;
+      })
       .map(cit => {
-        const citRequests = requests.filter(r => r.Citizen_ID === cit.Citizen_ID);
+        const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
+        const isArchived = isCitizenArchivedOrRestored(cit, citRequests);
         // Determine overall director state
         const hasRejection = citRequests.some(r => r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض');
         const hasSpecial = citRequests.some(r => r.DirectorDecision === 'خاص');
@@ -659,6 +721,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         return {
           citizen: cit,
           requests: citRequests,
+          isArchived,
           hasRejection,
           hasSpecial,
           hasGeneral,
@@ -666,7 +729,35 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           hasCompleted
         };
       });
-  }, [citizens, requests, searchTerm]);
+  }, [citizens, requestsByCitizenMap, showArchivedInDaily]);
+
+  const completedActiveDailyItems = useMemo(
+    () => (showArchivedInDaily ? [] : dailyRecords.filter(r => r.hasCompleted || r.hasRejection)),
+    [dailyRecords, showArchivedInDaily]
+  );
+
+  const handleConfirmArchiveClear = (mode: 'completed' | 'all_visible') => {
+    const targets = mode === 'completed' ? completedActiveDailyItems : dailyRecords;
+    const citizenIds = targets.map(t => t.citizen.Citizen_ID).filter(Boolean);
+    const requestIds = targets.flatMap(t => t.requests.map(r => r.Request_ID)).filter(Boolean);
+    if (citizenIds.length === 0) {
+      setArchiveConfirmMode('none');
+      return;
+    }
+    const res = archiveDailyWorkItems({
+      citizenIds,
+      requestIds,
+      reason:
+        mode === 'completed'
+          ? 'أرشفة وإخفاء المعاملات المكتملة من شاشة العمل اليومي (محفوظة بالكامل في قاعدة البيانات والأرشيف)'
+          : 'تفريغ شاشة العمل اليومي ونقل السجلات إلى الأرشيف بدون حذف من قاعدة البيانات'
+    });
+    setArchiveConfirmMode('none');
+    showBlockBanner(
+      'success',
+      `✓ تم نقل (${res.archivedCitizens}) سجل من شاشة العمل اليومي إلى الأرشيف بنجاح — كافة البيانات محفوظة 100% في Firestore و Google Sheet دون أي حذف.`
+    );
+  };
 
   // Filter daily records
   const filteredDailyRecords = useMemo(() => {
@@ -819,7 +910,112 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           >
             <span>🔵 مكتمل برقم صادر</span>
           </button>
+
+          <div className="mr-auto flex items-center gap-2 flex-wrap">
+            {/* Optional Toggle to View/Hide Archived Records */}
+            <button
+              type="button"
+              onClick={() => {
+                setShowArchivedInDaily(prev => !prev);
+                setArchiveConfirmMode('none');
+              }}
+              className={`px-3 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1.5 border ${
+                showArchivedInDaily
+                  ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-sm'
+                  : 'bg-white/10 text-slate-100 hover:bg-white/20 border-white/20'
+              }`}
+              title="عرض أو إخفاء السجلات المؤرشفة والمستردة (تبقى محفوظة بالكامل في قاعدة البيانات والأرشيف)"
+            >
+              <Archive className="w-3.5 h-3.5" />
+              <span>
+                {showArchivedInDaily
+                  ? `العودة للعمل اليومي النشط`
+                  : `عرض المؤرشف (${archivedDailyCount.toLocaleString()})`}
+              </span>
+            </button>
+
+            {/* Quick Non-Destructive Clear / Archive from Daily Work Display */}
+            {!showArchivedInDaily && dailyRecords.length > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setArchiveConfirmMode(prev =>
+                    prev === 'none'
+                      ? completedActiveDailyItems.length > 0
+                        ? 'completed'
+                        : 'all_visible'
+                      : 'none'
+                  )
+                }
+                className="px-3 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 border border-emerald-400/40"
+                title="نقل العناصر المكتملة أو المعروضة من شاشة العمل اليومي إلى الأرشيف بدون حذف أي سجل من قاعدة البيانات"
+              >
+                <Archive className="w-3.5 h-3.5 text-emerald-300" />
+                <span>
+                  {completedActiveDailyItems.length > 0
+                    ? `أرشفة وإخفاء المكتمل (${completedActiveDailyItems.length})`
+                    : `تفريغ العرض اليومي للأرشيف (${dailyRecords.length})`}
+                </span>
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Safe Non-Destructive Archive Confirmation Bar */}
+        {archiveConfirmMode !== 'none' && !showArchivedInDaily && (
+          <div className="mt-3 p-3 rounded-xl bg-slate-950/60 border border-emerald-400/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+            <div className="space-y-0.5">
+              <div className="font-black text-emerald-300 flex items-center gap-1.5">
+                <Archive className="w-4 h-4 shrink-0" />
+                <span>تأكيد إخفاء السجلات من شاشة العمل اليومي (حماية كاملة لقاعدة البيانات)</span>
+              </div>
+              <p className="text-[11px] text-slate-200/90">
+                هذا الإجراء ينقل السجلات من قائمة العمل اليومي إلى الأرشيف فقط عبر تحديث حالة الأرشفة، ولا يحذف أي سجل من Firebase Firestore أو Google Sheet نهائياً.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              {completedActiveDailyItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handleConfirmArchiveClear('completed')}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] cursor-pointer transition-colors"
+                >
+                  إخفاء المكتمل فقط ({completedActiveDailyItems.length})
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => handleConfirmArchiveClear('all_visible')}
+                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] cursor-pointer transition-colors"
+              >
+                تفريغ الكل للأرشيف ({dailyRecords.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setArchiveConfirmMode('none')}
+                className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold text-[11px] cursor-pointer"
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Notice when viewing Archived Records */}
+        {showArchivedInDaily && (
+          <div className="mt-3 p-2.5 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-100 text-xs font-bold flex items-center justify-between gap-2">
+            <span>
+              📦 أنت تستعرض الآن السجلات المؤرشفة / المستردة ({dailyRecords.length.toLocaleString()} سجل) — جميعها محفوظة في Firestore و Google Sheet ويمكنك إعادة أي سجل للعمل اليومي بنقرة واحدة.
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowArchivedInDaily(false)}
+              className="px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 font-black text-[11px] cursor-pointer shrink-0"
+            >
+              إخفاء المؤرشف
+            </button>
+          </div>
+        )}
       </div>
 
       {/* REAL-TIME LIVE STATUS BAR: آخر اسم مسجل + آخر عدد صادر مسجل + العدد القادم المقترح + صادر موحد + أرشيف صور Drive */}
@@ -903,12 +1099,55 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                 </button>
               </div>
             </div>
-            <div className="font-black text-sm font-mono text-emerald-950 dark:text-emerald-100 mt-0.5" dir="ltr">
-              {nextAutoOutgoingNumber}
-            </div>
-            <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5">
-              تاريخ اليوم: {new Date().toISOString().split('T')[0]} • قابل للتعديل
-            </div>
+            {isEditingManualCounter ? (
+              <div className="mt-1 flex items-center gap-1">
+                <input
+                  type="text"
+                  value={manualCounterInput}
+                  onChange={e => setManualCounterInput(e.target.value)}
+                  placeholder="مثلاً: 4256"
+                  className="w-24 h-7 px-2 rounded-md border border-emerald-400 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none"
+                  dir="ltr"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveManualCounter}
+                  className="px-2 h-7 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black cursor-pointer"
+                >
+                  حفظ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEditingManualCounter(false);
+                    setManualCounterInput('');
+                  }}
+                  className="px-1.5 h-7 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="font-black text-sm font-mono text-emerald-950 dark:text-emerald-100 mt-0.5 flex items-center justify-between gap-1">
+                  <span dir="ltr">{nextAutoOutgoingNumber}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualCounterInput(String(outgoingComputed.maxFound || ''));
+                      setIsEditingManualCounter(true);
+                    }}
+                    className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/60 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 text-[9px] font-bold cursor-pointer"
+                    title="تعديل آخر رقم صادر يدوياً"
+                  >
+                    تعديل يدوي
+                  </button>
+                </div>
+                <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5">
+                  التالي بعد ({outgoingComputed.maxFound || 0}) • تاريخ اليوم: {new Date().toISOString().split('T')[0]}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -1472,6 +1711,45 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     <FolderKanban className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                     <span>صور و Drive 🖼️</span>
                   </button>
+
+                  {/* Non-Destructive Hide to Archive / Restore to Daily Work Button */}
+                  {item.isArchived ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        restoreDailyWorkItem(
+                          cit.Citizen_ID,
+                          citReqs.map(r => r.Request_ID)
+                        );
+                        showBlockBanner('success', `✓ تمت إعادة (${cit.FullName}) إلى عرض العمل اليومي النشط.`);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer border border-amber-200 dark:border-amber-800"
+                      title="إعادة هذا السجل للعمل اليومي النشط"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
+                      <span>إعادة للعمل اليومي</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        archiveDailyWorkItems({
+                          citizenIds: [cit.Citizen_ID],
+                          requestIds: citReqs.map(r => r.Request_ID),
+                          reason: 'إخفاء فردي من العمل اليومي إلى الأرشيف (بدون حذف من قاعدة البيانات)'
+                        });
+                        showBlockBanner(
+                          'success',
+                          `✓ تم إخفاء (${cit.FullName}) من شاشة العمل اليومي ونقله للأرشيف — محفوظ بالكامل في Firestore و Google Sheet.`
+                        );
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-amber-50 dark:bg-slate-800 dark:hover:bg-amber-950/40 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer border border-slate-200 dark:border-slate-700"
+                      title="إخفاء من العمل اليومي فقط (يبقى محفوظاً في Firestore و Google Sheet والأرشيف بدون حذف)"
+                    >
+                      <Archive className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                      <span>إخفاء للأرشيف</span>
+                    </button>
+                  )}
 
                   {/* Delete Button (Button 3) */}
                   <button

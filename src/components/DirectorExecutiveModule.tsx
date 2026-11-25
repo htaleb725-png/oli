@@ -37,13 +37,15 @@ import {
   Printer,
   Trash2,
   FolderPlus,
-  HeartHandshake
+  HeartHandshake,
+  Archive
 } from 'lucide-react';
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { UsersAndPermissionsManager } from './developer/UsersAndPermissionsManager';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
 import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
+import { isCitizenArchivedOrRestored, isRequestArchivedOrRestored } from '../utils/archiveHelper';
 
 // Executive Office Module
 
@@ -68,8 +70,12 @@ export const DirectorExecutiveModule: React.FC = () => {
     whatsappTemplates,
     currentUser,
     addAuditLog,
+    archiveDailyWorkItems,
     setActiveSection
   } = useApp();
+
+  const [showArchivedQueue, setShowArchivedQueue] = useState(false);
+  const [confirmClearCompleted, setConfirmClearCompleted] = useState(false);
 
   const handleDirectorExportUnifiedExcel = () => {
     exportUnifiedSystemExcel({
@@ -125,7 +131,15 @@ export const DirectorExecutiveModule: React.FC = () => {
     return map;
   }, [citizens]);
 
-  // Strictly exclude Excel-imported / filtered archive records from Director's daily queue, sorted newest-first
+  const archivedDirectorCount = useMemo(() => {
+    return (requests || []).filter(r => {
+      if (!r || r.IsDirectInstantRequest) return false;
+      const cit = citizenMap.get(r.Citizen_ID);
+      return isRequestArchivedOrRestored(r) || isCitizenArchivedOrRestored(cit);
+    }).length;
+  }, [requests, citizenMap]);
+
+  // Strictly exclude archived / restored records from Director's daily queue unless user toggles Show Archived
   const activeDirectorRequests = useMemo(() => {
     const parseTs = (r: OfficeRequest) => {
       const raw = String(r.UpdatedAt || r.CreatedAt || '').trim();
@@ -137,10 +151,15 @@ export const DirectorExecutiveModule: React.FC = () => {
       return isNaN(t) ? 0 : t;
     };
     return (requests || [])
-      .filter(r => r && !r.IsHistoricalImported && !r.IsArchived && !r.IsDirectInstantRequest && r.DirectorDecision !== 'مؤرشف')
+      .filter(r => {
+        if (!r || r.IsDirectInstantRequest) return false;
+        const cit = citizenMap.get(r.Citizen_ID);
+        const archived = isRequestArchivedOrRestored(r) || isCitizenArchivedOrRestored(cit);
+        return showArchivedQueue ? archived : !archived;
+      })
       .slice()
       .sort((a, b) => parseTs(b) - parseTs(a));
-  }, [requests]);
+  }, [requests, citizenMap, showArchivedQueue]);
 
   // Reception requests list (sorted with newest on top)
   const receptionRequests = useMemo(() => {
@@ -567,8 +586,8 @@ export const DirectorExecutiveModule: React.FC = () => {
             </div>
           </div>
 
-          {/* Search Bar & Instruction Notice */}
-          <div className="bg-white dark:bg-slate-900 p-3.5 sm:p-4 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+          {/* Search Bar & Non-Destructive Archive Controls */}
+          <div className="bg-white dark:bg-slate-900 p-3.5 sm:p-4 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 flex-wrap">
             <div className="relative w-full sm:w-80">
               <input
                 type="text"
@@ -578,6 +597,65 @@ export const DirectorExecutiveModule: React.FC = () => {
                 className="w-full h-10 pr-9 pl-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
               />
               <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowArchivedQueue(prev => !prev);
+                  setConfirmClearCompleted(false);
+                }}
+                className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer ${
+                  showArchivedQueue
+                    ? 'bg-amber-500 text-slate-950 border-amber-400'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
+                }`}
+              >
+                <Archive className="w-3.5 h-3.5" />
+                <span>
+                  {showArchivedQueue ? 'إخفاء المؤرشف' : `عرض المؤرشف (${archivedDirectorCount.toLocaleString()})`}
+                </span>
+              </button>
+
+              {!showArchivedQueue && activeDirectorRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision)) && (
+                confirmClearCompleted ? (
+                  <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px]">
+                    <span className="font-bold text-emerald-900 dark:text-emerald-200">إخفاء للأرشيف بدون حذف؟</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targets = activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision));
+                        archiveDailyWorkItems({
+                          requestIds: targets.map(r => r.Request_ID),
+                          reason: 'إخفاء المعاملات المنجزة/المتخذ قرار بشأنها من شاشة العمل اليومي للمدير (محفوظة في الأرشيف)'
+                        });
+                        setConfirmClearCompleted(false);
+                      }}
+                      className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
+                    >
+                      تأكيد
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClearCompleted(false)}
+                      className="px-2 py-0.5 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearCompleted(true)}
+                    className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                    title="إخفاء المعاملات المكتملة من شاشة العمل اليومي ونقلها للأرشيف بدون حذفها من قاعدة البيانات"
+                  >
+                    <Archive className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>إخفاء المكتمل للأرشيف</span>
+                  </button>
+                )
+              )}
             </div>
 
             <div className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-2 self-start sm:self-auto font-medium">

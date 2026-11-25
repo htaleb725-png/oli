@@ -131,6 +131,15 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
     UpdatedAt: nowIso,
     updatedAt: nowIso
   };
+  // Keep IsArchived and archived boolean flags synchronized in Firestore (never deleting records)
+  if (typeof citizen.IsArchived === 'boolean') {
+    copy.IsArchived = citizen.IsArchived;
+    copy.archived = citizen.IsArchived;
+    if (citizen.IsArchived === false) {
+      copy.ArchivedAt = '';
+      copy.ArchiveCode = '';
+    }
+  }
   // Explicitly clear block fields in Firestore when unblocked (instead of passing undefined which Firestore rejects)
   if (citizen.IsBlocked === false) {
     copy.IsBlocked = false;
@@ -161,6 +170,14 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
     UpdatedAt: nowIso,
     updatedAt: nowIso
   };
+  if (typeof req.IsArchived === 'boolean') {
+    copy.IsArchived = req.IsArchived;
+    copy.archived = req.IsArchived;
+    if (req.IsArchived === false) {
+      copy.ArchivedAt = '';
+      copy.ArchiveCode = '';
+    }
+  }
   // Strip large inline base64 attachments that exceed Firestore's 1MB document limit
   if (typeof copy.AttachedRequestImage === 'string' && copy.AttachedRequestImage.length > 250000) {
     delete copy.AttachedRequestImage;

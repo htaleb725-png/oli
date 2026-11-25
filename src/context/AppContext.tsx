@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { MAX_VALID_OUTGOING_SEQ, scanMaxOutgoingSequences } from '../utils/outgoingNumberHelper';
+import { isCitizenArchivedOrRestored, isRequestArchivedOrRestored } from '../utils/archiveHelper';
 import { toCleanSheetCitizenPayload, toCleanSheetRequestPayload } from '../services/googleSheetsSchema';
 import { extractDriveFolderId } from '../services/driveArchiveService';
 import {
@@ -345,6 +346,12 @@ interface AppContextType {
   printableArchiveCitizen: SmartArchiveDossierData | null;
   setPrintableArchiveCitizen: (data: SmartArchiveDossierData | null) => void;
   smartArchiveCitizen: (citizenId: string, notes?: string) => { success: boolean; citizen: Citizen | null; archivedRequestsCount: number; archiveCode: string };
+  archiveDailyWorkItems: (options: {
+    citizenIds?: string[];
+    requestIds?: string[];
+    reason?: string;
+  }) => { archivedCitizens: number; archivedRequests: number };
+  restoreDailyWorkItem: (citizenId: string, requestIds?: string[]) => void;
   selectedCitizenForHistory: Citizen | null;
   setSelectedCitizenForHistory: (citizen: Citizen | null) => void;
   isDesktopInstallModalOpen: boolean;
@@ -3549,6 +3556,163 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   };
 
+  // إخفاء / أرشفة عناصر من شاشة العمل اليومي فقط (تحديث حالة الأرشفة في Firestore و Google Sheet بدون أي حذف نهائياً)
+  const archiveDailyWorkItems = (options: {
+    citizenIds?: string[];
+    requestIds?: string[];
+    reason?: string;
+  }): { archivedCitizens: number; archivedRequests: number } => {
+    const targetCitIds = new Set((options.citizenIds || []).filter(Boolean));
+    const targetReqIds = new Set((options.requestIds || []).filter(Boolean));
+    if (targetCitIds.size === 0 && targetReqIds.size === 0) {
+      return { archivedCitizens: 0, archivedRequests: 0 };
+    }
+
+    const now = new Date();
+    const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const actorName = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'موظف الإدارة';
+    const noteText = options.reason || 'أرشفة وإخفاء من شاشة العمل اليومي مع الاحتفاظ الكامل في قاعدة البيانات والأرشيف';
+
+    const updatedCitizensList: Citizen[] = [];
+    if (targetCitIds.size > 0) {
+      setCitizens(prev =>
+        prev.map(c => {
+          if (!targetCitIds.has(c.Citizen_ID)) return c;
+          const nextCit: Citizen = {
+            ...c,
+            IsArchived: true,
+            ArchivedAt: c.ArchivedAt || formattedDate,
+            ArchivedBy: c.ArchivedBy || actorName,
+            ArchiveNotes: c.ArchiveNotes || noteText,
+            UpdatedAt: now.toISOString()
+          };
+          updatedCitizensList.push(nextCit);
+          return nextCit;
+        })
+      );
+    }
+
+    const updatedRequestsList: OfficeRequest[] = [];
+    setRequests(prev =>
+      prev.map(r => {
+        const matchesReq = targetReqIds.has(r.Request_ID) || (r.Citizen_ID && targetCitIds.has(r.Citizen_ID));
+        if (!matchesReq) return r;
+        const nextReq: OfficeRequest = {
+          ...r,
+          IsArchived: true,
+          ArchivedAt: r.ArchivedAt || formattedDate,
+          UpdatedAt: now.toISOString()
+        };
+        updatedRequestsList.push(nextReq);
+        return nextReq;
+      })
+    );
+
+    // Non-destructive updates ONLY (merge: true in Firestore, update in Google Sheets — ZERO deletions!)
+    updatedCitizensList.forEach(cit => {
+      emitServerMutation('citizens', 'upsert', { item: cit });
+      fsSaveCitizen(cit).catch(console.error);
+      pushToGoogleSheetsRealtime(
+        'citizens',
+        { ...toCleanSheetCitizenPayload(cit), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' },
+        'update',
+        systemSettingsRef.current.appsScriptUrl
+      );
+    });
+
+    updatedRequestsList.forEach(req => {
+      emitServerMutation('requests', 'upsert', { item: req });
+      fsSaveRequest(req).catch(console.error);
+      pushToGoogleSheetsRealtime(
+        'requests',
+        { ...toCleanSheetRequestPayload(req), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' },
+        'update',
+        systemSettingsRef.current.appsScriptUrl
+      );
+    });
+
+    addAuditLog(
+      'أرشفة وإخفاء من العمل اليومي (بدون حذف)',
+      'قسم الإدارة والأرشيف',
+      `تم نقل (${updatedCitizensList.length}) مراجع و(${updatedRequestsList.length}) طلب من شاشة العمل اليومي إلى الأرشيف مع بقاء كافة السجلات محفوظة بالكامل في Firestore و Google Sheet`
+    );
+
+    return {
+      archivedCitizens: updatedCitizensList.length,
+      archivedRequests: updatedRequestsList.length
+    };
+  };
+
+  // استرجاع سجل مؤرشف إلى عرض العمل اليومي (تحديث غير حذفي فقط)
+  const restoreDailyWorkItem = (citizenId: string, requestIds?: string[]) => {
+    const nowIso = new Date().toISOString();
+    const targetReqSet = new Set((requestIds || []).filter(Boolean));
+
+    const updatedCits: Citizen[] = [];
+    setCitizens(prev =>
+      prev.map(c => {
+        if (c.Citizen_ID !== citizenId) return c;
+        const nextCit: Citizen = {
+          ...c,
+          IsArchived: false,
+          IsHistoricalImported: false,
+          ArchivedAt: undefined,
+          ArchiveCode: undefined,
+          UpdatedAt: nowIso
+        };
+        updatedCits.push(nextCit);
+        return nextCit;
+      })
+    );
+
+    const updatedReqs: OfficeRequest[] = [];
+    setRequests(prev =>
+      prev.map(r => {
+        const match = r.Citizen_ID === citizenId || targetReqSet.has(r.Request_ID);
+        if (!match) return r;
+        const nextReq: OfficeRequest = {
+          ...r,
+          IsArchived: false,
+          IsHistoricalImported: false,
+          ArchivedAt: undefined,
+          ArchiveCode: undefined,
+          DirectorDecision: r.DirectorDecision === 'مؤرشف' ? undefined : r.DirectorDecision,
+          UpdatedAt: nowIso
+        };
+        updatedReqs.push(nextReq);
+        return nextReq;
+      })
+    );
+
+    updatedCits.forEach(cit => {
+      emitServerMutation('citizens', 'upsert', { item: cit });
+      fsSaveCitizen(cit).catch(console.error);
+      pushToGoogleSheetsRealtime(
+        'citizens',
+        { ...toCleanSheetCitizenPayload(cit), IsArchived: 'لا', archived: false, الأرشفة: 'لا' },
+        'update',
+        systemSettingsRef.current.appsScriptUrl
+      );
+    });
+
+    updatedReqs.forEach(req => {
+      emitServerMutation('requests', 'upsert', { item: req });
+      fsSaveRequest(req).catch(console.error);
+      pushToGoogleSheetsRealtime(
+        'requests',
+        { ...toCleanSheetRequestPayload(req), IsArchived: 'لا', archived: false, الأرشفة: 'لا' },
+        'update',
+        systemSettingsRef.current.appsScriptUrl
+      );
+    });
+
+    addAuditLog(
+      'إعادة سجل مؤرشف للعمل اليومي',
+      'قسم الإدارة والأرشيف',
+      `تمت إعادة عرض السجل (${citizenId}) في شاشة العمل اليومي`
+    );
+  };
+
   // Check RBAC permission for printing the official ID card:
   // "زر وميزة طباعة بطاقة المعلومات من البحث الشامل مقتصرة فقط حصرياً على: [المطور، المدير، موظف الإدارة]"
   const canPrintOfficialCard = (user: User | null): boolean => {
@@ -4601,15 +4765,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!c?.Citizen_ID) return c;
         const existing = existingCitMap.get(c.Citizen_ID);
         const hasHistoricalHint =
-          Boolean(c.IsHistoricalImported) ||
-          Boolean(c.IsArchived) ||
-          Boolean(existing?.IsHistoricalImported) ||
-          Boolean(existing?.IsArchived) ||
+          isCitizenArchivedOrRestored(c) ||
+          isCitizenArchivedOrRestored(existing) ||
           String(c.ReferralSource || '').includes('استيراد إكسل') ||
           String(c.CreatedBy || '').includes('استيراد');
         const mergedCit = existing ? fillMissingFieldsOnly(c, existing) : c;
         return hasHistoricalHint
-          ? { ...mergedCit, IsHistoricalImported: true, IsArchived: true }
+          ? { ...mergedCit, IsHistoricalImported: Boolean(mergedCit.IsHistoricalImported || existing?.IsHistoricalImported), IsArchived: true }
           : mergedCit;
       });
       const rawCitizens = mergeCitizens([], enrichedPulledCitizens, deletedIds);
@@ -4623,20 +4785,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const enrichedPulledRequests = (pulled.requests || []).map(r => {
         const existing = r?.Request_ID ? existingReqMap.get(r.Request_ID) : undefined;
         const hasHistoricalHint =
-          Boolean(r?.IsHistoricalImported) ||
-          Boolean(r?.IsArchived) ||
-          Boolean(existing?.IsHistoricalImported) ||
-          Boolean(existing?.IsArchived) ||
+          isRequestArchivedOrRestored(r) ||
+          isRequestArchivedOrRestored(existing) ||
           String(r?.Request_ID || '').includes('-IMP-') ||
-          String(r?.CreatedBy || '').includes('استيراد') ||
-          r?.DirectorDecision === 'مؤرشف' ||
-          existing?.DirectorDecision === 'مؤرشف';
+          String(r?.CreatedBy || '').includes('استيراد');
         if (!existing) {
-          return hasHistoricalHint ? { ...r, IsHistoricalImported: true, IsArchived: true } : r;
+          return hasHistoricalHint ? { ...r, IsHistoricalImported: Boolean(r?.IsHistoricalImported), IsArchived: true } : r;
         }
         const merged = fillMissingFieldsOnly(r, existing);
         const withHist = hasHistoricalHint
-          ? { ...merged, IsHistoricalImported: true, IsArchived: true }
+          ? { ...merged, IsHistoricalImported: Boolean(merged.IsHistoricalImported || existing?.IsHistoricalImported), IsArchived: true }
           : merged;
         // If Firestore has a newer UpdatedAt (e.g., Director just approved), keep newer workflow status cleanly
         const existingTs = getRecordTimestamp(existing);
@@ -4943,6 +5101,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         printableArchiveCitizen,
         setPrintableArchiveCitizen,
         smartArchiveCitizen,
+        archiveDailyWorkItems,
+        restoreDailyWorkItem,
         selectedCitizenForHistory,
         setSelectedCitizenForHistory,
         isDesktopInstallModalOpen,

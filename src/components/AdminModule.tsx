@@ -624,7 +624,7 @@ export const AdminModule: React.FC = () => {
     setAttachedScanImage(null);
     setScanUploadedBy('');
     setScanUploadedAt('');
-    const computed = computeNextOutgoingNumber(requests, systemSettings, officialLetters);
+    const computed = computeNextOutgoingNumber(requests, systemSettings, officialLetters, customRecords);
     setFormOutgoingNumber(computed.nextNumber);
     setFormOutgoingDate(new Date().toISOString().split('T')[0]);
     setShowAddModal(true);

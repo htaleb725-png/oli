@@ -42,7 +42,7 @@ export const INITIAL_SETTINGS: SystemSettings = {
   developerPasscode: '2026',
   allowAdminOpenDriveFolder: false,
   officeBranch: 'nasiriyah',
-  lastOutgoingNumberNasiriyah: 103,
+  lastOutgoingNumberNasiriyah: 0,
   lastOutgoingNumberSuq: 0,
   requiredFieldsConfig: {
     FullName: true,

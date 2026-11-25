@@ -338,7 +338,16 @@ html:not(.dark) tbody tr:hover {
   background: rgba(100, 116, 139, 0.8);
 }
 
-/* Marquee News Ticker Animation */
+/* Marquee News Ticker Animation (Smooth Seamless Dual-Track RTL Scroll) */
+@keyframes ticker-scroll-rtl {
+  0% {
+    transform: translate3d(-50%, 0, 0);
+  }
+  100% {
+    transform: translate3d(0%, 0, 0);
+  }
+}
+
 @keyframes marquee-rtl {
   0% {
     transform: translateX(-100%);
@@ -348,13 +357,25 @@ html:not(.dark) tbody tr:hover {
   }
 }
 
-.animate-marquee-rtl {
-  display: inline-block;
+.news-ticker-track {
+  will-change: transform;
+  animation: ticker-scroll-rtl 34s linear infinite;
+}
+
+.news-ticker-bar:hover .news-ticker-track {
+  animation-play-state: paused;
+}
+
+.animate-marquee-rtl,
+.animate-ticker {
+  display: inline-flex;
   white-space: nowrap;
+  will-change: transform;
   animation: marquee-rtl 32s linear infinite;
 }
 
-.animate-marquee-rtl:hover {
+.animate-marquee-rtl:hover,
+.animate-ticker:hover {
   animation-play-state: paused;
 }
 
