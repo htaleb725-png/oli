@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { initializeFirestore, getFirestore, doc, getDocFromServer, Firestore, setLogLevel } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, memoryLocalCache, doc, getDocFromServer, Firestore, setLogLevel } from 'firebase/firestore';
 import localFirebaseConfig from '../../firebase-applet-config.json';
 import { inspectCloudEnvironment, isPlaceholderOrInvalidValue } from '../utils/cloudEnvDiagnostics';
 import { updateFirebaseHealth } from '../services/cloudSyncAlerts';
@@ -100,6 +100,7 @@ export const googleAuthProvider = new GoogleAuthProvider();
 const rawDbId = cleanEnv(activeFirebaseConfig.firestoreDatabaseId) || '(default)';
 const customNamedDbId = rawDbId !== '(default)' ? rawDbId : undefined;
 const firestoreSettings = {
+  localCache: memoryLocalCache(),
   ignoreUndefinedProperties: true,
   ...(typeof window !== 'undefined' ? { experimentalAutoDetectLongPolling: true } : {})
 };

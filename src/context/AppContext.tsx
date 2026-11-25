@@ -683,9 +683,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSplashOpen, setIsSplashOpen] = useState<boolean>(true);
   const [lastLoginError, setLastLoginError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<string>('dashboard');
-  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(false);
-  const [sessionLoadingMessage, setSessionLoadingMessage] = useState<string>('يرجى الانتظار لتحميل بياناتك...');
+  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(true);
+  const [sessionLoadingMessage, setSessionLoadingMessage] = useState<string>('جاري تحميل البيانات، يرجى الانتظار...');
   const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(false);
+  const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const firestorePasscodeLoadedRef = useRef<boolean>(false);
 
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => {
     return !!(typeof window !== 'undefined' && localStorage.getItem('al_nashi_google_token'));
@@ -967,7 +969,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         purgeDeletedIdsEverywhere(removedIds);
       }
       if (Array.isArray(items) && items.length > 0) {
-        setUsers(prev => reconcileLiveFirestoreSnapshot(prev, items, 'User_ID', meta, mergeUsers));
+        setUsers(prev =>
+          reconcileLiveFirestoreSnapshot(
+            prev,
+            items,
+            'User_ID',
+            meta,
+            (cur, inc, del) => mergeUsers(cur, inc, del, { incomingAuthoritative: true })
+          )
+        );
       }
     });
     unsubs.push(unsubUsers);
@@ -1000,9 +1010,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     unsubs.push(unsubNotifications);
 
     const unsubSettings = fsWatchCollection<any>(FS_COLLECTIONS.SETTINGS, (docs) => {
+      const authDoc = docs.find((d: any) => d && typeof d.passcode === 'string' && d.passcode.trim().length >= 3);
       const generalDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements || typeof d.lastOutgoingNumberNasiriyah === 'number'));
       const cloudDoc = docs.find((d: any) => d && (d.googleDriveFolderId || d.appsScriptUrl || typeof d.lastOutgoingNumberNasiriyah === 'number') && !d.appName);
       const mergedRemote = { ...(generalDoc || {}), ...(cloudDoc || {}) };
+
+      // Authoritative Developer Passcode lock from Firebase Firestore
+      const authoritativePasscode = String(authDoc?.passcode || mergedRemote.developerPasscode || '').trim();
+      if (authoritativePasscode.length >= 3) {
+        firestorePasscodeLoadedRef.current = true;
+        setDeveloperPasscodeState(authoritativePasscode);
+        try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', authoritativePasscode); } catch {}
+      }
+
       if (Object.keys(mergedRemote).length > 0) {
         const cleanRemoteDrive = mergedRemote.googleDriveFolderId
           ? extractDriveFolderId(mergedRemote.googleDriveFolderId)
@@ -1020,6 +1040,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const next = normalizeSystemSettings({
             ...prev,
             ...mergedRemote,
+            ...(authoritativePasscode.length >= 3 ? { developerPasscode: authoritativePasscode } : { developerPasscode: prev.developerPasscode }),
             ...(cleanRemoteDrive ? { googleDriveFolderId: cleanRemoteDrive } : {})
           });
           systemSettingsRef.current = next;
@@ -1060,21 +1081,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...(cfg.logoUrl ? { logoUrl: cfg.logoUrl } : {})
         });
         systemSettingsRef.current = next;
-        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(next));
-        idbSetJSON(STORAGE_KEY_PREFIX + 'settings', next).catch(() => {});
         return next;
       });
     });
     unsubs.push(unsubCloudConfig);
 
-    // Check remote developer passcode
+    // Authoritative check for saved developer passcode in Firebase Firestore
     fsGetDeveloperPasscode().then(code => {
-      if (code) {
-        setDeveloperPasscodeState(code);
+      const cleanCode = String(code || '').trim();
+      if (cleanCode.length >= 3) {
+        firestorePasscodeLoadedRef.current = true;
+        setDeveloperPasscodeState(cleanCode);
+        try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', cleanCode); } catch {}
       }
     }).catch(() => {});
 
-    // Hydrate & bi-directionally sync users with shared server API (/api/users) on startup
+    // Non-authoritative fallback hydration from /api/users & /api/settings:
+    // NEVER allowed to downgrade Firebase Firestore passwords or reset developerPasscode to stale defaults!
     (async () => {
       try {
         const res = await fetch('/api/users');
@@ -1086,18 +1109,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           serverDeleted.forEach(id => localDeleted.add(id));
 
           if (serverUsers.length > 0) {
-            setUsers(prev => mergeUsers(prev, serverUsers, localDeleted));
+            setUsers(prev => mergeUsers(prev, serverUsers, localDeleted, { incomingAuthoritative: false }));
           }
-          if (data?.developerPasscode) {
-            setDeveloperPasscodeState(String(data.developerPasscode));
-            try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', String(data.developerPasscode)); } catch {}
+          // Only adopt server passcode if Firestore has NOT provided one and it is not a stale default overwrite
+          const srvCode = String(data?.developerPasscode || '').trim();
+          if (srvCode.length >= 3 && !firestorePasscodeLoadedRef.current && srvCode !== '2026') {
+            setDeveloperPasscodeState(srvCode);
+            try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', srvCode); } catch {}
           }
         }
       } catch {
         // Ignore if running without backend API (e.g., pure static host)
       }
 
-      // Hydrate shared settings, icons, and custom sections from /api/settings
+      // Hydrate non-security UI settings and custom sections from /api/settings (never clobbering developerPasscode)
       try {
         const sRes = await fetch('/api/settings');
         if (sRes.ok) {
@@ -1111,22 +1136,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 }
               } catch {}
             }
-            if (sData.systemSettings.developerPasscode) {
-              setDeveloperPasscodeState(String(sData.systemSettings.developerPasscode));
-              try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', String(sData.systemSettings.developerPasscode)); } catch {}
-            }
+            const { developerPasscode: _ignoredServerPasscode, ...safeServerSettings } = sData.systemSettings;
             setSystemSettings(prev => {
-              const merged = { ...prev, ...sData.systemSettings, settingsVersion: remoteVer || prev.settingsVersion };
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(merged));
+              const merged = { ...prev, ...safeServerSettings, settingsVersion: remoteVer || prev.settingsVersion };
+              systemSettingsRef.current = merged;
               return merged;
             });
           }
           if (Array.isArray(sData?.customSections) && sData.customSections.length > 0) {
-            setCustomSections(prev => {
-              const merged = mergeCustomSections(prev, sData.customSections, getStoredDeletedIds());
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'custom_sections', JSON.stringify(merged));
-              return merged;
-            });
+            setCustomSections(prev => mergeCustomSections(prev, sData.customSections, getStoredDeletedIds()));
           }
         }
       } catch {}
@@ -1193,214 +1211,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch {}
 
-      // Track server revision & settingsVersion for lightning-fast 1.2s real-time synchronization
-      let lastKnownServerRev = 0;
-      let lastKnownSettingsVer = 0;
-      let isPullingOrPushing = false;
-
-      // Hydrate & bi-directionally reconcile ALL core records with authoritative live server store (/api/sync/state)
-      const pullServerSyncState = async (allowLocalDeltaPush = true) => {
-        if (isPullingOrPushing) return;
-        isPullingOrPushing = true;
-        try {
-          const syncRes = await fetch('/api/sync/state', { cache: 'no-store' });
-          if (!syncRes.ok) return;
-          const s = await syncRes.json();
-          if (!s?.success) return;
-
-          if (typeof s.rev === 'number' && s.rev > lastKnownServerRev) {
-            lastKnownServerRev = s.rev;
-          }
-          if (typeof s.settingsVersion === 'number' && s.settingsVersion > lastKnownSettingsVer) {
-            lastKnownSettingsVer = s.settingsVersion;
-          }
-
-          const deletedSet = getStoredDeletedIds();
-          if (Array.isArray(s.deletedIds) && s.deletedIds.length > 0) {
-            const incomingDeleted: string[] = [];
-            s.deletedIds.forEach((d: string) => {
-              if (d) {
-                const clean = String(d).trim();
-                deletedSet.add(clean);
-                incomingDeleted.push(clean);
-              }
-            });
-            if (incomingDeleted.length > 0) {
-              purgeDeletedIdsEverywhere(incomingDeleted);
-            }
-          }
-
-          if (Array.isArray(s.citizens) && s.citizens.length > 0) {
-            setCitizens(prev => mergeCitizens(prev, s.citizens, deletedSet));
-          }
-          if (Array.isArray(s.requests) && s.requests.length > 0) {
-            setRequests(prev => mergeRequests(prev, s.requests, deletedSet));
-          }
-          if (Array.isArray(s.interviews) && s.interviews.length > 0) {
-            setInterviews(prev => mergeInterviews(prev, s.interviews, deletedSet));
-          }
-          if (Array.isArray(s.officialLetters) && s.officialLetters.length > 0) {
-            setOfficialLetters(prev => mergeOfficialLetters(prev, s.officialLetters, deletedSet));
-          }
-          if (Array.isArray(s.cheques) && s.cheques.length > 0) {
-            setCheques(prev => mergeCheques(prev, s.cheques, deletedSet));
-          }
-          if (Array.isArray(s.organizationRecords) && s.organizationRecords.length > 0) {
-            setOrganizationRecords(prev => mergeOrganizationRecords(prev, s.organizationRecords, deletedSet));
-          }
-          if (Array.isArray(s.customSections) && s.customSections.length > 0) {
-            setCustomSections(prev => mergeCustomSections(prev, s.customSections, deletedSet));
-          }
-          if (Array.isArray(s.customRecords) && s.customRecords.length > 0) {
-            setCustomRecords(prev => mergeCustomRecords(prev, s.customRecords, deletedSet));
-          }
-          if (Array.isArray(s.users) && s.users.length > 0) {
-            setUsers(prev => mergeUsers(prev, s.users, deletedSet));
-          }
-          if (s.developerPasscode) {
-            setDeveloperPasscodeState(String(s.developerPasscode));
-          }
-          if (s.systemSettings && typeof s.systemSettings === 'object' && Object.keys(s.systemSettings).length > 0) {
-            setSystemSettings(prev => {
-              const next = normalizeSystemSettings({ ...prev, ...s.systemSettings });
-              systemSettingsRef.current = next;
-              return next;
-            });
-          }
-          if (Array.isArray(s.notifications) && s.notifications.length > 0) {
-            setNotifications(prev => {
-              const map = new Map<string, UrgentNotification>();
-              prev.forEach(n => { if (n?.id && !deletedSet.has(n.id)) map.set(n.id, n); });
-              s.notifications.forEach((n: UrgentNotification) => { if (n?.id && !deletedSet.has(n.id)) map.set(n.id, { ...(map.get(n.id) || {}), ...n }); });
-              return Array.from(map.values())
-                .sort((a, b) => (Date.parse(b.createdAtIso || '') || 0) - (Date.parse(a.createdAtIso || '') || 0))
-                .slice(0, 80);
-            });
-          }
-          if (s.blacklist && typeof s.blacklist === 'object') {
-            const remoteBlocked: any[] = Array.isArray(s.blacklist.items) ? s.blacklist.items : [];
-            const remoteUnblocked = new Set<string>(Array.isArray(s.blacklist.unblockedIds) ? s.blacklist.unblockedIds : []);
-            if (remoteBlocked.length > 0 || remoteUnblocked.size > 0) {
-              setCitizens(prev => {
-                const map = new Map<string, Citizen>();
-                prev.forEach(c => {
-                  if (!c?.Citizen_ID) return;
-                  if (remoteUnblocked.has(c.Citizen_ID)) {
-                    map.set(c.Citizen_ID, { ...c, IsBlocked: false, BlockReason: '', BlockedAt: '', BlockedBy: '' });
-                  } else {
-                    map.set(c.Citizen_ID, c);
-                  }
-                });
-                remoteBlocked.forEach(b => {
-                  if (!b?.Citizen_ID) return;
-                  const ex = map.get(b.Citizen_ID);
-                  if (ex) {
-                    map.set(b.Citizen_ID, {
-                      ...ex,
-                      IsBlocked: true,
-                      BlockReason: b.BlockReason || ex.BlockReason,
-                      BlockedAt: b.BlockedAt || ex.BlockedAt,
-                      BlockedBy: b.BlockedBy || ex.BlockedBy
-                    });
-                  }
-                });
-                return Array.from(map.values());
-              });
-            }
-          }
-          if (Array.isArray(s.documents) && s.documents.length > 0) {
-            setDocuments(prev => {
-              const map = new Map<string, DocumentArchiveItem>();
-              prev.forEach(d => { if (d?.Doc_ID && !deletedSet.has(d.Doc_ID)) map.set(d.Doc_ID, d); });
-              s.documents.forEach((d: DocumentArchiveItem) => { if (d?.Doc_ID && !deletedSet.has(d.Doc_ID)) map.set(d.Doc_ID, d); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(s.dropdowns) && s.dropdowns.length > 0) {
-            setDropdowns(prev => {
-              const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
-              const added = s.dropdowns.filter((d: DropdownItem) =>
-                d && d.Category && d.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`)
-              );
-              return added.length > 0 ? [...prev, ...added] : prev;
-            });
-          }
-
-          // BIDIRECTIONAL AUTOMATIC DATA RESCUE:
-          // Whenever THIS browser has any local records (in React state, localStorage, or IndexedDB)
-          // whose IDs are missing from the server response `s`, push them to `/api/sync/state?mode=bulk` immediately
-          // so any other open browser or computer receives 100% of this browser's data without losing a single record!
-          if (allowLocalDeltaPush) {
-            try {
-              const serverCitIds = new Set((Array.isArray(s.citizens) ? s.citizens : []).map((c: any) => c?.Citizen_ID).filter(Boolean));
-              const serverReqIds = new Set((Array.isArray(s.requests) ? s.requests : []).map((r: any) => r?.Request_ID).filter(Boolean));
-              const serverIntIds = new Set((Array.isArray(s.interviews) ? s.interviews : []).map((i: any) => i?.Interview_ID).filter(Boolean));
-              const serverLetIds = new Set((Array.isArray(s.officialLetters) ? s.officialLetters : []).map((l: any) => l?.Letter_ID).filter(Boolean));
-              const serverChqIds = new Set((Array.isArray(s.cheques) ? s.cheques : []).map((c: any) => c?.id).filter(Boolean));
-              const serverOrgIds = new Set((Array.isArray(s.organizationRecords) ? s.organizationRecords : []).map((o: any) => o?.Citizen_ID).filter(Boolean));
-              const serverRecIds = new Set((Array.isArray(s.customRecords) ? s.customRecords : []).map((r: any) => r?.id).filter(Boolean));
-
-              const missingCitizens = citizensRef.current.filter(
-                c => c && c.Citizen_ID && !deletedSet.has(c.Citizen_ID) && !String(c.Citizen_ID).startsWith('CIT-00') && !serverCitIds.has(c.Citizen_ID)
-              );
-              const missingRequests = requestsRef.current.filter(
-                r => r && r.Request_ID && !deletedSet.has(r.Request_ID) && !serverReqIds.has(r.Request_ID)
-              );
-              const missingInterviews = interviewsRef.current.filter(
-                i => i && i.Interview_ID && !deletedSet.has(i.Interview_ID) && !serverIntIds.has(i.Interview_ID)
-              );
-              const missingLetters = officialLettersRef.current.filter(
-                l => l && l.Letter_ID && !deletedSet.has(l.Letter_ID) && !serverLetIds.has(l.Letter_ID)
-              );
-              const missingCheques = chequesRef.current.filter(
-                c => c && c.id && !deletedSet.has(c.id) && !serverChqIds.has(c.id)
-              );
-              const missingOrgs = organizationRecordsRef.current.filter(
-                o => o && o.Citizen_ID && !deletedSet.has(o.Citizen_ID) && !serverOrgIds.has(o.Citizen_ID)
-              );
-              const missingCustomRecs = customRecordsRef.current.filter(
-                r => r && r.id && !deletedSet.has(r.id) && !serverRecIds.has(r.id)
-              );
-
-              if (
-                missingCitizens.length > 0 ||
-                missingRequests.length > 0 ||
-                missingInterviews.length > 0 ||
-                missingLetters.length > 0 ||
-                missingCheques.length > 0 ||
-                missingOrgs.length > 0 ||
-                missingCustomRecs.length > 0
-              ) {
-                emitServerBulk({
-                  ...(missingCitizens.length > 0 ? { citizens: missingCitizens } : {}),
-                  ...(missingRequests.length > 0 ? { requests: sanitizeRequestsForStorage(missingRequests) } : {}),
-                  ...(missingInterviews.length > 0 ? { interviews: missingInterviews } : {}),
-                  ...(missingLetters.length > 0 ? { officialLetters: missingLetters } : {}),
-                  ...(missingCheques.length > 0 ? { cheques: missingCheques } : {}),
-                  ...(missingOrgs.length > 0 ? { organizationRecords: missingOrgs } : {}),
-                  ...(missingCustomRecs.length > 0 ? { customRecords: missingCustomRecs } : {}),
-                  dropdowns: dropdownsRef.current,
-                  customSections: customSectionsRef.current,
-                  users: usersRef.current,
-                  systemSettings: systemSettingsRef.current,
-                  deletedIds: Array.from(deletedSet)
-                });
-              }
-            } catch {}
-          }
-        } catch {} finally {
-          isPullingOrPushing = false;
-        }
-      };
-
-      await pullServerSyncState(true);
-
-      // Subscribe to real-time SSE stream + cross-tab BroadcastChannel + storage fallback
-      let sse: EventSource | null = null;
-      let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-      let revPollTimer: ReturnType<typeof setInterval> | null = null;
+      // Live Cloud Sync: Firebase Firestore onSnapshot is the sole real-time bus across all devices & Vercel instances.
+      // Volatile serverless /api/sync/state memory is NEVER allowed to overwrite or resurrect business records!
       let lastCatchupAt = Date.now();
-      let closed = false;
+      let lastSheetResumeSyncAt = 0;
 
       const applyIncomingMutation = (payload: any) => {
         if (!payload || payload.clientId === LIVE_SYNC_CLIENT_ID) return;
@@ -1476,7 +1290,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       };
 
-      // Cross-tab BroadcastChannel listener (instant sync across multiple tabs/windows of the same browser/PWA, including Vercel)
+      // Cross-tab BroadcastChannel listener (sub-millisecond echo across open tabs in the same browser/PWA)
       const handleBroadcastMessage = (ev: MessageEvent) => {
         const msg = ev.data;
         if (!msg || msg.clientId === LIVE_SYNC_CLIENT_ID) return;
@@ -1507,8 +1321,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         bc.addEventListener('message', handleBroadcastMessage);
       }
 
-      // Strict Cloud-Only Policy: Ignore any legacy localStorage business record events
-      // Only allow UI appearance/settings updates to sync across tabs via storage events
+      // Strict Cloud-Only Policy: Only allow UI appearance/settings updates to sync via storage events
       const handleStorageEvent = (ev: StorageEvent) => {
         if (!ev.key || !ev.newValue) return;
         try {
@@ -1526,91 +1339,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       window.addEventListener('storage', handleStorageEvent);
 
-      const connectSse = () => {
-        if (closed || typeof window === 'undefined' || typeof EventSource === 'undefined') return;
-        try {
-          sse = new EventSource('/api/sync/stream');
-          sse.addEventListener('mutation', (ev: MessageEvent) => {
-            try {
-              const data = JSON.parse(ev.data);
-              if (typeof data?.rev === 'number' && data.rev > lastKnownServerRev) {
-                lastKnownServerRev = data.rev;
-              }
-              applyIncomingMutation(data);
-            } catch {}
-          });
-          sse.addEventListener('bulk_refresh', (ev: MessageEvent) => {
-            try {
-              const data = JSON.parse(ev.data);
-              if (typeof data?.rev === 'number' && data.rev > lastKnownServerRev) {
-                lastKnownServerRev = data.rev;
-              }
-              if (data?.clientId === LIVE_SYNC_CLIENT_ID) return;
-              pullServerSyncState(false);
-            } catch {}
-          });
-          sse.addEventListener('users_updated', () => {
-            pullServerSyncState(false);
-          });
-          sse.addEventListener('blacklist_updated', () => {
-            pullServerSyncState(false);
-          });
-          sse.addEventListener('settings_updated', () => {
-            pullServerSyncState(false);
-          });
-          sse.onerror = () => {
-            try { sse?.close(); } catch {}
-            sse = null;
-            if (!closed) {
-              if (reconnectTimer) clearTimeout(reconnectTimer);
-              reconnectTimer = setTimeout(connectSse, 4000);
-            }
-          };
-        } catch {}
-      };
-
-      connectSse();
-
-      // Lightning-fast 1.2-second unified heartbeat against /api/sync/state?mode=rev
-      // Works on Vercel Serverless, AI Studio Dev/Shared URL, and Desktop PWA!
-      revPollTimer = setInterval(async () => {
-        if (closed || isPullingOrPushing || document.visibilityState === 'hidden') return;
-        try {
-          const r = await fetch('/api/sync/state?mode=rev', { cache: 'no-store' });
-          if (!r.ok) return;
-          const info = await r.json();
-          if (!info?.success) return;
-
-          const remoteRev = Number(info.rev || 0);
-          const remoteSettingsVer = Number(info.settingsVersion || 0);
-          const remoteCitCount = Number(info.counts?.citizens ?? -1);
-          const remoteReqCount = Number(info.counts?.requests ?? -1);
-
-          const revChanged = remoteRev !== lastKnownServerRev;
-          const settingsChanged = remoteSettingsVer > lastKnownSettingsVer;
-          const serverHasMoreData =
-            (remoteCitCount > citizensRef.current.length) ||
-            (remoteReqCount > requestsRef.current.length);
-          const localHasMoreData =
-            (remoteCitCount >= 0 && citizensRef.current.length > remoteCitCount) ||
-            (remoteReqCount >= 0 && requestsRef.current.length > remoteReqCount);
-
-          if (revChanged || settingsChanged || serverHasMoreData || localHasMoreData) {
-            await pullServerSyncState(true);
-          }
-        } catch {}
-      }, 1200);
-
-      // Catch-up sync whenever Desktop PWA or browser tab regains focus/visibility or network comes back online
+      // Lightweight cloud catch-up on tab resume (throttled to prevent memory spikes / Chrome Crashpad)
       const handleResumeSync = () => {
         if (document.visibilityState === 'hidden') return;
+        if (activeRefreshPromiseRef.current) return;
         const now = Date.now();
-        if (now - lastCatchupAt < 1000) return;
+        if (now - lastCatchupAt < 15000) return;
         lastCatchupAt = now;
-        pullServerSyncState(true);
+        purgeLegacyBrowserBusinessData();
         fetchAllFromFirestoreNow().catch(() => {});
-        if (!sse || sse.readyState === EventSource.CLOSED) {
-          connectSse();
+        // Reconcile two-way with Google Sheets at most once every 45s on tab resume
+        if (now - lastSheetResumeSyncAt >= 45000) {
+          lastSheetResumeSyncAt = now;
+          const scriptUrl =
+            (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
+            systemSettingsRef.current.appsScriptUrl ||
+            systemSettingsRef.current.googleAppsScriptUrl ||
+            '';
+          if (scriptUrl) {
+            fetchAllFromGoogleSheetsNow(scriptUrl, undefined, {
+              syncToFirestore: true,
+              replaceAsPrimary: true
+            }).catch(() => {});
+          }
         }
       };
       window.addEventListener('focus', handleResumeSync);
@@ -1618,10 +1369,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       document.addEventListener('visibilitychange', handleResumeSync);
 
       unsubs.push(() => {
-        closed = true;
-        if (reconnectTimer) clearTimeout(reconnectTimer);
-        if (revPollTimer) clearInterval(revPollTimer);
-        try { sse?.close(); } catch {}
         if (bc) bc.removeEventListener('message', handleBroadcastMessage);
         window.removeEventListener('storage', handleStorageEvent);
         window.removeEventListener('focus', handleResumeSync);
@@ -1661,105 +1408,129 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const refreshAllDataFromAllSources = async () => {
-    // 0. Always purge any stale business data trapped in Chrome localStorage / IndexedDB
-    purgeLegacyBrowserBusinessData();
-    clearBusinessRecordsFromIDB().catch(() => {});
-
-    // 1. ULTRA-FAST PARALLEL HYDRATION:
-    //    Launch Firebase Firestore fast fetch AND Google Sheets authoritative pull IN PARALLEL
-    //    so the UI renders live data in milliseconds with zero hang, while Google Sheets
-    //    reconciles authoritatively and mirrors updates back to Firestore non-blockingly.
-    const envScript = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || '';
-    const envSheet = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID || '';
-    const cachedScript =
-      envScript ||
-      systemSettingsRef.current.appsScriptUrl ||
-      systemSettingsRef.current.googleAppsScriptUrl ||
-      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
-    const cachedSheet =
-      envSheet ||
-      systemSettingsRef.current.googleSheetId ||
-      systemSettingsRef.current.activeGoogleSheetId ||
-      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') || '' : '');
-
-    // Start Google Sheets pull immediately if script URL / sheet ID is already known
-    let sheetsStartedEarly = false;
-    let sheetsPromise: Promise<any> | null = null;
-    if (cachedScript || cachedSheet) {
-      sheetsStartedEarly = true;
-      sheetsPromise = fetchAllFromGoogleSheetsNow(cachedScript, cachedSheet, {
-        syncToFirestore: true,
-        replaceAsPrimary: true
-      }).catch(e => {
-        console.warn('Primary Google Sheets hydration notice:', e);
-        return null;
-      });
+    // Deduplicate concurrent refresh bursts (prevents memory spikes & Chrome Crashpad)
+    if (activeRefreshPromiseRef.current) {
+      return activeRefreshPromiseRef.current;
     }
 
-    // Simultaneously pull fast snapshot + metadata from Firebase Firestore (populates UI immediately!)
-    let cloudSettings: Partial<SystemSettings> | undefined;
-    try {
-      const fsResult = await fetchAllFromFirestoreNow();
-      cloudSettings = fsResult.systemSettings;
-      if (cloudSettings) {
-        setRuntimeCloudConfig({
-          appsScriptUrl: cloudSettings.appsScriptUrl || cloudSettings.googleAppsScriptUrl,
-          googleSheetId: cloudSettings.googleSheetId || cloudSettings.activeGoogleSheetId,
-          googleDriveFolderId: cloudSettings.googleDriveFolderId
-        });
-      }
-    } catch (e) {
-      console.warn('Cloud Firestore hydration notice:', e);
-    }
+    const run = (async () => {
+      // 0. Always purge any stale business data trapped in Chrome localStorage / IndexedDB
+      purgeLegacyBrowserBusinessData();
+      clearBusinessRecordsFromIDB().catch(() => {});
 
-    // If Apps Script URL came from Firestore settings (not yet known on boot), trigger Google Sheets pull now
-    if (!sheetsStartedEarly) {
-      const resolvedScript =
+      // 1. PARALLEL HYDRATION:
+      //    Launch Firebase Firestore fetch AND Google Sheets authoritative pull IN PARALLEL
+      const envScript = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || '';
+      const envSheet = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID || '';
+      const cachedScript =
         envScript ||
-        cloudSettings?.appsScriptUrl ||
-        cloudSettings?.googleAppsScriptUrl ||
-        '';
-      const resolvedSheet =
+        systemSettingsRef.current.appsScriptUrl ||
+        systemSettingsRef.current.googleAppsScriptUrl ||
+        (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
+      const cachedSheet =
         envSheet ||
-        cloudSettings?.googleSheetId ||
-        cloudSettings?.activeGoogleSheetId ||
-        '';
-      if (resolvedScript || resolvedSheet) {
-        sheetsPromise = fetchAllFromGoogleSheetsNow(resolvedScript, resolvedSheet, {
+        systemSettingsRef.current.googleSheetId ||
+        systemSettingsRef.current.activeGoogleSheetId ||
+        (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') || '' : '');
+
+      let sheetsStartedEarly = false;
+      let sheetsPromise: Promise<any> | null = null;
+      if (cachedScript || cachedSheet) {
+        sheetsStartedEarly = true;
+        sheetsPromise = fetchAllFromGoogleSheetsNow(cachedScript, cachedSheet, {
           syncToFirestore: true,
           replaceAsPrimary: true
         }).catch(e => {
-          console.warn('Background Google Sheets hydration notice:', e);
+          console.warn('Primary Google Sheets hydration notice:', e);
           return null;
         });
       }
-    }
 
-    if (sheetsPromise) {
-      await sheetsPromise;
+      let cloudSettings: Partial<SystemSettings> | undefined;
+      try {
+        const fsResult = await fetchAllFromFirestoreNow();
+        cloudSettings = fsResult.systemSettings;
+        if (cloudSettings) {
+          setRuntimeCloudConfig({
+            appsScriptUrl: cloudSettings.appsScriptUrl || cloudSettings.googleAppsScriptUrl,
+            googleSheetId: cloudSettings.googleSheetId || cloudSettings.activeGoogleSheetId,
+            googleDriveFolderId: cloudSettings.googleDriveFolderId
+          });
+        }
+      } catch (e) {
+        console.warn('Cloud Firestore hydration notice:', e);
+      }
+
+      if (!sheetsStartedEarly) {
+        const resolvedScript =
+          envScript ||
+          cloudSettings?.appsScriptUrl ||
+          cloudSettings?.googleAppsScriptUrl ||
+          '';
+        const resolvedSheet =
+          envSheet ||
+          cloudSettings?.googleSheetId ||
+          cloudSettings?.activeGoogleSheetId ||
+          '';
+        if (resolvedScript || resolvedSheet) {
+          sheetsPromise = fetchAllFromGoogleSheetsNow(resolvedScript, resolvedSheet, {
+            syncToFirestore: true,
+            replaceAsPrimary: true
+          }).catch(e => {
+            console.warn('Background Google Sheets hydration notice:', e);
+            return null;
+          });
+        }
+      }
+
+      if (sheetsPromise) {
+        await sheetsPromise;
+      }
+    })();
+
+    activeRefreshPromiseRef.current = run;
+    try {
+      await run;
+    } finally {
+      activeRefreshPromiseRef.current = null;
     }
   };
 
   const triggerSessionDataLoad = (customMsg?: string) => {
     setIsSessionLoading(true);
-    setSessionLoadingMessage(customMsg || 'جاري جلب أحدث البيانات...');
+    setSessionLoadingMessage(customMsg || 'جاري تحميل البيانات، يرجى الانتظار...');
 
-    // Dismiss loading curtain immediately once fast hydration finishes (max 650ms for crisp feel)
-    const minHide = setTimeout(() => {
+    // Keep the loading screen active until actual data hydration completes (15s safety ceiling only if network hangs)
+    const safetyCeiling = window.setTimeout(() => {
       setIsSessionLoading(false);
-    }, 650);
+    }, 15000);
 
     refreshAllDataFromAllSources()
       .catch(() => {})
       .finally(() => {
-        clearTimeout(minHide);
+        window.clearTimeout(safetyCeiling);
         setIsSessionLoading(false);
       });
   };
 
-  // Run initial hydration on mount
+  // Run initial hydration on mount and keep loading curtain active until real data has arrived
   useEffect(() => {
-    refreshAllDataFromAllSources().catch(() => {});
+    let active = true;
+    const safetyCeiling = window.setTimeout(() => {
+      if (active) setIsSessionLoading(false);
+    }, 15000);
+
+    refreshAllDataFromAllSources()
+      .catch(() => {})
+      .finally(() => {
+        window.clearTimeout(safetyCeiling);
+        if (active) setIsSessionLoading(false);
+      });
+
+    return () => {
+      active = false;
+      window.clearTimeout(safetyCeiling);
+    };
   }, []);
 
   const addAuditLog = (action: string, section: string, details: string) => {
@@ -1789,7 +1560,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `${sourceMessage} - ${user.FullName} (${user.RoleArabic})`);
     triggerDepartmentGreeting(user);
-    triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
+    triggerSessionDataLoad('جاري تحميل البيانات، يرجى الانتظار...');
   };
 
   const upsertMatchedUserLocally = (matched: User) => {
@@ -2402,6 +2173,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Surname: surname || citizenData.Surname,
       Citizen_ID: newCitizenId,
       FullName: fullName,
+      CurrentStage: citizenData.CurrentStage || 'مدير المكتب',
       CreatedAt: formattedDate,
       UpdatedAt: now.toISOString(),
       CreatedBy: currentUser ? currentUser.FullName : 'الاستعلامات'
@@ -2946,6 +2718,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setRequests(prev => [newRequest, ...prev.filter(r => r.Request_ID !== candidate)]);
 
+    // Ensure linked citizen advances to 'مدير المكتب' stage when a new Reception request is registered
+    if (isFromReception && reqData.Citizen_ID) {
+      const linkedCit = citizensRef.current.find(c => c.Citizen_ID === reqData.Citizen_ID);
+      if (linkedCit && linkedCit.CurrentStage !== 'مدير المكتب') {
+        updateCitizen({ ...linkedCit, CurrentStage: 'مدير المكتب' });
+      }
+    }
+
     if (reqData.Entity) {
       addDropdownItem('Entity', reqData.Entity);
     }
@@ -2973,12 +2753,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
 
-    // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
+    // Real-time broadcast to same-browser tabs
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([newRequest])[0] || newRequest });
 
-    // Dual Cloud Save (Firebase Firestore + Google Sheets) with transparent failure reporting
+    // Dual Cloud Save (Firebase Firestore + Google Sheets Apps Script in parallel)
     adminRequestsDomain.saveRequest(newRequest, 'insert', getCloudCtx()).catch(() => {});
-    sheetsIntegration.requests.insert(newRequest).catch(() => {});
+    if (isGoogleConnected) {
+      sheetsIntegration.requests.insert(newRequest).catch(() => {});
+    }
 
     return newRequest;
   };
@@ -3030,9 +2812,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
     
-    // Dual Cloud Save (Firebase Firestore + Google Sheets) with transparent failure reporting
+    // Dual Cloud Save (Firebase Firestore + Google Sheets Apps Script in parallel)
     adminRequestsDomain.saveRequest(updatedReq, 'update', getCloudCtx()).catch(() => {});
-    sheetsIntegration.requests.update(updatedReq).catch(() => {});
+    if (isGoogleConnected) {
+      sheetsIntegration.requests.update(updatedReq).catch(() => {});
+    }
   };
 
   const deleteRequest = (requestId: string) => {
@@ -3041,7 +2825,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     emitServerMutation('requests', 'delete', { id: requestId });
     addAuditLog('حذف نهائي لطلب إداري', 'قسم الإدارة', `تم حذف الطلب ${requestId} نهائياً من قاعدة البيانات`);
     adminRequestsDomain.deleteRequest(requestId, getCloudCtx()).catch(() => {});
-    sheetsIntegration.requests.delete(requestId).catch(() => {});
+    if (isGoogleConnected) {
+      sheetsIntegration.requests.delete(requestId).catch(() => {});
+    }
   };
 
   const addCheque = (newChequeData: Omit<ChequeRecord, 'id' | 'CreatedAt'>): ChequeRecord => {
@@ -4116,6 +3902,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setDeveloperPasscode = async (newCode: string): Promise<boolean> => {
     const normalized = (newCode || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
     if (!normalized || normalized.length < 3) return false;
+    firestorePasscodeLoadedRef.current = true;
     setDeveloperPasscodeState(normalized);
     try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', normalized); } catch {}
 
@@ -4165,7 +3952,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveSection('master_admin');
       addAuditLog('تسجيل دخول ناجح برمز المطور', 'نظام المصادقة', 'دخول المطور بالرمز السري المعتمد');
       triggerDepartmentGreeting(devUser);
-      triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
+      triggerSessionDataLoad('جاري تحميل البيانات، يرجى الانتظار...');
       return true;
     }
     return false;
@@ -4394,19 +4181,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           });
         }
         if (res.users && res.users.length > 0) {
-          setUsers(prev => mergeUsers(prev, res.users, deletedIds));
+          setUsers(prev => mergeUsers(prev, res.users, deletedIds, { incomingAuthoritative: true }));
         }
         if (res.notifications && res.notifications.length > 0) {
           setNotifications(res.notifications.slice(0, 80));
         }
-        if (res.developerPasscode) setDeveloperPasscodeState(res.developerPasscode);
+        if (res.developerPasscode && String(res.developerPasscode).trim().length >= 3) {
+          const cleanCode = String(res.developerPasscode).trim();
+          firestorePasscodeLoadedRef.current = true;
+          setDeveloperPasscodeState(cleanCode);
+          try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', cleanCode); } catch {}
+        }
         if (res.systemSettings) {
           setRuntimeCloudConfig({
             appsScriptUrl: res.systemSettings.appsScriptUrl || res.systemSettings.googleAppsScriptUrl,
             googleSheetId: res.systemSettings.googleSheetId || res.systemSettings.activeGoogleSheetId,
             googleDriveFolderId: res.systemSettings.googleDriveFolderId
           });
-          setSystemSettings(prev => ({ ...prev, ...res.systemSettings }));
+          setSystemSettings(prev => ({
+            ...prev,
+            ...res.systemSettings,
+            ...(res.developerPasscode ? { developerPasscode: res.developerPasscode } : {})
+          }));
         }
         return { success: true, systemSettings: res.systemSettings };
       }
@@ -4781,7 +4577,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
       if (cleanUsers.length > 0) {
-        setUsers(prev => mergeUsers(prev, cleanUsers, deletedIds));
+        // Non-authoritative merge from Google Sheets: never revert newer passwords locked in Firebase Firestore
+        setUsers(prev => mergeUsers(prev, cleanUsers, deletedIds, { incomingAuthoritative: false }));
       }
 
       // Immediately mirror authoritative Google Sheet records & deletions directly into Firebase Firestore
@@ -4803,7 +4600,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             officialLetters: cleanLetters,
             cheques: cleanCheques,
             organizationRecords: cleanOrgs,
-            users: cleanUsers,
+            // Lock users in Firestore: never overwrite Firestore staff passwords with stale Google Sheet rows
+            users: [],
             systemSettings: undefined as unknown as SystemSettings,
             dropdowns: [],
             customSections: [],

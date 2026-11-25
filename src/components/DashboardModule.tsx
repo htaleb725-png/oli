@@ -211,7 +211,9 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
   }, [employeeStats]);
 
   const pendingDirectorReviewCount = useMemo(() => {
-    return requests.filter(r => !r.DirectorDecision).length;
+    return requests.filter(
+      r => r && !r.DirectorDecision && !r.IsHistoricalImported && !r.IsArchived && !r.IsDirectInstantRequest
+    ).length;
   }, [requests]);
 
   const urgentRequestsCount = useMemo(() => {

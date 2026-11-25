@@ -598,12 +598,90 @@ export function mergeCustomRecords(
 }
 
 /**
- * Specialized Users merger (respects tombstones and UpdatedAt timestamps).
+ * Specialized Users merger with Strict Password & Security Lock:
+ * - Protects saved staff passwords, roles, permissions, and allowed sections so they
+ *   can NEVER be silently reverted by stale seed users or un-timestamped Sheet rows.
+ * - When `incomingAuthoritative` is true (Firebase Firestore), non-empty cloud passwords
+ *   and permissions take precedence over local/seed defaults unless local has a strictly newer UpdatedAt.
+ * - When `incomingAuthoritative` is false (e.g. Google Sheets or fallback), incoming rows
+ *   can ONLY add missing users or update if they carry a strictly newer UpdatedAt timestamp.
  */
 export function mergeUsers(
   currentList: User[],
   incomingList: User[],
-  deletedIds?: Set<string>
+  deletedIds?: Set<string>,
+  options?: { incomingAuthoritative?: boolean }
 ): User[] {
-  return mergeEntityRecords(currentList, incomingList, 'User_ID', deletedIds || new Set());
+  const deleted = deletedIds || new Set<string>();
+  const incomingAuthoritative = Boolean(options?.incomingAuthoritative);
+  const byId = new Map<string, User>();
+  const usernameToId = new Map<string, string>();
+
+  const normUsername = (u?: string) => String(u || '').trim().toLowerCase();
+
+  for (const raw of currentList || []) {
+    if (!raw || !raw.User_ID) continue;
+    const id = String(raw.User_ID).trim();
+    if (!id || deleted.has(id)) continue;
+    byId.set(id, { ...raw });
+    const un = normUsername(raw.Username);
+    if (un) usernameToId.set(un, id);
+  }
+
+  for (const raw of incomingList || []) {
+    if (!raw || !raw.User_ID) continue;
+    const rawId = String(raw.User_ID).trim();
+    if (!rawId || deleted.has(rawId)) continue;
+
+    const un = normUsername(raw.Username);
+    const matchedId = byId.has(rawId) ? rawId : (un && usernameToId.has(un) ? usernameToId.get(un)! : rawId);
+    const existing = byId.get(matchedId);
+
+    if (!existing) {
+      byId.set(matchedId, { ...raw, User_ID: matchedId });
+      if (un) usernameToId.set(un, matchedId);
+      continue;
+    }
+
+    const existingTs = getRecordTimestamp(existing);
+    const incomingTs = getRecordTimestamp(raw);
+
+    // Determine which record's security/password fields win
+    const incomingWins =
+      (incomingTs > existingTs && incomingTs > 0) ||
+      (incomingAuthoritative && incomingTs >= existingTs);
+
+    if (incomingWins) {
+      const merged: User = {
+        ...existing,
+        ...raw,
+        User_ID: existing.User_ID,
+        // Never allow an empty/placeholder incoming password to erase a valid existing password
+        Password: !isMissingOrPlaceholder(raw.Password) ? raw.Password : existing.Password,
+        Username: !isMissingOrPlaceholder(raw.Username) ? raw.Username : existing.Username,
+        FullName: !isMissingOrPlaceholder(raw.FullName) ? raw.FullName : existing.FullName,
+        Role: raw.Role || existing.Role,
+        RoleArabic: !isMissingOrPlaceholder(raw.RoleArabic) ? raw.RoleArabic : existing.RoleArabic,
+        Permissions: Array.isArray(raw.Permissions) && raw.Permissions.length > 0 ? raw.Permissions : existing.Permissions,
+        AllowedSections: Array.isArray(raw.AllowedSections) && raw.AllowedSections.length > 0 ? raw.AllowedSections : existing.AllowedSections,
+        Status: raw.Status || existing.Status
+      };
+      byId.set(matchedId, merged);
+    } else {
+      // Existing is newer or locked: only gap-fill missing non-security fields, NEVER overwrite Password/Role/AllowedSections/Permissions
+      const gapFilled = fillMissingFieldsOnly(existing, raw);
+      byId.set(matchedId, {
+        ...gapFilled,
+        User_ID: existing.User_ID,
+        Password: existing.Password,
+        Role: existing.Role,
+        Permissions: existing.Permissions,
+        AllowedSections: existing.AllowedSections,
+        Status: existing.Status
+      });
+    }
+  }
+
+  return Array.from(byId.values());
 }
+

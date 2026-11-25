@@ -1,1145 +1,1116 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { OrganizationRecord, Citizen, OrgFinalResult, OrgFinalEvaluation, OrgTeamMember } from '../types';
-import { 
-  Users2, 
-  Search, 
-  Plus, 
-  Clock,
-  SendHorizontal,
-  UserCheck,
-  Eye,
-  Filter,
-  Layers,
-  Sparkles,
+import { OrganizationRecord, OrgTeamMember, Citizen, OfficeRequest } from '../types';
+import {
+  Users,
+  BarChart3,
+  Briefcase,
+  Search,
   CheckCircle2,
+  Clock,
   AlertCircle,
   XCircle,
-  BarChart3,
-  ShieldCheck,
-  FileSpreadsheet,
+  UserCheck,
+  UserPlus,
+  Plus,
+  Eye,
+  Trash2,
+  X,
+  Phone,
+  MapPin,
+  Printer,
+  ClipboardCheck,
   Award,
-  FileText,
-  ArrowLeft
+  Sparkles,
+  FileSpreadsheet
 } from 'lucide-react';
-import { AiRequestDrafterModal } from './AiRequestDrafterModal';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Legend
+} from 'recharts';
 import { OrgFinalEvaluationModal } from './OrgFinalEvaluationModal';
-import { OrgStatisticsAndReports } from './OrgStatisticsAndReports';
-import { OrgTeamMembersManager } from './OrgTeamMembersManager';
-import { OrgTeamMemberCardModal } from './OrgTeamMemberCardModal';
-import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
+import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
 import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
+import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
 
-const INITIAL_TEAM_MEMBERS: OrgTeamMember[] = [
-  {
-    id: 'TM-001',
-    Citizen_ID: 'ONA-10492',
-    FullName: 'محمد جاسم خلف علي الخفاجي',
-    Phone: '07812345678',
-    District: 'قضاء الناصرية',
-    SubDistrict: 'حي سومر',
-    ElectionCenter: 'مدرسة سومر الابتدائية',
-    Role: 'مفتاح نهائي',
-    JoinedDate: '2026-02-12',
-    OfficeVisitCount: '3 - 5 مرات',
-    Notes: 'وجيه منطقة ومؤيد فاعل، انضم كعضو فريق بعد إنجاز شمول الرعاية الاجتماعية بالكامل.',
-    Status: 'نشط'
-  },
-  {
-    id: 'TM-002',
-    Citizen_ID: 'ONA-10494',
-    FullName: 'حسين فاضل عباس طاهر التميمي',
-    Phone: '07712398765',
-    District: 'قضاء سوق الشيوخ',
-    SubDistrict: 'مركز القضاء',
-    ElectionCenter: 'ثانوية الفرات للبنين',
-    Role: 'مفتاح نهائي',
-    JoinedDate: '2026-02-16',
-    OfficeVisitCount: '4 - 6 مرات',
-    Notes: 'ممثل خريجين وناشط شبابي، انضم للفريق بعد متابعة طلب تعيين الحقول النفطية.',
-    Status: 'نشط'
+const COLORS = ['#10b981', '#f59e0b', '#3b82f6', '#ef4444'];
+
+const parseTimestamp = (raw?: string): number => {
+  const s = String(raw || '').trim();
+  if (!s) return 0;
+  let t = Date.parse(s);
+  if (Number.isNaN(t) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(s)) {
+    t = Date.parse(s.replace(' ', 'T'));
   }
-];
+  return Number.isNaN(t) ? 0 : t;
+};
 
 export const OrganizationModule: React.FC = () => {
-  const { 
-    organizationRecords, 
-    addOrganizationRecord, 
-    updateOrganizationRecord, 
+  const {
     citizens,
-    updateCitizen,
     requests,
+    interviews,
+    cheques,
+    officialLetters,
+    customSections,
+    customRecords,
+    systemSettings,
+    currentUser,
+    organizationRecords,
+    addOrganizationRecord,
+    updateOrganizationRecord,
     setSelectedCitizenForHistory,
-    setActiveSection
+    addAuditLog
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'hub' | 'records' | 'reports' | 'team_members' | 'referred_citizens'>('hub');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [ratingFilter, setRatingFilter] = useState('all');
-  const [finalResultFilter, setFinalResultFilter] = useState('all');
-  const [districtFilter, setDistrictFilter] = useState('all');
-  const [influenceFilter, setInfluenceFilter] = useState('all');
+  // Strictly 3 main icons in the Organization Hub:
+  // 1) سجل فريق العمل (team_members)
+  // 2) إحصائيات (reports)
+  // 3) العمل اليومي (daily_work)
+  const [activeTab, setActiveTab] = useState<'hub' | 'team_members' | 'reports' | 'daily_work'>('hub');
 
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showAiDrafterModal, setShowAiDrafterModal] = useState(false);
-  const [editingRecord, setEditingRecord] = useState<OrganizationRecord | null>(null);
+  // Daily Work (العمل اليومي) search, filter & lightweight pagination (prevents Chrome Crashpad on large datasets)
+  const [dailySearch, setDailySearch] = useState('');
+  const [dailyFilter, setDailyFilter] = useState<'pending' | 'completed' | 'all'>('pending');
+  const [visibleLimit, setVisibleLimit] = useState(40);
 
-  // Evaluation modal states
-  const [showEvaluationModal, setShowEvaluationModal] = useState(false);
-  const [evaluatingRecord, setEvaluatingRecord] = useState<OrganizationRecord | null>(null);
-  const [evaluatingCitizen, setEvaluatingCitizen] = useState<Citizen | null>(null);
+  // Team Members (سجل فريق العمل) search & add modal
+  const [teamSearch, setTeamSearch] = useState('');
+  const [isAddTeamModalOpen, setIsAddTeamModalOpen] = useState(false);
+  const [selectedCitizenForTeam, setSelectedCitizenForTeam] = useState('');
+  const [newTeamRole, setNewTeamRole] = useState('مفتاح نهائي');
+  const [newTeamNotes, setNewTeamNotes] = useState('');
+  const [confirmRemoveTeamId, setConfirmRemoveTeamId] = useState<string | null>(null);
 
-  // Independent team member card modal
-  const [showCardModal, setShowCardModal] = useState(false);
-  const [selectedMemberForCard, setSelectedMemberForCard] = useState<OrgTeamMember | null>(null);
+  // Evaluation / Complete Request Modal ("إكمال الطلب")
+  const [isEvalModalOpen, setIsEvalModalOpen] = useState(false);
+  const [evalTargetCitizen, setEvalTargetCitizen] = useState<Citizen | null>(null);
+  const [evalTargetRecord, setEvalTargetRecord] = useState<OrganizationRecord | null>(null);
+  const [evalTargetRequestId, setEvalTargetRequestId] = useState<string>('');
 
-  // Team members state with localStorage persistence
-  const [teamMembers, setTeamMembers] = useState<OrgTeamMember[]>(() => {
-    try {
-      const saved = localStorage.getItem('ola_alnashi_office_team_members');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-      return INITIAL_TEAM_MEMBERS;
-    } catch {
-      return INITIAL_TEAM_MEMBERS;
-    }
-  });
+  // In-app toast banner (zero window.alert / window.confirm)
+  const [toastBanner, setToastBanner] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('ola_alnashi_office_team_members', JSON.stringify(teamMembers));
-    } catch (e) {
-      console.error('Failed to persist team members', e);
-    }
-  }, [teamMembers]);
+  const showToast = (text: string, type: 'success' | 'info' | 'error' = 'success') => {
+    setToastBanner({ type, text });
+    window.setTimeout(() => {
+      setToastBanner(prev => (prev?.text === text ? null : prev));
+    }, 4500);
+  };
 
-  // Form states for general org rating
-  const [citizenId, setCitizenId] = useState('');
-  const [editOrgName, setEditOrgName] = useState('');
-  const [editOrgPhone, setEditOrgPhone] = useState('');
-  const [orgRating, setOrgRating] = useState('مؤيد');
-  const [influence, setInfluence] = useState('وجيه منطقة');
-  const [points, setPoints] = useState(90);
-  const [electionCenter, setElectionCenter] = useState('');
-  const [stationNumber, setStationNumber] = useState('');
-  const [notes, setNotes] = useState('');
+  // Fast lookup maps
+  const orgRecordByCitizenId = useMemo(() => {
+    const map = new Map<string, OrganizationRecord>();
+    (organizationRecords || []).forEach(rec => {
+      if (rec?.Citizen_ID) map.set(rec.Citizen_ID, rec);
+    });
+    return map;
+  }, [organizationRecords]);
 
-  // Extract unique districts
-  const districts = Array.from(
-    new Set(organizationRecords.map(r => r.District).filter(Boolean))
-  ) as string[];
+  const requestsByCitizenId = useMemo(() => {
+    const map = new Map<string, OfficeRequest[]>();
+    (requests || []).forEach(r => {
+      if (!r?.Citizen_ID) return;
+      const list = map.get(r.Citizen_ID) || [];
+      list.push(r);
+      map.set(r.Citizen_ID, list);
+    });
+    map.forEach(list => {
+      list.sort((a, b) => parseTimestamp(b.UpdatedAt || b.CreatedAt) - parseTimestamp(a.UpdatedAt || a.CreatedAt));
+    });
+    return map;
+  }, [requests]);
 
-  const filteredRecords = organizationRecords.filter(rec => {
-    const matchesSearch = 
-      rec.FullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      rec.Citizen_ID.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (rec.District && rec.District.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (rec.InfluenceType && rec.InfluenceType.toLowerCase().includes(searchQuery.toLowerCase()));
+  // Daily Work Queue: active citizens with requests or organization presence, sorted newest-first
+  // Mirrors DirectorExecutiveModule's exclusion of Excel historical/archived imports for crisp daily workflow
+  interface DailyWorkEntry {
+    citizen: Citizen;
+    latestRequest?: OfficeRequest;
+    requestCount: number;
+    orgRecord?: OrganizationRecord;
+    isCompleted: boolean;
+    sortTs: number;
+  }
 
-    const matchesRating = ratingFilter === 'all' || rec.OrgRating === ratingFilter;
-    const matchesDistrict = districtFilter === 'all' || rec.District === districtFilter;
-    const matchesInfluence = influenceFilter === 'all' || rec.InfluenceType === influenceFilter;
-    
-    const recResult = rec.finalEvaluation?.finalResult;
-    const matchesFinalResult = 
-      finalResultFilter === 'all' || 
-      (finalResultFilter === 'unassigned' ? !recResult : recResult === finalResultFilter);
+  const allDailyWorkEntries = useMemo<DailyWorkEntry[]>(() => {
+    const entries: DailyWorkEntry[] = [];
+    const seen = new Set<string>();
 
-    return matchesSearch && matchesRating && matchesDistrict && matchesInfluence && matchesFinalResult;
-  });
+    (citizens || []).forEach(cit => {
+      if (!cit?.Citizen_ID || seen.has(cit.Citizen_ID)) return;
+      seen.add(cit.Citizen_ID);
 
-  // Filter citizens referred to Organization Manager
-  const referredCitizens = citizens.filter(c => 
-    c.CurrentStage === 'مدير التنظيم' || (c.WorkflowHistory && c.WorkflowHistory.some(w => w.ToStage === 'مدير التنظيم'))
-  );
+      const citReqs = (requestsByCitizenId.get(cit.Citizen_ID) || []).filter(
+        r => !r.IsHistoricalImported && !r.IsArchived && r.DirectorDecision !== 'مؤرشف'
+      );
+      const orgRec = orgRecordByCitizenId.get(cit.Citizen_ID);
 
-  const handleSaveGeneralOrg = (e: React.FormEvent) => {
-    e.preventDefault();
+      // Exclude purely historical Excel archive citizens who have no active request & no org record
+      if (cit.IsHistoricalImported && citReqs.length === 0 && !orgRec) return;
 
-    if (editingRecord) {
-      const finalName = editOrgName.trim() || editingRecord.FullName;
-      const finalPhone = editOrgPhone.trim() || editingRecord.Phone1;
+      const latestReq = citReqs[0];
+      const sortTs = Math.max(
+        parseTimestamp(latestReq?.UpdatedAt || latestReq?.CreatedAt),
+        parseTimestamp(cit.UpdatedAt || cit.CreatedAt),
+        parseTimestamp(orgRec?.finalEvaluation?.evaluatedAt)
+      );
 
-      updateOrganizationRecord({
-        ...editingRecord,
-        FullName: finalName,
-        Phone1: finalPhone,
-        OrgRating: orgRating as any,
-        InfluenceType: influence,
-        EvaluationPoints: points,
-        ElectionCenter: electionCenter || undefined,
-        StationNumber: stationNumber || undefined,
-        Notes: notes || undefined
+      entries.push({
+        citizen: cit,
+        latestRequest: latestReq,
+        requestCount: citReqs.length,
+        orgRecord: orgRec,
+        isCompleted: Boolean(orgRec?.finalEvaluation?.finalResult),
+        sortTs
+      });
+    });
+
+    entries.sort((a, b) => b.sortTs - a.sortTs);
+    return entries;
+  }, [citizens, requestsByCitizenId, orgRecordByCitizenId]);
+
+  const dailyStats = useMemo(() => {
+    let pending = 0;
+    let completed = 0;
+    allDailyWorkEntries.forEach(e => {
+      if (e.isCompleted) completed++;
+      else pending++;
+    });
+    return { total: allDailyWorkEntries.length, pending, completed };
+  }, [allDailyWorkEntries]);
+
+  const filteredDailyWork = useMemo(() => {
+    const q = dailySearch.trim().toLowerCase();
+    return allDailyWorkEntries.filter(entry => {
+      if (dailyFilter === 'pending' && entry.isCompleted) return false;
+      if (dailyFilter === 'completed' && !entry.isCompleted) return false;
+      if (!q) return true;
+      const c = entry.citizen;
+      const req = entry.latestRequest;
+      return (
+        c.FullName?.toLowerCase().includes(q) ||
+        c.Citizen_ID?.toLowerCase().includes(q) ||
+        c.Phone1?.toLowerCase().includes(q) ||
+        c.District?.toLowerCase().includes(q) ||
+        c.SubDistrict?.toLowerCase().includes(q) ||
+        req?.Entity?.toLowerCase().includes(q) ||
+        req?.Request_ID?.toLowerCase().includes(q)
+      );
+    });
+  }, [allDailyWorkEntries, dailyFilter, dailySearch]);
+
+  // Team Members derived directly from cloud-synced organizationRecords (no mock localStorage!)
+  const teamMembersList = useMemo(() => {
+    const citizenMap = new Map<string, Citizen>();
+    (citizens || []).forEach(c => {
+      if (c?.Citizen_ID) citizenMap.set(c.Citizen_ID, c);
+    });
+
+    const list = (organizationRecords || [])
+      .filter(r => r && r.isTeamMember)
+      .map(r => {
+        const cit = citizenMap.get(r.Citizen_ID);
+        return {
+          record: r,
+          citizen: cit,
+          fullName: cit?.FullName || r.FullName || 'عضو فريق',
+          phone: cit?.Phone1 || r.Phone1 || '',
+          district: cit?.District || r.District || '',
+          subDistrict: cit?.SubDistrict || r.SubDistrict || '',
+          role: r.teamMemberRole || r.finalEvaluation?.case3_teamRole || 'مفتاح نهائي',
+          joinedDate: r.finalEvaluation?.evaluatedAt || cit?.CreatedAt || '',
+          visitCount: r.finalEvaluation?.case3_officeVisitFrequency || 'متردد على المكتب',
+          notes: r.finalEvaluation?.case3_officerNotes || r.Notes || ''
+        };
       });
 
-      const cit = citizens.find(c => c.Citizen_ID === editingRecord.Citizen_ID);
-      if (cit) {
-        updateCitizen({
-          ...cit,
-          FullName: finalName,
-          Phone1: finalPhone
-        });
-      }
+    const q = teamSearch.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      item =>
+        item.fullName.toLowerCase().includes(q) ||
+        item.phone.toLowerCase().includes(q) ||
+        item.district.toLowerCase().includes(q) ||
+        item.role.toLowerCase().includes(q)
+    );
+  }, [organizationRecords, citizens, teamSearch]);
 
-      setEditingRecord(null);
-    } else {
-      const cit = citizens.find(c => c.Citizen_ID === citizenId);
-      if (!cit) {
-        alert('يرجى اختيار مراجع مسجل بالنظام أولاً.');
-        return;
-      }
+  // Statistics for "إحصائيات"
+  const evalAnalytics = useMemo(() => {
+    const evals = (organizationRecords || []).filter(r => r?.finalEvaluation?.finalResult);
+    const fullCount = evals.filter(r => r.finalEvaluation?.finalResult === 'تم اكمال الطلب بالكامل').length;
+    const partialCount = evals.filter(r => r.finalEvaluation?.finalResult === 'تم حل الطلب جزئيا').length;
+    const followupCount = evals.filter(r => r.finalEvaluation?.finalResult === 'الطلب يحتاج متابعة').length;
+    const failedCount = evals.filter(r => r.finalEvaluation?.finalResult === 'لم يتم حل الطلب').length;
 
-      addOrganizationRecord({
-        Citizen_ID: cit.Citizen_ID,
-        FullName: cit.FullName,
-        District: cit.District,
-        SubDistrict: cit.SubDistrict,
-        Phone1: cit.Phone1,
-        OrgRating: orgRating as any,
-        InfluenceType: influence,
-        EvaluationPoints: points,
-        ElectionCenter: electionCenter || undefined,
-        StationNumber: stationNumber || undefined,
-        Notes: notes || undefined
-      });
+    const pieData = [
+      { name: 'مكتمل بالكامل', value: fullCount },
+      { name: 'حل جزئي', value: partialCount },
+      { name: 'يحتاج متابعة', value: followupCount },
+      { name: 'لم يتم الحل', value: failedCount }
+    ].filter(d => d.value > 0);
 
-      setShowAddModal(false);
-    }
+    // By District distribution
+    const districtMap = new Map<string, { district: string; completed: number; pending: number }>();
+    allDailyWorkEntries.forEach(entry => {
+      const dist = (entry.citizen.District || 'غير محدد').trim() || 'غير محدد';
+      const cur = districtMap.get(dist) || { district: dist, completed: 0, pending: 0 };
+      if (entry.isCompleted) cur.completed++;
+      else cur.pending++;
+      districtMap.set(dist, cur);
+    });
+    const districtChartData = Array.from(districtMap.values())
+      .sort((a, b) => b.completed + b.pending - (a.completed + a.pending))
+      .slice(0, 8);
 
-    setNotes('');
-    setElectionCenter('');
-    setStationNumber('');
+    return {
+      totalEvaluated: evals.length,
+      fullCount,
+      partialCount,
+      followupCount,
+      failedCount,
+      pieData,
+      districtChartData
+    };
+  }, [organizationRecords, allDailyWorkEntries]);
+
+  // Open "إكمال الطلب" modal for any citizen (works whether OrganizationRecord exists or not!)
+  const handleOpenCompleteRequest = (entry: DailyWorkEntry) => {
+    setEvalTargetCitizen(entry.citizen);
+    setEvalTargetRecord(entry.orgRecord || null);
+    setEvalTargetRequestId(entry.latestRequest?.Request_ID || '');
+    setIsEvalModalOpen(true);
   };
 
-  const openEdit = (rec: OrganizationRecord) => {
-    setEditingRecord(rec);
-    setCitizenId(rec.Citizen_ID);
-    setEditOrgName(rec.FullName || '');
-    setEditOrgPhone(rec.Phone1 || rec.Phone || '');
-    setOrgRating(rec.OrgRating);
-    setInfluence(rec.InfluenceType || 'وجيه منطقة');
-    setPoints(rec.EvaluationPoints || 90);
-    setElectionCenter(rec.ElectionCenter || '');
-    setStationNumber(rec.StationNumber || '');
-    setNotes(rec.Notes || '');
-    setShowAddModal(true);
-  };
-
-  const openCreateForCitizen = (cit: Citizen) => {
-    const existing = organizationRecords.find(r => r.Citizen_ID === cit.Citizen_ID);
-    if (existing) {
-      openEdit(existing);
-    } else {
-      setEditingRecord(null);
-      setCitizenId(cit.Citizen_ID);
-      setOrgRating('مؤيد');
-      setInfluence('وجيه منطقة');
-      setPoints(90);
-      setElectionCenter('');
-      setStationNumber('');
-      setNotes('');
-      setShowAddModal(true);
-    }
-  };
-
-  // Open evaluation modal for a specific record
-  const handleOpenEvaluation = (rec: OrganizationRecord) => {
-    const cit = citizens.find(c => c.Citizen_ID === rec.Citizen_ID) || null;
-    setEvaluatingRecord(rec);
-    setEvaluatingCitizen(cit);
-    setShowEvaluationModal(true);
-  };
-
-  // Open evaluation modal for a citizen directly
-  const handleOpenEvaluationForCitizen = (cit: Citizen) => {
-    const rec = organizationRecords.find(r => r.Citizen_ID === cit.Citizen_ID) || null;
-    setEvaluatingCitizen(cit);
-    setEvaluatingRecord(rec);
-    setShowEvaluationModal(true);
-  };
-
-  // Open new evaluation modal with selector
-  const handleOpenNewEvaluation = () => {
-    setEvaluatingRecord(null);
-    setEvaluatingCitizen(citizens[0] || null);
-    setShowEvaluationModal(true);
-  };
-
-  // Save evaluation handler
-  const handleSaveEvaluation = (record: OrganizationRecord, teamMemberToOpen?: OrgTeamMember | null) => {
-    const exists = organizationRecords.some(r => r.Citizen_ID === record.Citizen_ID);
+  // Save handler for OrgFinalEvaluationModal
+  const handleSaveEvaluation = (updatedRecord: OrganizationRecord, teamMemberToOpen?: OrgTeamMember | null) => {
+    const exists = organizationRecords.some(r => r.Citizen_ID === updatedRecord.Citizen_ID);
     if (exists) {
-      updateOrganizationRecord(record);
+      updateOrganizationRecord(updatedRecord);
     } else {
-      addOrganizationRecord(record);
+      addOrganizationRecord(updatedRecord);
     }
+
+    addAuditLog(
+      'إكمال وتقييم طلب في قسم التنظيم',
+      'قسم التنظيم',
+      `تم حفظ النتيجة (${updatedRecord.finalEvaluation?.finalResult || 'مكتمل'}) للمواطن ${updatedRecord.FullName}`
+    );
 
     if (teamMemberToOpen) {
-      setTeamMembers(prev => {
-        const filtered = prev.filter(m => m.Citizen_ID !== teamMemberToOpen.Citizen_ID);
-        return [teamMemberToOpen, ...filtered];
-      });
-      // Automatically open the independent team member card!
-      setSelectedMemberForCard(teamMemberToOpen);
-      setShowCardModal(true);
+      showToast(`تم حفظ النتيجة وإضافة (${updatedRecord.FullName}) إلى سجل فريق العمل تلقائياً.`, 'success');
+    } else {
+      showToast(`تم حفظ نتيجة إكمال الطلب للمواطن (${updatedRecord.FullName}) بنجاح.`, 'success');
     }
   };
 
-  const handleDeleteTeamMember = (id: string) => {
-    if (window.confirm('هل أنت متأكد من حذف هذا الملف من سجل فريق العمل؟')) {
-      setTeamMembers(prev => prev.filter(m => m.id !== id));
-    }
-  };
-
-  const handleAddMemberManually = () => {
-    if (citizens.length === 0) {
-      alert('لا يوجد مراجعين مسجلين لاختيارهم');
+  // Add a citizen to Team Members (persisted via OrganizationRecord in Firestore + Google Sheets)
+  const handleAddTeamMemberSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cit = citizens.find(c => c.Citizen_ID === selectedCitizenForTeam);
+    if (!cit) {
+      showToast('يرجى اختيار مواطن من القائمة أولاً.', 'error');
       return;
     }
-    const citizenName = prompt('أدخل الاسم أو اختر من القائمة، أو انقر موافق لفتح استمارة تقييم متابعة');
-    if (citizenName) {
-      const match = citizens.find(c => c.FullName.includes(citizenName));
-      if (match) {
-        handleOpenEvaluationForCitizen(match);
-      } else {
-        handleOpenNewEvaluation();
-      }
+
+    const existing = orgRecordByCitizenId.get(cit.Citizen_ID);
+    const updatedRecord: OrganizationRecord = existing
+      ? {
+          ...existing,
+          isTeamMember: true,
+          teamMemberRole: newTeamRole,
+          Notes: newTeamNotes.trim() || existing.Notes || ''
+        }
+      : {
+          Citizen_ID: cit.Citizen_ID,
+          FullName: cit.FullName,
+          District: cit.District || '',
+          SubDistrict: cit.SubDistrict || '',
+          Phone1: cit.Phone1 || '',
+          OrgRating: 'مؤيد',
+          InfluenceType: newTeamRole,
+          Notes: newTeamNotes.trim(),
+          isTeamMember: true,
+          teamMemberRole: newTeamRole
+        };
+
+    if (existing) {
+      updateOrganizationRecord(updatedRecord);
     } else {
-      handleOpenNewEvaluation();
+      addOrganizationRecord(updatedRecord);
     }
+
+    addAuditLog('إضافة عضو إلى فريق العمل', 'قسم التنظيم', `تم ضم (${cit.FullName}) إلى سجل فريق العمل بصفة (${newTeamRole})`);
+    showToast(`تمت إضافة (${cit.FullName}) إلى سجل فريق العمل وحفظه سحابياً.`, 'success');
+    setIsAddTeamModalOpen(false);
+    setSelectedCitizenForTeam('');
+    setNewTeamRole('مفتاح نهائي');
+    setNewTeamNotes('');
   };
 
-  // Render final result badge helper
-  const renderFinalResultBadge = (rec: OrganizationRecord) => {
-    const ev = rec.finalEvaluation;
-    if (!ev || !ev.finalResult) {
-      return (
-        <button
-          onClick={() => handleOpenEvaluation(rec)}
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-slate-100 hover:bg-indigo-50 text-slate-600 hover:text-indigo-700 border border-dashed border-slate-300 hover:border-indigo-300 transition-colors cursor-pointer"
-          title="تسجيل النتيجة النهائية للطلب"
-        >
-          <Plus className="w-3 h-3" />
-          <span>قيد التقييم (تسجيل)</span>
-        </button>
-      );
-    }
+  // Remove team member status cleanly without deleting citizen history
+  const handleConfirmRemoveTeamMember = (record: OrganizationRecord) => {
+    updateOrganizationRecord({
+      ...record,
+      isTeamMember: false,
+      teamMemberRole: undefined
+    });
+    addAuditLog('إزالة عضو من سجل فريق العمل', 'قسم التنظيم', `تمت إزالة (${record.FullName}) من قائمة فريق العمل`);
+    showToast(`تمت إزالة (${record.FullName}) من سجل فريق العمل.`, 'info');
+    setConfirmRemoveTeamId(null);
+  };
 
-    switch (ev.finalResult) {
+  const handleExportOrgExcel = () => {
+    exportUnifiedSystemExcel({
+      citizens,
+      requests,
+      interviews,
+      cheques,
+      organizationRecords,
+      officialLetters,
+      customSections,
+      customRecords,
+      officeName: systemSettings.officeName || systemSettings.appName,
+      exporterName: currentUser?.FullName || 'مسؤول قسم التنظيم'
+    });
+    showToast('تم تصدير بيانات المنظومة وقسم التنظيم إلى ملف Excel بنجاح.', 'success');
+  };
+
+  // Strictly 3 Main Icons for Organization Hub
+  const organizationHubTiles: OfficeTileItem[] = [
+    {
+      id: 'org_team_tab',
+      title: 'سجل فريق العمل',
+      subtitle: 'قاعدة بيانات أعضاء فريق العمل والمفاتيح الانتخابية والمنسقين',
+      icon: UserCheck,
+      iconColor: 'text-emerald-600 dark:text-emerald-400',
+      iconBg: 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800',
+      badge: `${teamMembersList.length} عضو`,
+      badgeColor: 'bg-emerald-600 text-white',
+      onClick: () => setActiveTab('team_members')
+    },
+    {
+      id: 'org_reports_tab',
+      title: 'إحصائيات',
+      subtitle: 'مؤشرات الإنجاز والتقييم الجماهيري وتوزيع الطلبات حسب الأقضية',
+      icon: BarChart3,
+      iconColor: 'text-sky-600 dark:text-sky-400',
+      iconBg: 'bg-sky-50 dark:bg-sky-950/40 border-sky-200 dark:border-sky-800',
+      badge: `${evalAnalytics.totalEvaluated} تقييم`,
+      badgeColor: 'bg-sky-600 text-white',
+      onClick: () => setActiveTab('reports')
+    },
+    {
+      id: 'org_daily_work_tab',
+      title: 'العمل اليومي',
+      subtitle: 'قائمة الأسماء اليومية وإكمال الطلبات وعرض بيانات الاستعلامات والإدارة',
+      icon: Briefcase,
+      iconColor: 'text-purple-600 dark:text-purple-400',
+      iconBg: 'bg-purple-50 dark:bg-purple-950/40 border-purple-200 dark:border-purple-800',
+      badge: `${dailyStats.pending} بانتظار الإكمال`,
+      badgeColor: 'bg-purple-600 text-white',
+      onClick: () => setActiveTab('daily_work')
+    }
+  ];
+
+  const getResultBadge = (result?: string) => {
+    switch (result) {
       case 'تم اكمال الطلب بالكامل':
-        return (
-          <div className="flex flex-col items-start gap-0.5">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-              <span>تم إكمال الطلب بالكامل</span>
-            </span>
-            <span className="text-[9px] text-slate-500 pr-1 font-medium">
-              النتيجة: {ev.case1_citizenObtainedGoal || 'نعم'} | راضي: {ev.case1_citizenSatisfied || 'نعم'}
-            </span>
-          </div>
-        );
+        return { label: 'مكتمل بالكامل', cls: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
       case 'تم حل الطلب جزئيا':
-        return (
-          <div className="flex flex-col items-start gap-0.5">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
-              <AlertCircle className="w-3 h-3 text-blue-600" />
-              <span>تم حل الطلب جزئياً</span>
-            </span>
-            <span className="text-[9px] text-slate-500 pr-1 font-medium">
-              السبب: {ev.case2_incompleteReason?.slice(0, 18) || 'عدم اختصاص'}...
-            </span>
-          </div>
-        );
+        return { label: 'حل جزئي', cls: 'bg-amber-100 text-amber-800 border-amber-200' };
       case 'الطلب يحتاج متابعة':
-        return (
-          <div className="flex flex-col items-start gap-0.5">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
-              <Clock className="w-3 h-3 text-amber-600" />
-              <span>الطلب يحتاج متابعة</span>
-            </span>
-            <span className="text-[9px] text-slate-500 pr-1 font-medium">
-              {ev.case3_followupTypes?.[0] || 'متابعة'} {ev.case3_wantsToJoinTeam === 'نعم' ? '• (مفتاح فريق)' : ''}
-            </span>
-          </div>
-        );
+        return { label: 'يحتاج متابعة', cls: 'bg-blue-100 text-blue-800 border-blue-200' };
       case 'لم يتم حل الطلب':
-        return (
-          <div className="flex flex-col items-start gap-0.5">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-800 border border-rose-200">
-              <XCircle className="w-3 h-3 text-rose-600" />
-              <span>لم يتم حل الطلب</span>
-            </span>
-            <span className="text-[9px] text-slate-500 pr-1 font-medium">
-              السبب: {ev.case4_failureReason || 'خارج الاختصاص'} ({ev.case4_citizenStance || 'متفهم'})
-            </span>
-          </div>
-        );
+        return { label: 'لم يتم الحل', cls: 'bg-rose-100 text-rose-800 border-rose-200' };
       default:
         return null;
     }
   };
 
   return (
-    <div className="space-y-4 text-right">
-      {/* Header */}
-      <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-xs">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700">
-              <Users2 className="w-5 h-5" />
-            </div>
-            <h2 className="text-lg font-extrabold text-slate-900">قسم التنظيم والموقف الجماهيري</h2>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-              المحطة الرابعة في المسار الإداري
-            </span>
+    <div className="space-y-5 text-right animate-in fade-in duration-200 font-['Tajawal',sans-serif]" dir="rtl">
+      {/* Toast Notification Banner */}
+      {toastBanner && (
+        <div
+          className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 text-xs font-bold shadow-sm ${
+            toastBanner.type === 'success'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+              : toastBanner.type === 'error'
+              ? 'bg-rose-50 border-rose-300 text-rose-900'
+              : 'bg-blue-50 border-blue-300 text-blue-900'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {toastBanner.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : toastBanner.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            ) : (
+              <Sparkles className="w-4 h-4 text-blue-600 shrink-0" />
+            )}
+            <span>{toastBanner.text}</span>
           </div>
-          <p className="text-xs text-slate-500 max-w-2xl">
-            تقييم النتيجة النهائية للطلبات (مكتمل بالكامل، جزئي، يحتاج متابعة، لم يحل)، إدارة ملفات فريق العمل والمفاتيح الانتخابية، والتقارير والإحصائيات التراكمية.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2 flex-wrap w-full lg:w-auto justify-end">
           <button
-            onClick={() => setActiveSection('dashboard')}
-            className="px-3.5 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
-            title="الانتقال إلى لوحة تحكم وإحصائيات قسم التنظيم والجماهير"
+            type="button"
+            onClick={() => setToastBanner(null)}
+            className="p-1 rounded-lg hover:bg-black/5 cursor-pointer"
           >
-            <BarChart3 className="w-4 h-4 text-purple-600" />
-            <span>لوحة إحصائيات التنظيم</span>
-          </button>
-
-          {/* Main Action: New Request Outcome Evaluation */}
-          <button
-            onClick={handleOpenNewEvaluation}
-            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
-            title="تقييم وتوثيق مخرجات الطلب النهائية للمواطن"
-          >
-            <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-            <span>تسجيل النتيجة النهائية للطلب</span>
-          </button>
-
-          <button
-            onClick={() => setShowAiDrafterModal(true)}
-            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
-            title="توليد طلب تنظيمي رسمي بالذكاء الاصطناعي"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-            <span>توليد طلب بالذكاء الاصطناعي</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setEditingRecord(null);
-              setCitizenId(citizens[0]?.Citizen_ID || '');
-              setShowAddModal(true);
-            }}
-            className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>+ تقييم تنظيمي</span>
+            <X className="w-4 h-4" />
           </button>
         </div>
-      </div>
+      )}
 
-      {/* ---------------- VIEW 1: CENTRAL ICONS HUB ---------------- */}
+      {/* ================================================================ */}
+      {/* HUB VIEW: EXACTLY 3 MAIN ICONS ONLY                              */}
+      {/* ================================================================ */}
       {activeTab === 'hub' && (
         <OfficeIconTilesGrid
-          title="أيقونات ومهام قسم التنظيم والموقف الجماهيري"
-          subtitle="انقر على أي أيقونة للاستعراض المباشر أو تسجيل التقييمات النهائية والكوادر"
-          columns={5}
-          items={[
-            {
-              id: 'org_records_tab',
-              title: 'سجلات الموقف والنتائج',
-              subtitle: 'الموقف الجماهيري للمراجعين',
-              icon: Users2,
-              iconColor: 'text-indigo-600 dark:text-indigo-400',
-              iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-              badge: filteredRecords.length,
-              badgeColor: 'bg-indigo-600 text-white',
-              onClick: () => {
-                setActiveTab('records');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            },
-            {
-              id: 'org_referred_tab',
-              title: 'الوارد والمحال للتنظيم',
-              subtitle: 'المراجعون المحالون لقسم التنظيم',
-              icon: SendHorizontal,
-              iconColor: 'text-amber-600 dark:text-amber-400',
-              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
-              badge: referredCitizens.length,
-              badgeColor: 'bg-amber-600 text-white',
-              onClick: () => {
-                setActiveTab('referred_citizens');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            },
-            {
-              id: 'org_evaluation_tab',
-              title: 'تسجيل النتيجة النهائية للطلب',
-              subtitle: 'مكتمل / جزئي / متابعة / لم يحل',
-              icon: CheckCircle2,
-              iconColor: 'text-emerald-600 dark:text-emerald-400',
-              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
-              onClick: () => handleOpenNewEvaluation()
-            },
-            {
-              id: 'org_team_tab',
-              title: 'سجل فريق العمل والكوادر',
-              subtitle: 'المفاتيح الانتخابية والنشطاء',
-              icon: UserCheck,
-              iconColor: 'text-purple-600 dark:text-purple-400',
-              iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800',
-              badge: teamMembers.length,
-              badgeColor: 'bg-purple-600 text-white',
-              onClick: () => {
-                setActiveTab('team_members');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            },
-            {
-              id: 'org_reports_tab',
-              title: 'إحصائيات وتقارير النتائج',
-              subtitle: 'الرسوم البيانية وتوزيع الأقضية',
-              icon: BarChart3,
-              iconColor: 'text-rose-600 dark:text-rose-400',
-              iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800',
-              onClick: () => {
-                setActiveTab('reports');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            }
-          ]}
+          title="قسم التنظيم والموقف الجماهيري"
+          subtitle="اختر إحدى الأيقونات الرئيسية الثلاث لإدارة فريق العمل أو متابعة الإحصائيات أو العمل اليومي"
+          items={organizationHubTiles}
+          columns={3}
         />
       )}
 
-      {/* ---------------- VIEW 2: DEDICATED SUBVIEW HEADER WITH BACK BUTTON ---------------- */}
+      {/* ================================================================ */}
+      {/* SUB-VIEW HEADER (SHOWN IN ANY OF THE 3 SUB-SECTIONS)             */}
+      {/* ================================================================ */}
       {activeTab !== 'hub' && (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-3">
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => {
-                setActiveTab('hub');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-black text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+              type="button"
+              onClick={() => setActiveTab('hub')}
+              className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 font-bold text-xs transition-colors cursor-pointer"
             >
-              <ArrowLeft className="w-4 h-4 rotate-180" />
-              <span>رجوع إلى شبكة أيقونات قسم التنظيم</span>
+              → الأيقونات الرئيسية
             </button>
-
-            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
-
-            <span className="font-black text-sm text-slate-900 dark:text-white">
-              {activeTab === 'records' && '👥 سجلات الموقف والنتائج التنظيمية'}
-              {activeTab === 'reports' && '📊 إحصائيات وتقارير النتائج'}
-              {activeTab === 'team_members' && '🛡️ فريق العمل والمفاتيح المستقلة'}
-              {activeTab === 'referred_citizens' && '📨 الوارد المحال من الإدارة ومدير المكتب'}
-            </span>
+            <div>
+              <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+                {activeTab === 'daily_work'
+                  ? 'العمل اليومي — قسم التنظيم'
+                  : activeTab === 'team_members'
+                  ? 'سجل فريق العمل'
+                  : 'إحصائيات قسم التنظيم'}
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {activeTab === 'daily_work'
+                  ? 'قائمة الأسماء اليومية — اضغط على (إكمال الطلب) لعرض كافة بيانات الاستعلامات والإدارة وتسجيل النتيجة النهائية'
+                  : activeTab === 'team_members'
+                  ? 'قائمة أعضاء فريق العمل والمفاتيح الانتخابية المحفوظة سحابياً'
+                  : 'التقارير البيانية ومؤشرات إنجاز وتقييم طلبات المراجعين'}
+              </p>
+            </div>
           </div>
 
-          {/* Quick Sub-tab Jump Pills */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs font-bold">
+          {/* Clean 3-tab quick switcher */}
+          <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-full md:w-auto overflow-x-auto">
             <button
-              onClick={() => setActiveTab('records')}
-              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
-                activeTab === 'records' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              type="button"
+              onClick={() => setActiveTab('daily_work')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'daily_work'
+                  ? 'bg-white dark:bg-slate-900 text-purple-700 dark:text-purple-300 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
               }`}
             >
-              سجلات الموقف ({filteredRecords.length})
+              <Briefcase className="w-3.5 h-3.5" />
+              <span>العمل اليومي</span>
             </button>
             <button
-              onClick={() => setActiveTab('reports')}
-              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
-                activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
-              }`}
-            >
-              التقارير
-            </button>
-            <button
+              type="button"
               onClick={() => setActiveTab('team_members')}
-              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
-                activeTab === 'team_members' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'team_members'
+                  ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-300 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
               }`}
             >
-              فريق العمل ({teamMembers.length})
+              <UserCheck className="w-3.5 h-3.5" />
+              <span>سجل فريق العمل</span>
             </button>
             <button
-              onClick={() => setActiveTab('referred_citizens')}
-              className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
-                activeTab === 'referred_citizens' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+              type="button"
+              onClick={() => setActiveTab('reports')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'reports'
+                  ? 'bg-white dark:bg-slate-900 text-sky-700 dark:text-sky-300 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
               }`}
             >
-              الوارد المحال ({referredCitizens.length})
+              <BarChart3 className="w-3.5 h-3.5" />
+              <span>إحصائيات</span>
             </button>
           </div>
         </div>
       )}
 
-
-      {/* Tab 1: Records Table */}
-      {activeTab === 'records' && (
-        <div className="space-y-3">
-          {/* Quick Filters */}
-          <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-              <div className="relative">
-                <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="بحث بالاسم، الرمز، القضاء، أو الثقل..."
-                  className="w-full pr-9 pl-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                />
-              </div>
-
+      {/* ================================================================ */}
+      {/* TAB 1: العمل اليومي (DIRECTOR-STYLE NAME BARS + إكمال الطلب)      */}
+      {/* ================================================================ */}
+      {activeTab === 'daily_work' && (
+        <div className="space-y-4">
+          {/* Status Filter KPI Cards (Director style) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setDailyFilter('pending');
+                setVisibleLimit(40);
+              }}
+              className={`p-4 rounded-2xl border text-right transition-all cursor-pointer flex items-center justify-between ${
+                dailyFilter === 'pending'
+                  ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-400 ring-2 ring-amber-400/30 shadow-xs'
+                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:bg-slate-50'
+              }`}
+            >
               <div>
-                <select
-                  value={finalResultFilter}
-                  onChange={(e) => setFinalResultFilter(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-semibold"
-                >
-                  <option value="all">كل النتائج النهائية للطلبات</option>
-                  <option value="تم اكمال الطلب بالكامل">تم إكمال الطلب بالكامل</option>
-                  <option value="تم حل الطلب جزئيا">تم حل الطلب جزئياً</option>
-                  <option value="الطلب يحتاج متابعة">الطلب يحتاج متابعة</option>
-                  <option value="لم يتم حل الطلب">لم يتم حل الطلب</option>
-                  <option value="unassigned">قيد التقييم (بدون نتيجة مسجلة)</option>
-                </select>
+                <p className="text-xs font-bold text-amber-700 dark:text-amber-300">بانتظار إكمال الطلب</p>
+                <p className="text-2xl font-black text-slate-900 dark:text-white mt-0.5 tabular-nums">{dailyStats.pending}</p>
               </div>
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/50 text-amber-600 flex items-center justify-center">
+                <Clock className="w-5 h-5" />
+              </div>
+            </button>
 
+            <button
+              type="button"
+              onClick={() => {
+                setDailyFilter('completed');
+                setVisibleLimit(40);
+              }}
+              className={`p-4 rounded-2xl border text-right transition-all cursor-pointer flex items-center justify-between ${
+                dailyFilter === 'completed'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-400 ring-2 ring-emerald-400/30 shadow-xs'
+                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:bg-slate-50'
+              }`}
+            >
               <div>
-                <select
-                  value={ratingFilter}
-                  onChange={(e) => setRatingFilter(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                >
-                  <option value="all">جميع المواقف التنظيمية</option>
-                  <option value="مؤيد">مؤيد</option>
-                  <option value="متردد">متردد</option>
-                  <option value="معارض">معارض</option>
-                  <option value="كادر قيادي">كادر قيادي</option>
-                  <option value="شخصية مؤثرة">شخصية مؤثرة</option>
-                </select>
+                <p className="text-xs font-bold text-emerald-700 dark:text-emerald-300">تم إكمال الطلب</p>
+                <p className="text-2xl font-black text-slate-900 dark:text-white mt-0.5 tabular-nums">{dailyStats.completed}</p>
               </div>
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 flex items-center justify-center">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+            </button>
 
+            <button
+              type="button"
+              onClick={() => {
+                setDailyFilter('all');
+                setVisibleLimit(40);
+              }}
+              className={`p-4 rounded-2xl border text-right transition-all cursor-pointer flex items-center justify-between ${
+                dailyFilter === 'all'
+                  ? 'bg-indigo-50 dark:bg-indigo-950/40 border-indigo-400 ring-2 ring-indigo-400/30 shadow-xs'
+                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:bg-slate-50'
+              }`}
+            >
               <div>
-                <select
-                  value={districtFilter}
-                  onChange={(e) => setDistrictFilter(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                >
-                  <option value="all">جميع الأقضية والمناطق</option>
-                  {districts.map(d => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
+                <p className="text-xs font-bold text-indigo-700 dark:text-indigo-300">جميع الأسماء</p>
+                <p className="text-2xl font-black text-slate-900 dark:text-white mt-0.5 tabular-nums">{dailyStats.total}</p>
               </div>
+              <div className="w-10 h-10 rounded-xl bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 flex items-center justify-center">
+                <Users className="w-5 h-5" />
+              </div>
+            </button>
+          </div>
+
+          {/* Search Bar */}
+          <div className="bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="relative w-full sm:w-96">
+              <input
+                type="text"
+                value={dailySearch}
+                onChange={e => setDailySearch(e.target.value)}
+                placeholder="بحث بالاسم، رقم الهاتف، القضاء، أو رقم الطلب..."
+                className="w-full h-10 pr-9 pl-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 font-medium"
+              />
+              <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
+            </div>
+            <div className="text-xs font-bold text-slate-500 dark:text-slate-400">
+              المعروض: <span className="font-mono text-slate-800 dark:text-slate-200">{filteredDailyWork.length}</span> اسم
             </div>
           </div>
 
-          {/* Records Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-            <div className="p-3.5 border-b border-slate-100 flex items-center justify-between text-xs text-slate-500">
-              <span className="font-bold text-slate-800">
-                سجلات التنظيم والنتائج النهائية الموثقة ({filteredRecords.length})
-              </span>
-              <span className="text-[11px] text-slate-400">
-                تحديث لحظي وتوثيق معتمد
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-right text-xs">
-                <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
-                  <tr>
-                    <th className="p-3.5">الرقم التعريفي</th>
-                    <th className="p-3.5">المواطن المراجع</th>
-                    <th className="p-3.5">النتيجة النهائية للطلب</th>
-                    <th className="p-3.5">الموقف التنظيمي</th>
-                    <th className="p-3.5">الثقل الاجتماعي</th>
-                    <th className="p-3.5">المركز والمحطة</th>
-                    <th className="p-3.5 text-center">الإجراءات والتقييم</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {filteredRecords.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="p-8 text-center text-slate-400">
-                        لا توجد سجلات تنظيمية مطابقة لخيارات البحث المحددة.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredRecords.map((rec) => {
-                      const memberMatch = teamMembers.find(m => m.Citizen_ID === rec.Citizen_ID);
-                      const isTeam = rec.isTeamMember || !!memberMatch;
-
-                      return (
-                        <tr key={rec.Citizen_ID} className="hover:bg-slate-50/80 transition-colors">
-                          <td className="p-3.5 font-mono font-bold text-indigo-600 text-[11px] whitespace-nowrap">
-                            {rec.Citizen_ID}
-                          </td>
-                          <td className="p-3.5">
-                            <div className="font-bold text-slate-900">{rec.FullName}</div>
-                            <div className="text-[10px] text-slate-400 flex items-center gap-1.5 mt-0.5">
-                              <span>{rec.District || 'ذي قار'}</span>
-                              <span>•</span>
-                              <span className="font-mono" dir="ltr">{rec.Phone1 || rec.Phone || '—'}</span>
-                            </div>
-                          </td>
-                          <td className="p-3.5">
-                            {renderFinalResultBadge(rec)}
-                          </td>
-                          <td className="p-3.5">
-                            <span className={`px-2.5 py-1 rounded-md text-[10px] font-bold border ${
-                              rec.OrgRating === 'مؤيد' || rec.OrgRating === 'كادر قيادي'
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                : rec.OrgRating === 'معارض'
-                                ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
-                            }`}>
-                              {rec.OrgRating}
+          {/* Clean Director-Style Horizontal Name Bars (Name + Action Buttons ONLY) */}
+          <div className="space-y-2.5">
+            {filteredDailyWork.length === 0 ? (
+              <div className="p-12 text-center bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-2.5">
+                <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+                </div>
+                <h4 className="font-extrabold text-sm text-slate-800 dark:text-slate-200">
+                  {dailyFilter === 'pending'
+                    ? 'لا توجد أسماء بانتظار إكمال الطلب حالياً.'
+                    : 'لا توجد نتائج مطابقة للبحث الحالي.'}
+                </h4>
+                {dailyFilter !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setDailyFilter('all')}
+                    className="mt-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs cursor-pointer"
+                  >
+                    عرض جميع الأسماء
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                {filteredDailyWork.slice(0, visibleLimit).map((entry, idx) => {
+                  const resultBadge = getResultBadge(entry.orgRecord?.finalEvaluation?.finalResult);
+                  return (
+                    <div
+                      key={entry.citizen.Citizen_ID}
+                      className={`px-4 py-3.5 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                        entry.isCompleted
+                          ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/70'
+                          : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-purple-300 shadow-2xs'
+                      }`}
+                    >
+                      {/* Right: Clean Citizen Name Only (+ minimal status tag if evaluated) */}
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="w-8 h-8 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono font-bold text-xs flex items-center justify-center shrink-0">
+                          {idx + 1}
+                        </span>
+                        <div className="min-w-0 flex flex-wrap items-center gap-2">
+                          <h3 className="font-extrabold text-sm sm:text-base text-slate-900 dark:text-white truncate">
+                            {entry.citizen.FullName}
+                          </h3>
+                          {resultBadge && (
+                            <span className={`px-2 py-0.5 rounded-lg border text-[11px] font-bold ${resultBadge.cls}`}>
+                              {resultBadge.label}
                             </span>
-                          </td>
-                          <td className="p-3.5 font-semibold text-slate-800">
-                            <div>{rec.InfluenceType || 'مواطن'}</div>
-                            <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-400">
-                              <span>النقاط:</span>
-                              <span className="font-mono font-bold text-indigo-600">{rec.EvaluationPoints || 0}</span>
-                            </div>
-                          </td>
-                          <td className="p-3.5 text-slate-600 text-[11px]">
-                            <div>{rec.ElectionCenter || 'غير محدد'}</div>
-                            {rec.StationNumber && (
-                              <span className="text-[10px] text-slate-400 block">{rec.StationNumber}</span>
-                            )}
-                          </td>
-                          <td className="p-3.5">
-                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                              {/* Evaluation Button */}
-                              <button
-                                onClick={() => handleOpenEvaluation(rec)}
-                                className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[10px] font-bold cursor-pointer transition-colors flex items-center gap-1"
-                                title="تسجيل أو تعديل استبيان النتيجة النهائية للطلب"
-                              >
-                                <FileText className="w-3 h-3" />
-                                <span>{rec.finalEvaluation ? 'النتيجة' : '+ تقييم النتيجة'}</span>
-                              </button>
+                          )}
+                          {entry.orgRecord?.isTeamMember && (
+                            <span className="px-2 py-0.5 rounded-lg bg-purple-100 text-purple-800 border border-purple-200 text-[11px] font-bold">
+                              عضو فريق عمل
+                            </span>
+                          )}
+                        </div>
+                      </div>
 
-                              {/* Independent team member badge/card */}
-                              {isTeam && (
-                                <button
-                                  onClick={() => {
-                                    if (memberMatch) {
-                                      setSelectedMemberForCard(memberMatch);
-                                      setShowCardModal(true);
-                                    } else {
-                                      const mockMember: OrgTeamMember = {
-                                        id: `TM-${rec.Citizen_ID.replace('ONA-', '')}`,
-                                        Citizen_ID: rec.Citizen_ID,
-                                        FullName: rec.FullName,
-                                        Phone: rec.Phone1,
-                                        District: rec.District,
-                                        SubDistrict: rec.SubDistrict,
-                                        ElectionCenter: rec.ElectionCenter,
-                                        Role: rec.teamMemberRole || 'مفتاح نهائي',
-                                        JoinedDate: rec.UpdatedAt || '2026-02-01',
-                                        Status: 'نشط'
-                                      };
-                                      setSelectedMemberForCard(mockMember);
-                                      setShowCardModal(true);
-                                    }
-                                  }}
-                                  className="px-2 py-1 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-[10px] font-bold cursor-pointer transition-colors flex items-center gap-1"
-                                  title="عرض بطاقة المفتاح التنظيمي المستقل"
-                                >
-                                  <ShieldCheck className="w-3 h-3" />
-                                  <span>ملف المفتاح</span>
-                                </button>
-                              )}
+                      {/* Left: Dedicated Action Buttons */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenCompleteRequest(entry)}
+                          className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 ${
+                            entry.isCompleted
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                              : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                          }`}
+                        >
+                          <ClipboardCheck className="w-4 h-4" />
+                          <span>{entry.isCompleted ? 'تعديل إكمال الطلب' : 'إكمال الطلب'}</span>
+                        </button>
 
-                              {/* General Edit */}
-                              <button
-                                onClick={() => openEdit(rec)}
-                                className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-[10px] font-bold cursor-pointer transition-colors"
-                                title="تعديل الموقف التنظيمي"
-                              >
-                                تعديل
-                              </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCitizenForHistory(entry.citizen)}
+                          className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                          title="عرض السجل الكامل للمراجع"
+                        >
+                          <Eye className="w-4 h-4" />
+                          <span>السجل</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
 
-                              {/* Citizen History Modal */}
-                              <button
-                                onClick={() => {
-                                  const cit = citizens.find(c => c.Citizen_ID === rec.Citizen_ID);
-                                  if (cit) setSelectedCitizenForHistory(cit);
-                                }}
-                                className="p-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 cursor-pointer transition-colors"
-                                title="السجل التراكمي للمواطن"
-                              >
-                                <Clock className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+                {filteredDailyWork.length > visibleLimit && (
+                  <div className="pt-2 text-center">
+                    <button
+                      type="button"
+                      onClick={() => setVisibleLimit(prev => prev + 40)}
+                      className="px-5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 text-slate-800 dark:text-slate-200 font-bold text-xs cursor-pointer shadow-2xs"
+                    >
+                      عرض المزيد ({filteredDailyWork.length - visibleLimit} اسم متبقي)
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
       )}
 
-      {/* Tab 2: Statistics and Reports */}
-      {activeTab === 'reports' && (
-        <OrgStatisticsAndReports
-          records={organizationRecords}
-          teamMembers={teamMembers}
-          onOpenEvaluation={handleOpenEvaluation}
-          onOpenTeamMemberCard={(member) => {
-            setSelectedMemberForCard(member);
-            setShowCardModal(true);
-          }}
-        />
-      )}
-
-      {/* Tab 3: Team Members Manager */}
+      {/* ================================================================ */}
+      {/* TAB 2: سجل فريق العمل (CLOUD-SYNCED TEAM MEMBERS)                */}
+      {/* ================================================================ */}
       {activeTab === 'team_members' && (
-        <OrgTeamMembersManager
-          teamMembers={teamMembers}
-          onOpenCard={(member) => {
-            setSelectedMemberForCard(member);
-            setShowCardModal(true);
-          }}
-          onDeleteMember={handleDeleteTeamMember}
-          onAddMemberManually={handleAddMemberManually}
-        />
-      )}
+        <div className="space-y-4">
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="relative w-full sm:w-96">
+              <input
+                type="text"
+                value={teamSearch}
+                onChange={e => setTeamSearch(e.target.value)}
+                placeholder="بحث في سجل فريق العمل بالاسم، الهاتف، القضاء، أو الدور..."
+                className="w-full h-10 pr-9 pl-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
+              />
+              <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
+            </div>
 
-      {/* Tab 4: Referred Citizens */}
-      {activeTab === 'referred_citizens' && (
-        <div className="space-y-3">
-          {referredCitizens.length === 0 ? (
-            <div className="p-10 rounded-2xl bg-white border border-slate-200 text-center text-slate-500 text-xs shadow-xs">
-              لا يوجد مراجعين محالين حالياً إلى قسم التنظيم والموقف الجماهيري.
+            <button
+              type="button"
+              onClick={() => setIsAddTeamModalOpen(true)}
+              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>إضافة عضو إلى فريق العمل</span>
+            </button>
+          </div>
+
+          {teamMembersList.length === 0 ? (
+            <div className="p-12 text-center bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="w-14 h-14 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 flex items-center justify-center mx-auto">
+                <Users className="w-7 h-7" />
+              </div>
+              <h4 className="font-extrabold text-sm text-slate-800 dark:text-slate-200">
+                لا يوجد أعضاء مسجلون في سجل فريق العمل حالياً
+              </h4>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                يمكنك إضافة عضو جديد مباشرة من الزر أعلاه، أو عند اختيار انضمام المواطن للفريق داخل شاشة (إكمال الطلب) في العمل اليومي.
+              </p>
             </div>
           ) : (
-            referredCitizens.map((cit) => {
-              const orgRec = organizationRecords.find(r => r.Citizen_ID === cit.Citizen_ID);
-              const latestDirective = cit.WorkflowHistory && cit.WorkflowHistory.length > 0
-                ? cit.WorkflowHistory[cit.WorkflowHistory.length - 1]
-                : null;
-
-              return (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {teamMembersList.map(item => (
                 <div
-                  key={cit.Citizen_ID}
-                  className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200 hover:border-indigo-300 shadow-xs space-y-3 transition-all text-right"
+                  key={item.record.Citizen_ID}
+                  className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs flex flex-col justify-between gap-3"
                 >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono font-bold text-xs text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-lg border border-indigo-200">
-                        {cit.Citizen_ID}
-                      </span>
-                      <h4 className="font-bold text-sm text-slate-900">{cit.FullName}</h4>
-                      {cit.Surname && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
-                          عشيرة: {cit.Surname}
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h4 className="font-extrabold text-sm text-slate-900 dark:text-white">{item.fullName}</h4>
+                        <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-bold">
+                          <Award className="w-3 h-3" />
+                          {item.role}
                         </span>
-                      )}
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center gap-1">
-                        <UserCheck className="w-3 h-3" />
-                        <span>محال إلى مدير التنظيم</span>
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2 text-xs">
-                      {orgRec ? (
-                        <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold text-[11px]">
-                          الموقف: {orgRec.OrgRating} ({orgRec.InfluenceType || 'مواطن'})
-                        </span>
-                      ) : (
-                        <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 font-bold text-[11px]">
-                          بانتظار تسجيل التقييم التنظيمي
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {latestDirective && (
-                    <div className="bg-indigo-50/70 p-3 rounded-xl border border-indigo-100 text-xs text-indigo-950 space-y-1">
-                      <div className="flex items-center justify-between text-[10px] text-indigo-600 font-bold">
-                        <span>آخر إحالة من: {latestDirective.ActionBy} ({latestDirective.FromStage} ← {latestDirective.ToStage})</span>
-                        <span className="font-mono">{latestDirective.Timestamp}</span>
                       </div>
-                      <p className="font-medium text-slate-800">
-                        توجيه الإحالة: {latestDirective.DirectiveNotes || 'لا توجد ملاحظات إضافية'}
-                      </p>
+                      <span className="font-mono text-[10px] text-slate-400">{item.record.Citizen_ID}</span>
                     </div>
-                  )}
 
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs text-slate-700 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                    <div>
-                      <span className="text-slate-400 block text-[10px] mb-0.5">الهاتف</span>
-                      <span className="font-mono font-bold text-slate-900" dir="ltr">{cit.Phone1}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 block text-[10px] mb-0.5">السكن</span>
-                      <span className="font-semibold text-slate-900">{cit.District} - {cit.SubDistrict}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 block text-[10px] mb-0.5">المهنة</span>
-                      <span className="font-semibold text-slate-900">{cit.Job || 'كاسب'}</span>
+                    <div className="space-y-1 text-xs text-slate-600 dark:text-slate-300 pt-1">
+                      <div className="flex items-center gap-1.5">
+                        <Phone className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span className="font-mono font-bold">{item.phone || 'غير مسجل'}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                        <span>{[item.district, item.subDistrict].filter(Boolean).join(' — ') || 'غير محدد'}</span>
+                      </div>
+                      {item.notes && (
+                        <p className="text-[11px] text-slate-500 bg-slate-50 dark:bg-slate-800/70 p-2 rounded-lg border border-slate-100 dark:border-slate-700 leading-relaxed">
+                          {item.notes}
+                        </p>
+                      )}
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2 flex-wrap">
-                    <button
-                      onClick={() => setSelectedCitizenForHistory(cit)}
-                      className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                    >
-                      <Eye className="w-3.5 h-3.5 text-blue-600" />
-                      <span>السجل التراكمي</span>
-                    </button>
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center gap-1.5">
+                      {item.citizen && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const reqs = requestsByCitizenId.get(item.citizen!.Citizen_ID) || [];
+                            setEvalTargetCitizen(item.citizen!);
+                            setEvalTargetRecord(item.record);
+                            setEvalTargetRequestId(reqs[0]?.Request_ID || '');
+                            setIsEvalModalOpen(true);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-[11px] cursor-pointer"
+                        >
+                          إكمال / تقييم
+                        </button>
+                      )}
+                      {item.citizen && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCitizenForHistory(item.citizen!)}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] cursor-pointer"
+                        >
+                          السجل
+                        </button>
+                      )}
+                    </div>
 
-                    <button
-                      onClick={() => handleOpenEvaluationForCitizen(cit)}
-                      className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>تسجيل النتيجة النهائية للطلب</span>
-                    </button>
-
-                    <button
-                      onClick={() => openCreateForCitizen(cit)}
-                      className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>{orgRec ? 'تعديل التقييم والبيانات الانتخابية' : '+ تثبيت التقييم التنظيمي'}</span>
-                    </button>
+                    {confirmRemoveTeamId === item.record.Citizen_ID ? (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmRemoveTeamMember(item.record)}
+                          className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-bold cursor-pointer"
+                        >
+                          تأكيد الإزالة
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRemoveTeamId(null)}
+                          className="px-2 py-1 rounded-lg bg-slate-200 text-slate-700 text-[10px] font-bold cursor-pointer"
+                        >
+                          إلغاء
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmRemoveTeamId(item.record.Citizen_ID)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                        title="إزالة من سجل فريق العمل"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
-              );
-            })
+              ))}
+            </div>
           )}
         </div>
       )}
 
-      {/* Add / Edit General Org Modal */}
-      {(showAddModal || editingRecord) && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-          <div className="relative w-full max-w-xl bg-white text-slate-800 rounded-2xl border border-slate-200 shadow-xl p-5 md:p-6 space-y-4 max-h-[90vh] overflow-y-auto text-right">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <Users2 className="w-5 h-5 text-indigo-600" />
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    {editingRecord ? `تعديل الموقف التنظيمي (${editingRecord.FullName})` : 'إضافة وتوثيق الموقف التنظيمي'}
-                  </h3>
-                  <p className="text-[11px] text-slate-500">تحديد الولاء، الثقل الاجتماعي، والبيانات الانتخابية</p>
+      {/* ================================================================ */}
+      {/* TAB 3: إحصائيات (ANALYTICS & REPORTS)                            */}
+      {/* ================================================================ */}
+      {activeTab === 'reports' && (
+        <div className="space-y-5">
+          {/* Action Strip */}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleExportOrgExcel}
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>تصدير Excel شامل</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <Printer className="w-4 h-4" />
+              <span>طباعة التقرير</span>
+            </button>
+          </div>
+
+          {/* 4 Summary Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-700">مكتمل بالكامل</span>
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              </div>
+              <p className="text-2xl font-black text-slate-900 dark:text-white mt-1 tabular-nums">{evalAnalytics.fullCount}</p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-800">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-700">حل جزئي</span>
+                <Clock className="w-4 h-4 text-amber-600" />
+              </div>
+              <p className="text-2xl font-black text-slate-900 dark:text-white mt-1 tabular-nums">{evalAnalytics.partialCount}</p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-blue-700">يحتاج متابعة</span>
+                <AlertCircle className="w-4 h-4 text-blue-600" />
+              </div>
+              <p className="text-2xl font-black text-slate-900 dark:text-white mt-1 tabular-nums">{evalAnalytics.followupCount}</p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-rose-700">لم يتم الحل</span>
+                <XCircle className="w-4 h-4 text-rose-600" />
+              </div>
+              <p className="text-2xl font-black text-slate-900 dark:text-white mt-1 tabular-nums">{evalAnalytics.failedCount}</p>
+            </div>
+          </div>
+
+          {/* Charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <h4 className="text-sm font-extrabold text-slate-900 dark:text-white mb-3">
+                توزيع نتائج إكمال الطلبات
+              </h4>
+              {evalAnalytics.pieData.length === 0 ? (
+                <div className="h-60 flex items-center justify-center text-xs text-slate-400">
+                  لا توجد تقييمات مسجلة بعد لعرض الرسم البياني
                 </div>
+              ) : (
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={evalAnalytics.pieData}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={82}
+                        label
+                      >
+                        {evalAnalytics.pieData.map((_, idx) => (
+                          <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                      <Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <h4 className="text-sm font-extrabold text-slate-900 dark:text-white mb-3">
+                توزيع العمل اليومي حسب القضاء
+              </h4>
+              {evalAnalytics.districtChartData.length === 0 ? (
+                <div className="h-60 flex items-center justify-center text-xs text-slate-400">
+                  لا توجد بيانات كافية لعرض توزيع الأقضية
+                </div>
+              ) : (
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={evalAnalytics.districtChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="district" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="completed" name="تم إكمال الطلب" fill="#10b981" radius={[6, 6, 0, 0]} />
+                      <Bar dataKey="pending" name="بانتظار الإكمال" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Unified Department Analytics */}
+          <DepartmentAnalyticsDashboard department="organization" />
+        </div>
+      )}
+
+      {/* ================================================================ */}
+      {/* MODAL 1: إكمال الطلب (OrgFinalEvaluationModal with Reception+Admin Dossier) */}
+      {/* ================================================================ */}
+      <OrgFinalEvaluationModal
+        isOpen={isEvalModalOpen}
+        onClose={() => {
+          setIsEvalModalOpen(false);
+          setEvalTargetCitizen(null);
+          setEvalTargetRecord(null);
+          setEvalTargetRequestId('');
+        }}
+        citizen={evalTargetCitizen}
+        initialRecord={evalTargetRecord}
+        initialRequestId={evalTargetRequestId}
+        requests={requests}
+        citizens={citizens}
+        onSave={handleSaveEvaluation}
+      />
+
+      {/* ================================================================ */}
+      {/* MODAL 2: إضافة عضو جديد إلى سجل فريق العمل                      */}
+      {/* ================================================================ */}
+      {isAddTeamModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
+          <div className="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 space-y-4 text-right">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-emerald-50 text-emerald-700">
+                  <UserPlus className="w-5 h-5" />
+                </div>
+                <h3 className="font-extrabold text-sm text-slate-900">إضافة عضو جديد إلى سجل فريق العمل</h3>
               </div>
               <button
-                onClick={() => {
-                  setShowAddModal(false);
-                  setEditingRecord(null);
-                }}
-                className="text-slate-400 hover:text-slate-600 text-xs cursor-pointer p-1"
+                type="button"
+                onClick={() => setIsAddTeamModalOpen(false)}
+                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 cursor-pointer"
               >
-                ✕
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveGeneralOrg} className="space-y-3 text-right">
-              {!editingRecord ? (
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-0.5">اختر المراجع *</label>
-                  <select
-                    value={citizenId}
-                    onChange={(e) => setCitizenId(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                    required
-                  >
-                    <option value="">-- اختر مراجع مسجل بالاستعلامات --</option>
-                    {citizens.map((c) => (
-                      <option key={c.Citizen_ID} value={c.Citizen_ID}>
-                        {c.FullName} ({c.Citizen_ID}) - {c.District}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : (
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-bold">بيانات المراجع التنظيمية:</span>
-                    <span className="font-mono text-indigo-700 font-bold bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
-                      {editingRecord.Citizen_ID}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-600 mb-0.5">الاسم الرباعي واللقب</label>
-                      <input
-                        type="text"
-                        value={editOrgName}
-                        onChange={(e) => setEditOrgName(e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-900 text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-600 mb-0.5">رقم الهاتف</label>
-                      <input
-                        type="tel"
-                        value={editOrgPhone}
-                        onChange={(e) => setEditOrgPhone(e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-900 text-xs font-mono outline-none focus:ring-2 focus:ring-indigo-500"
-                        dir="ltr"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-0.5">الموقف التنظيمي</label>
-                  <select
-                    value={orgRating}
-                    onChange={(e) => setOrgRating(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-indigo-700"
-                  >
-                    <option value="مؤيد">مؤيد</option>
-                    <option value="متردد">متردد</option>
-                    <option value="معارض">معارض</option>
-                    <option value="كادر قيادي">كادر قيادي</option>
-                    <option value="شخصية مؤثرة">شخصية مؤثرة</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-0.5">الثقل الاجتماعي</label>
-                  <select
-                    value={influence}
-                    onChange={(e) => setInfluence(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                  >
-                    <option value="شيخ عشيرة">شيخ عشيرة</option>
-                    <option value="وجيه منطقة">وجيه منطقة</option>
-                    <option value="ناشط مدني">ناشط مدني</option>
-                    <option value="أكاديمي">أكاديمي</option>
-                    <option value="كاسب">كاسب</option>
-                    <option value="متقاعد">متقاعد</option>
-                    <option value="خريج">خريج</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-0.5">نقاط التقييم (0 - 100)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={points}
-                    onChange={(e) => setPoints(Number(e.target.value))}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-left font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-0.5">المركز الانتخابي</label>
-                  <input
-                    type="text"
-                    value={electionCenter}
-                    onChange={(e) => setElectionCenter(e.target.value)}
-                    placeholder="مدرسة النصر الابتدائية"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-0.5">رقم المحطة</label>
-                  <input
-                    type="text"
-                    value={stationNumber}
-                    onChange={(e) => setStationNumber(e.target.value)}
-                    placeholder="محطة 3"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                  />
-                </div>
+            <form onSubmit={handleAddTeamMemberSubmit} className="space-y-3.5 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">اختر المواطن *</label>
+                <select
+                  value={selectedCitizenForTeam}
+                  onChange={e => setSelectedCitizenForTeam(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 font-bold outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="">-- اختر من سجل المواطنين --</option>
+                  {citizens.map(c => (
+                    <option key={c.Citizen_ID} value={c.Citizen_ID}>
+                      {c.FullName} — {c.District || 'ذي قار'} ({c.Phone1 || c.Citizen_ID})
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-0.5">ملاحظات إضافية ومواقف ميدانية</label>
+                <label className="block font-bold text-slate-700 mb-1">الدور / الصفة التنظيمية *</label>
+                <select
+                  value={newTeamRole}
+                  onChange={e => setNewTeamRole(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 font-bold outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="مفتاح نهائي">مفتاح نهائي</option>
+                  <option value="منسق منطقة / حي">منسق منطقة / حي</option>
+                  <option value="عضو فريق مبادرات شبابية">عضو فريق مبادرات شبابية</option>
+                  <option value="كادر تنظيمي عام">كادر تنظيمي عام</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">ملاحظات تنظيمية</label>
                 <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
+                  value={newTeamNotes}
+                  onChange={e => setNewTeamNotes(e.target.value)}
                   rows={2}
-                  placeholder="ملاحظات حول الحضور، التأثير على العائلة، والجاهزية للمؤتمرات..."
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs text-right focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                  placeholder="تفاصيل المنطقة أو المهام المكلف بها العضو..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
-              <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
                 <button
                   type="button"
-                  onClick={() => {
-                    setShowAddModal(false);
-                    setEditingRecord(null);
-                  }}
-                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer"
+                  onClick={() => setIsAddTeamModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs"
+                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold flex items-center gap-1.5 cursor-pointer"
                 >
-                  حفظ البيانات التنظيمية
+                  <Plus className="w-4 h-4" />
+                  <span>حفظ في سجل فريق العمل</span>
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
-
-      {/* Org Final Evaluation Modal */}
-      <OrgFinalEvaluationModal
-        isOpen={showEvaluationModal}
-        onClose={() => {
-          setShowEvaluationModal(false);
-          setEvaluatingRecord(null);
-          setEvaluatingCitizen(null);
-        }}
-        citizen={evaluatingCitizen}
-        initialRecord={evaluatingRecord}
-        requests={requests}
-        citizens={citizens}
-        onSave={handleSaveEvaluation}
-      />
-
-      {/* Independent Team Member Card Modal */}
-      <OrgTeamMemberCardModal
-        isOpen={showCardModal}
-        onClose={() => {
-          setShowCardModal(false);
-          setSelectedMemberForCard(null);
-        }}
-        member={selectedMemberForCard}
-      />
-
-      {/* AI Request Drafter Modal */}
-      <AiRequestDrafterModal
-        isOpen={showAiDrafterModal}
-        onClose={() => setShowAiDrafterModal(false)}
-      />
     </div>
   );
 };

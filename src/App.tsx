@@ -74,6 +74,7 @@ const MainAppLayout: React.FC = () => {
   };
 
   const lastRenderedLogoRef = React.useRef<string>('');
+  const generatedIconsForLogoRef = React.useRef<string>('');
 
   // Dynamic Browser Tab Title, Favicon & Genuine PNG Desktop PWA App Icon Sync (AI Studio + Vercel)
   React.useEffect(() => {
@@ -112,20 +113,6 @@ const MainAppLayout: React.FC = () => {
       const manifestLink = document.querySelector("link[rel='manifest']") as HTMLLinkElement | null;
       if (!manifestLink) return;
 
-      // Check whether Express dynamic /api/pwa-icon/192 endpoint exists (Node server vs static Vercel)
-      try {
-        const probe = await fetch(`/api/pwa-icon/192?v=${encodeURIComponent(versionTag)}`, {
-          method: 'HEAD',
-          cache: 'no-store'
-        });
-        if (!cancelled && probe.ok) {
-          manifestLink.setAttribute('href', `/manifest.json?v=${encodeURIComponent(versionTag)}`);
-          return;
-        }
-      } catch {
-        // Static host (e.g. Vercel) — fall through to inline manifest with genuine PNG icons
-      }
-
       if (!cancelled && png192 && png512) {
         manifestLink.setAttribute(
           'href',
@@ -142,11 +129,13 @@ const MainAppLayout: React.FC = () => {
       let final192 = existing192;
       let final512 = existing512;
 
-      // If Developer uploaded/linked a custom logo and PNG desktop icons aren't generated for this exact logo yet, generate them now
+      // Guard: generate PNG icons at most ONCE per unique customLogo to prevent Firestore/state feedback loops
       if (
         customLogo &&
+        generatedIconsForLogoRef.current !== customLogo &&
         (!final192 || !final512 || (lastRenderedLogoRef.current && lastRenderedLogoRef.current !== customLogo))
       ) {
+        generatedIconsForLogoRef.current = customLogo;
         const generated = await generatePwaPngIcons(customLogo);
         if (!cancelled && generated) {
           final192 = generated.icon192;
@@ -274,18 +263,27 @@ const MainAppLayout: React.FC = () => {
       }
     };
 
-    applyToTree();
-    let rafId: number | null = null;
+    let debounceTimer: number | null = null;
     const observer = new MutationObserver(() => {
       if (isApplying) return;
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(applyToTree);
+      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => {
+        observer.disconnect();
+        applyToTree();
+        if (document.body) {
+          observer.observe(document.body, { childList: true, subtree: true });
+        }
+      }, 180);
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+
+    applyToTree();
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
 
     return () => {
       observer.disconnect();
-      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
     };
   }, [systemSettings?.textReplacements, activeSection, isAuthenticated]);
 
@@ -407,13 +405,17 @@ const MainAppLayout: React.FC = () => {
         </div>
       )}
 
-      {/* Main Workspace Body: نظام الأيقونات المباشرة بالكامل بدون قائمة جانبية */}
+      {/* Main Workspace Body: Do NOT mount heavy workspace modules until actual cloud data load finishes */}
       <div className="flex-1 w-full min-w-0 pb-16 md:pb-0">
         <main className="w-full p-3 sm:p-4 md:p-6 overflow-y-auto bg-[#F1F5F9] dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
           <div className="max-w-7xl mx-auto w-full">
-            <ErrorBoundary key={activeSection} sectionName={activeSection} compact={true}>
-              {renderActiveModule()}
-            </ErrorBoundary>
+            {isSessionLoading ? (
+              <div className="min-h-[60vh]" aria-busy="true" />
+            ) : (
+              <ErrorBoundary key={activeSection} sectionName={activeSection} compact={true}>
+                {renderActiveModule()}
+              </ErrorBoundary>
+            )}
           </div>
         </main>
       </div>

@@ -52,6 +52,7 @@ export const DirectorExecutiveModule: React.FC = () => {
   const { 
     citizens, 
     requests, 
+    updateCitizen,
     updateRequest,
     deleteRequest,
     deleteCitizen,
@@ -198,14 +199,17 @@ export const DirectorExecutiveModule: React.FC = () => {
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
+    const nextStage = decision === 'رفض' ? 'مكتمل' : 'مدير الإدارة';
     const updatedRequest: OfficeRequest = {
       ...request,
       DirectorDecision: decision,
-      DirectorNotes: noteText.trim() || undefined,
+      DirectorNotes: noteText.trim() || '',
+      RejectionReason: decision === 'رفض' ? (noteText.trim() || 'عدم استيفاء الشروط والضوابط') : '',
       DirectorDecisionDate: formattedDate,
       DirectorDecisionBy: currentUser ? `${currentUser.FullName} (مدير المكتب)` : 'مدير المكتب',
-      CurrentStage: decision === 'رفض' ? 'مكتمل' : 'مدير الإدارة',
-      ProcessingStatus: decision === 'رفض' ? 'مرفوض' : request.ProcessingStatus,
+      CurrentStage: nextStage,
+      TargetDepartment: request.TargetDepartment || 'قسم الإدارة',
+      ProcessingStatus: decision === 'رفض' ? 'مرفوض' : (request.ProcessingStatus === 'قيد الإجراء' ? 'قيد التدقيق' : request.ProcessingStatus),
       DeputyNotes: decision === 'رفض'
         ? `[سبب الرفض من قبل مدير المكتب]: ${noteText.trim() || 'عدم استيفاء الشروط والضوابط'}`
         : noteText.trim() 
@@ -214,6 +218,16 @@ export const DirectorExecutiveModule: React.FC = () => {
     };
 
     updateRequest(updatedRequest);
+
+    // Advance linked Citizen workflow stage instantaneously so Admin & Reception trackers reflect Director's decision live
+    const linkedCitizen = citizenMap.get(request.Citizen_ID);
+    if (linkedCitizen && linkedCitizen.CurrentStage !== nextStage) {
+      updateCitizen({
+        ...linkedCitizen,
+        CurrentStage: nextStage
+      });
+    }
+
     addAuditLog(
       `قرار مدير المكتب (${decision})`,
       'قسم مدير المكتب',
@@ -237,7 +251,7 @@ export const DirectorExecutiveModule: React.FC = () => {
 
     const updatedRequest: OfficeRequest = {
       ...request,
-      DirectorNotes: noteText.trim() || undefined,
+      DirectorNotes: noteText.trim() || '',
       DeputyNotes: noteText.trim() 
         ? `[توجيه المدير]: ${noteText.trim()}` 
         : request.DeputyNotes

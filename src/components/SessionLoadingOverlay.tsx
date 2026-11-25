@@ -21,7 +21,7 @@ interface Props {
 
 export const SessionLoadingOverlay: React.FC<Props> = ({
   isLoading,
-  message = 'جاري تهيئة ومزامنة بيانات المنظومة...',
+  message = 'جاري تحميل البيانات، يرجى الانتظار...',
   userName,
   userRole,
   officeName = 'مكتب النائب المهندسة علا عودة الناشي',
@@ -29,47 +29,36 @@ export const SessionLoadingOverlay: React.FC<Props> = ({
   customTitle,
   customSubtitle
 }) => {
-  const [progress, setProgress] = useState(12);
+  const [progress, setProgress] = useState(14);
   const [currentStep, setCurrentStep] = useState(1);
 
   useEffect(() => {
     if (!isLoading) {
-      setProgress(12);
-      setCurrentStep(1);
+      setProgress(100);
+      setCurrentStep(4);
       return;
     }
 
-    const t1 = setTimeout(() => {
-      setProgress(38);
-      setCurrentStep(1);
-    }, 220);
+    setProgress(16);
+    setCurrentStep(1);
 
-    const t2 = setTimeout(() => {
-      setProgress(72);
-      setCurrentStep(2);
-    }, 780);
-
-    const t3 = setTimeout(() => {
-      setProgress(96);
-      setCurrentStep(3);
-    }, 1450);
-
-    const t4 = setTimeout(() => {
-      setProgress(100);
-      setCurrentStep(4);
-    }, 1900);
+    const interval = window.setInterval(() => {
+      setProgress(prev => {
+        if (prev >= 92) return 92;
+        const step = prev < 45 ? 9 : prev < 75 ? 5 : 2;
+        return Math.min(92, prev + step);
+      });
+      setCurrentStep(prev => (prev < 3 ? prev + 1 : 3));
+    }, 500);
 
     return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      clearTimeout(t4);
+      window.clearInterval(interval);
     };
   }, [isLoading]);
 
   if (!isLoading) return null;
 
-  const displayTitle = customTitle?.trim() || message;
+  const displayTitle = customTitle?.trim() || message || 'جاري تحميل البيانات، يرجى الانتظار...';
   const displaySubtitle =
     customSubtitle?.trim() || 'مجلس النواب العراقي — المنظومة الإدارية التنفيذية المتكاملة';
 
