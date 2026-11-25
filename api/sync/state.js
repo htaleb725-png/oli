@@ -256,8 +256,15 @@ export default async function handler(req, res) {
     // Bypasses browser CORS/no-cors limitations on Vercel and desktop PWA
     if (mode === 'sheets_proxy') {
       const appsScriptUrl = String(body.appsScriptUrl || '').trim();
-      if (!appsScriptUrl || !appsScriptUrl.startsWith('https://script.google.com/')) {
-        return res.status(400).json({ success: false, error: 'Invalid Google Apps Script URL' });
+      if (
+        !appsScriptUrl ||
+        !appsScriptUrl.startsWith('https://script.google.com/macros/s/') ||
+        !appsScriptUrl.includes('/exec')
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'رابط Google Apps Script غير صالح — يجب أن يبدأ بـ https://script.google.com/macros/s/ وينتهي بـ /exec.'
+        });
       }
       const method = String(body.method || 'POST').toUpperCase();
       try {
@@ -275,7 +282,14 @@ export default async function handler(req, res) {
             const parsed = JSON.parse(text);
             return res.status(200).json(parsed);
           } catch {
-            return res.status(200).json({ success: upstream.ok, raw: text.slice(0, 500) });
+            const isHtml = text.trim().startsWith('<') || text.includes('<!DOCTYPE') || text.includes('<html');
+            return res.status(502).json({
+              success: false,
+              error: isHtml
+                ? `رابط Google Apps Script أعاد صفحة HTML بدلاً من JSON (HTTP ${upstream.status}) — تأكد من نشر السكربت كـ Web App بصلاحية (Anyone / أي شخص) وباستخدام أحدث رابط /exec.`
+                : `استجابة Google Apps Script غير صالحة (HTTP ${upstream.status}).`,
+              raw: text.slice(0, 300)
+            });
           }
         } else {
           const payload = body.payload || {};
@@ -290,13 +304,20 @@ export default async function handler(req, res) {
             const parsed = JSON.parse(text);
             return res.status(200).json(parsed);
           } catch {
-            return res.status(200).json({ success: upstream.ok, status: 'proxied_ok' });
+            const isHtml = text.trim().startsWith('<') || text.includes('<!DOCTYPE') || text.includes('<html');
+            return res.status(502).json({
+              success: false,
+              error: isHtml
+                ? `فشل تنفيذ العملية في Google Apps Script (أعاد صفحة HTML بدلاً من JSON - HTTP ${upstream.status}). تأكد من تفعيل صلاحية (Anyone / أي شخص) ونشر إصدار جديد (New Version).`
+                : `استجابة غير صالحة من Google Apps Script أثناء الحفظ (HTTP ${upstream.status}).`,
+              raw: text.slice(0, 300)
+            });
           }
         }
       } catch (err) {
         return res.status(502).json({
           success: false,
-          error: err?.message || 'Failed to reach Google Apps Script'
+          error: err?.message || 'تعذر الاتصال بخادم Google Apps Script'
         });
       }
     }

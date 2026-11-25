@@ -29,7 +29,7 @@ import {
   CustomSectionRecord,
   User
 } from '../types';
-import { updateSheetsHealth } from './cloudSyncAlerts';
+import { updateSheetsHealth, pushCloudSyncAlert } from './cloudSyncAlerts';
 
 /**
  * Realtime Google Sheets and Google Drive Auto-Sync Service
@@ -151,40 +151,67 @@ export function resolveTargetSheetId(customSheetId?: string): string {
   return '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
 }
 
+export const LEGACY_DEFAULT_APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec';
+
+export function isValidExecAppsScriptUrl(url?: string | null): boolean {
+  if (!url) return false;
+  const cleaned = stripQuotes(String(url));
+  if (!cleaned || cleaned.startsWith('(') || cleaned.includes('الرابط') || cleaned.includes('ضع')) return false;
+  return cleaned.startsWith('https://script.google.com/macros/s/') && cleaned.includes('/exec');
+}
+
 export function resolveAppsScriptUrl(customUrl?: string): string {
-  if (customUrl && customUrl.trim()) {
-    const cleaned = stripQuotes(customUrl);
-    if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
-  }
-  if (_runtimeCloudConfig.appsScriptUrl) {
-    const cleaned = stripQuotes(_runtimeCloudConfig.appsScriptUrl);
-    if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
-  }
-  const envUrl = import.meta.env?.VITE_GOOGLE_APPS_SCRIPT_URL;
-  if (envUrl && envUrl.trim()) {
-    const cleaned = stripQuotes(envUrl);
-    if (!cleaned.startsWith('(') && !cleaned.includes('الرابط') && !cleaned.includes('ضع')) return cleaned;
+  const rawEnvUrl = import.meta.env?.VITE_GOOGLE_APPS_SCRIPT_URL;
+  const envUrl = isValidExecAppsScriptUrl(rawEnvUrl) ? stripQuotes(rawEnvUrl) : '';
+
+  // Clean stale localStorage Apps Script URL if Vercel env var is configured with a newer /exec URL
+  if (envUrl && typeof window !== 'undefined') {
+    try {
+      const stored = localStorage.getItem('al_nashi_apps_script_url');
+      if (stored && stripQuotes(stored) !== envUrl && stripQuotes(stored) === LEGACY_DEFAULT_APPS_SCRIPT_URL) {
+        localStorage.setItem('al_nashi_apps_script_url', envUrl);
+      }
+    } catch {}
   }
 
+  // 1. Explicit customUrl wins ONLY if it is a valid /exec URL and is NOT the stale legacy fallback when envUrl is configured
+  if (isValidExecAppsScriptUrl(customUrl)) {
+    const cleaned = stripQuotes(customUrl);
+    if (!envUrl || cleaned !== LEGACY_DEFAULT_APPS_SCRIPT_URL) {
+      return cleaned;
+    }
+  }
+
+  // 2. Authoritative Vercel / environment VITE_GOOGLE_APPS_SCRIPT_URL (/exec)
+  if (envUrl) {
+    return envUrl;
+  }
+
+  // 3. Live runtime cloud config from Firestore settings/general
+  if (isValidExecAppsScriptUrl(_runtimeCloudConfig.appsScriptUrl)) {
+    return stripQuotes(_runtimeCloudConfig.appsScriptUrl);
+  }
+
+  // 4. Saved direct URL preference (only valid /exec)
   if (typeof window !== 'undefined') {
     const direct = localStorage.getItem('al_nashi_apps_script_url');
-    if (direct && direct.trim()) {
-      const cleaned = stripQuotes(direct);
-      if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
+    if (isValidExecAppsScriptUrl(direct)) {
+      return stripQuotes(direct || '');
     }
     try {
       const savedSettings = localStorage.getItem('al_nashi_office_settings');
       if (savedSettings) {
         const parsed = JSON.parse(savedSettings);
         const candidate = parsed.appsScriptUrl || parsed.googleAppsScriptUrl;
-        if (candidate && String(candidate).trim()) {
-          const cleaned = stripQuotes(String(candidate));
-          if (!cleaned.startsWith('(') && !cleaned.includes('الرابط')) return cleaned;
+        if (isValidExecAppsScriptUrl(candidate)) {
+          return stripQuotes(String(candidate));
         }
       }
     } catch {}
   }
-  return 'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec';
+
+  return LEGACY_DEFAULT_APPS_SCRIPT_URL;
 }
 
 /**
@@ -309,13 +336,13 @@ async function getFromAppsScriptWithServerProxy(
       })
     });
     const contentType = proxyRes.headers.get('content-type') || '';
-    if (proxyRes.ok && contentType.includes('application/json')) {
+    if (contentType.includes('application/json')) {
       const json = await proxyRes.json().catch(() => null);
-      if (json && json.success !== false) {
+      if (proxyRes.ok && json && json.success !== false) {
         updateSheetsHealth('connected', null);
         return { ok: true, via: 'proxy', data: json };
       }
-      proxyErr = json?.error || `HTTP ${proxyRes.status}`;
+      proxyErr = json?.error || `رفض وكيل المزامنة الطلب (HTTP ${proxyRes.status})`;
     } else {
       proxyErr = `استجابة غير صالحة من وكيل الخادم (${proxyRes.status})`;
     }
@@ -693,7 +720,16 @@ export async function pushBulkDataToGoogleSheets(
   citizensList: Citizen[],
   requestsList: OfficeRequest[],
   customAppsScriptUrl?: string,
-  customSheetId?: string
+  customSheetId?: string,
+  extraCollections?: {
+    interviews?: Interview[];
+    officialLetters?: OfficialLetter[];
+    cheques?: ChequeRecord[];
+    organizationRecords?: OrganizationRecord[];
+    customSections?: CustomSection[];
+    customRecords?: CustomSectionRecord[];
+    users?: User[];
+  }
 ): Promise<{ appsScriptSent: boolean; directSheetsSent: boolean; chunksSent: number; error?: string }> {
   const resolvedUrl = resolveAppsScriptUrl(customAppsScriptUrl);
   const resolvedSheetId = resolveTargetSheetId(customSheetId);
@@ -704,23 +740,83 @@ export async function pushBulkDataToGoogleSheets(
 
   const cleanCitizens = (citizensList || []).map(c => toCleanSheetCitizenPayload(c));
   const cleanRequests = (requestsList || []).map(r => toCleanSheetRequestPayload(r));
+  const cleanInterviews = (extraCollections?.interviews || []).map(i => toCleanSheetInterviewPayload(i));
+  const cleanLetters = (extraCollections?.officialLetters || []).map(l => toCleanSheetLetterPayload(l));
+  const cleanCheques = (extraCollections?.cheques || []).map(ch => toCleanSheetChequePayload(ch));
+  const cleanOrgs = (extraCollections?.organizationRecords || []).map(o => toCleanSheetOrganizationPayload(o));
+  const cleanUsers = (extraCollections?.users || []).map(u => toCleanSheetUserPayload(u));
+  const activeSections = extraCollections?.customSections || _runtimeCustomSections;
+  const cleanCustomRecords = (extraCollections?.customRecords || []).map(rec => {
+    const resolved = toCleanCustomSectionRecordPayload(rec, activeSections);
+    return {
+      sectionId: resolved.sectionId,
+      sheetName: resolved.sheetName,
+      sectionTitle: resolved.title,
+      sectionColumns: resolved.columns,
+      payload: resolved.payload,
+      ...resolved.payload
+    };
+  });
 
-  // 1. Push in chunks of 80 rows to Google Apps Script Webhook (bulk_sync merges & upserts safely without wiping!)
-  if (resolvedUrl && resolvedUrl.startsWith('http') && (cleanCitizens.length > 0 || cleanRequests.length > 0)) {
+  const hasAnyPayload =
+    cleanCitizens.length > 0 ||
+    cleanRequests.length > 0 ||
+    cleanInterviews.length > 0 ||
+    cleanLetters.length > 0 ||
+    cleanCheques.length > 0 ||
+    cleanOrgs.length > 0 ||
+    cleanCustomRecords.length > 0 ||
+    cleanUsers.length > 0;
+
+  // 1. Push in chunks of 80 rows to Google Apps Script Web App (non-destructive gap-filling bulk_sync!)
+  if (resolvedUrl && resolvedUrl.startsWith('http') && hasAnyPayload) {
     const CHUNK = 80;
-    const maxLen = Math.max(cleanCitizens.length, cleanRequests.length);
+    const maxLen = Math.max(
+      cleanCitizens.length,
+      cleanRequests.length,
+      cleanInterviews.length,
+      cleanLetters.length,
+      cleanCheques.length,
+      cleanOrgs.length,
+      cleanCustomRecords.length,
+      cleanUsers.length
+    );
     for (let i = 0; i < maxLen; i += CHUNK) {
       const citSlice = cleanCitizens.slice(i, i + CHUNK);
       const reqSlice = cleanRequests.slice(i, i + CHUNK);
-      if (citSlice.length === 0 && reqSlice.length === 0) continue;
+      const intSlice = cleanInterviews.slice(i, i + CHUNK);
+      const letSlice = cleanLetters.slice(i, i + CHUNK);
+      const chqSlice = cleanCheques.slice(i, i + CHUNK);
+      const orgSlice = cleanOrgs.slice(i, i + CHUNK);
+      const cusSlice = cleanCustomRecords.slice(i, i + CHUNK);
+      const usrSlice = cleanUsers.slice(i, i + CHUNK);
+      if (
+        citSlice.length === 0 &&
+        reqSlice.length === 0 &&
+        intSlice.length === 0 &&
+        letSlice.length === 0 &&
+        chqSlice.length === 0 &&
+        orgSlice.length === 0 &&
+        cusSlice.length === 0 &&
+        usrSlice.length === 0
+      ) {
+        continue;
+      }
       const res = await postToAppsScriptWithServerProxy(resolvedUrl, {
         action: 'bulk_sync',
+        customSections: i === 0 ? activeSections : undefined,
         data: {
           citizens: citSlice,
-          requests: reqSlice
+          requests: reqSlice,
+          interviews: intSlice,
+          officialLetters: letSlice,
+          cheques: chqSlice,
+          organizationRecords: orgSlice,
+          customRecords: cusSlice,
+          users: usrSlice
         },
         timestamp: new Date().toISOString(),
-        source: 'al_nashi_excel_filter_import'
+        source: 'al_nashi_bulk_sync'
       });
       if (res.success) {
         appsScriptSent = true;
@@ -729,8 +825,18 @@ export async function pushBulkDataToGoogleSheets(
         lastError = res.error;
       }
       if (i + CHUNK < maxLen) {
-        await new Promise(resolve => setTimeout(resolve, 350));
+        await new Promise(resolve => setTimeout(resolve, 250));
       }
+    }
+
+    if (!appsScriptSent && lastError) {
+      pushCloudSyncAlert({
+        severity: 'error',
+        target: 'google_sheets',
+        title: 'فشل إرسال البيانات إلى Google Sheets',
+        message: 'تعذر ترحيل الدفعة إلى رابط Google Apps Script (/exec).',
+        details: lastError
+      });
     }
   }
 
@@ -1023,10 +1129,18 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
   try {
     const fetchResult = await getFromAppsScriptWithServerProxy(cleanUrl, 'getAllData');
     if (!fetchResult.ok || !fetchResult.data) {
+      const errMsg = fetchResult.error || 'تعذر جلب البيانات من Google Apps Script.';
+      pushCloudSyncAlert({
+        severity: 'error',
+        target: 'google_sheets',
+        title: 'فشل جلب البيانات من Google Sheets',
+        message: 'حدث خطأ أثناء الاتصال برابط Google Apps Script (/exec).',
+        details: errMsg
+      });
       return {
         success: false,
-        error: fetchResult.error || 'تعذر جلب البيانات من Google Apps Script.',
-        message: fetchResult.error || 'تعذر جلب البيانات من Google Apps Script.'
+        error: errMsg,
+        message: errMsg
       };
     }
 
@@ -1047,23 +1161,29 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       const isBlocked = c.IsBlocked === true || blockStr.startsWith('محظور') || blockStr === 'نعم';
       const blockReason = blockStr.includes(' - ') ? blockStr.split(' - ').slice(1).join(' - ').trim() : c.BlockReason;
       const dynamicExtras = c.CustomFields && typeof c.CustomFields === 'object' ? c.CustomFields : undefined;
+      const firstName = String(c.FirstName || c['الاسم الأول'] || '').trim();
+      const fatherName = String(c.FatherName || c['اسم الأب'] || '').trim();
+      const grandFatherName = String(c.GrandFatherName || c['اسم الجد'] || '').trim();
+      const surname = String(c.Surname || c['اللقب / العشيرة'] || '').trim();
+      const rawFullName = String(c.FullName || c['الاسم الكامل'] || c.CitizenName || '').trim();
+      const fullName = rawFullName || [firstName, fatherName, grandFatherName, surname].filter(Boolean).join(' ').trim();
       return {
         ...(dynamicExtras ? { CustomFields: dynamicExtras } : {}),
         Citizen_ID: String(c.Citizen_ID || c['الرقم التعريفي'] || c.id || '').trim(),
-        FirstName: String(c.FirstName || c['الاسم الأول'] || '').trim(),
-        FatherName: String(c.FatherName || c['اسم الأب'] || '').trim(),
-        GrandFatherName: String(c.GrandFatherName || c['اسم الجد'] || '').trim(),
+        FirstName: firstName,
+        FatherName: fatherName,
+        GrandFatherName: grandFatherName,
         GreatGrandFatherName: String(c.GreatGrandFatherName || '').trim(),
-        Surname: String(c.Surname || c['اللقب / العشيرة'] || '').trim(),
-        FullName: String(c.FullName || c['الاسم الكامل'] || c.CitizenName || '').trim(),
-        Phone1: String(c.Phone1 || c['رقم الهاتف'] || c.Phone || '').trim(),
+        Surname: surname,
+        FullName: fullName,
+        Phone1: String(c.Phone1 || c.Phone || c['رقم الهاتف'] || '').trim(),
         Phone2: String(c.Phone2 || c['الهاتف البديل'] || '').trim(),
         Gender: (c.Gender || c['الجنس']) === 'أنثى' ? 'أنثى' : 'ذكر',
         Job: String(c.Job || c['المهنة / العمل'] || '').trim(),
         Education: String(c.Education || c['التحصيل الدراسي'] || '').trim(),
         Rating: String(c.Rating || c['التقييم'] || 'لائق'),
         District: String(c.District || c['القضاء'] || '').trim(),
-        SubDistrict: String(c.SubDistrict || c['الناحية / المنطقة'] || '').trim(),
+        SubDistrict: String(c.SubDistrict || c.Subdistrict || c.ResidentialArea || c['الناحية / المنطقة'] || '').trim(),
         ReferralSource: String(c.ReferralSource || c['المعرف / التزكية'] || '').trim(),
         IsBlocked: isBlocked,
         ...(blockReason ? { BlockReason: String(blockReason) } : {}),
@@ -1167,9 +1287,9 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       ...(o.CustomFields && typeof o.CustomFields === 'object' ? { CustomFields: o.CustomFields } : {}),
       Citizen_ID: String(o.Citizen_ID || o['الرقم التعريفي'] || '').trim(),
       FullName: String(o.FullName || o['الاسم الكامل'] || '').trim(),
-      Phone1: String(o.Phone1 || o['رقم الهاتف'] || '').trim(),
+      Phone1: String(o.Phone1 || o.Phone || o['رقم الهاتف'] || '').trim(),
       District: String(o.District || o['القضاء'] || '').trim(),
-      SubDistrict: String(o.SubDistrict || o['الناحية / المنطقة'] || '').trim(),
+      SubDistrict: String(o.SubDistrict || o.Subdistrict || o['الناحية / المنطقة'] || '').trim(),
       Affiliation: String(o.Affiliation || '').trim(),
       ElectionCenter: String(o.ElectionCenter || o['المركز الانتخابي'] || '').trim(),
       Notes: String(o.Notes || o['الملاحظات'] || '').trim(),

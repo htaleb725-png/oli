@@ -536,81 +536,112 @@ function appendDynamicFieldsToPayload(
 export function toCleanSheetCitizenPayload(c: Partial<Citizen>): Record<string, string> {
   const row = citizenToSheetRow(c);
   const map = buildRowMap(CITIZENS_SHEET_HEADERS, row);
+  const phoneVal = cleanSheetCell(c.Phone1 || (c as any).Phone);
+  const subDistVal = cleanSheetCell(c.SubDistrict || (c as any).Subdistrict || (c as any).ResidentialArea);
+  const blockVal = c.IsBlocked
+    ? cleanSheetCell(c.BlockReason ? `محظور - ${c.BlockReason}` : 'محظور')
+    : 'نشط';
   const base: Record<string, string> = {
     ...map,
     Citizen_ID: cleanSheetCell(c.Citizen_ID),
     FullName: cleanSheetCell(c.FullName),
-    Phone1: cleanSheetCell(c.Phone1),
+    FirstName: cleanSheetCell(c.FirstName),
+    FatherName: cleanSheetCell(c.FatherName),
+    GrandFatherName: cleanSheetCell(c.GrandFatherName),
+    Surname: cleanSheetCell(c.Surname),
+    Phone1: phoneVal,
+    Phone: phoneVal,
     Phone2: cleanSheetCell(c.Phone2),
     District: cleanSheetCell(c.District),
-    SubDistrict: cleanSheetCell(c.SubDistrict),
+    SubDistrict: subDistVal,
+    Subdistrict: subDistVal,
     Gender: cleanSheetCell(c.Gender),
     Job: cleanSheetCell(c.Job),
     Education: cleanSheetCell(c.Education),
     Rating: cleanSheetCell(c.Rating),
     ReferralSource: cleanSheetCell(c.ReferralSource),
+    IsBlocked: blockVal,
     CreatedAt: cleanSheetCell(c.CreatedAt),
     CreatedBy: cleanSheetCell(c.CreatedBy)
   };
-  return appendDynamicFieldsToPayload(c, base, ['FirstName', 'FatherName', 'GrandFatherName', 'GreatGrandFatherName', 'Surname', 'IsBlocked']);
+  return appendDynamicFieldsToPayload(c, base, ['GreatGrandFatherName', 'ResidentialArea']);
 }
 
 export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<string, string> {
   const row = requestToSheetRow(r);
   const map = buildRowMap(REQUESTS_SHEET_HEADERS, row);
+  const phoneVal = cleanSheetCell(r.CitizenPhone || (r as any).Phone1 || (r as any).Phone);
+  const deliveryVal = cleanSheetCell(r.DeliveryStatus || r.RequestStatus);
+  const addressVal = cleanSheetCell(r.Address || r.ResidentialArea);
+  const marginVal = cleanSheetCell(r.Margin || r.DeputyNotes);
   const base: Record<string, string> = {
     ...map,
     Request_ID: cleanSheetCell(r.Request_ID),
     Citizen_ID: cleanSheetCell(r.Citizen_ID),
     CitizenName: cleanSheetCell(r.CitizenName),
-    CitizenPhone: cleanSheetCell(r.CitizenPhone),
+    CitizenPhone: phoneVal,
+    Phone: phoneVal,
     Entity: cleanSheetCell(r.Entity),
     Details: cleanSheetCell(r.Details),
     OutgoingNumber: cleanSheetCell(r.OutgoingNumber),
     OutgoingDate: cleanSheetCell(r.OutgoingDate),
     ProcessingStatus: cleanSheetCell(r.ProcessingStatus),
-    DeliveryStatus: cleanSheetCell(r.DeliveryStatus || r.RequestStatus),
+    DeliveryStatus: deliveryVal,
+    RequestStatus: deliveryVal,
     Priority: cleanSheetCell(r.Priority),
-    Address: cleanSheetCell(r.Address || r.ResidentialArea),
+    Address: addressVal,
+    Education: cleanSheetCell(r.Education),
+    Job: cleanSheetCell(r.Job),
     ReferralSource: cleanSheetCell(r.ReferralSource),
-    Margin: cleanSheetCell(r.Margin || r.DeputyNotes),
-    TargetDepartment: cleanSheetCell(r.TargetDepartment),
+    Margin: marginVal,
+    TargetDepartment: cleanSheetCell(r.TargetDepartment || r.RegisteredVia),
+    OtherNotes: cleanSheetCell(r.OtherNotes),
     CreatedAt: cleanSheetCell(r.CreatedAt),
     CreatedBy: cleanSheetCell(r.CreatedBy)
   };
-  return appendDynamicFieldsToPayload(r, base, ['RequestStatus', 'ResidentialArea', 'DeputyNotes', 'OtherNotes', 'Education', 'Job', 'RegisteredVia']);
+  return appendDynamicFieldsToPayload(r, base, ['ResidentialArea', 'DeputyNotes', 'RegisteredVia']);
 }
 
 export function toCleanSheetInterviewPayload(i: Partial<Interview>): Record<string, string> {
   const row = interviewToSheetRow(i);
   const map = buildRowMap(INTERVIEWS_SHEET_HEADERS, row);
+  const phoneVal = cleanSheetCell(i.Phone1 || (i as any).Phone);
   const base: Record<string, string> = {
     ...map,
     Interview_ID: cleanSheetCell(i.Interview_ID),
     Citizen_ID: cleanSheetCell(i.Citizen_ID),
     FullName: cleanSheetCell(i.FullName),
-    Phone1: cleanSheetCell(i.Phone1),
+    Phone1: phoneVal,
+    Phone: phoneVal,
+    Address: cleanSheetCell(i.Address),
     Subject: cleanSheetCell(i.Subject),
     InterviewDate: cleanSheetCell(i.InterviewDate),
-    Status: cleanSheetCell(i.Status),
     Priority: cleanSheetCell(i.Priority),
+    Status: cleanSheetCell(i.Status),
     DeputyNotes: cleanSheetCell(i.DeputyNotes),
-    Outcome: cleanSheetCell(i.Outcome)
+    Outcome: cleanSheetCell(i.Outcome),
+    Referrer: cleanSheetCell(i.Referrer)
   };
-  return appendDynamicFieldsToPayload(i, base, ['Address', 'Referrer']);
+  return appendDynamicFieldsToPayload(i, base, []);
 }
 
 export function toCleanSheetOrganizationPayload(o: Partial<OrganizationRecord>): Record<string, string> {
   const row = organizationToSheetRow(o);
   const map = buildRowMap(ORGANIZATION_SHEET_HEADERS, row);
+  const phoneVal = cleanSheetCell(o.Phone1 || (o as any).Phone);
+  const subDistVal = cleanSheetCell(o.SubDistrict || (o as any).Subdistrict);
+  const ratingVal = cleanSheetCell(o.OrgRating || (o as any).Rating);
   const base: Record<string, string> = {
     ...map,
     Citizen_ID: cleanSheetCell(o.Citizen_ID || o.Org_ID),
     FullName: cleanSheetCell(o.FullName),
-    Phone1: cleanSheetCell(o.Phone1),
+    Phone1: phoneVal,
+    Phone: phoneVal,
     District: cleanSheetCell(o.District),
-    SubDistrict: cleanSheetCell(o.SubDistrict),
-    OrgRating: cleanSheetCell(o.OrgRating),
+    SubDistrict: subDistVal,
+    Subdistrict: subDistVal,
+    OrgRating: ratingVal,
+    Rating: ratingVal,
     InfluenceType: cleanSheetCell(o.InfluenceType),
     ElectionCenter: cleanSheetCell(o.ElectionCenter),
     Notes: cleanSheetCell(o.Notes),
@@ -631,26 +662,31 @@ export function toCleanSheetLetterPayload(l: Partial<OfficialLetter>): Record<st
     Subject: cleanSheetCell(l.Subject),
     Body: cleanSheetCell(l.Body),
     CitizenName: cleanSheetCell(l.CitizenName),
-    Status: cleanSheetCell(l.Status)
+    Status: cleanSheetCell(l.Status),
+    ClerkName: cleanSheetCell(l.ClerkName)
   };
-  return appendDynamicFieldsToPayload(l, base, ['Letter_Number', 'Letter_Date', 'To_Entity', 'ClerkName']);
+  return appendDynamicFieldsToPayload(l, base, ['Letter_Number', 'Letter_Date', 'To_Entity']);
 }
 
 export function toCleanSheetChequePayload(ch: Partial<ChequeRecord>): Record<string, string> {
   const row = chequeToSheetRow(ch);
   const map = buildRowMap(CHEQUES_SHEET_HEADERS, row);
+  const phoneVal = cleanSheetCell(ch.CitizenPhone || (ch as any).Phone);
   const base: Record<string, string> = {
     ...map,
     id: cleanSheetCell(ch.id),
     ChequeNumber: cleanSheetCell(ch.ChequeNumber),
     Citizen_ID: cleanSheetCell(ch.Citizen_ID),
     CitizenName: cleanSheetCell(ch.CitizenName),
+    CitizenPhone: phoneVal,
+    Phone: phoneVal,
     Amount: cleanSheetCell(ch.Amount),
     BankName: cleanSheetCell(ch.BankName),
     Purpose: cleanSheetCell(ch.Purpose),
-    Status: cleanSheetCell(ch.Status)
+    Status: cleanSheetCell(ch.Status),
+    IssueDate: cleanSheetCell(ch.IssueDate || ch.CreatedAt)
   };
-  return appendDynamicFieldsToPayload(ch, base, ['CitizenPhone', 'IssueDate', 'CreatedAt']);
+  return appendDynamicFieldsToPayload(ch, base, ['CreatedAt']);
 }
 
 export function toCleanSheetSocialCarePayload(rec: any): Record<string, string> {
@@ -667,9 +703,10 @@ export function toCleanSheetSocialCarePayload(rec: any): Record<string, string> 
     f_welf_researcher: cleanSheetCell(d.f_welf_researcher || d.researcher_status),
     f_welf_district: cleanSheetCell(d.f_welf_district || d.district),
     f_welf_date: cleanSheetCell(d.f_welf_date || d.submission_date || rec.createdAt),
-    f_welf_notes: cleanSheetCell(d.f_welf_notes || d.notes)
+    f_welf_notes: cleanSheetCell(d.f_welf_notes || d.notes),
+    createdBy: cleanSheetCell(rec.createdBy || d.createdBy)
   };
-  return appendDynamicFieldsToPayload(rec, base, ['createdAt', 'createdBy']);
+  return appendDynamicFieldsToPayload(rec, base, ['createdAt']);
 }
 
 export function toCleanSheetUserPayload(u: Partial<User>): Record<string, string> {
@@ -679,11 +716,16 @@ export function toCleanSheetUserPayload(u: Partial<User>): Record<string, string
     ...map,
     User_ID: cleanSheetCell(u.User_ID),
     Username: cleanSheetCell(u.Username),
+    Password: cleanSheetCell(u.Password),
     FullName: cleanSheetCell(u.FullName),
     Role: cleanSheetCell(u.Role),
-    Department: cleanSheetCell(u.Department)
+    RoleArabic: cleanSheetCell(u.RoleArabic || u.Role),
+    Department: cleanSheetCell(u.Department),
+    Phone: cleanSheetCell(u.Phone),
+    Status: cleanSheetCell(u.Status),
+    UpdatedAt: cleanSheetCell(u.UpdatedAt || u.CreatedAt)
   };
-  return appendDynamicFieldsToPayload(u, base, ['Password', 'RoleArabic', 'Phone', 'Status', 'CreatedAt']);
+  return appendDynamicFieldsToPayload(u, base, ['CreatedAt']);
 }
 
 export function mapSheetRowByHeaders(headers: string[], row: any[]): Record<string, string> {

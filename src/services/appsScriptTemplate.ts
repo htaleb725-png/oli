@@ -32,7 +32,7 @@ var CORE_SCHEMAS = {
       { header: 'رقم الهاتف', key: 'Phone1', aliases: ['Phone1', 'Phone', 'رقم الهاتف', 'الهاتف الرئيسي', 'الهاتف 1'] },
       { header: 'الهاتف البديل', key: 'Phone2', aliases: ['Phone2', 'الهاتف البديل', 'الهاتف الثانوي', 'الهاتف 2'] },
       { header: 'القضاء', key: 'District', aliases: ['District', 'القضاء'] },
-      { header: 'الناحية / المنطقة', key: 'SubDistrict', aliases: ['SubDistrict', 'ResidentialArea', 'الناحية / المنطقة', 'الناحية / الحي', 'الناحية'] },
+      { header: 'الناحية / المنطقة', key: 'SubDistrict', aliases: ['SubDistrict', 'Subdistrict', 'ResidentialArea', 'الناحية / المنطقة', 'الناحية / الحي', 'الناحية'] },
       { header: 'الجنس', key: 'Gender', aliases: ['Gender', 'الجنس'] },
       { header: 'المهنة / العمل', key: 'Job', aliases: ['Job', 'المهنة / العمل', 'المهنة'] },
       { header: 'التحصيل الدراسي', key: 'Education', aliases: ['Education', 'التحصيل الدراسي', 'التحصيل'] },
@@ -52,7 +52,7 @@ var CORE_SCHEMAS = {
       { header: 'رقم الطلب', key: 'Request_ID', aliases: ['Request_ID', 'id', 'رقم الطلب', 'رقم المعاملة', 'رقم الطلب (Request_ID)'] },
       { header: 'الرقم التعريفي للمواطن', key: 'Citizen_ID', aliases: ['Citizen_ID', 'الرقم التعريفي للمواطن', 'الرقم التعريفي'] },
       { header: 'اسم صاحب الطلب', key: 'CitizenName', aliases: ['CitizenName', 'FullName', 'اسم صاحب الطلب', 'اسم المواطن'] },
-      { header: 'رقم الهاتف', key: 'CitizenPhone', aliases: ['CitizenPhone', 'Phone1', 'رقم الهاتف', 'الهاتف'] },
+      { header: 'رقم الهاتف', key: 'CitizenPhone', aliases: ['CitizenPhone', 'Phone1', 'Phone', 'رقم الهاتف', 'الهاتف'] },
       { header: 'الوزارة / الجهة', key: 'Entity', aliases: ['Entity', 'الوزارة / الجهة', 'الجهة المعنية'] },
       { header: 'الموضوع / تفاصيل الطلب', key: 'Details', aliases: ['Details', 'الموضوع / تفاصيل الطلب', 'تفاصيل الطلب', 'الموضوع', 'التفاصيل'] },
       { header: 'العدد / الصادر', key: 'OutgoingNumber', aliases: ['OutgoingNumber', 'العدد / الصادر', 'رقم الصادر'] },
@@ -80,7 +80,7 @@ var CORE_SCHEMAS = {
       { header: 'رمز المقابلة', key: 'Interview_ID', aliases: ['Interview_ID', 'id', 'رمز المقابلة', 'رقم المقابلة', 'معرف المقابلة'] },
       { header: 'الرقم التعريفي للمواطن', key: 'Citizen_ID', aliases: ['Citizen_ID', 'الرقم التعريفي للمواطن', 'الرقم التعريفي', 'معرف المواطن'] },
       { header: 'اسم المواطن', key: 'FullName', aliases: ['FullName', 'CitizenName', 'اسم المواطن'] },
-      { header: 'رقم الهاتف', key: 'Phone1', aliases: ['Phone1', 'رقم الهاتف', 'الهاتف 1', 'الهاتف'] },
+      { header: 'رقم الهاتف', key: 'Phone1', aliases: ['Phone1', 'Phone', 'رقم الهاتف', 'الهاتف 1', 'الهاتف'] },
       { header: 'العنوان / السكن', key: 'Address', aliases: ['Address', 'العنوان / السكن', 'السكن / العنوان', 'السكن'] },
       { header: 'موضوع المقابلة', key: 'Subject', aliases: ['Subject', 'موضوع المقابلة', 'الموضوع'] },
       { header: 'تاريخ المقابلة', key: 'InterviewDate', aliases: ['InterviewDate', 'Date', 'تاريخ المقابلة', 'التاريخ'] },
@@ -99,9 +99,9 @@ var CORE_SCHEMAS = {
     columns: [
       { header: 'الرقم التعريفي', key: 'Citizen_ID', aliases: ['Citizen_ID', 'Org_ID', 'الرقم التعريفي', 'المعرف'] },
       { header: 'الاسم الكامل', key: 'FullName', aliases: ['FullName', 'الاسم الكامل', 'الاسم'] },
-      { header: 'رقم الهاتف', key: 'Phone1', aliases: ['Phone1', 'رقم الهاتف'] },
+      { header: 'رقم الهاتف', key: 'Phone1', aliases: ['Phone1', 'Phone', 'رقم الهاتف'] },
       { header: 'القضاء', key: 'District', aliases: ['District', 'القضاء'] },
-      { header: 'الناحية / المنطقة', key: 'SubDistrict', aliases: ['SubDistrict', 'الناحية / المنطقة', 'الناحية'] },
+      { header: 'الناحية / المنطقة', key: 'SubDistrict', aliases: ['SubDistrict', 'Subdistrict', 'الناحية / المنطقة', 'الناحية'] },
       { header: 'التقييم التنظيمي', key: 'OrgRating', aliases: ['OrgRating', 'Rating', 'التقييم التنظيمي', 'التقييم الجماهيري', 'الموقف التنظيمي'] },
       { header: 'الصفة / التأثير الاجتماعي', key: 'InfluenceType', aliases: ['InfluenceType', 'الصفة / التأثير الاجتماعي', 'نوع التأثير والشخصية', 'الثقل الاجتماعي'] },
       { header: 'المركز الانتخابي', key: 'ElectionCenter', aliases: ['ElectionCenter', 'المركز الانتخابي'] },
@@ -136,7 +136,7 @@ var CORE_SCHEMAS = {
       { header: 'رقم الصك', key: 'ChequeNumber', aliases: ['ChequeNumber', 'رقم الصك'] },
       { header: 'الرقم التعريفي للمواطن', key: 'Citizen_ID', aliases: ['Citizen_ID', 'الرقم التعريفي للمواطن', 'الرقم التعريفي', 'معرف المواطن'] },
       { header: 'اسم المستفيد', key: 'CitizenName', aliases: ['CitizenName', 'اسم المستفيد'] },
-      { header: 'رقم الهاتف', key: 'CitizenPhone', aliases: ['CitizenPhone', 'رقم الهاتف'] },
+      { header: 'رقم الهاتف', key: 'CitizenPhone', aliases: ['CitizenPhone', 'Phone', 'Phone1', 'رقم الهاتف'] },
       { header: 'المبلغ (د.ع)', key: 'Amount', aliases: ['Amount', 'المبلغ (د.ع)', 'المبلغ'] },
       { header: 'المصرف / الصندوق', key: 'BankName', aliases: ['BankName', 'المصرف / الصندوق', 'المصرف', 'اسم المصرف / الصندوق'] },
       { header: 'الغرض من الصرف', key: 'Purpose', aliases: ['Purpose', 'الغرض من الصرف', 'الغرض'] },
@@ -639,6 +639,10 @@ function getSingleSheetRawRecords(ss, sheetName, schema) {
     }
     if (item.FullName && !item.CitizenName) item.CitizenName = item.FullName;
     if (item.Phone1 && !item.CitizenPhone) item.CitizenPhone = item.Phone1;
+    if (item.Phone1 && !item.Phone) item.Phone = item.Phone1;
+    if (item.Phone && !item.Phone1) item.Phone1 = item.Phone;
+    if (item.SubDistrict && !item.Subdistrict) item.Subdistrict = item.SubDistrict;
+    if (item.Subdistrict && !item.SubDistrict) item.SubDistrict = item.Subdistrict;
     records.push(item);
   }
   return records;
@@ -1089,16 +1093,26 @@ function doPost(e) {
     var targetId = contents.id || data.Citizen_ID || data.Request_ID || data.Interview_ID || data.Letter_ID || data.User_ID || data.id;
     var isExplicitUserEdit = action === 'updateRow' || action === 'update' || contents.forceUpdate === true;
 
+    var opStats = null;
+    var deletedCount = 0;
+
     if (action === 'delete') {
-      handleDelete(sheet, targetId);
+      deletedCount += handleDelete(sheet, targetId, schema);
       if (schema && schema.legacyNames) {
         schema.legacyNames.forEach(function(legName) {
           var legSheet = ss.getSheetByName(legName);
-          if (legSheet) handleDelete(legSheet, targetId);
+          if (legSheet) deletedCount += handleDelete(legSheet, targetId, schema);
         });
       }
+      return jsonResponse({
+        success: true,
+        message: deletedCount > 0 ? 'تم حذف السجل من ورقة Google Sheet بنجاح' : 'السجل غير موجود مسبقاً في الورقة (تمت المطابقة)',
+        sheet: targetSheetName,
+        deletedCount: deletedCount,
+        timestamp: new Date().toISOString()
+      });
     } else if (schema) {
-      handleStructuredUpsertBatch(sheet, schema, [data], { allowOverwriteExisting: isExplicitUserEdit });
+      opStats = handleStructuredUpsertBatch(sheet, schema, [data], { allowOverwriteExisting: isExplicitUserEdit });
     } else {
       // ورقة ديناميكية جديدة بالكامل: إنشاء أعمدة تلقائية من مفاتيح الكائن المرسل وحفظ السجل فوراً
       var autoCols = [{ header: 'المعرف', key: 'id', aliases: ['id', 'المعرف', 'معرف القيد'] }];
@@ -1108,13 +1122,14 @@ function doPost(e) {
         headerFg: '#ffffff',
         columns: autoCols
       };
-      handleStructuredUpsertBatch(sheet, dynamicSchema, [data], { allowOverwriteExisting: isExplicitUserEdit });
+      opStats = handleStructuredUpsertBatch(sheet, dynamicSchema, [data], { allowOverwriteExisting: isExplicitUserEdit });
     }
 
     return jsonResponse({
       success: true,
       message: 'تم حفظ السجل في ورقة القسم المخصصة وبأعمدته المرتبة ديناميكياً بنجاح',
       sheet: targetSheetName,
+      stats: opStats,
       timestamp: new Date().toISOString()
     });
   } catch (err) {
@@ -1494,17 +1509,36 @@ function handleStructuredUpsertBatch(sheet, schema, items, options) {
   return stats;
 }
 
-function handleDelete(sheet, id) {
-  if (!id) return;
+function handleDelete(sheet, id, schema) {
+  if (!sheet || !id) return 0;
+  var cleanId = String(id).trim();
+  if (!cleanId) return 0;
   var lastRow = sheet.getLastRow();
-  if (lastRow <= 1) return;
-  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  for (var i = 0; i < ids.length; i++) {
-    if (String(ids[i][0]).trim() === String(id).trim()) {
-      sheet.deleteRow(i + 2);
-      break;
+  var lastCol = sheet.getLastColumn();
+  if (lastRow <= 1 || lastCol < 1) return 0;
+
+  var idColIndex = 1;
+  if (schema && schema.columns && schema.columns.length > 0) {
+    var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var idColDef = schema.columns[0];
+    for (var h = 0; h < headers.length; h++) {
+      var hdr = String(headers[h] || '').trim();
+      if (hdr === idColDef.header || hdr === idColDef.key || (idColDef.aliases && idColDef.aliases.indexOf(hdr) !== -1)) {
+        idColIndex = h + 1;
+        break;
+      }
     }
   }
+
+  var ids = sheet.getRange(2, idColIndex, lastRow - 1, 1).getValues();
+  var deletedCount = 0;
+  for (var i = ids.length - 1; i >= 0; i--) {
+    if (String(ids[i][0] || '').trim() === cleanId) {
+      sheet.deleteRow(i + 2);
+      deletedCount++;
+    }
+  }
+  return deletedCount;
 }
 
 function handleBulkSync(ss, allData) {

@@ -619,7 +619,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       merged.activeGoogleSheetId = INITIAL_SETTINGS.activeGoogleSheetId;
       merged.activeGoogleSheetUrl = INITIAL_SETTINGS.activeGoogleSheetUrl;
     }
-    if (!merged.appsScriptUrl && INITIAL_SETTINGS.appsScriptUrl) {
+    const envScriptUrl = String((import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || '').trim();
+    if (envScriptUrl && envScriptUrl.startsWith('https://script.google.com/macros/s/') && envScriptUrl.includes('/exec')) {
+      if (!merged.appsScriptUrl || merged.appsScriptUrl === INITIAL_SETTINGS.appsScriptUrl || !merged.appsScriptUrl.includes('/exec')) {
+        merged.appsScriptUrl = envScriptUrl;
+      }
+      try {
+        if (typeof window !== 'undefined') {
+          const cached = localStorage.getItem('al_nashi_apps_script_url');
+          if (!cached || cached === INITIAL_SETTINGS.appsScriptUrl || !cached.includes('/exec')) {
+            localStorage.setItem('al_nashi_apps_script_url', envScriptUrl);
+          }
+        }
+      } catch {}
+    } else if (!merged.appsScriptUrl && INITIAL_SETTINGS.appsScriptUrl) {
       merged.appsScriptUrl = INITIAL_SETTINGS.appsScriptUrl;
     }
     if (!merged.googleDriveFolderId && INITIAL_SETTINGS.googleDriveFolderId) {
@@ -3753,15 +3766,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]);
 
     const sheetsOk = sheetsRes.status === 'fulfilled' && sheetsRes.value?.success;
+    const sheetsErr =
+      sheetsRes.status === 'fulfilled'
+        ? sheetsRes.value?.error || sheetsRes.value?.message
+        : String(sheetsRes.reason || '');
     const fsOk = fsRes.status === 'fulfilled' && fsRes.value?.success;
 
     pushCloudSyncAlert({
-      severity: fsOk && sheetsOk ? 'success' : 'info',
-      target: 'both',
-      title: 'تم تصفير النظام بالكامل بنجاح',
+      severity: fsOk && sheetsOk ? 'success' : 'error',
+      target: sheetsOk ? 'both' : 'google_sheets',
+      title: sheetsOk ? 'تم تصفير النظام بالكامل بنجاح' : 'تم تصفير الواجهة وFirestore، وفشل تصفير Google Sheets',
       message: sheetsOk
         ? 'تم تفريغ جميع السجلات فوراً من الواجهة و Firebase Firestore و Google Sheets (مع الإبقاء على صف العناوين Headers وحسابات الكادر).'
-        : 'تم تفريغ السجلات من الواجهة و Firebase Firestore بنجاح (تأكد من تحديث كود Apps Script لإتمام التصفير التلقائي في Google Sheets).'
+        : 'تم تفريغ السجلات من الواجهة و Firebase Firestore، لكن تعذر تصفير Google Sheets عبر Apps Script.',
+      details: !sheetsOk ? sheetsErr : undefined
     });
 
     // 5. Log audit entry
@@ -3831,15 +3849,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]);
 
     const sheetsOk = sheetsRes.status === 'fulfilled' && sheetsRes.value?.success;
+    const sheetsErr =
+      sheetsRes.status === 'fulfilled'
+        ? sheetsRes.value?.error || sheetsRes.value?.message
+        : String(sheetsRes.reason || '');
     const fsOk = fsRes.status === 'fulfilled' && fsRes.value?.success;
 
     pushCloudSyncAlert({
-      severity: fsOk && sheetsOk ? 'success' : 'info',
-      target: 'both',
-      title: `تم تصفير (${keys.length}) قسم محدد بنجاح`,
+      severity: fsOk && sheetsOk ? 'success' : 'error',
+      target: sheetsOk ? 'both' : 'google_sheets',
+      title: sheetsOk ? `تم تصفير (${keys.length}) قسم محدد بنجاح` : `تم تصفير (${keys.length}) قسم في الواجهة وFirestore، وفشل تصفير Google Sheets`,
       message: sheetsOk
         ? 'تم حذف سجلات الأقسام المختارة فوراً من الواجهة و Firebase Firestore و Google Sheets (مع الإبقاء على صف العناوين وبقية الأقسام سليمة).'
-        : 'تم حذف سجلات الأقسام المختارة من الواجهة و Firebase Firestore بنجاح (تأكد من تحديث كود Apps Script لتفعيل التصفير الانتقائي في Google Sheets).'
+        : 'تم حذف سجلات الأقسام المختارة من الواجهة و Firebase Firestore، لكن تعذر تصفيرها في Google Sheets عبر Apps Script.',
+      details: !sheetsOk ? sheetsErr : undefined
     });
 
     addAuditLog(
@@ -4533,35 +4556,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Direct REST Sync note:', directErr);
       }
 
-      // 2. Apps Script Webhook Sync (if appsScriptUrl is configured)
-      const targetScriptUrl = systemSettings.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+      // 2. Reliable Apps Script Web App Bulk Sync (uses server proxy + CORE_SCHEMAS clean payloads, NEVER silent no-cors!)
+      const envScriptUrl = String((import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || '').trim();
+      const targetScriptUrl =
+        envScriptUrl ||
+        systemSettings.appsScriptUrl ||
+        systemSettings.googleAppsScriptUrl ||
+        (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
+      let appsScriptError = '';
+
       if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
         try {
-          await fetch(targetScriptUrl, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify({
-              action: 'bulk_sync',
-              data: {
-                citizens: citizens.map(c => toCleanSheetCitizenPayload(c)),
-                requests: requests.map(r => toCleanSheetRequestPayload(r)),
-                interviews,
-                officialLetters,
-                cheques,
-                organizationRecords
-              },
-              timestamp: new Date().toISOString(),
-              source: 'al_nashi_office_bulk_sync'
-            })
-          });
-          sheetsSynced = true;
-          hasAnySuccess = true;
-          if (!successMessage) {
-            successMessage = `تم بنجاح إرسال وتحديث (${citizens.length}) مراجع و (${requests.length}) معاملة في Google Sheets عبر رابط Apps Script Webhook.`;
+          const bulkRes = await pushBulkDataToGoogleSheets(
+            citizens,
+            requests,
+            targetScriptUrl,
+            systemSettings.googleSheetId || systemSettings.activeGoogleSheetId,
+            {
+              interviews,
+              officialLetters,
+              cheques,
+              organizationRecords,
+              customSections,
+              customRecords,
+              users
+            }
+          );
+          if (bulkRes.appsScriptSent || bulkRes.directSheetsSent) {
+            sheetsSynced = true;
+            hasAnySuccess = true;
+            if (!successMessage) {
+              successMessage = `تم بنجاح إرسال وتحديث (${citizens.length}) مراجع و (${requests.length}) معاملة و (${customRecords.length}) سجل قسم في Google Sheets عبر Apps Script.`;
+            }
+          } else if (bulkRes.error) {
+            appsScriptError = bulkRes.error;
           }
         } catch (scriptErr: any) {
-          console.warn('Apps Script bulk_sync note:', scriptErr);
+          appsScriptError = scriptErr?.message || 'تعذر الاتصال برابط Google Apps Script';
+          console.warn('Apps Script bulk_sync error:', scriptErr);
         }
       }
 
@@ -4573,10 +4605,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
+      const failureMsg =
+        appsScriptError ||
+        'يرجى التأكد من صحة رابط Google Apps Script (/exec) وصلاحية النشر (Anyone) لإتمام الإرسال.';
+      pushCloudSyncAlert({
+        severity: 'error',
+        target: 'google_sheets',
+        title: 'فشل مزامنة البيانات مع Google Sheets',
+        message: 'تعذر إرسال البيانات إلى Google Apps Script.',
+        details: failureMsg
+      });
       return {
         success: false,
         sheetsSynced: false,
-        message: 'يرجى تسجيل الدخول بحساب Google أو التأكد من إدخال رابط Google Apps Script Webhook لإتمام الإرسال.'
+        message: failureMsg
       };
     } finally {
       setIsGoogleSyncing(false);
@@ -4676,6 +4718,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         systemSettingsRef.current.googleAppsScriptUrl ||
         (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
 
+      let appsScriptPullError = '';
       if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
         try {
           const scriptRes = await pullDataFromGoogleAppsScript(targetScriptUrl);
@@ -4688,7 +4731,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 `✓ تم سحب (${cleanCitizens.length}) مراجع و (${cleanRequests.length}) معاملة و (${cleanCustomRecords.length}) سجل قسم من Google Sheets وتحديث Firebase Firestore مباشرة.`
             };
           }
-        } catch (scriptErr) {
+          if (scriptRes && !scriptRes.success) {
+            appsScriptPullError = scriptRes.error || scriptRes.message || '';
+          }
+        } catch (scriptErr: any) {
+          appsScriptPullError = scriptErr?.message || 'تعذر سحب البيانات من Google Apps Script';
           console.warn('Apps Script fetch notice:', scriptErr);
         }
       }
@@ -4723,7 +4770,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return {
         success: false,
-        message: 'لا تتوفر بيانات جديدة من Google Sheets أو لم يتم ربط الحساب.'
+        message: appsScriptPullError || 'لا تتوفر بيانات جديدة من Google Sheets أو تعذر الاتصال برابط Apps Script (/exec).'
       };
     } finally {
       setIsGoogleSyncing(false);
