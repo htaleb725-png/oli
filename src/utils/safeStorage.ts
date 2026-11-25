@@ -28,7 +28,8 @@ const BLOCKED_BUSINESS_KEY_PATTERNS = [
   'is_zeroed',
   'notifications',
   'sync_queue',
-  'backup'
+  'backup',
+  'deleted_ids'
 ];
 
 export function isBusinessRecordStorageKey(key: string): boolean {
@@ -133,27 +134,35 @@ export function scheduleSafeLocalStorageSet(
 }
 
 /**
- * Purges any legacy business records previously cached in Chrome localStorage
+ * Purges any legacy business records previously cached in Chrome localStorage OR sessionStorage
  * so stale browser data can never shadow or overwrite Cloud DB records.
  */
 export function purgeLegacyBrowserBusinessData(): number {
-  if (typeof window === 'undefined' || !window.localStorage) return 0;
+  if (typeof window === 'undefined') return 0;
   let removedCount = 0;
-  try {
-    const keysToRemove: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && isBusinessRecordStorageKey(k)) {
-        keysToRemove.push(k);
+
+  const purgeStorage = (storage: Storage | undefined | null) => {
+    if (!storage) return;
+    try {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < storage.length; i++) {
+        const k = storage.key(i);
+        if (k && isBusinessRecordStorageKey(k)) {
+          keysToRemove.push(k);
+        }
       }
-    }
-    for (const k of keysToRemove) {
-      try {
-        localStorage.removeItem(k);
-        removedCount++;
-      } catch {}
-    }
-  } catch {}
+      for (const k of keysToRemove) {
+        try {
+          storage.removeItem(k);
+          removedCount++;
+        } catch {}
+      }
+    } catch {}
+  };
+
+  purgeStorage(window.localStorage);
+  purgeStorage(window.sessionStorage);
+
   return removedCount;
 }
 

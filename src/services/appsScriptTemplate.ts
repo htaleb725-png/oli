@@ -64,11 +64,19 @@ var CORE_SCHEMAS = {
       { header: 'التحصيل الدراسي', key: 'Education', aliases: ['Education', 'التحصيل الدراسي'] },
       { header: 'المهنة', key: 'Job', aliases: ['Job', 'المهنة'] },
       { header: 'المعرف / التزكية', key: 'ReferralSource', aliases: ['ReferralSource', 'المعرف / التزكية'] },
-      { header: 'الهامش / التوجيه', key: 'Margin', aliases: ['Margin', 'DeputyNotes', 'DirectorNotes', 'الهامش / التوجيه', 'توجيهات وملاحظات النائب', 'توجيه النائب'] },
-      { header: 'القسم المختص', key: 'TargetDepartment', aliases: ['TargetDepartment', 'RegisteredVia', 'القسم المختص'] },
-      { header: 'الملاحظات', key: 'OtherNotes', aliases: ['OtherNotes', 'ReceptionNotes', 'الملاحظات'] },
+      { header: 'الهامش / التوجيه', key: 'Margin', aliases: ['Margin', 'DeputyNotes', 'الهامش / التوجيه', 'توجيهات وملاحظات النائب', 'توجيه النائب'] },
+      { header: 'القسم المختص', key: 'TargetDepartment', aliases: ['TargetDepartment', 'القسم المختص'] },
+      { header: 'الملاحظات', key: 'OtherNotes', aliases: ['OtherNotes', 'الملاحظات'] },
       { header: 'تاريخ التسجيل', key: 'CreatedAt', aliases: ['CreatedAt', 'تاريخ التسجيل', 'تاريخ المعاملة'] },
-      { header: 'الموظف المسؤول', key: 'CreatedBy', aliases: ['CreatedBy', 'الموظف المسؤول'] }
+      { header: 'الموظف المسؤول', key: 'CreatedBy', aliases: ['CreatedBy', 'الموظف المسؤول'] },
+      { header: 'قرار المدير', key: 'DirectorDecision', aliases: ['DirectorDecision', 'قرار المدير', 'توجيه المدير'] },
+      { header: 'ملاحظات المدير', key: 'DirectorNotes', aliases: ['DirectorNotes', 'ملاحظات المدير'] },
+      { header: 'المرحلة الحالية', key: 'CurrentStage', aliases: ['CurrentStage', 'المرحلة الحالية'] },
+      { header: 'مصدر التسجيل', key: 'RegisteredVia', aliases: ['RegisteredVia', 'مصدر التسجيل'] },
+      { header: 'تاريخ قرار المدير', key: 'DirectorDecisionDate', aliases: ['DirectorDecisionDate', 'تاريخ قرار المدير'] },
+      { header: 'بواسطة المدير', key: 'DirectorDecisionBy', aliases: ['DirectorDecisionBy', 'بواسطة المدير'] },
+      { header: 'ملاحظات الاستعلامات', key: 'ReceptionNotes', aliases: ['ReceptionNotes', 'ملاحظات الاستعلامات'] },
+      { header: 'سبب الرفض', key: 'RejectionReason', aliases: ['RejectionReason', 'سبب الرفض'] }
     ]
   },
   'قسم_مقابلات_النائب': {

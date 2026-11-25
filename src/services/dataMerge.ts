@@ -237,6 +237,7 @@ export function getRecordTimestamp(item: any): number {
   const candidates = [
     item.UpdatedAt,
     item.updatedAt,
+    item.DirectorDecisionDate,
     item.BlockedAt,
     item.CreatedAt,
     item.createdAt,
@@ -299,8 +300,8 @@ export function mergeEntityRecords<T extends Record<string, any>>(
         if (existingTime > incomingTime && incomingTime > 0) {
           // Existing record is strictly newer: keep its valid fields and fill only missing fields from incoming
           merged = fillMissingFieldsOnly(existing, item);
-        } else if (incomingTime > existingTime && existingTime > 0) {
-          // Incoming record is strictly newer: apply non-destructive update preserving valid fields
+        } else if (incomingTime > existingTime) {
+          // Incoming record is strictly newer (including when existing had no timestamp): apply non-destructive update
           merged = smartMergeObject(existing, item);
         } else {
           // Equal/unknown timestamps: keep existing valid data intact and fill missing fields only

@@ -1503,10 +1503,10 @@ export async function fsWipeSelectedCollections(
   }
 }
 
-// 15. Realtime Collection Watcher (emits full snapshot list AND explicitly removed doc IDs for instant deletion sync)
+// 15. Realtime Collection Watcher (emits full snapshot list, removed doc IDs, and server-vs-cache metadata for instant live sync)
 export function fsWatchCollection<T>(
-  colName: string, 
-  onData: (items: T[], removedIds: string[]) => void, 
+  colName: string,
+  onData: (items: T[], removedIds: string[], meta?: { fromCache: boolean; hasPendingWrites: boolean }) => void,
   onError?: (err: Error) => void
 ): Unsubscribe {
   const dynamicCol = getFSCol(colName);
@@ -1514,7 +1514,9 @@ export function fsWatchCollection<T>(
     return onSnapshot(
       collection(db, dynamicCol),
       (snapshot) => {
-        if (!snapshot.metadata.fromCache) {
+        const fromCache = snapshot.metadata.fromCache;
+        const hasPendingWrites = snapshot.metadata.hasPendingWrites;
+        if (!fromCache) {
           updateFirebaseHealth('connected', null);
         }
         const list = snapshot.docs.map(d => d.data() as T);
@@ -1523,7 +1525,7 @@ export function fsWatchCollection<T>(
           .filter(change => change.type === 'removed')
           .map(change => change.doc.id)
           .filter(Boolean);
-        onData(list, removedIds);
+        onData(list, removedIds, { fromCache, hasPendingWrites });
       },
       (err) => {
         // Never throw uncaught errors or trip global write circuit-breaker from a listener warning
@@ -1552,9 +1554,7 @@ export function fsWatchDeletedRecords(
           if (data?.id) ids.push(String(data.id).trim());
           else if (d.id) ids.push(String(d.id).trim());
         });
-        if (ids.length > 0) {
-          onDeletedIds(ids);
-        }
+        onDeletedIds(ids);
       },
       (err) => {
         console.warn('Firestore deleted_records watcher notice:', err?.message || err);
@@ -1564,4 +1564,55 @@ export function fsWatchDeletedRecords(
     return () => {};
   }
 }
+
+// 17. Two-Way Google Sheets -> Firestore Deletion Reconciler
+// Deletes Firestore docs that were removed directly from Google Sheets while preserving brand-new in-flight writes.
+export async function fsReconcileDeletedDocs(
+  colName: string,
+  authoritativeKeepIds: Set<string>,
+  idField: string,
+  recentGraceMs: number = 30000
+): Promise<number> {
+  try {
+    const dynamicCol = getFSCol(colName);
+    const snap = await getDocs(collection(db, dynamicCol));
+    if (snap.empty) return 0;
+
+    const nowMs = Date.now();
+    let removed = 0;
+    let batch = writeBatch(db);
+    let batchCount = 0;
+
+    for (const d of snap.docs) {
+      const data = d.data() as Record<string, any>;
+      const recordId = String(data?.[idField] || d.id || '').trim();
+      if (!recordId || authoritativeKeepIds.has(recordId)) continue;
+
+      // Protect brand-new records created/edited in the last 30s that may still be in-flight to Google Sheets
+      const rawTs = data?.UpdatedAt || data?.updatedAt || data?.CreatedAt || data?.createdAt || '';
+      const tsMs = rawTs ? Date.parse(String(rawTs).replace(' ', 'T')) : 0;
+      if (Number.isFinite(tsMs) && tsMs > 0 && nowMs - tsMs < recentGraceMs) {
+        continue;
+      }
+
+      batch.delete(d.ref);
+      batchCount++;
+      removed++;
+      if (batchCount >= 400) {
+        await batch.commit().catch(() => {});
+        batch = writeBatch(db);
+        batchCount = 0;
+      }
+    }
+
+    if (batchCount > 0) {
+      await batch.commit().catch(() => {});
+    }
+    return removed;
+  } catch (err) {
+    console.warn(`fsReconcileDeletedDocs notice (${colName}):`, err);
+    return 0;
+  }
+}
+
 

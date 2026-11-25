@@ -64,6 +64,7 @@ import {
   fsWatchCollection,
   fsWatchCloudConfig,
   fsWatchDeletedRecords,
+  fsReconcileDeletedDocs,
   fsWipeAllCollections,
   fsWipeSelectedCollections,
   isFirestoreTemporarilyBlocked,
@@ -112,7 +113,9 @@ import {
   mergeOrganizationRecords,
   mergeCustomSections,
   mergeCustomRecords,
-  mergeUsers
+  mergeUsers,
+  fillMissingFieldsOnly,
+  getRecordTimestamp
 } from '../services/dataMerge';
 import { autoSyncAllSchemas } from '../services/schemaAutoDiscovery';
 import {
@@ -210,30 +213,32 @@ function emitServerBulk(payload: Record<string, any>): void {
   } catch {}
 }
 
-// Helper to get permanently deleted IDs registry
+// Strictly In-Memory Deleted IDs Registry (hydrated live from Firebase Firestore `deleted_records` — ZERO localStorage/sessionStorage!)
+const _inMemoryDeletedIds = new Set<string>();
+
 export const getStoredDeletedIds = (): Set<string> => {
-  try {
-    const raw = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_deleted_ids') : null;
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) {
-        const clean = arr.filter(id => id && typeof id === 'string' && id.trim().length > 0 && id.trim() !== 'undefined' && id.trim() !== 'null');
-        return new Set(clean);
-      }
-    }
-  } catch {}
-  return new Set();
+  return new Set(_inMemoryDeletedIds);
 };
 
 export const recordDeletedId = (id: string) => {
-  if (!id || typeof id !== 'string' || !id.trim() || id.trim() === 'undefined' || id.trim() === 'null') return;
-  try {
-    const set = getStoredDeletedIds();
-    set.add(id.trim());
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('al_nashi_deleted_ids', JSON.stringify(Array.from(set)));
+  if (!id || typeof id !== 'string') return;
+  const clean = id.trim();
+  if (!clean || clean === 'undefined' || clean === 'null') return;
+  _inMemoryDeletedIds.add(clean);
+};
+
+const syncInMemoryDeletedIdsFromCloud = (ids: string[]) => {
+  _inMemoryDeletedIds.clear();
+  for (const rawId of ids) {
+    const clean = String(rawId || '').trim();
+    if (clean && clean !== 'undefined' && clean !== 'null') {
+      _inMemoryDeletedIds.add(clean);
     }
-  } catch {}
+  }
+};
+
+const clearInMemoryDeletedIds = () => {
+  _inMemoryDeletedIds.clear();
 };
 
 export type { UrgentNotification } from '../types';
@@ -851,97 +856,118 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const unsubDeletedRecords = fsWatchDeletedRecords((deletedIds) => {
-      purgeDeletedIdsEverywhere(deletedIds);
+      syncInMemoryDeletedIdsFromCloud(deletedIds);
+      if (deletedIds.length > 0) {
+        purgeDeletedIdsEverywhere(deletedIds);
+      }
     });
     unsubs.push(unsubDeletedRecords);
 
-    const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items, removedIds) => {
+    // Authoritative Real-Time Firestore Snapshot Reconciler:
+    // - On live server snapshots (!fromCache), mirrors Firestore instantaneously (including edits, Director decisions, deletions, and empty/wiped collections)
+    //   while protecting brand-new optimistic writes created in the last 8 seconds that haven't echoed from the server yet.
+    const reconcileLiveFirestoreSnapshot = <T extends Record<string, any>>(
+      prev: T[],
+      incoming: T[],
+      idKey: keyof T,
+      meta: { fromCache: boolean; hasPendingWrites: boolean } | undefined,
+      merger: (current: T[], next: T[], deleted: Set<string>) => T[]
+    ): T[] => {
+      const deletedIds = getStoredDeletedIds();
+      if (!Array.isArray(incoming)) return prev;
+
+      if (meta && !meta.fromCache) {
+        const nowMs = Date.now();
+        const incomingIdSet = new Set(
+          incoming
+            .map(item => String(item?.[idKey] || '').trim())
+            .filter(Boolean)
+        );
+        const recentOptimistic = prev.filter(item => {
+          const id = String(item?.[idKey] || '').trim();
+          if (!id || incomingIdSet.has(id) || deletedIds.has(id)) return false;
+          const ts = getRecordTimestamp(item);
+          return ts > 0 && nowMs - ts < 8000;
+        });
+        return merger(recentOptimistic, incoming, deletedIds);
+      }
+
+      if (incoming.length === 0) return prev;
+      return merger(prev, incoming, deletedIds);
+    };
+
+    const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
-      if (Array.isArray(items) && items.length > 0) {
-        setCitizens(prev => mergeCitizens(prev, items, getStoredDeletedIds()));
-      }
+      setCitizens(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Citizen_ID', meta, mergeCitizens));
     });
     unsubs.push(unsubCitizens);
 
-    const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items, removedIds) => {
+    const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
-      if (Array.isArray(items) && items.length > 0) {
-        setRequests(prev => mergeRequests(prev, items, getStoredDeletedIds()));
-      }
+      setRequests(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Request_ID', meta, mergeRequests));
     });
     unsubs.push(unsubRequests);
 
-    const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items, removedIds) => {
+    const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
-      if (Array.isArray(items) && items.length > 0) {
-        setInterviews(prev => mergeInterviews(prev, items, getStoredDeletedIds()));
-      }
+      setInterviews(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Interview_ID', meta, mergeInterviews));
     });
     unsubs.push(unsubInterviews);
 
-    const unsubLetters = fsWatchCollection<OfficialLetter>(FS_COLLECTIONS.LETTERS, (items, removedIds) => {
+    const unsubLetters = fsWatchCollection<OfficialLetter>(FS_COLLECTIONS.LETTERS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
-      if (Array.isArray(items) && items.length > 0) {
-        setOfficialLetters(prev => mergeOfficialLetters(prev, items, getStoredDeletedIds()));
-      }
+      setOfficialLetters(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Letter_ID', meta, mergeOfficialLetters));
     });
     unsubs.push(unsubLetters);
 
-    const unsubCheques = fsWatchCollection<ChequeRecord>(FS_COLLECTIONS.CHEQUES, (items, removedIds) => {
+    const unsubCheques = fsWatchCollection<ChequeRecord>(FS_COLLECTIONS.CHEQUES, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
-      if (Array.isArray(items) && items.length > 0) {
-        setCheques(prev => mergeCheques(prev, items, getStoredDeletedIds()));
-      }
+      setCheques(prev => reconcileLiveFirestoreSnapshot(prev, items, 'id', meta, mergeCheques));
     });
     unsubs.push(unsubCheques);
 
-    const unsubOrgs = fsWatchCollection<OrganizationRecord>(FS_COLLECTIONS.ORGANIZATIONS, (items, removedIds) => {
+    const unsubOrgs = fsWatchCollection<OrganizationRecord>(FS_COLLECTIONS.ORGANIZATIONS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
-      if (Array.isArray(items) && items.length > 0) {
-        setOrganizationRecords(prev => mergeOrganizationRecords(prev, items, getStoredDeletedIds()));
-      }
+      setOrganizationRecords(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Citizen_ID', meta, mergeOrganizationRecords));
     });
     unsubs.push(unsubOrgs);
 
-    const unsubSections = fsWatchCollection<CustomSection>(FS_COLLECTIONS.CUSTOM_SECTIONS, (items, removedIds) => {
+    const unsubSections = fsWatchCollection<CustomSection>(FS_COLLECTIONS.CUSTOM_SECTIONS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
       if (Array.isArray(items) && items.length > 0) {
-        setCustomSections(prev => mergeCustomSections(prev, items, getStoredDeletedIds()));
+        setCustomSections(prev => reconcileLiveFirestoreSnapshot(prev, items, 'id', meta, mergeCustomSections));
       }
     });
     unsubs.push(unsubSections);
 
-    const unsubRecords = fsWatchCollection<CustomSectionRecord>(FS_COLLECTIONS.CUSTOM_RECORDS, (items, removedIds) => {
+    const unsubRecords = fsWatchCollection<CustomSectionRecord>(FS_COLLECTIONS.CUSTOM_RECORDS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
-      if (Array.isArray(items) && items.length > 0) {
-        setCustomRecords(prev => mergeCustomRecords(prev, items, getStoredDeletedIds()));
-      }
+      setCustomRecords(prev => reconcileLiveFirestoreSnapshot(prev, items, 'id', meta, mergeCustomRecords));
     });
     unsubs.push(unsubRecords);
 
-    const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items, removedIds) => {
+    const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
       if (Array.isArray(items) && items.length > 0) {
-        const deletedIds = getStoredDeletedIds();
-        setUsers(prev => mergeUsers(prev, items, deletedIds));
+        setUsers(prev => reconcileLiveFirestoreSnapshot(prev, items, 'User_ID', meta, mergeUsers));
       }
     });
     unsubs.push(unsubUsers);
@@ -2381,14 +2407,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       CreatedBy: currentUser ? currentUser.FullName : 'الاستعلامات'
     };
 
-    setCitizens(prev => {
-      const next = [newCitizen, ...prev.filter(c => c.Citizen_ID !== newCitizenId)];
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
-      return next;
-    });
-    try {
-      localStorage.setItem('al_nashi_has_real_data', 'true');
-    } catch {}
+    setCitizens(prev => [newCitizen, ...prev.filter(c => c.Citizen_ID !== newCitizenId)]);
 
     // Auto add dropdowns if new
     if (surname && surname !== 'عام') addDropdownItem('Surname', surname);
@@ -2912,43 +2931,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
+    const isFromReception = reqData.RegisteredVia === 'استعلامات';
     const newRequest: OfficeRequest = {
       ...reqData,
       Request_ID: candidate,
+      CurrentStage: reqData.CurrentStage || (isFromReception ? 'مدير المكتب' : 'مدير الإدارة'),
+      IsHistoricalImported: reqData.IsHistoricalImported ?? false,
+      IsArchived: reqData.IsArchived ?? false,
+      IsDirectInstantRequest: reqData.IsDirectInstantRequest ?? false,
       CreatedAt: formattedDate,
       UpdatedAt: now.toISOString(),
-      CreatedBy: currentUser ? currentUser.FullName : 'قسم الإدارة'
+      CreatedBy: currentUser ? currentUser.FullName : (isFromReception ? 'الاستعلامات' : 'قسم الإدارة')
     };
 
-    setRequests(prev => {
-      const next = [newRequest, ...prev.filter(r => r.Request_ID !== candidate)];
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(sanitizeRequestsForStorage(next)));
-      return next;
-    });
-    try {
-      localStorage.setItem('al_nashi_has_real_data', 'true');
-    } catch {}
+    setRequests(prev => [newRequest, ...prev.filter(r => r.Request_ID !== candidate)]);
 
     if (reqData.Entity) {
       addDropdownItem('Entity', reqData.Entity);
     }
 
     if (!options?.skipAuditLog) {
-      addAuditLog('إنشاء طلب إداري', 'قسم الإدارة', `تم تسجيل الطلب ${candidate} للمواطن ${reqData.CitizenName} موجه إلى ${reqData.Entity}`);
+      addAuditLog('إنشاء طلب إداري', isFromReception ? 'الاستعلامات' : 'قسم الإدارة', `تم تسجيل الطلب ${candidate} للمواطن ${reqData.CitizenName} موجه إلى ${reqData.Entity}`);
     }
 
     // Trigger real-time cloud notification unless explicitly suppressed (e.g. direct instant administrative requests)
     if (!options?.skipNotification) {
       const isUrgentReq = reqData.Priority === 'عاجل' || reqData.Priority === 'خاص جداً';
       addNotification({
-        title: isUrgentReq
-          ? `طلب عاجل (${reqData.Priority}): ${reqData.CitizenName}`
-          : `معاملة جديدة: ${reqData.CitizenName}`,
+        title: isFromReception
+          ? `طلب جديد من الاستعلامات بانتظار قرار المدير: ${reqData.CitizenName}`
+          : isUrgentReq
+            ? `طلب عاجل (${reqData.Priority}): ${reqData.CitizenName}`
+            : `معاملة جديدة: ${reqData.CitizenName}`,
         message: `الجهة: ${reqData.Entity || 'غير محدد'} | رقم الطلب: ${candidate}`,
         type: 'urgent_request',
-        category: 'request',
-        priority: isUrgentReq ? 'urgent' : 'normal',
-        linkSection: 'admin',
+        category: isFromReception ? 'director' : 'request',
+        priority: isFromReception || isUrgentReq ? 'urgent' : 'normal',
+        linkSection: isFromReception ? 'director' : 'admin',
         entityId: candidate,
         targetRoles: ['director', 'admin', 'admin_officer', 'developer']
       });
@@ -3734,12 +3753,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       lastOutgoingNumberSuq: 0
     });
 
-    // 3. Purge browser storage & IndexedDB immediately
+    // 3. Purge browser storage, IndexedDB & in-memory tombstones immediately
+    clearInMemoryDeletedIds();
     purgeLegacyBrowserBusinessData();
     clearBusinessRecordsFromIDB().catch(() => {});
-    try {
-      localStorage.removeItem('al_nashi_deleted_ids');
-    } catch {}
 
     // 4. PARALLEL CLOUD WIPE: Execute Firebase Firestore + Google Sheets (keeping Row 1 headers!) + Drive + Server simultaneously
     const targetScriptUrl =
@@ -4171,12 +4188,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const existingMap = new Map<string, Citizen>();
         prev.forEach(c => existingMap.set(c.Citizen_ID, c));
         validCitizens.forEach(c => existingMap.set(c.Citizen_ID, c));
-        const mergedList = Array.from(existingMap.values());
-        scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', () => JSON.stringify(mergedList));
-        idbSetJSON(STORAGE_KEY_PREFIX + 'citizens', mergedList).catch(() => {});
-        return mergedList;
+        return Array.from(existingMap.values());
       });
-      try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
     }
 
     if (requestsCount > 0) {
@@ -4184,13 +4197,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const existingReqMap = new Map<string, OfficeRequest>();
         prev.forEach(r => existingReqMap.set(r.Request_ID, r));
         validRequests.forEach(r => existingReqMap.set(r.Request_ID, r));
-        const mergedReqs = Array.from(existingReqMap.values());
-        const cleanMerged = sanitizeRequestsForStorage(mergedReqs);
-        scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', () => JSON.stringify(cleanMerged));
-        idbSetJSON(STORAGE_KEY_PREFIX + 'requests', cleanMerged).catch(() => {});
-        return mergedReqs;
+        return Array.from(existingReqMap.values());
       });
-      try { localStorage.setItem('al_nashi_has_real_data', 'true'); } catch {}
 
       // Authoritatively advance (and self-heal if poisoned > MAX_VALID_OUTGOING_SEQ) office outgoing counters,
       // unless SmartExcelImporterModal just anchored the exact last outgoing number from the uploaded file.
@@ -4450,9 +4458,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setOrganizationRecords(activeOrgs);
         setCheques(activeCheques);
         setIsSystemZeroed(false);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem(STORAGE_KEY_PREFIX + 'is_zeroed', 'false');
-        }
       }
 
       const res = await loginAndSetupDeveloperCloud({
@@ -4635,51 +4640,151 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const shouldSyncToFirestore = options?.syncToFirestore !== false;
     const replaceAsPrimary = options?.replaceAsPrimary === true;
 
-    const applyAndMirrorToFirestore = async (pulled: {
-      citizens?: Citizen[];
-      requests?: OfficeRequest[];
-      interviews?: Interview[];
-      officialLetters?: OfficialLetter[];
-      organizationRecords?: OrganizationRecord[];
-      cheques?: ChequeRecord[];
-      customRecords?: CustomSectionRecord[];
-      users?: User[];
-    }) => {
-      const cleanCitizens = mergeCitizens([], pulled.citizens || [], deletedIds);
-      const cleanRequests = mergeRequests([], pulled.requests || [], deletedIds);
-      const cleanInterviews = mergeInterviews([], pulled.interviews || [], deletedIds);
-      const cleanLetters = mergeOfficialLetters([], pulled.officialLetters || [], deletedIds);
-      const cleanOrgs = mergeOrganizationRecords([], pulled.organizationRecords || [], deletedIds);
-      const cleanCheques = mergeCheques([], pulled.cheques || [], deletedIds);
-      const cleanCustomRecords = mergeCustomRecords([], pulled.customRecords || [], deletedIds);
+    const applyAndMirrorToFirestore = async (
+      pulled: {
+        citizens?: Citizen[];
+        requests?: OfficeRequest[];
+        interviews?: Interview[];
+        officialLetters?: OfficialLetter[];
+        organizationRecords?: OrganizationRecord[];
+        cheques?: ChequeRecord[];
+        customRecords?: CustomSectionRecord[];
+        users?: User[];
+      },
+      isAuthoritativeSheetSnapshot: boolean = false
+    ) => {
+      const nowMs = Date.now();
+      const recentWindowMs = 30000;
+
+      // Helper to preserve brand-new local/Firestore records (within 30s) that may still be in-flight to Google Sheets
+      const keepRecentInFlight = <T extends Record<string, any>>(
+        currentList: T[],
+        incomingList: T[],
+        idKey: keyof T
+      ): T[] => {
+        const incomingIds = new Set(incomingList.map(i => String(i?.[idKey] || '').trim()).filter(Boolean));
+        return currentList.filter(item => {
+          const id = String(item?.[idKey] || '').trim();
+          if (!id || incomingIds.has(id) || deletedIds.has(id)) return false;
+          const ts = getRecordTimestamp(item);
+          return ts > 0 && nowMs - ts < recentWindowMs;
+        });
+      };
+
+      const rawCitizens = mergeCitizens([], pulled.citizens || [], deletedIds);
+      // Enrich pulled requests with existing Firestore workflow fields (DirectorDecision, DirectorNotes, CurrentStage, RegisteredVia, attachments)
+      // so pulling from Google Sheets NEVER wipes an approved Director decision or Reception workflow state!
+      const existingReqMap = new Map<string, OfficeRequest>();
+      (requestsRef.current || []).forEach(r => {
+        if (r?.Request_ID) existingReqMap.set(r.Request_ID, r);
+      });
+      const enrichedPulledRequests = (pulled.requests || []).map(r => {
+        const existing = r?.Request_ID ? existingReqMap.get(r.Request_ID) : undefined;
+        if (!existing) return r;
+        const merged = fillMissingFieldsOnly(r, existing);
+        // If Firestore has a newer UpdatedAt (e.g., Director just approved), keep newer workflow status cleanly
+        const existingTs = getRecordTimestamp(existing);
+        const pulledTs = getRecordTimestamp(r);
+        if (existingTs > pulledTs && existingTs > 0) {
+          return {
+            ...merged,
+            ...(existing.DirectorDecision ? { DirectorDecision: existing.DirectorDecision } : {}),
+            ...(existing.DirectorNotes ? { DirectorNotes: existing.DirectorNotes } : {}),
+            ...(existing.DirectorDecisionDate ? { DirectorDecisionDate: existing.DirectorDecisionDate } : {}),
+            ...(existing.DirectorDecisionBy ? { DirectorDecisionBy: existing.DirectorDecisionBy } : {}),
+            ...(existing.CurrentStage ? { CurrentStage: existing.CurrentStage } : {}),
+            ...(existing.RegisteredVia ? { RegisteredVia: existing.RegisteredVia } : {}),
+            ...(existing.ReceptionNotes ? { ReceptionNotes: existing.ReceptionNotes } : {}),
+            ...(existing.ProcessingStatus ? { ProcessingStatus: existing.ProcessingStatus } : {}),
+            ...(existing.DeliveryStatus ? { DeliveryStatus: existing.DeliveryStatus } : {}),
+            ...(existing.TargetDepartment ? { TargetDepartment: existing.TargetDepartment } : {}),
+            ...(existing.UpdatedAt ? { UpdatedAt: existing.UpdatedAt } : {})
+          };
+        }
+        return merged;
+      });
+
+      const rawRequests = mergeRequests([], enrichedPulledRequests, deletedIds);
+      const rawInterviews = mergeInterviews([], pulled.interviews || [], deletedIds);
+      const rawLetters = mergeOfficialLetters([], pulled.officialLetters || [], deletedIds);
+      const rawOrgs = mergeOrganizationRecords([], pulled.organizationRecords || [], deletedIds);
+      const rawCheques = mergeCheques([], pulled.cheques || [], deletedIds);
+      const rawCustomRecords = mergeCustomRecords([], pulled.customRecords || [], deletedIds);
       const cleanUsers = mergeUsers([], pulled.users || [], deletedIds);
 
-      if (cleanCitizens.length > 0) {
-        setCitizens(prev => (replaceAsPrimary ? cleanCitizens : mergeCitizens(prev, cleanCitizens, deletedIds)));
-      }
-      if (cleanRequests.length > 0) {
-        setRequests(prev => (replaceAsPrimary ? cleanRequests : mergeRequests(prev, cleanRequests, deletedIds)));
-      }
-      if (cleanInterviews.length > 0) {
-        setInterviews(prev => (replaceAsPrimary ? cleanInterviews : mergeInterviews(prev, cleanInterviews, deletedIds)));
-      }
-      if (cleanLetters.length > 0) {
-        setOfficialLetters(prev => (replaceAsPrimary ? cleanLetters : mergeOfficialLetters(prev, cleanLetters, deletedIds)));
-      }
-      if (cleanOrgs.length > 0) {
-        setOrganizationRecords(prev => (replaceAsPrimary ? cleanOrgs : mergeOrganizationRecords(prev, cleanOrgs, deletedIds)));
-      }
-      if (cleanCheques.length > 0) {
-        setCheques(prev => (replaceAsPrimary ? cleanCheques : mergeCheques(prev, cleanCheques, deletedIds)));
-      }
-      if (cleanCustomRecords.length > 0) {
-        setCustomRecords(prev => (replaceAsPrimary ? cleanCustomRecords : mergeCustomRecords(prev, cleanCustomRecords, deletedIds)));
+      const cleanCitizens = mergeCitizens(
+        keepRecentInFlight(citizensRef.current || [], rawCitizens, 'Citizen_ID'),
+        rawCitizens,
+        deletedIds
+      );
+      const cleanRequests = mergeRequests(
+        keepRecentInFlight(requestsRef.current || [], rawRequests, 'Request_ID'),
+        rawRequests,
+        deletedIds
+      );
+      const cleanInterviews = mergeInterviews(
+        keepRecentInFlight(interviewsRef.current || [], rawInterviews, 'Interview_ID'),
+        rawInterviews,
+        deletedIds
+      );
+      const cleanLetters = mergeOfficialLetters(
+        keepRecentInFlight(officialLettersRef.current || [], rawLetters, 'Letter_ID'),
+        rawLetters,
+        deletedIds
+      );
+      const cleanOrgs = mergeOrganizationRecords(
+        keepRecentInFlight(organizationRecordsRef.current || [], rawOrgs, 'Citizen_ID'),
+        rawOrgs,
+        deletedIds
+      );
+      const cleanCheques = mergeCheques(
+        keepRecentInFlight(chequesRef.current || [], rawCheques, 'id'),
+        rawCheques,
+        deletedIds
+      );
+      const cleanCustomRecords = mergeCustomRecords(
+        keepRecentInFlight(customRecordsRef.current || [], rawCustomRecords, 'id'),
+        rawCustomRecords,
+        deletedIds
+      );
+
+      // Update React UI immediately (including deletions when authoritative sheet snapshot succeeded)
+      if (isAuthoritativeSheetSnapshot && replaceAsPrimary) {
+        setCitizens(cleanCitizens);
+        setRequests(cleanRequests);
+        setInterviews(cleanInterviews);
+        setOfficialLetters(cleanLetters);
+        setOrganizationRecords(cleanOrgs);
+        setCheques(cleanCheques);
+        setCustomRecords(cleanCustomRecords);
+      } else {
+        if (cleanCitizens.length > 0) {
+          setCitizens(prev => (replaceAsPrimary ? cleanCitizens : mergeCitizens(prev, cleanCitizens, deletedIds)));
+        }
+        if (cleanRequests.length > 0) {
+          setRequests(prev => (replaceAsPrimary ? cleanRequests : mergeRequests(prev, cleanRequests, deletedIds)));
+        }
+        if (cleanInterviews.length > 0) {
+          setInterviews(prev => (replaceAsPrimary ? cleanInterviews : mergeInterviews(prev, cleanInterviews, deletedIds)));
+        }
+        if (cleanLetters.length > 0) {
+          setOfficialLetters(prev => (replaceAsPrimary ? cleanLetters : mergeOfficialLetters(prev, cleanLetters, deletedIds)));
+        }
+        if (cleanOrgs.length > 0) {
+          setOrganizationRecords(prev => (replaceAsPrimary ? cleanOrgs : mergeOrganizationRecords(prev, cleanOrgs, deletedIds)));
+        }
+        if (cleanCheques.length > 0) {
+          setCheques(prev => (replaceAsPrimary ? cleanCheques : mergeCheques(prev, cleanCheques, deletedIds)));
+        }
+        if (cleanCustomRecords.length > 0) {
+          setCustomRecords(prev => (replaceAsPrimary ? cleanCustomRecords : mergeCustomRecords(prev, cleanCustomRecords, deletedIds)));
+        }
       }
       if (cleanUsers.length > 0) {
         setUsers(prev => mergeUsers(prev, cleanUsers, deletedIds));
       }
 
-      // Immediately mirror authoritative Google Sheet records directly into Firebase Firestore
+      // Immediately mirror authoritative Google Sheet records & deletions directly into Firebase Firestore
       const totalPulled =
         cleanCitizens.length +
         cleanRequests.length +
@@ -4689,21 +4794,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cleanCheques.length +
         cleanCustomRecords.length;
 
-      if (shouldSyncToFirestore && totalPulled > 0) {
-        // Non-blocking background mirror to Firebase Firestore so UI hydration finishes instantaneously
-        void fsBulkPushAll({
-          citizens: cleanCitizens,
-          requests: cleanRequests,
-          interviews: cleanInterviews,
-          officialLetters: cleanLetters,
-          cheques: cleanCheques,
-          organizationRecords: cleanOrgs,
-          users: cleanUsers,
-          systemSettings: undefined as unknown as SystemSettings,
-          dropdowns: [],
-          customSections: [],
-          customRecords: cleanCustomRecords
-        }).catch(err => console.warn('Direct Google Sheet -> Firestore sync notice:', err));
+      if (shouldSyncToFirestore) {
+        if (totalPulled > 0) {
+          void fsBulkPushAll({
+            citizens: cleanCitizens,
+            requests: cleanRequests,
+            interviews: cleanInterviews,
+            officialLetters: cleanLetters,
+            cheques: cleanCheques,
+            organizationRecords: cleanOrgs,
+            users: cleanUsers,
+            systemSettings: undefined as unknown as SystemSettings,
+            dropdowns: [],
+            customSections: [],
+            customRecords: cleanCustomRecords
+          }).catch(err => console.warn('Direct Google Sheet -> Firestore sync notice:', err));
+        }
+
+        // Two-way deletion reconciliation: if rows were deleted directly in Google Sheets, remove them from Firestore too
+        if (isAuthoritativeSheetSnapshot && replaceAsPrimary) {
+          void Promise.allSettled([
+            fsReconcileDeletedDocs(FS_COLLECTIONS.CITIZENS, new Set(cleanCitizens.map(c => c.Citizen_ID)), 'Citizen_ID', recentWindowMs),
+            fsReconcileDeletedDocs(FS_COLLECTIONS.REQUESTS, new Set(cleanRequests.map(r => r.Request_ID)), 'Request_ID', recentWindowMs),
+            fsReconcileDeletedDocs(FS_COLLECTIONS.INTERVIEWS, new Set(cleanInterviews.map(i => i.Interview_ID)), 'Interview_ID', recentWindowMs),
+            fsReconcileDeletedDocs(FS_COLLECTIONS.LETTERS, new Set(cleanLetters.map(l => l.Letter_ID)), 'Letter_ID', recentWindowMs),
+            fsReconcileDeletedDocs(FS_COLLECTIONS.ORGANIZATIONS, new Set(cleanOrgs.map(o => o.Citizen_ID)), 'Citizen_ID', recentWindowMs),
+            fsReconcileDeletedDocs(FS_COLLECTIONS.CHEQUES, new Set(cleanCheques.map(ch => ch.id)), 'id', recentWindowMs),
+            fsReconcileDeletedDocs(FS_COLLECTIONS.CUSTOM_RECORDS, new Set(cleanCustomRecords.map(cr => cr.id)), 'id', recentWindowMs)
+          ]).catch(() => {});
+        }
       }
 
       return { cleanCitizens, cleanRequests, cleanCustomRecords };
@@ -4723,7 +4842,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         try {
           const scriptRes = await pullDataFromGoogleAppsScript(targetScriptUrl);
           if (scriptRes && scriptRes.success && scriptRes.data) {
-            const { cleanCitizens, cleanRequests, cleanCustomRecords } = await applyAndMirrorToFirestore(scriptRes.data);
+            const { cleanCitizens, cleanRequests, cleanCustomRecords } = await applyAndMirrorToFirestore(scriptRes.data, true);
             return {
               success: true,
               message:

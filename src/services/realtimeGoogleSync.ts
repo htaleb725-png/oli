@@ -1197,6 +1197,23 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       const rawDelivery = r.DeliveryStatus || r['حالة الاستلام'] || '';
       const rawProc = r.ProcessingStatus || r['حالة الإنجاز'] || 'قيد التدقيق';
       const dynamicExtras = r.CustomFields && typeof r.CustomFields === 'object' ? r.CustomFields : undefined;
+      const rawDecision = String(r.DirectorDecision || r['قرار المدير'] || r['توجيه المدير'] || '').trim();
+      const directorDecision =
+        rawDecision === 'خاص' || rawDecision === 'عام' || rawDecision === 'رفض' || rawDecision === 'مؤرشف'
+          ? (rawDecision as OfficeRequest['DirectorDecision'])
+          : undefined;
+      const directorNotes = String(r.DirectorNotes || r['ملاحظات المدير'] || '').trim();
+      const directorDecisionDate = String(r.DirectorDecisionDate || r['تاريخ قرار المدير'] || '').trim();
+      const directorDecisionBy = String(r.DirectorDecisionBy || r['بواسطة المدير'] || '').trim();
+      const currentStage = String(r.CurrentStage || r['المرحلة الحالية'] || '').trim();
+      const registeredVia = String(r.RegisteredVia || r['مصدر التسجيل'] || '').trim();
+      const receptionNotes = String(r.ReceptionNotes || r['ملاحظات الاستعلامات'] || '').trim();
+      const rejectionReason = String(r.RejectionReason || r['سبب الرفض'] || '').trim();
+      const rawArchived = r.IsArchived;
+      const isArchived = rawArchived === true || rawArchived === 'true' || rawArchived === 'نعم';
+      const rawDirect = r.IsDirectInstantRequest;
+      const isDirectInstant = rawDirect === true || rawDirect === 'true' || rawDirect === 'نعم';
+
       return {
         ...(dynamicExtras ? { CustomFields: dynamicExtras } : {}),
         Request_ID: String(r.Request_ID || r['رقم الطلب'] || r.id || '').trim(),
@@ -1223,6 +1240,21 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
         AttachmentRequest: r.AttachmentRequest || undefined,
         AttachmentResponse: r.AttachmentResponse || undefined,
         DeputyNotes: String(r.DeputyNotes || r['الهامش / التوجيه'] || '').trim(),
+        ...(directorDecision ? { DirectorDecision: directorDecision } : {}),
+        ...(directorNotes ? { DirectorNotes: directorNotes } : {}),
+        ...(directorDecisionDate ? { DirectorDecisionDate: directorDecisionDate } : {}),
+        ...(directorDecisionBy ? { DirectorDecisionBy: directorDecisionBy } : {}),
+        ...(currentStage ? { CurrentStage: currentStage as OfficeRequest['CurrentStage'] } : {}),
+        ...(registeredVia ? { RegisteredVia: registeredVia as OfficeRequest['RegisteredVia'] } : {}),
+        ...(receptionNotes ? { ReceptionNotes: receptionNotes } : {}),
+        ...(rejectionReason ? { RejectionReason: rejectionReason } : {}),
+        ...(isArchived ? { IsArchived: true } : {}),
+        ...(isDirectInstant ? { IsDirectInstantRequest: true } : {}),
+        ...(r.AttendanceType ? { AttendanceType: String(r.AttendanceType).trim() as OfficeRequest['AttendanceType'] } : {}),
+        ...(r.DependencyStatus ? { DependencyStatus: String(r.DependencyStatus).trim() as OfficeRequest['DependencyStatus'] } : {}),
+        ...(r.ProxyName ? { ProxyName: String(r.ProxyName).trim() } : {}),
+        ...(r.ProxyPhone ? { ProxyPhone: String(r.ProxyPhone).trim() } : {}),
+        ...(r.ProxyAddress ? { ProxyAddress: String(r.ProxyAddress).trim() } : {}),
         IsHistoricalImported: r.IsHistoricalImported === true || r.IsHistoricalImported === 'true',
         CreatedAt: String(r.CreatedAt || r['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
         CreatedBy: String(r.CreatedBy || r['الموظف المسؤول'] || 'Google Sheets').trim(),

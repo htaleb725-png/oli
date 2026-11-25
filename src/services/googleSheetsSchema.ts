@@ -574,6 +574,15 @@ export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<st
   const deliveryVal = cleanSheetCell(r.DeliveryStatus || r.RequestStatus);
   const addressVal = cleanSheetCell(r.Address || r.ResidentialArea);
   const marginVal = cleanSheetCell(r.Margin || r.DeputyNotes);
+  const directorDecisionVal = cleanSheetCell(r.DirectorDecision);
+  const directorNotesVal = cleanSheetCell(r.DirectorNotes);
+  const directorDecisionDateVal = cleanSheetCell(r.DirectorDecisionDate);
+  const directorDecisionByVal = cleanSheetCell(r.DirectorDecisionBy);
+  const currentStageVal = cleanSheetCell(r.CurrentStage);
+  const registeredViaVal = cleanSheetCell(r.RegisteredVia);
+  const receptionNotesVal = cleanSheetCell(r.ReceptionNotes);
+  const rejectionReasonVal = cleanSheetCell(r.RejectionReason);
+
   const base: Record<string, string> = {
     ...map,
     Request_ID: cleanSheetCell(r.Request_ID),
@@ -594,12 +603,29 @@ export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<st
     Job: cleanSheetCell(r.Job),
     ReferralSource: cleanSheetCell(r.ReferralSource),
     Margin: marginVal,
-    TargetDepartment: cleanSheetCell(r.TargetDepartment || r.RegisteredVia),
+    TargetDepartment: cleanSheetCell(r.TargetDepartment),
     OtherNotes: cleanSheetCell(r.OtherNotes),
     CreatedAt: cleanSheetCell(r.CreatedAt),
-    CreatedBy: cleanSheetCell(r.CreatedBy)
+    CreatedBy: cleanSheetCell(r.CreatedBy),
+    // Director & Reception workflow fields (synced instantaneously to Google Sheets)
+    DirectorDecision: directorDecisionVal,
+    'قرار المدير': directorDecisionVal,
+    DirectorNotes: directorNotesVal,
+    'ملاحظات المدير': directorNotesVal,
+    CurrentStage: currentStageVal,
+    'المرحلة الحالية': currentStageVal,
+    RegisteredVia: registeredViaVal,
+    'مصدر التسجيل': registeredViaVal,
+    DirectorDecisionDate: directorDecisionDateVal,
+    'تاريخ قرار المدير': directorDecisionDateVal,
+    DirectorDecisionBy: directorDecisionByVal,
+    'بواسطة المدير': directorDecisionByVal,
+    ReceptionNotes: receptionNotesVal,
+    'ملاحظات الاستعلامات': receptionNotesVal,
+    RejectionReason: rejectionReasonVal,
+    'سبب الرفض': rejectionReasonVal
   };
-  return appendDynamicFieldsToPayload(r, base, ['ResidentialArea', 'DeputyNotes', 'RegisteredVia']);
+  return appendDynamicFieldsToPayload(r, base, ['ResidentialArea', 'DeputyNotes']);
 }
 
 export function toCleanSheetInterviewPayload(i: Partial<Interview>): Record<string, string> {
