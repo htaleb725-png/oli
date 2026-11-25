@@ -477,10 +477,66 @@ function buildRowMap(headers: string[], row: string[]): Record<string, string> {
   return payload;
 }
 
+const EXCLUDED_DYNAMIC_SHEET_KEYS = new Set([
+  'PhotoUrl',
+  'ScanAttachments',
+  'WorkflowHistory',
+  'AttachedRequestImage',
+  'AttachmentRequest',
+  'AttachmentResponse',
+  'GeneratedAiDraft',
+  'Permissions',
+  'AllowedSections',
+  'UpdatedAt',
+  'updatedAt',
+  'data',
+  'CustomFields',
+  'sectionId',
+  'sectionTitle',
+  'sectionColumns',
+  'sheetName',
+  'IsHistoricalImported',
+  'BlockReason',
+  'BlockedAt',
+  'BlockedBy'
+]);
+
+/**
+ * Schema-Less Dynamic Field Forwarder:
+ * Automatically includes any extra scalar properties or `CustomFields` / `data` keys
+ * added in future system updates so Google Apps Script can auto-create columns for them.
+ */
+function appendDynamicFieldsToPayload(
+  source: any,
+  base: Record<string, string>,
+  knownKeys: string[] = []
+): Record<string, string> {
+  if (!source || typeof source !== 'object') return base;
+  const out: Record<string, string> = { ...base };
+  const skip = new Set<string>([...EXCLUDED_DYNAMIC_SHEET_KEYS, ...knownKeys]);
+
+  const attachFromObject = (obj: any) => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+    for (const [key, rawVal] of Object.entries(obj)) {
+      if (!key || skip.has(key) || out[key] !== undefined) continue;
+      if (rawVal === null || rawVal === undefined || typeof rawVal === 'object') continue;
+      const cleaned = cleanSheetCell(rawVal);
+      if (cleaned !== '') {
+        out[key] = cleaned;
+      }
+    }
+  };
+
+  attachFromObject(source.CustomFields);
+  attachFromObject(source.data);
+  attachFromObject(source);
+  return out;
+}
+
 export function toCleanSheetCitizenPayload(c: Partial<Citizen>): Record<string, string> {
   const row = citizenToSheetRow(c);
   const map = buildRowMap(CITIZENS_SHEET_HEADERS, row);
-  return {
+  const base: Record<string, string> = {
     ...map,
     Citizen_ID: cleanSheetCell(c.Citizen_ID),
     FullName: cleanSheetCell(c.FullName),
@@ -496,12 +552,13 @@ export function toCleanSheetCitizenPayload(c: Partial<Citizen>): Record<string, 
     CreatedAt: cleanSheetCell(c.CreatedAt),
     CreatedBy: cleanSheetCell(c.CreatedBy)
   };
+  return appendDynamicFieldsToPayload(c, base, ['FirstName', 'FatherName', 'GrandFatherName', 'GreatGrandFatherName', 'Surname', 'IsBlocked']);
 }
 
 export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<string, string> {
   const row = requestToSheetRow(r);
   const map = buildRowMap(REQUESTS_SHEET_HEADERS, row);
-  return {
+  const base: Record<string, string> = {
     ...map,
     Request_ID: cleanSheetCell(r.Request_ID),
     Citizen_ID: cleanSheetCell(r.Citizen_ID),
@@ -521,12 +578,13 @@ export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<st
     CreatedAt: cleanSheetCell(r.CreatedAt),
     CreatedBy: cleanSheetCell(r.CreatedBy)
   };
+  return appendDynamicFieldsToPayload(r, base, ['RequestStatus', 'ResidentialArea', 'DeputyNotes', 'OtherNotes', 'Education', 'Job', 'RegisteredVia']);
 }
 
 export function toCleanSheetInterviewPayload(i: Partial<Interview>): Record<string, string> {
   const row = interviewToSheetRow(i);
   const map = buildRowMap(INTERVIEWS_SHEET_HEADERS, row);
-  return {
+  const base: Record<string, string> = {
     ...map,
     Interview_ID: cleanSheetCell(i.Interview_ID),
     Citizen_ID: cleanSheetCell(i.Citizen_ID),
@@ -539,26 +597,32 @@ export function toCleanSheetInterviewPayload(i: Partial<Interview>): Record<stri
     DeputyNotes: cleanSheetCell(i.DeputyNotes),
     Outcome: cleanSheetCell(i.Outcome)
   };
+  return appendDynamicFieldsToPayload(i, base, ['Address', 'Referrer']);
 }
 
 export function toCleanSheetOrganizationPayload(o: Partial<OrganizationRecord>): Record<string, string> {
   const row = organizationToSheetRow(o);
   const map = buildRowMap(ORGANIZATION_SHEET_HEADERS, row);
-  return {
+  const base: Record<string, string> = {
     ...map,
     Citizen_ID: cleanSheetCell(o.Citizen_ID || o.Org_ID),
     FullName: cleanSheetCell(o.FullName),
     Phone1: cleanSheetCell(o.Phone1),
     District: cleanSheetCell(o.District),
+    SubDistrict: cleanSheetCell(o.SubDistrict),
     OrgRating: cleanSheetCell(o.OrgRating),
-    InfluenceType: cleanSheetCell(o.InfluenceType)
+    InfluenceType: cleanSheetCell(o.InfluenceType),
+    ElectionCenter: cleanSheetCell(o.ElectionCenter),
+    Notes: cleanSheetCell(o.Notes),
+    LastUpdated: cleanSheetCell((o as any).LastUpdated || (o as any).Last_Updated || (o as any).UpdatedAt)
   };
+  return appendDynamicFieldsToPayload(o, base, ['Org_ID', 'Last_Updated', 'UpdatedAt']);
 }
 
 export function toCleanSheetLetterPayload(l: Partial<OfficialLetter>): Record<string, string> {
   const row = letterToSheetRow(l);
   const map = buildRowMap(LETTERS_SHEET_HEADERS, row);
-  return {
+  const base: Record<string, string> = {
     ...map,
     Letter_ID: cleanSheetCell(l.Letter_ID),
     LetterNumber: cleanSheetCell(l.LetterNumber || l.Letter_Number),
@@ -569,12 +633,13 @@ export function toCleanSheetLetterPayload(l: Partial<OfficialLetter>): Record<st
     CitizenName: cleanSheetCell(l.CitizenName),
     Status: cleanSheetCell(l.Status)
   };
+  return appendDynamicFieldsToPayload(l, base, ['Letter_Number', 'Letter_Date', 'To_Entity', 'ClerkName']);
 }
 
 export function toCleanSheetChequePayload(ch: Partial<ChequeRecord>): Record<string, string> {
   const row = chequeToSheetRow(ch);
   const map = buildRowMap(CHEQUES_SHEET_HEADERS, row);
-  return {
+  const base: Record<string, string> = {
     ...map,
     id: cleanSheetCell(ch.id),
     ChequeNumber: cleanSheetCell(ch.ChequeNumber),
@@ -585,27 +650,32 @@ export function toCleanSheetChequePayload(ch: Partial<ChequeRecord>): Record<str
     Purpose: cleanSheetCell(ch.Purpose),
     Status: cleanSheetCell(ch.Status)
   };
+  return appendDynamicFieldsToPayload(ch, base, ['CitizenPhone', 'IssueDate', 'CreatedAt']);
 }
 
 export function toCleanSheetSocialCarePayload(rec: any): Record<string, string> {
   const row = socialCareToSheetRow(rec);
   const map = buildRowMap(SOCIAL_CARE_SHEET_HEADERS, row);
   const d = (rec && typeof rec.data === 'object' && rec.data) ? rec.data : (rec || {});
-  return {
+  const base: Record<string, string> = {
     ...map,
     id: cleanSheetCell(rec.id || d.id),
     f_welf_name: cleanSheetCell(d.f_welf_name || d.citizen_name || rec.CitizenName),
     f_welf_phone: cleanSheetCell(d.f_welf_phone || d.phone),
     f_welf_code: cleanSheetCell(d.f_welf_code || d.welfare_code),
     f_welf_type: cleanSheetCell(d.f_welf_type || d.case_type),
-    f_welf_researcher: cleanSheetCell(d.f_welf_researcher || d.researcher_status)
+    f_welf_researcher: cleanSheetCell(d.f_welf_researcher || d.researcher_status),
+    f_welf_district: cleanSheetCell(d.f_welf_district || d.district),
+    f_welf_date: cleanSheetCell(d.f_welf_date || d.submission_date || rec.createdAt),
+    f_welf_notes: cleanSheetCell(d.f_welf_notes || d.notes)
   };
+  return appendDynamicFieldsToPayload(rec, base, ['createdAt', 'createdBy']);
 }
 
 export function toCleanSheetUserPayload(u: Partial<User>): Record<string, string> {
   const row = userToSheetRow(u);
   const map = buildRowMap(USERS_SHEET_HEADERS, row);
-  return {
+  const base: Record<string, string> = {
     ...map,
     User_ID: cleanSheetCell(u.User_ID),
     Username: cleanSheetCell(u.Username),
@@ -613,6 +683,7 @@ export function toCleanSheetUserPayload(u: Partial<User>): Record<string, string
     Role: cleanSheetCell(u.Role),
     Department: cleanSheetCell(u.Department)
   };
+  return appendDynamicFieldsToPayload(u, base, ['Password', 'RoleArabic', 'Phone', 'Status', 'CreatedAt']);
 }
 
 export function mapSheetRowByHeaders(headers: string[], row: any[]): Record<string, string> {
@@ -757,11 +828,13 @@ export function toCleanCustomSectionRecordPayload(
     payload[field.id] = val;
   }
 
-  // Also include any extra keys on rec.data not in field definitions (non-destructive preservation)
+  // Also include any extra keys on rec.data not in field definitions (auto-register as dynamic columns!)
   for (const [k, rawVal] of Object.entries(d)) {
-    if (payload[k] !== undefined) continue;
+    if (payload[k] !== undefined || addedHeaders.has(k)) continue;
     const cleaned = cleanSheetCell(rawVal);
     if (!cleaned) continue;
+    addedHeaders.add(k);
+    columns.push({ key: k, header: k });
     payload[k] = cleaned;
   }
 

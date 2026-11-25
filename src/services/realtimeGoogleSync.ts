@@ -52,7 +52,8 @@ export type RealtimeEntityType =
   | 'dropdowns'
   | 'custom_sections'
   | 'custom_records'
-  | 'settings';
+  | 'settings'
+  | (string & {});
 
 export type RealtimeActionType = 'insert' | 'update' | 'upsert' | 'delete';
 
@@ -557,16 +558,25 @@ export async function pushToGoogleSheetsRealtime(
   let oauthRestOk = false;
 
   // 1. Optional Direct Google Sheets REST API sync if OAuth token is active
-  if (resolvedSheetId && entityType !== 'custom_records') {
+  const isCoreRestEntity =
+    entityType === 'citizens' ||
+    entityType === 'requests' ||
+    entityType === 'interviews' ||
+    entityType === 'organization' ||
+    entityType === 'letters' ||
+    entityType === 'cheques' ||
+    entityType === 'users';
+  if (resolvedSheetId && isCoreRestEntity) {
+    const coreEntityType = entityType as 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'users';
     try {
       const token = await getAccessToken();
       if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {
         if (action === 'delete') {
           if (targetId) {
-            oauthRestOk = await deleteRecordFromSheetsRealtime(token, resolvedSheetId, entityType, targetId);
+            oauthRestOk = await deleteRecordFromSheetsRealtime(token, resolvedSheetId, coreEntityType, targetId);
           }
         } else {
-          oauthRestOk = await pushSingleRecordToSheetsRealtime(token, resolvedSheetId, entityType, data);
+          oauthRestOk = await pushSingleRecordToSheetsRealtime(token, resolvedSheetId, coreEntityType, data);
         }
       }
     } catch {
@@ -916,6 +926,79 @@ export async function reorganizeGoogleSheetsNow(params: {
 }
 
 /**
+ * Wipe all sheets or specific selected sections in Google Sheets via Apps Script,
+ * strictly preserving Row 1 headers and user accounts (unless explicitly included).
+ */
+export async function wipeGoogleSheetsViaAppsScript(
+  mode: 'all' | 'sections',
+  sections?: string[],
+  customAppsScriptUrl?: string
+): Promise<{ success: boolean; message: string; clearedSheets?: string[]; error?: string }> {
+  const resolvedUrl = resolveAppsScriptUrl(customAppsScriptUrl);
+  if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
+    return {
+      success: false,
+      message: 'رابط Google Apps Script غير مضبوط (VITE_GOOGLE_APPS_SCRIPT_URL).',
+      error: 'missing_apps_script_url'
+    };
+  }
+
+  const expandedTargets: string[] = [];
+  if (mode === 'sections' && Array.isArray(sections)) {
+    for (const rawKey of sections) {
+      const key = String(rawKey || '').trim();
+      if (!key) continue;
+      expandedTargets.push(key);
+      if (key === 'sec_social_welfare') {
+        expandedTargets.push('قسم_الرعاية_الاجتماعية');
+      } else {
+        const matchedCustom = _runtimeCustomSections.find(
+          s => s.id === key || s.title === key
+        );
+        if (matchedCustom) {
+          expandedTargets.push(buildCustomSectionSheetName(matchedCustom.title));
+          if (Array.isArray(matchedCustom.subSections)) {
+            for (const sub of matchedCustom.subSections) {
+              if (sub?.title) {
+                expandedTargets.push(buildCustomSectionSheetName(matchedCustom.title, sub.title));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const uniqueTargets = Array.from(new Set(expandedTargets));
+  const res = await postToAppsScriptWithServerProxy(resolvedUrl, {
+    action: mode === 'all' ? 'wipeAll' : 'wipeSections',
+    sections: mode === 'sections' ? uniqueTargets : undefined,
+    includeUsers: false,
+    timestamp: new Date().toISOString(),
+    source: 'al_nashi_office_system'
+  });
+
+  if (res.success) {
+    const clearedSheets = Array.isArray(res.data?.clearedSheets) ? res.data.clearedSheets : [];
+    return {
+      success: true,
+      clearedSheets,
+      message:
+        res.data?.message ||
+        (mode === 'all'
+          ? 'تم تصفير أوراق Google Sheets بالكامل مع الإبقاء على صف العناوين.'
+          : `تم تصفير (${uniqueTargets.length}) قسم محدد في Google Sheets مع الإبقاء على صف العناوين.`)
+    };
+  }
+
+  return {
+    success: false,
+    message: res.error || 'تعذر تنفيذ التصفير التلقائي في Google Sheets.',
+    error: res.error
+  };
+}
+
+/**
  * Pull all data from Google Apps Script Web App (proxied via server on Vercel to avoid CORS redirects)
  */
 export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promise<{
@@ -963,7 +1046,9 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       const blockStr = String(c.IsBlocked || c['حالة الحظر'] || '').trim();
       const isBlocked = c.IsBlocked === true || blockStr.startsWith('محظور') || blockStr === 'نعم';
       const blockReason = blockStr.includes(' - ') ? blockStr.split(' - ').slice(1).join(' - ').trim() : c.BlockReason;
+      const dynamicExtras = c.CustomFields && typeof c.CustomFields === 'object' ? c.CustomFields : undefined;
       return {
+        ...(dynamicExtras ? { CustomFields: dynamicExtras } : {}),
         Citizen_ID: String(c.Citizen_ID || c['الرقم التعريفي'] || c.id || '').trim(),
         FirstName: String(c.FirstName || c['الاسم الأول'] || '').trim(),
         FatherName: String(c.FatherName || c['اسم الأب'] || '').trim(),
@@ -991,7 +1076,9 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     const requests: OfficeRequest[] = (sourceData.requests || []).map((r: any) => {
       const rawDelivery = r.DeliveryStatus || r['حالة الاستلام'] || '';
       const rawProc = r.ProcessingStatus || r['حالة الإنجاز'] || 'قيد التدقيق';
+      const dynamicExtras = r.CustomFields && typeof r.CustomFields === 'object' ? r.CustomFields : undefined;
       return {
+        ...(dynamicExtras ? { CustomFields: dynamicExtras } : {}),
         Request_ID: String(r.Request_ID || r['رقم الطلب'] || r.id || '').trim(),
         Citizen_ID: String(r.Citizen_ID || r['الرقم التعريفي للمواطن'] || '').trim(),
         CitizenName: String(r.CitizenName || r['اسم صاحب الطلب'] || r.FullName || '').trim(),
@@ -1024,6 +1111,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     });
 
     const interviews: Interview[] = (sourceData.interviews || []).map((i: any) => ({
+      ...(i.CustomFields && typeof i.CustomFields === 'object' ? { CustomFields: i.CustomFields } : {}),
       Interview_ID: String(i.Interview_ID || i['رمز المقابلة'] || i.id || '').trim(),
       Citizen_ID: String(i.Citizen_ID || i['الرقم التعريفي للمواطن'] || '').trim(),
       FullName: String(i.FullName || i['اسم المواطن'] || i.CitizenName || '').trim(),
@@ -1042,6 +1130,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     }));
 
     const officialLetters: OfficialLetter[] = (sourceData.officialLetters || sourceData.letters || []).map((l: any) => ({
+      ...(l.CustomFields && typeof l.CustomFields === 'object' ? { CustomFields: l.CustomFields } : {}),
       Letter_ID: String(l.Letter_ID || l['رمز الكتاب'] || l.id || '').trim(),
       LetterNumber: String(l.LetterNumber || l['العدد / الصادر'] || l.Letter_Number || '').trim(),
       LetterDate: String(l.LetterDate || l['تاريخ الكتاب'] || l.Letter_Date || '').trim(),
@@ -1055,6 +1144,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     }));
 
     const cheques: ChequeRecord[] = (sourceData.cheques || []).map((ch: any) => ({
+      ...(ch.CustomFields && typeof ch.CustomFields === 'object' ? { CustomFields: ch.CustomFields } : {}),
       id: String(ch.id || ch['معرف الصك'] || ch.Cheque_ID || '').trim(),
       ChequeNumber: String(ch.ChequeNumber || ch['رقم الصك'] || '').trim(),
       Citizen_ID: String(ch.Citizen_ID || ch['الرقم التعريفي للمواطن'] || '').trim(),
@@ -1074,6 +1164,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     }));
 
     const organizationRecords: OrganizationRecord[] = (sourceData.organizationRecords || sourceData.organizations || []).map((o: any) => ({
+      ...(o.CustomFields && typeof o.CustomFields === 'object' ? { CustomFields: o.CustomFields } : {}),
       Citizen_ID: String(o.Citizen_ID || o['الرقم التعريفي'] || '').trim(),
       FullName: String(o.FullName || o['الاسم الكامل'] || '').trim(),
       Phone1: String(o.Phone1 || o['رقم الهاتف'] || '').trim(),
@@ -1088,11 +1179,23 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       InfluenceType: (o.InfluenceType || o['الصفة / التأثير الاجتماعي'] || 'شخصية مؤثرة') as any
     }));
 
-    // Preserve BOTH Social Care records AND any dynamic Custom Section records with all their dynamic fields!
+    // Preserve BOTH Social Care records (including ANY dynamically added future columns!) AND any dynamic Custom Section records!
     const customRecords: CustomSectionRecord[] = (sourceData.customRecords || [])
       .map((cr: any) => {
         const secId = String(cr.sectionId || 'sec_social_welfare').trim();
         const d = (cr && typeof cr.data === 'object' && cr.data) ? cr.data : cr;
+
+        const preservedData: Record<string, any> = {};
+        if (d && typeof d === 'object') {
+          for (const [k, v] of Object.entries(d)) {
+            if (k === 'id' || k === 'sectionId' || k === 'createdAt' || k === 'createdBy' || k === 'معرف القيد' || k === 'تاريخ الإنشاء' || k === 'الموظف المسؤول') {
+              continue;
+            }
+            if (v !== undefined && v !== null) {
+              preservedData[k] = typeof v === 'string' ? v.trim() : v;
+            }
+          }
+        }
 
         if (secId === 'sec_social_welfare') {
           return {
@@ -1101,6 +1204,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
             createdAt: String(cr.createdAt || d.f_welf_date || cr['تاريخ المراجعة'] || new Date().toISOString().split('T')[0]).trim(),
             createdBy: String(cr.createdBy || cr['الموظف المسؤول'] || 'قسم الرعاية الاجتماعية').trim(),
             data: {
+              ...preservedData,
               f_welf_name: String(d.f_welf_name || cr['اسم المواطن الرباعي'] || '').trim(),
               f_welf_phone: String(d.f_welf_phone || cr['رقم الهاتف'] || '').trim(),
               f_welf_code: String(d.f_welf_code || cr['رقم القيد / المعاملة الوزارية'] || '').trim(),
@@ -1113,18 +1217,6 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
           };
         }
 
-        // Dynamic custom section record: keep every dynamic key intact without dropping fields!
-        const preservedData: Record<string, any> = {};
-        if (d && typeof d === 'object') {
-          for (const [k, v] of Object.entries(d)) {
-            if (k === 'id' || k === 'sectionId' || k === 'createdAt' || k === 'createdBy' || k === 'معرف القيد' || k === 'تاريخ الإنشاء' || k === 'الموظف المسؤول') {
-              continue;
-            }
-            if (v !== undefined && v !== null) {
-              preservedData[k] = typeof v === 'string' ? v.trim() : v;
-            }
-          }
-        }
         return {
           id: String(cr.id || cr['معرف القيد'] || '').trim(),
           sectionId: secId,

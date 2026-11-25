@@ -65,6 +65,7 @@ import {
   fsWatchCloudConfig,
   fsWatchDeletedRecords,
   fsWipeAllCollections,
+  fsWipeSelectedCollections,
   isFirestoreTemporarilyBlocked,
   FS_COLLECTIONS
 } from '../services/firebaseFirestoreService';
@@ -85,7 +86,8 @@ import {
 } from '../data/initialData';
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
-import { pushToGoogleSheetsRealtime, pushBulkDataToGoogleSheets, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets, setRuntimeCloudConfig, setRuntimeCustomSections } from '../services/realtimeGoogleSync';
+import { pushToGoogleSheetsRealtime, pushBulkDataToGoogleSheets, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets, setRuntimeCloudConfig, setRuntimeCustomSections, wipeGoogleSheetsViaAppsScript } from '../services/realtimeGoogleSync';
+import { pushCloudSyncAlert } from '../services/cloudSyncAlerts';
 import { sheetsIntegration } from '../services/sheetsIntegrationLayer';
 import { 
   loginAndSetupDeveloperCloud, 
@@ -353,6 +355,7 @@ interface AppContextType {
   resetToDefaultData: () => void;
   resetToInitialData: () => void;
   wipeAllSystemData: () => Promise<void>;
+  wipeSelectedSections: (sectionKeys: string[]) => Promise<void>;
   isSystemZeroed: boolean;
   isGoogleConnected: boolean;
   isGoogleSyncing: boolean;
@@ -1620,14 +1623,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const refreshAllDataFromAllSources = async () => {
     // 0. Always purge any stale business data trapped in Chrome localStorage / IndexedDB
-    //    so legacy browser records can NEVER reappear or conflict with Cloud DB.
     purgeLegacyBrowserBusinessData();
     clearBusinessRecordsFromIDB().catch(() => {});
 
-    // 1. Resolve cloud connection endpoints (Env vars take priority, enriched by Firestore settings)
-    let cloudSettings: Partial<SystemSettings> | null = null;
+    // 1. ULTRA-FAST PARALLEL HYDRATION:
+    //    Launch Firebase Firestore fast fetch AND Google Sheets authoritative pull IN PARALLEL
+    //    so the UI renders live data in milliseconds with zero hang, while Google Sheets
+    //    reconciles authoritatively and mirrors updates back to Firestore non-blockingly.
+    const envScript = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || '';
+    const envSheet = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID || '';
+    const cachedScript =
+      envScript ||
+      systemSettingsRef.current.appsScriptUrl ||
+      systemSettingsRef.current.googleAppsScriptUrl ||
+      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
+    const cachedSheet =
+      envSheet ||
+      systemSettingsRef.current.googleSheetId ||
+      systemSettingsRef.current.activeGoogleSheetId ||
+      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') || '' : '');
+
+    // Start Google Sheets pull immediately if script URL / sheet ID is already known
+    let sheetsStartedEarly = false;
+    let sheetsPromise: Promise<any> | null = null;
+    if (cachedScript || cachedSheet) {
+      sheetsStartedEarly = true;
+      sheetsPromise = fetchAllFromGoogleSheetsNow(cachedScript, cachedSheet, {
+        syncToFirestore: true,
+        replaceAsPrimary: true
+      }).catch(e => {
+        console.warn('Primary Google Sheets hydration notice:', e);
+        return null;
+      });
+    }
+
+    // Simultaneously pull fast snapshot + metadata from Firebase Firestore (populates UI immediately!)
+    let cloudSettings: Partial<SystemSettings> | undefined;
     try {
-      cloudSettings = await fsGetSettings();
+      const fsResult = await fetchAllFromFirestoreNow();
+      cloudSettings = fsResult.systemSettings;
       if (cloudSettings) {
         setRuntimeCloudConfig({
           appsScriptUrl: cloudSettings.appsScriptUrl || cloudSettings.googleAppsScriptUrl,
@@ -1636,63 +1670,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
     } catch (e) {
-      console.warn('Firestore settings lookup notice:', e);
+      console.warn('Cloud Firestore hydration notice:', e);
     }
 
-    const targetScript =
-      (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
-      cloudSettings?.appsScriptUrl ||
-      cloudSettings?.googleAppsScriptUrl ||
-      systemSettingsRef.current.appsScriptUrl ||
-      systemSettingsRef.current.googleAppsScriptUrl ||
-      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
-
-    const targetSheet =
-      (import.meta as any).env?.VITE_GOOGLE_SHEET_ID ||
-      cloudSettings?.googleSheetId ||
-      cloudSettings?.activeGoogleSheetId ||
-      systemSettingsRef.current.googleSheetId ||
-      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') || '' : '');
-
-    // 2. PRIMARY AUTHORITATIVE SOURCE: Pull all sheets & records from Google Sheet (via Apps Script)
-    //    and immediately sync/update Firebase Firestore directly with the authoritative sheet records.
-    if (targetScript || targetSheet) {
-      try {
-        await fetchAllFromGoogleSheetsNow(targetScript, targetSheet, {
+    // If Apps Script URL came from Firestore settings (not yet known on boot), trigger Google Sheets pull now
+    if (!sheetsStartedEarly) {
+      const resolvedScript =
+        envScript ||
+        cloudSettings?.appsScriptUrl ||
+        cloudSettings?.googleAppsScriptUrl ||
+        '';
+      const resolvedSheet =
+        envSheet ||
+        cloudSettings?.googleSheetId ||
+        cloudSettings?.activeGoogleSheetId ||
+        '';
+      if (resolvedScript || resolvedSheet) {
+        sheetsPromise = fetchAllFromGoogleSheetsNow(resolvedScript, resolvedSheet, {
           syncToFirestore: true,
           replaceAsPrimary: true
+        }).catch(e => {
+          console.warn('Background Google Sheets hydration notice:', e);
+          return null;
         });
-      } catch (e) {
-        console.warn('Primary Google Sheets hydration notice:', e);
       }
     }
 
-    // 3. SECONDARY HYDRATION: Hydrate Firestore metadata (customSections, settings, dropdowns, notifications)
-    //    and non-destructively merge any Firestore records via semantic gap-filling (zero duplicates).
-    try {
-      const fsResult = await fetchAllFromFirestoreNow();
-      if (fsResult.systemSettings) {
-        setRuntimeCloudConfig({
-          appsScriptUrl: fsResult.systemSettings.appsScriptUrl || fsResult.systemSettings.googleAppsScriptUrl,
-          googleSheetId: fsResult.systemSettings.googleSheetId || fsResult.systemSettings.activeGoogleSheetId,
-          googleDriveFolderId: fsResult.systemSettings.googleDriveFolderId
-        });
-      }
-    } catch (e) {
-      console.warn('Cloud Firestore hydration notice:', e);
+    if (sheetsPromise) {
+      await sheetsPromise;
     }
   };
 
   const triggerSessionDataLoad = (customMsg?: string) => {
     setIsSessionLoading(true);
-    setSessionLoadingMessage(customMsg || 'يرجى الانتظار لتحميل بياناتك...');
+    setSessionLoadingMessage(customMsg || 'جاري جلب أحدث البيانات...');
 
-    refreshAllDataFromAllSources().catch(() => {});
-
-    // Exactly 2 seconds as requested by the user
-    setTimeout(() => {
+    // Dismiss loading curtain immediately once fast hydration finishes (max 650ms for crisp feel)
+    const minHide = setTimeout(() => {
       setIsSessionLoading(false);
-    }, 2000);
+    }, 650);
+
+    refreshAllDataFromAllSources()
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(minHide);
+        setIsSessionLoading(false);
+      });
   };
 
   // Run initial hydration on mount
@@ -3671,55 +3694,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const wipeAllSystemData = async () => {
     // 0. Security Guard: Only the developer can wipe data
     if (currentUser?.Role !== 'developer') {
-      alert('عذراً، صلاحية تصفير النظام وتفريغ البيانات مقتصرة حصرياً على حساب المطور.');
+      pushCloudSyncAlert({
+        severity: 'warning',
+        target: 'both',
+        title: 'صلاحية التصفير مقفلة',
+        message: 'عذراً، صلاحية تصفير النظام وتفريغ البيانات مقتصرة حصرياً على حساب المطور.'
+      });
       return;
     }
 
-    // 1. Wipe Firebase Firestore collections
-    try {
-      await fsWipeAllCollections();
-    } catch (e) {
-      console.warn('Error wiping Firebase collections:', e);
-    }
-
-    // 2. Wipe Google Drive / Sheets Cloud Data
-    try {
-      await wipeDeveloperCloudData();
-    } catch (e) {
-      console.warn('Error during cloud wipeout (Drive, Sheets):', e);
-    }
-
-    // 3. Wipe Google Sheets via Apps Script Webhook
-    const targetScriptUrl = systemSettings.appsScriptUrl || systemSettings.googleAppsScriptUrl;
-    if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
-      try {
-        await fetch(targetScriptUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            action: 'wipeAll',
-            timestamp: new Date().toISOString()
-          })
-        });
-      } catch {}
-    }
-
-    // 4. Wipe Unified Server Store & Blacklist Store
-    try {
-      await fetch('/api/sync/state?mode=wipe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'wipe', clientId: LIVE_SYNC_CLIENT_ID })
-      });
-      await fetch('/api/blacklist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: [], unblockedIds: [] })
-      }).catch(() => {});
-    } catch {}
-
-    // 5. Clear in-memory state completely to 0 records
+    // 1. INSTANT UI ZEROING: Clear ALL in-memory collections immediately so records disappear with 0ms lag!
     setCitizens([]);
     setRequests([]);
     setCheques([]);
@@ -3727,36 +3711,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setOrganizationRecords([]);
     setDocuments([]);
     setOfficialLetters([]);
+    setCustomRecords([]);
     setNotifications([]);
     setIsSystemZeroed(true);
 
-    // 6. Reset outgoing counters in systemSettings
+    // 2. Reset outgoing counters in systemSettings (preserving icons, sections & cloud config)
     updateSettings({
       lastOutgoingNumberNasiriyah: 0,
       lastOutgoingNumberSuq: 0
     });
 
-    // 7. Clear browser storage and IndexedDB
+    // 3. Purge browser storage & IndexedDB immediately
+    purgeLegacyBrowserBusinessData();
+    clearBusinessRecordsFromIDB().catch(() => {});
     try {
-      localStorage.removeItem(STORAGE_KEY_PREFIX + 'citizens');
-      localStorage.removeItem(STORAGE_KEY_PREFIX + 'requests');
-      localStorage.removeItem(STORAGE_KEY_PREFIX + 'cheques');
-      localStorage.removeItem(STORAGE_KEY_PREFIX + 'interviews');
-      localStorage.removeItem(STORAGE_KEY_PREFIX + 'org');
-      localStorage.removeItem(STORAGE_KEY_PREFIX + 'documents');
-      localStorage.removeItem(STORAGE_KEY_PREFIX + 'letters');
-      localStorage.removeItem(STORAGE_KEY_PREFIX + 'drive_requests_cache');
       localStorage.removeItem('al_nashi_deleted_ids');
-      localStorage.setItem(STORAGE_KEY_PREFIX + 'is_zeroed', 'true');
     } catch {}
 
-    try {
-      await clearAllImagesFromDB();
-    } catch (e) {
-      console.warn('Error clearing IndexedDB images during wipe:', e);
-    }
+    // 4. PARALLEL CLOUD WIPE: Execute Firebase Firestore + Google Sheets (keeping Row 1 headers!) + Drive + Server simultaneously
+    const targetScriptUrl =
+      (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
+      systemSettingsRef.current.appsScriptUrl ||
+      systemSettingsRef.current.googleAppsScriptUrl ||
+      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
 
-    // 8. Log audit entry
+    const [fsRes, sheetsRes] = await Promise.allSettled([
+      fsWipeAllCollections(),
+      wipeGoogleSheetsViaAppsScript('all', undefined, targetScriptUrl),
+      wipeDeveloperCloudData().catch(() => {}),
+      clearAllImagesFromDB().catch(() => {}),
+      fetch('/api/sync/state?mode=wipe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'wipe', clientId: LIVE_SYNC_CLIENT_ID })
+      }).catch(() => {}),
+      fetch('/api/blacklist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [], unblockedIds: [] })
+      }).catch(() => {})
+    ]);
+
+    const sheetsOk = sheetsRes.status === 'fulfilled' && sheetsRes.value?.success;
+    const fsOk = fsRes.status === 'fulfilled' && fsRes.value?.success;
+
+    pushCloudSyncAlert({
+      severity: fsOk && sheetsOk ? 'success' : 'info',
+      target: 'both',
+      title: 'تم تصفير النظام بالكامل بنجاح',
+      message: sheetsOk
+        ? 'تم تفريغ جميع السجلات فوراً من الواجهة و Firebase Firestore و Google Sheets (مع الإبقاء على صف العناوين Headers وحسابات الكادر).'
+        : 'تم تفريغ السجلات من الواجهة و Firebase Firestore بنجاح (تأكد من تحديث كود Apps Script لإتمام التصفير التلقائي في Google Sheets).'
+    });
+
+    // 5. Log audit entry
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const wipeLog: AuditLog = {
@@ -3765,12 +3773,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ActionType: 'تصفير شامل',
       Section: 'إدارة وتصفير البيانات',
       Department: 'إدارة وتصفير البيانات',
-      Details: 'تم تصفير النظام بالكامل بواسطة المطور (0 سجل)، وتفريغ وحذف كافة السجلات والصور من Google Drive و Google Sheets و Firebase Firestore ومحطة العمل.',
+      Details: 'تم تصفير النظام بالكامل بواسطة المطور (0 سجل) في الواجهة و Firebase Firestore و Google Sheets مع الحفاظ على صف العناوين.',
       UserName: currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'المطور',
       User: currentUser ? currentUser.FullName : 'المطور',
       Timestamp: formattedDate
     };
     setAuditLogs([wipeLog]);
+  };
+
+  const wipeSelectedSections = async (sectionKeys: string[]) => {
+    if (currentUser?.Role !== 'developer') {
+      pushCloudSyncAlert({
+        severity: 'warning',
+        target: 'both',
+        title: 'صلاحية التصفير مقفلة',
+        message: 'عذراً، صلاحية تصفير الأقسام مقتصرة حصرياً على حساب المطور.'
+      });
+      return;
+    }
+
+    const keys = Array.from(new Set((sectionKeys || []).map(k => String(k || '').trim()).filter(Boolean)));
+    if (keys.length === 0) return;
+
+    const keySet = new Set(keys);
+
+    // 1. INSTANT UI ZEROING for selected sections only (other departments remain 100% untouched!)
+    if (keySet.has('citizens')) setCitizens([]);
+    if (keySet.has('requests')) {
+      setRequests([]);
+      updateSettings({ lastOutgoingNumberNasiriyah: 0, lastOutgoingNumberSuq: 0 });
+    }
+    if (keySet.has('interviews')) setInterviews([]);
+    if (keySet.has('organization')) setOrganizationRecords([]);
+    if (keySet.has('letters')) {
+      setOfficialLetters([]);
+      setDocuments([]);
+    }
+    if (keySet.has('cheques')) setCheques([]);
+
+    const coreSet = new Set(['citizens', 'requests', 'interviews', 'organization', 'letters', 'cheques']);
+    const customKeysToWipe = keys.filter(k => !coreSet.has(k));
+    if (customKeysToWipe.length > 0) {
+      const customKeySet = new Set(customKeysToWipe);
+      setCustomRecords(prev => prev.filter(rec => !customKeySet.has(String(rec.sectionId || 'sec_social_welfare'))));
+    }
+
+    // 2. PARALLEL CLOUD WIPE for ONLY the selected sections in Firebase Firestore + Google Sheets (keeping Row 1 headers!)
+    const targetScriptUrl =
+      (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
+      systemSettingsRef.current.appsScriptUrl ||
+      systemSettingsRef.current.googleAppsScriptUrl ||
+      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
+
+    const [fsRes, sheetsRes] = await Promise.allSettled([
+      fsWipeSelectedCollections(keys),
+      wipeGoogleSheetsViaAppsScript('sections', keys, targetScriptUrl)
+    ]);
+
+    const sheetsOk = sheetsRes.status === 'fulfilled' && sheetsRes.value?.success;
+    const fsOk = fsRes.status === 'fulfilled' && fsRes.value?.success;
+
+    pushCloudSyncAlert({
+      severity: fsOk && sheetsOk ? 'success' : 'info',
+      target: 'both',
+      title: `تم تصفير (${keys.length}) قسم محدد بنجاح`,
+      message: sheetsOk
+        ? 'تم حذف سجلات الأقسام المختارة فوراً من الواجهة و Firebase Firestore و Google Sheets (مع الإبقاء على صف العناوين وبقية الأقسام سليمة).'
+        : 'تم حذف سجلات الأقسام المختارة من الواجهة و Firebase Firestore بنجاح (تأكد من تحديث كود Apps Script لتفعيل التصفير الانتقائي في Google Sheets).'
+    });
+
+    addAuditLog(
+      'تصفير أقسام محددة',
+      'إدارة وتصفير البيانات',
+      `تم تصفير الأقسام التالية فقط: ${keys.join('، ')}`
+    );
   };
 
   const resetToDefaultData = () => {
@@ -4572,7 +4648,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cleanCustomRecords.length;
 
       if (shouldSyncToFirestore && totalPulled > 0) {
-        await fsBulkPushAll({
+        // Non-blocking background mirror to Firebase Firestore so UI hydration finishes instantaneously
+        void fsBulkPushAll({
           citizens: cleanCitizens,
           requests: cleanRequests,
           interviews: cleanInterviews,
@@ -4757,6 +4834,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resetToDefaultData,
         resetToInitialData: resetToDefaultData,
         wipeAllSystemData,
+        wipeSelectedSections,
         isSystemZeroed,
         isGoogleConnected,
         isGoogleSyncing,

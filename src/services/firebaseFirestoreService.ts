@@ -1328,87 +1328,177 @@ export async function fsBulkPullAll(): Promise<{
   }
 }
 
-export async function fsWipeAllCollections(): Promise<{ success: boolean; error?: string }> {
+async function wipeSingleFirestoreCollection(colName: string): Promise<number> {
+  let deleted = 0;
   try {
-    const collectionsToWipe = [
+    const snap = await getDocs(collection(db, colName));
+    if (snap.empty) return 0;
+
+    let currentBatch = writeBatch(db);
+    let count = 0;
+    for (const d of snap.docs) {
+      currentBatch.delete(d.ref);
+      count++;
+      deleted++;
+      if (count >= 400) {
+        await currentBatch.commit().catch(() => {});
+        currentBatch = writeBatch(db);
+        count = 0;
+      }
+    }
+    if (count > 0) {
+      await currentBatch.commit().catch(() => {});
+    }
+  } catch (e) {
+    console.warn(`Wipe collection notice (${colName}):`, e);
+  }
+  return deleted;
+}
+
+/**
+ * Fast parallel wipe of ALL business data collections in Firebase Firestore
+ * while preserving staff accounts (users), system settings/icons, dropdowns, and section definitions.
+ */
+export async function fsWipeAllCollections(): Promise<{ success: boolean; deletedCount?: number; error?: string }> {
+  try {
+    const businessCollections = [
       FS_COLLECTIONS.CITIZENS,
       FS_COLLECTIONS.REQUESTS,
       FS_COLLECTIONS.INTERVIEWS,
       FS_COLLECTIONS.LETTERS,
       FS_COLLECTIONS.CHEQUES,
       FS_COLLECTIONS.ORGANIZATIONS,
-      FS_COLLECTIONS.USERS,
-      FS_COLLECTIONS.CUSTOM_SECTIONS,
       FS_COLLECTIONS.CUSTOM_RECORDS,
-      FS_COLLECTIONS.DROPDOWNS,
       FS_COLLECTIONS.AUDIT_LOGS,
       FS_COLLECTIONS.NOTIFICATIONS,
-      FS_COLLECTIONS.DELETED_RECORDS,
-      'citizens',
-      'requests',
-      'interviews',
-      'letters',
-      'cheques',
-      'organizations',
-      'users',
-      'custom_sections',
-      'custom_records',
-      'dropdowns',
-      'audit_logs',
-      'notifications',
-      'deleted_records'
+      FS_COLLECTIONS.DELETED_RECORDS
     ];
 
-    const uniqueCols = Array.from(new Set(collectionsToWipe));
-    for (const baseCol of uniqueCols) {
-      const colName = getFSCol(baseCol);
-      try {
-        const snap = await getDocs(collection(db, colName));
-        if (snap.empty) continue;
-        
-        // Process in batches of 400
-        let currentBatch = writeBatch(db);
-        let count = 0;
-        for (const d of snap.docs) {
-          currentBatch.delete(d.ref);
-          count++;
-          if (count >= 400) {
-            await currentBatch.commit().catch(() => {});
-            currentBatch = writeBatch(db);
-            count = 0;
-          }
-        }
-        if (count > 0) {
-          await currentBatch.commit().catch(() => {});
-        }
+    const colNames = Array.from(
+      new Set(businessCollections.flatMap(base => [getFSCol(base), base]))
+    );
 
-        // Also delete documents individually to guarantee 100% removal
-        for (const d of snap.docs) {
-          await deleteDoc(d.ref).catch(() => {});
-        }
-      } catch (e) {
-        console.warn(`Wipe collection notice (${baseCol}):`, e);
+    const counts = await Promise.all(colNames.map(col => wipeSingleFirestoreCollection(col)));
+    const deletedCount = counts.reduce((acc, n) => acc + n, 0);
+
+    // Reset outgoing counters in settings without touching Firebase/Apps Script/UI icon configuration
+    try {
+      const settingsCol = getFSCol(FS_COLLECTIONS.SETTINGS);
+      const resetPatch = {
+        lastOutgoingNumberNasiriyah: 0,
+        lastOutgoingNumberSuq: 0,
+        updatedAt: new Date().toISOString()
+      };
+      await Promise.all([
+        setDoc(doc(db, settingsCol, 'cloud_config'), resetPatch, { merge: true }).catch(() => {}),
+        setDoc(doc(db, settingsCol, 'general'), resetPatch, { merge: true }).catch(() => {})
+      ]);
+    } catch {}
+
+    updateFirebaseHealth('connected', null);
+    return { success: true, deletedCount };
+  } catch (err: any) {
+    console.warn('fsWipeAllCollections warning:', err);
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Selective Section Wipe in Firebase Firestore:
+ * Wipes ONLY the specified core collections or custom section records (`sectionId`) in parallel.
+ */
+export async function fsWipeSelectedCollections(
+  sectionKeys: string[]
+): Promise<{ success: boolean; deletedCount?: number; error?: string }> {
+  try {
+    const keys = Array.from(new Set((sectionKeys || []).map(k => String(k || '').trim()).filter(Boolean)));
+    if (keys.length === 0) return { success: true, deletedCount: 0 };
+
+    const coreMap: Record<string, string> = {
+      citizens: FS_COLLECTIONS.CITIZENS,
+      requests: FS_COLLECTIONS.REQUESTS,
+      interviews: FS_COLLECTIONS.INTERVIEWS,
+      letters: FS_COLLECTIONS.LETTERS,
+      officialLetters: FS_COLLECTIONS.LETTERS,
+      cheques: FS_COLLECTIONS.CHEQUES,
+      organization: FS_COLLECTIONS.ORGANIZATIONS,
+      organizations: FS_COLLECTIONS.ORGANIZATIONS,
+      organizationRecords: FS_COLLECTIONS.ORGANIZATIONS,
+      notifications: FS_COLLECTIONS.NOTIFICATIONS,
+      audit_logs: FS_COLLECTIONS.AUDIT_LOGS
+    };
+
+    const coreColsToWipe: string[] = [];
+    const customSectionIdsToWipe: string[] = [];
+
+    for (const k of keys) {
+      if (coreMap[k]) {
+        coreColsToWipe.push(getFSCol(coreMap[k]), coreMap[k]);
+      } else {
+        customSectionIdsToWipe.push(k);
       }
     }
 
-    // Reset outgoing counters in cloud_config
-    try {
-      const settingsCol = getFSCol(FS_COLLECTIONS.SETTINGS);
-      await setDoc(doc(db, settingsCol, 'cloud_config'), {
-        lastOutgoingNumberNasiriyah: 0,
-        lastOutgoingNumberSuq: 0,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-      await setDoc(doc(db, settingsCol, 'general'), {
-        lastOutgoingNumberNasiriyah: 0,
-        lastOutgoingNumberSuq: 0,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    } catch {}
+    let deletedCount = 0;
 
-    return { success: true };
+    // 1. Wipe selected core collections in parallel
+    const uniqueCoreCols = Array.from(new Set(coreColsToWipe));
+    if (uniqueCoreCols.length > 0) {
+      const counts = await Promise.all(uniqueCoreCols.map(c => wipeSingleFirestoreCollection(c)));
+      deletedCount += counts.reduce((a, b) => a + b, 0);
+    }
+
+    // 2. Wipe selected custom sections' records (e.g. sec_social_welfare or any dynamic sectionId)
+    if (customSectionIdsToWipe.length > 0) {
+      const targetSet = new Set(customSectionIdsToWipe);
+      const customCols = Array.from(new Set([getFSCol(FS_COLLECTIONS.CUSTOM_RECORDS), FS_COLLECTIONS.CUSTOM_RECORDS]));
+      for (const colName of customCols) {
+        try {
+          const snap = await getDocs(collection(db, colName));
+          if (snap.empty) continue;
+          let batch = writeBatch(db);
+          let batchCount = 0;
+          for (const d of snap.docs) {
+            const data = d.data() as any;
+            const secId = String(data?.sectionId || 'sec_social_welfare').trim();
+            if (targetSet.has(secId)) {
+              batch.delete(d.ref);
+              batchCount++;
+              deletedCount++;
+              if (batchCount >= 400) {
+                await batch.commit().catch(() => {});
+                batch = writeBatch(db);
+                batchCount = 0;
+              }
+            }
+          }
+          if (batchCount > 0) {
+            await batch.commit().catch(() => {});
+          }
+        } catch (e) {
+          console.warn(`Selective custom_records wipe notice (${colName}):`, e);
+        }
+      }
+    }
+
+    // Reset outgoing numbers if requests were wiped
+    if (keys.includes('requests')) {
+      const settingsCol = getFSCol(FS_COLLECTIONS.SETTINGS);
+      const resetPatch = {
+        lastOutgoingNumberNasiriyah: 0,
+        lastOutgoingNumberSuq: 0,
+        updatedAt: new Date().toISOString()
+      };
+      await Promise.all([
+        setDoc(doc(db, settingsCol, 'cloud_config'), resetPatch, { merge: true }).catch(() => {}),
+        setDoc(doc(db, settingsCol, 'general'), resetPatch, { merge: true }).catch(() => {})
+      ]);
+    }
+
+    updateFirebaseHealth('connected', null);
+    return { success: true, deletedCount };
   } catch (err: any) {
-    console.warn('fsWipeAllCollections warning:', err);
+    console.warn('fsWipeSelectedCollections warning:', err);
     return { success: false, error: err?.message || String(err) };
   }
 }

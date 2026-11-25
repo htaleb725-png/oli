@@ -213,9 +213,10 @@ function cleanCellVal(val) {
   return str.replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s{2,}/g, ' ').slice(0, 1500);
 }
 
-// تحويل اسم القسم أو الجدول إلى اسم الورقة الرسمية الموحدة
+// تحويل اسم القسم أو الجدول إلى اسم الورقة الرسمية الموحدة (وينشئ ورقة مستقلة تلقائياً لأي قسم جديد مستقبلاً)
 function resolveSheetName(table) {
   var clean = String(table || '').trim();
+  if (!clean) return 'قسم_الاستعلامات_والمراجعين';
   if (CORE_SCHEMAS[clean]) return clean;
 
   var schemaNames = Object.keys(CORE_SCHEMAS);
@@ -242,7 +243,8 @@ function resolveSheetName(table) {
     case 'sec_social_welfare': return 'قسم_الرعاية_الاجتماعية';
     case 'users': return 'قسم_الرقابة_والمستخدمين';
     default:
-      return 'قسم_الاستعلامات_والمراجعين';
+      // أي قسم أو جدول جديد مستقبلي يحصل تلقائياً على ورقة مخصصة مرتبة
+      return sanitizeCustomSheetName(clean);
   }
 }
 
@@ -441,12 +443,12 @@ function registerDynamicCustomSection(ss, secDef) {
 /**
  * إدخال وتحديث غير تدميري لسجلات الأقسام المخصصة داخل ورقة القسم الخاصة بها
  */
-function handleDynamicCustomRecordUpsert(ss, contents, record) {
+function handleDynamicCustomRecordUpsert(ss, contents, record, options) {
   if (!record || typeof record !== 'object') return null;
   var secId = String(contents.sectionId || record.sectionId || '').trim();
   if (!secId || secId === 'sec_social_welfare') {
     var socialSheet = ss.getSheetByName('قسم_الرعاية_الاجتماعية') || ss.insertSheet('قسم_الرعاية_الاجتماعية');
-    handleStructuredUpsertBatch(socialSheet, CORE_SCHEMAS['قسم_الرعاية_الاجتماعية'], [record]);
+    handleStructuredUpsertBatch(socialSheet, CORE_SCHEMAS['قسم_الرعاية_الاجتماعية'], [record], options);
     return 'قسم_الرعاية_الاجتماعية';
   }
 
@@ -499,7 +501,7 @@ function handleDynamicCustomRecordUpsert(ss, contents, record) {
     })
   };
 
-  handleStructuredUpsertBatch(sheet, schemaObj, [record]);
+  handleStructuredUpsertBatch(sheet, schemaObj, [record], options);
   return targetSheetName;
 }
 
@@ -610,21 +612,30 @@ function getSingleSheetRawRecords(ss, sheetName, schema) {
     if (!firstCell || firstCell.indexOf('[محذوف') === 0 || firstCell.indexOf('[deleted') === 0) continue;
 
     var item = {};
+    var dynamicExtras = {};
     for (var j = 0; j < headers.length; j++) {
       var h = headers[j];
       if (!h) continue;
       var cell = row[j] !== undefined && row[j] !== null ? row[j] : '';
       item[h] = cell;
+      var matchedKnown = false;
       if (schema) {
         for (var c = 0; c < schema.columns.length; c++) {
           var col = schema.columns[c];
           if (h === col.header || h === col.key || (col.aliases && col.aliases.indexOf(h) !== -1)) {
+            matchedKnown = true;
             if (item[col.key] === undefined || item[col.key] === '') {
               item[col.key] = cell;
             }
           }
         }
       }
+      if (!matchedKnown && String(cell).trim() !== '') {
+        dynamicExtras[h] = String(cell).trim();
+      }
+    }
+    if (Object.keys(dynamicExtras).length > 0) {
+      item.CustomFields = dynamicExtras;
     }
     if (item.FullName && !item.CitizenName) item.CitizenName = item.FullName;
     if (item.Phone1 && !item.CitizenPhone) item.CitizenPhone = item.Phone1;
@@ -678,29 +689,46 @@ function buildAllDepartmentsPayload(ss) {
   var users = getDepartmentRecordsWithLegacies(ss, 'قسم_الرقابة_والمستخدمين');
 
   var customRecords = socialCareRaw.map(function(r) {
+    // قراءة جميع الأعمدة الثابتة والديناميكية المضافة مستقبلاً في قسم الرعاية الاجتماعية
+    var socialData = {
+      f_welf_name: String(r.f_welf_name || r['اسم المواطن الرباعي'] || ''),
+      f_welf_phone: String(r.f_welf_phone || r['رقم الهاتف'] || ''),
+      f_welf_code: String(r.f_welf_code || r['رقم القيد / المعاملة الوزارية'] || ''),
+      f_welf_type: String(r.f_welf_type || r['نوع الإعانة / الفئة'] || ''),
+      f_welf_researcher: String(r.f_welf_researcher || r['حالة الباحث الاجتماعي'] || ''),
+      f_welf_district: String(r.f_welf_district || r['القضاء / الناحية'] || ''),
+      f_welf_date: String(r.f_welf_date || r['تاريخ المراجعة'] || ''),
+      f_welf_notes: String(r.f_welf_notes || r['الملاحظات والتوجيهات'] || '')
+    };
+    if (r.CustomFields && typeof r.CustomFields === 'object') {
+      Object.keys(r.CustomFields).forEach(function(ek) {
+        if (socialData[ek] === undefined) {
+          socialData[ek] = String(r.CustomFields[ek] || '');
+        }
+      });
+    }
     return {
       id: String(r.id || r['معرف القيد'] || ''),
       sectionId: 'sec_social_welfare',
       createdAt: String(r.f_welf_date || r['تاريخ المراجعة'] || ''),
       createdBy: String(r.createdBy || r['الموظف المسؤول'] || 'قسم الرعاية الاجتماعية'),
-      data: {
-        f_welf_name: String(r.f_welf_name || r['اسم المواطن الرباعي'] || ''),
-        f_welf_phone: String(r.f_welf_phone || r['رقم الهاتف'] || ''),
-        f_welf_code: String(r.f_welf_code || r['رقم القيد / المعاملة الوزارية'] || ''),
-        f_welf_type: String(r.f_welf_type || r['نوع الإعانة / الفئة'] || ''),
-        f_welf_researcher: String(r.f_welf_researcher || r['حالة الباحث الاجتماعي'] || ''),
-        f_welf_district: String(r.f_welf_district || r['القضاء / الناحية'] || ''),
-        f_welf_date: String(r.f_welf_date || r['تاريخ المراجعة'] || ''),
-        f_welf_notes: String(r.f_welf_notes || r['الملاحظات والتوجيهات'] || '')
-      }
+      data: socialData
     };
   });
 
-  // قراءة سجلات جميع الأقسام المخصصة المسجلة ديناميكياً من أوراقها المستقلة
+  // قراءة سجلات جميع الأقسام المخصصة المسجلة ديناميكياً + أي ورقة قسم إضافية موجودة بالملف
   var dynamicRegistry = loadDynamicSectionRegistry();
+  var scannedSheetNames = {};
+  Object.keys(CORE_SCHEMAS).forEach(function(cn) {
+    scannedSheetNames[cn] = true;
+    (CORE_SCHEMAS[cn].legacyNames || []).forEach(function(ln) { scannedSheetNames[ln] = true; });
+  });
+  OBSOLETE_CLUTTER_SHEETS.forEach(function(ob) { scannedSheetNames[ob] = true; });
+
   Object.keys(dynamicRegistry).forEach(function(secId) {
     var meta = dynamicRegistry[secId];
     if (!meta || !meta.sheetName) return;
+    scannedSheetNames[meta.sheetName] = true;
     var dynSchema = {
       columns: (meta.columns || []).map(function(c) {
         return { key: c.key, header: c.header, aliases: [c.key, c.header] };
@@ -715,6 +743,14 @@ function buildAllDepartmentsPayload(ss) {
         if (col.key === 'id' || col.key === 'createdAt' || col.key === 'createdBy') return;
         dataMap[col.key] = String(rowObj[col.key] || rowObj[col.header] || '');
       });
+      // التقاط أي عمود جديد مضاف ديناميكياً لهذه الورقة
+      if (rowObj.CustomFields && typeof rowObj.CustomFields === 'object') {
+        Object.keys(rowObj.CustomFields).forEach(function(fk) {
+          if (dataMap[fk] === undefined) {
+            dataMap[fk] = String(rowObj.CustomFields[fk] || '');
+          }
+        });
+      }
       customRecords.push({
         id: recId,
         sectionId: secId,
@@ -725,10 +761,36 @@ function buildAllDepartmentsPayload(ss) {
     });
   });
 
+  // قراءة تلقائية لأي ورقة قسم جديدة غير مسجلة مسبقاً في PropertiesService
+  var allWorkbookSheets = ss.getSheets();
+  for (var wbIdx = 0; wbIdx < allWorkbookSheets.length; wbIdx++) {
+    var extraSheet = allWorkbookSheets[wbIdx];
+    var extraName = extraSheet.getName();
+    if (scannedSheetNames[extraName]) continue;
+    var extraRows = getSingleSheetRawRecords(ss, extraName, null);
+    extraRows.forEach(function(rowObj, rIndex) {
+      var recId = String(rowObj.id || rowObj['معرف القيد'] || (extraName + '_' + (rIndex + 1))).trim();
+      var dataMap = {};
+      Object.keys(rowObj).forEach(function(rk) {
+        if (rk === 'id' || rk === 'معرف القيد' || rk === 'createdAt' || rk === 'تاريخ الإنشاء' || rk === 'createdBy' || rk === 'الموظف المسؤول' || rk === 'CustomFields') return;
+        if (typeof rowObj[rk] !== 'object') {
+          dataMap[rk] = String(rowObj[rk] || '');
+        }
+      });
+      customRecords.push({
+        id: recId,
+        sectionId: extraName,
+        createdAt: String(rowObj.createdAt || rowObj['تاريخ الإنشاء'] || ''),
+        createdBy: String(rowObj.createdBy || rowObj['الموظف المسؤول'] || extraName),
+        data: dataMap
+      });
+    });
+  }
+
   return {
     status: 'online',
     success: true,
-    schemaVersion: '2026-DYNAMIC-ONE-SHEET-PER-DEPARTMENT',
+    schemaVersion: '2026-DYNAMIC-SCHEMALESS-V3',
     appName: 'منظومة مكتب النائب علا الناشي',
     spreadsheetName: ss.getName(),
     sheetsCount: ss.getSheets().length,
@@ -836,22 +898,74 @@ function doPost(e) {
     }
 
     if (action === 'wipeAll') {
-      // تصفير الصفوف فقط (A2:AZ) مع الحفاظ الكامل على الأوراق وترويساتها - محصور بصلاحية المطور
+      // تصفير جميع صفوف بيانات الأقسام (من الصف 2 فما فوق) مع الإبقاء التام على صف العناوين (Row 1) وحسابات المستخدمين
+      var includeUsers = contents.includeUsers === true;
       var allWipeSheets = ss.getSheets();
-      var clearedCount = 0;
+      var clearedSheetNames = [];
       for (var w = 0; w < allWipeSheets.length; w++) {
         var wsh = allWipeSheets[w];
+        var wName = wsh.getName();
+        if (!includeUsers && wName === 'قسم_الرقابة_والمستخدمين') {
+          continue;
+        }
         var lastR = wsh.getLastRow();
         var lastC = wsh.getLastColumn();
         if (lastR > 1 && lastC > 0) {
           wsh.getRange(2, 1, lastR - 1, lastC).clearContent();
-          clearedCount++;
+          clearedSheetNames.push(wName);
         }
       }
       return jsonResponse({
         success: true,
-        message: 'تم تصفير بيانات كافة الأوراق مع الحفاظ على الترويسات',
-        clearedSheets: clearedCount,
+        message: 'تم تصفير بيانات كافة الأوراق مع الإبقاء على صف العناوين (Headers) بنجاح',
+        clearedSheets: clearedSheetNames.length,
+        sheetNames: clearedSheetNames,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (action === 'wipeSections' || action === 'wipeSection') {
+      // تصفير أقسام محددة فقط (من الصف 2 فما فوق) مع الإبقاء التام على صف العناوين (Row 1)
+      var requestedSections = Array.isArray(contents.sections)
+        ? contents.sections
+        : (contents.section ? [contents.section] : []);
+      var dynRegWipe = loadDynamicSectionRegistry();
+      var wipedNames = [];
+
+      requestedSections.forEach(function(secKey) {
+        var keyStr = String(secKey || '').trim();
+        if (!keyStr) return;
+
+        var candidateSheets = [];
+        if (dynRegWipe[keyStr] && dynRegWipe[keyStr].sheetName) {
+          candidateSheets.push(dynRegWipe[keyStr].sheetName);
+        } else if (ss.getSheetByName(keyStr)) {
+          candidateSheets.push(keyStr);
+        } else {
+          var resolved = resolveSheetName(keyStr);
+          candidateSheets.push(resolved);
+          if (CORE_SCHEMAS[resolved] && CORE_SCHEMAS[resolved].legacyNames) {
+            candidateSheets = candidateSheets.concat(CORE_SCHEMAS[resolved].legacyNames);
+          }
+        }
+
+        candidateSheets.forEach(function(shName) {
+          var sh = ss.getSheetByName(shName);
+          if (!sh) return;
+          var lRow = sh.getLastRow();
+          var lCol = sh.getLastColumn();
+          if (lRow > 1 && lCol > 0) {
+            sh.getRange(2, 1, lRow - 1, lCol).clearContent();
+          }
+          if (wipedNames.indexOf(shName) === -1) wipedNames.push(shName);
+        });
+      });
+
+      return jsonResponse({
+        success: true,
+        message: 'تم تصفير الأقسام المحددة مع الإبقاء على صف العناوين (Headers) بنجاح',
+        clearedSheets: wipedNames.length,
+        sheetNames: wipedNames,
         timestamp: new Date().toISOString()
       });
     }
@@ -954,7 +1068,8 @@ function doPost(e) {
         if (delSheet) handleDelete(delSheet, targetCustomId);
         return jsonResponse({ success: true, message: 'تم حذف السجل من ورقة القسم المخصص', sheet: delSheetName });
       }
-      var writtenSheet = handleDynamicCustomRecordUpsert(ss, contents, data);
+      var isCustomEdit = action === 'updateRow' || action === 'update' || contents.forceUpdate === true;
+      var writtenSheet = handleDynamicCustomRecordUpsert(ss, contents, data, { allowOverwriteExisting: isCustomEdit });
       return jsonResponse({
         success: true,
         message: 'تم حفظ سجل القسم المخصص في ورقته المستقلة بنجاح',
@@ -972,6 +1087,7 @@ function doPost(e) {
     }
 
     var targetId = contents.id || data.Citizen_ID || data.Request_ID || data.Interview_ID || data.Letter_ID || data.User_ID || data.id;
+    var isExplicitUserEdit = action === 'updateRow' || action === 'update' || contents.forceUpdate === true;
 
     if (action === 'delete') {
       handleDelete(sheet, targetId);
@@ -982,12 +1098,22 @@ function doPost(e) {
         });
       }
     } else if (schema) {
-      handleStructuredUpsertBatch(sheet, schema, [data]);
+      handleStructuredUpsertBatch(sheet, schema, [data], { allowOverwriteExisting: isExplicitUserEdit });
+    } else {
+      // ورقة ديناميكية جديدة بالكامل: إنشاء أعمدة تلقائية من مفاتيح الكائن المرسل وحفظ السجل فوراً
+      var autoCols = [{ header: 'المعرف', key: 'id', aliases: ['id', 'المعرف', 'معرف القيد'] }];
+      var dynamicSchema = {
+        idKey: 'id',
+        headerBg: '#1e3a8a',
+        headerFg: '#ffffff',
+        columns: autoCols
+      };
+      handleStructuredUpsertBatch(sheet, dynamicSchema, [data], { allowOverwriteExisting: isExplicitUserEdit });
     }
 
     return jsonResponse({
       success: true,
-      message: 'تم حفظ السجل في ورقة القسم المخصصة وبعموده المرتب بنجاح',
+      message: 'تم حفظ السجل في ورقة القسم المخصصة وبأعمدته المرتبة ديناميكياً بنجاح',
       sheet: targetSheetName,
       timestamp: new Date().toISOString()
     });
@@ -1042,17 +1168,97 @@ function isMissingOrPlaceholderCell(val) {
 }
 
 /**
- * مزامنة ذكية غير تدميرية (Smart 3-Way Upsert):
- * 1) إذا كان الاسم/القيد موجوداً مسبقاً وجميع بياناته مكتملة وصحيحة -> يُبقى كما هو دون تعديل أو تكرار.
- * 2) إذا كان موجوداً وبه نقص في بعض الحقول -> تُكمَل الحقول الناقصة فقط دون مسح أو تغيير أي حقل صحيح.
- * 3) إذا لم يكن موجوداً -> يُضاف كسجل جديد في نهاية الورقة.
+ * مفاتيح داخلية تقنية لا تُنشأ لها أعمدة إضافية تلقائياً في Google Sheets
  */
-function handleStructuredUpsertBatch(sheet, schema, items) {
-  var stats = { inserted: 0, gapFilled: 0, unchanged: 0 };
+var INTERNAL_SKIP_DYNAMIC_KEYS = {
+  data: true,
+  CustomFields: true,
+  sectionId: true,
+  sectionTitle: true,
+  sectionColumns: true,
+  sheetName: true,
+  updatedAt: true,
+  UpdatedAt: true,
+  PhotoUrl: true,
+  ScanAttachments: true,
+  WorkflowHistory: true,
+  AttachedRequestImage: true,
+  AttachmentRequest: true,
+  AttachmentResponse: true,
+  GeneratedAiDraft: true,
+  IsHistoricalImported: true,
+  Permissions: true,
+  AllowedSections: true,
+  BlockReason: true,
+  BlockedAt: true,
+  BlockedBy: true
+};
+
+/**
+ * اكتشاف تلقائي لأي حقول جديدة مضافة مستقبلاً في التطبيق وإضافتها كأعمدة مرتبة في صف العناوين
+ */
+function discoverDynamicHeadersFromItems(schema, items) {
+  var knownKeySet = {};
+  if (schema && Array.isArray(schema.columns)) {
+    schema.columns.forEach(function(c) {
+      if (c.header) knownKeySet[String(c.header).trim()] = true;
+      if (c.key) knownKeySet[String(c.key).trim()] = true;
+      if (Array.isArray(c.aliases)) {
+        c.aliases.forEach(function(a) { knownKeySet[String(a).trim()] = true; });
+      }
+    });
+  }
+
+  var discovered = [];
+  var discoveredSet = {};
+
+  function scanObj(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    Object.keys(obj).forEach(function(k) {
+      var cleanKey = String(k || '').trim();
+      if (!cleanKey || INTERNAL_SKIP_DYNAMIC_KEYS[cleanKey] || knownKeySet[cleanKey] || discoveredSet[cleanKey]) {
+        return;
+      }
+      var val = obj[k];
+      if (val === undefined || val === null || typeof val === 'object') return;
+      var cleanedVal = cleanCellVal(val);
+      if (cleanedVal !== '') {
+        discoveredSet[cleanKey] = true;
+        discovered.push(cleanKey);
+      }
+    });
+  }
+
+  items.forEach(function(it) {
+    if (!it || typeof it !== 'object') return;
+    scanObj(it.CustomFields);
+    scanObj(it.data);
+    scanObj(it);
+  });
+
+  return discovered;
+}
+
+/**
+ * مزامنة ذكية غير تدميرية + اكتشاف تلقائي للأعمدة الجديدة (Dynamic Schema-Less Smart Upsert):
+ * 1) يكتشف أي حقول جديدة لم تكن موجودة سابقاً ويضيفها كأعمدة تلقائياً في صف العناوين (Row 1).
+ * 2) عند المزامنة الشاملة أو استيراد Excel:
+ *    - سجل موجود ومكتمل -> يبقى كما هو دون تعديل أو تكرار.
+ *    - سجل موجود وبه نواقص -> تُكمَل الحقول الناقصة فقط دون مسح البيانات الصحيحة.
+ *    - سجل جديد -> يُضاف في نهاية الورقة.
+ * 3) عند التعديل الصريح من واجهة النظام (allowOverwriteExisting: true):
+ *    - تُحدَّث الحقول المعدّلة بقيمها الجديدة الصحيحة فوراً دون مسح الحقول غير المرسلة.
+ */
+function handleStructuredUpsertBatch(sheet, schema, items, options) {
+  var stats = { inserted: 0, gapFilled: 0, updated: 0, unchanged: 0, addedColumns: 0 };
   if (!Array.isArray(items) || items.length === 0) return stats;
+  var allowOverwriteExisting = Boolean(options && options.allowOverwriteExisting === true);
 
   var standardHeaders = schema.columns.map(function(c) { return c.header; });
-  var existingHeaders = ensureNonDestructiveHeaders(sheet, standardHeaders, schema.headerBg, schema.headerFg);
+  var discoveredDynamicHeaders = discoverDynamicHeadersFromItems(schema, items);
+  var combinedRequiredHeaders = standardHeaders.concat(discoveredDynamicHeaders);
+  var existingHeaders = ensureNonDestructiveHeaders(sheet, combinedRequiredHeaders, schema.headerBg, schema.headerFg);
+  stats.addedColumns = discoveredDynamicHeaders.length;
 
   var colToSchema = existingHeaders.map(function(h) {
     for (var cIdx = 0; cIdx < schema.columns.length; cIdx++) {
@@ -1173,7 +1379,7 @@ function handleStructuredUpsertBatch(sheet, schema, items) {
   items.forEach(function(item) {
     if (!item || typeof item !== 'object') return;
     var idCol = schema.columns[0];
-    var idVal = cleanCellVal(extractFieldBySchemaColumn(item, idCol));
+    var idVal = cleanCellVal(extractFieldBySchemaColumn(item, idCol)) || cleanCellVal(item.id || item.Citizen_ID || item.Request_ID || ('REC-' + Date.now()));
     if (!idVal) return;
 
     var rowVals = existingHeaders.map(function(h, colIdx) {
@@ -1181,8 +1387,15 @@ function handleStructuredUpsertBatch(sheet, schema, items) {
       if (matchedCol) {
         return cleanCellVal(extractFieldBySchemaColumn(item, matchedCol));
       }
-      // الحفاظ على أي حقل يطابق اسم عمود مضاف يدوياً في الورقة
-      var rawDirect = item[h] !== undefined ? item[h] : (item.data && item.data[h]);
+      // قراءة ديناميكية لأي حقل جديد من الجذر أو من data أو من CustomFields
+      var rawDirect =
+        item[h] !== undefined
+          ? item[h]
+          : (item.data && item.data[h] !== undefined)
+          ? item.data[h]
+          : (item.CustomFields && item.CustomFields[h] !== undefined)
+          ? item.CustomFields[h]
+          : '';
       return cleanCellVal(rawDirect);
     });
 
@@ -1199,7 +1412,7 @@ function handleStructuredUpsertBatch(sheet, schema, items) {
 
     if (matchRef) {
       var targetRow = matchRef.type === 'existing' ? existingGrid[matchRef.index] : rowsToAppend[matchRef.index];
-      var hasGapFilled = false;
+      var hasChanged = false;
 
       for (var c = 0; c < existingHeaders.length; c++) {
         var prevVal = targetRow[c] !== undefined && targetRow[c] !== null ? String(targetRow[c]).trim() : '';
@@ -1209,24 +1422,33 @@ function handleStructuredUpsertBatch(sheet, schema, items) {
         if (c === 0) {
           if (!prevVal && incVal) {
             targetRow[0] = incVal;
-            hasGapFilled = true;
+            hasChanged = true;
           }
           continue;
         }
 
-        // نُكمل الحقول الناقصة أو الافتراضية فقط دون مسح أو تعديل أي قيمة صحيحة موجودة مسبقاً
-        if (isMissingOrPlaceholderCell(prevVal) && !isMissingOrPlaceholderCell(incVal)) {
-          targetRow[c] = incVal;
-          hasGapFilled = true;
+        if (allowOverwriteExisting) {
+          // عند التعديل الصريح من شاشة النظام: نُحدّث بالقيمة الصحيحة الجديدة دون مسح الحقول غير المرسلة
+          if (!isMissingOrPlaceholderCell(incVal) && incVal !== prevVal) {
+            targetRow[c] = incVal;
+            hasChanged = true;
+          }
+        } else {
+          // عند المزامنة أو الاستيراد: نُكمل الحقول الناقصة فقط دون مسح أو تغيير أي حقل صحيح موجود
+          if (isMissingOrPlaceholderCell(prevVal) && !isMissingOrPlaceholderCell(incVal)) {
+            targetRow[c] = incVal;
+            hasChanged = true;
+          }
         }
       }
 
-      if (hasGapFilled) {
+      if (hasChanged) {
         if (matchRef.type === 'existing') {
           dirtyExistingIndices[matchRef.index] = true;
         }
-        stats.gapFilled++;
-        // تسجيل المفاتيح الجديدة بعد إكمال النقص
+        if (allowOverwriteExisting) stats.updated++;
+        else stats.gapFilled++;
+        // تسجيل المفاتيح الجديدة بعد التحديث أو إكمال النقص
         var updatedKeys = buildSemanticKeys(targetRow);
         for (var uk = 0; uk < updatedKeys.length; uk++) {
           if (semanticRowMap[updatedKeys[uk]] === undefined) {
