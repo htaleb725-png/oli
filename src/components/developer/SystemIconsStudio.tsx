@@ -32,7 +32,6 @@ const DEFAULT_SYSTEM_TILES: DefaultTileConfig[] = [
   { id: 'tile_director', defaultTitle: 'قسم مدير المكتب التنفيذي', defaultSubtitle: 'اعتماد وتوجيه وارد الاستعلامات والإشراف', defaultIcon: 'Briefcase' },
   { id: 'tile_interviews', defaultTitle: 'قسم مقابلات النائب', defaultSubtitle: 'جدول مواعيد النائب وتوثيق الهوامش', defaultIcon: 'Handshake' },
   { id: 'tile_organization', defaultTitle: 'قسم التنظيم والجماهير', defaultSubtitle: 'شؤون العشائر والموقف الجماهيري', defaultIcon: 'Users2' },
-  { id: 'tile_machine', defaultTitle: 'قسم المكنة والطباعة', defaultSubtitle: 'طباعة الكتب الرسمية والصادر والوارد', defaultIcon: 'Printer' },
   { id: 'tile_search_archive', defaultTitle: 'قسم البحث الشامل والأرشيف', defaultSubtitle: 'البحث الفوري واستخراج السجلات وطباعة الهوية', defaultIcon: 'Search' },
   { id: 'tile_drive_requests', defaultTitle: 'أرشيف طلبات Google Drive', defaultSubtitle: 'مزامنة وتنزيل وأرشفة المستندات السحابية', defaultIcon: 'CloudDownload' },
   { id: 'tile_reports', defaultTitle: 'قسم التقارير والإحصائيات', defaultSubtitle: 'مؤشرات الإنجاز، التحليلات، وسحب Excel', defaultIcon: 'BarChart3' },

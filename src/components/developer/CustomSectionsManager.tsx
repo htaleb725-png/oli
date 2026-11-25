@@ -34,7 +34,6 @@ const ACCESS_ROLES: { id: UserRole; label: string }[] = [
   { id: 'social_care', label: 'قسم الرعاية الاجتماعية' },
   { id: 'interviews_officer', label: 'قسم المقابلات' },
   { id: 'organization', label: 'قسم التنظيم' },
-  { id: 'machine', label: 'قسم المكنة' },
   { id: 'audit', label: 'قسم الرقابة' },
   { id: 'archive', label: 'الأرشيف' }
 ];

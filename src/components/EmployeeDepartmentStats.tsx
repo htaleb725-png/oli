@@ -140,7 +140,7 @@ export const EmployeeDepartmentStats: React.FC = () => {
             <option value="reception">قسم الاستعلامات وشؤون المواطنين</option>
             <option value="admin">قسم الإدارة والمعاملات والكتب</option>
             <option value="interviews">قسم المقابلات ومكتب النائب</option>
-            <option value="organization">قسم المكنة والتنظيم الجماهيري</option>
+            <option value="organization">قسم التنظيم والجماهير</option>
           </select>
 
           <button
@@ -282,7 +282,7 @@ export const EmployeeDepartmentStats: React.FC = () => {
             <div className="flex items-center justify-between">
               <h4 className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
                 <Layers className="w-4 h-4 text-purple-600" />
-                <span>إحصائيات قسم المكنة والتنظيم المكتبي والانتخابي</span>
+                <span>إحصائيات قسم التنظيم وفريق العمل</span>
               </h4>
               <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-[11px] font-bold">
                 {orgStats.total} سجل تنظيمي

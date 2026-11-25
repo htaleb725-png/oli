@@ -47,9 +47,6 @@ export const MobileAppBottomNav: React.FC<Props> = ({ onOpenLogoutModal }) => {
     if (role === 'organization' || role === 'organization_officer') {
       return { id: 'organization', label: 'التنظيم', icon: Users2 };
     }
-    if (role === 'machine' || role === 'machine_officer') {
-      return { id: 'machine', label: 'المكنة', icon: Printer };
-    }
     if (role === 'social_care' || role === 'social_care_officer') {
       return { id: 'social_care', label: 'الرعاية', icon: HeartHandshake };
     }

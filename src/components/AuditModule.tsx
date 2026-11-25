@@ -21,9 +21,65 @@ import {
   ChevronLeft,
   Database,
   FileDown,
-  ArrowLeft
+  ArrowLeft,
+  Activity,
+  ShieldAlert,
+  UserCheck,
+  Filter,
+  RotateCcw,
+  Trash2,
+  Edit3,
+  KeyRound,
+  LogIn,
+  Calendar
 } from 'lucide-react';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
+
+const escapeHtml = (val: any): string =>
+  String(val ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const classifyAuditAction = (
+  actionRaw: string,
+  detailsRaw: string
+): 'delete' | 'security' | 'create' | 'update' | 'login' | 'export' | 'other' => {
+  const txt = `${actionRaw || ''} ${detailsRaw || ''}`.toLowerCase();
+  if (
+    txt.includes('حذف') ||
+    txt.includes('تصفير') ||
+    txt.includes('إزالة') ||
+    txt.includes('مسح')
+  ) {
+    return 'delete';
+  }
+  if (
+    txt.includes('قائمة سوداء') ||
+    txt.includes('حظر') ||
+    txt.includes('صلاحي') ||
+    txt.includes('رمز') ||
+    txt.includes('كلمة المرور') ||
+    txt.includes('مستخدم') ||
+    txt.includes('ضبط المصنع')
+  ) {
+    return 'security';
+  }
+  if (txt.includes('دخول') || txt.includes('خروج') || txt.includes('مصادقة')) {
+    return 'login';
+  }
+  if (txt.includes('تصدير') || txt.includes('إكسيل') || txt.includes('طباعة') || txt.includes('استيراد')) {
+    return 'export';
+  }
+  if (txt.includes('تحديث') || txt.includes('تعديل') || txt.includes('إحالة') || txt.includes('ترحيل') || txt.includes('توجيه')) {
+    return 'update';
+  }
+  if (txt.includes('إضافة') || txt.includes('تسجيل') || txt.includes('إنشاء') || txt.includes('إصدار') || txt.includes('جدولة') || txt.includes('رفع')) {
+    return 'create';
+  }
+  return 'other';
+};
 
 interface ParliamentaryInquiry {
   id: string;
@@ -44,6 +100,8 @@ export const AuditModule: React.FC = () => {
     organizationRecords,
     officialLetters,
     documents,
+    users,
+    systemSettings,
     addAuditLog,
     exportToExcel 
   } = useApp();
@@ -51,6 +109,11 @@ export const AuditModule: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'hub' | 'followup_stats' | 'audit_trail' | 'inquiries'>('hub');
   const [statsCategory, setStatsCategory] = useState<'clans' | 'districts' | 'jobs' | 'entities'>('clans');
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedLogUser, setSelectedLogUser] = useState<string>('ALL');
+  const [selectedLogDept, setSelectedLogDept] = useState<string>('ALL');
+  const [selectedLogCategory, setSelectedLogCategory] = useState<string>('ALL');
+  const [selectedLogDate, setSelectedLogDate] = useState<string>('');
+  const [visibleLogsLimit, setVisibleLogsLimit] = useState<number>(50);
 
   const [inquiries, setInquiries] = useState<ParliamentaryInquiry[]>([
     {
@@ -188,15 +251,243 @@ export const AuditModule: React.FC = () => {
   const totalUrgent = auditableRequests.filter(r => r.Priority === 'عاجل' || r.Priority === 'خاص جداً').length;
   const totalScheduledInterviews = interviews.filter(i => i.Status === 'مجدولة').length;
 
-  // Filtered audit logs
-  const filteredLogs = auditLogs.filter(log => {
-    const action = (log.ActionType || log.Action || '').toLowerCase();
-    const user = (log.UserName || log.User || '').toLowerCase();
-    const dept = (log.Department || log.Section || '').toLowerCase();
-    const details = (log.Details || '').toLowerCase();
-    const q = searchQuery.toLowerCase();
-    return action.includes(q) || user.includes(q) || dept.includes(q) || details.includes(q);
-  });
+  const todayIso = useMemo(() => new Date().toISOString().split('T')[0], []);
+
+  // Unique users & departments inside auditLogs for rich filtering
+  const auditFilterOptions = useMemo(() => {
+    const userSet = new Set<string>();
+    const deptSet = new Set<string>();
+    (auditLogs || []).forEach(log => {
+      const u = (log.UserName || log.User || '').trim();
+      const d = (log.Department || log.Section || '').trim();
+      if (u) userSet.add(u);
+      if (d) deptSet.add(d);
+    });
+    return {
+      users: Array.from(userSet).sort((a, b) => a.localeCompare(b, 'ar')),
+      departments: Array.from(deptSet).sort((a, b) => a.localeCompare(b, 'ar'))
+    };
+  }, [auditLogs]);
+
+  // Comprehensive Staff Activity & Oversight Metrics
+  const staffOversightMetrics = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        user: string;
+        total: number;
+        creates: number;
+        updates: number;
+        deletes: number;
+        security: number;
+        departments: Set<string>;
+        lastSeen: string;
+      }
+    >();
+
+    let todayCount = 0;
+    const alerts: Array<{ log: typeof auditLogs[number]; category: 'delete' | 'security'; severity: 'high' | 'medium' }> = [];
+
+    (auditLogs || []).forEach(log => {
+      const user = (log.UserName || log.User || 'النظام الآلي').trim();
+      const dept = (log.Department || log.Section || 'النظام').trim();
+      const action = log.ActionType || log.Action || '';
+      const details = log.Details || '';
+      const ts = log.Timestamp || '';
+      const cat = classifyAuditAction(action, details);
+
+      if (ts.includes(todayIso)) {
+        todayCount += 1;
+      }
+
+      if (cat === 'delete' || cat === 'security') {
+        const isHigh =
+          action.includes('حذف نهائي') ||
+          action.includes('تصفير') ||
+          action.includes('قائمة سوداء') ||
+          action.includes('رمز دخول المطور') ||
+          action.includes('ضبط المصنع');
+        alerts.push({ log, category: cat, severity: isHigh ? 'high' : 'medium' });
+      }
+
+      const cur = map.get(user) || {
+        user,
+        total: 0,
+        creates: 0,
+        updates: 0,
+        deletes: 0,
+        security: 0,
+        departments: new Set<string>(),
+        lastSeen: ts
+      };
+      cur.total += 1;
+      if (cat === 'create') cur.creates += 1;
+      else if (cat === 'update') cur.updates += 1;
+      else if (cat === 'delete') cur.deletes += 1;
+      else if (cat === 'security') cur.security += 1;
+      if (dept) cur.departments.add(dept);
+      if (ts && (!cur.lastSeen || ts > cur.lastSeen)) {
+        cur.lastSeen = ts;
+      }
+      map.set(user, cur);
+    });
+
+    const staffList = Array.from(map.values())
+      .map(s => ({ ...s, departmentsList: Array.from(s.departments) }))
+      .sort((a, b) => b.total - a.total);
+
+    return {
+      todayCount,
+      alerts,
+      staffList,
+      activeUsersCount: staffList.length,
+      registeredStaffCount: (users || []).length
+    };
+  }, [auditLogs, todayIso, users]);
+
+  // Multi-filtered audit logs
+  const filteredLogs = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return (auditLogs || []).filter(log => {
+      const actionRaw = log.ActionType || log.Action || '';
+      const userRaw = log.UserName || log.User || '';
+      const deptRaw = log.Department || log.Section || '';
+      const detailsRaw = log.Details || '';
+      const tsRaw = log.Timestamp || '';
+
+      if (selectedLogUser !== 'ALL' && userRaw.trim() !== selectedLogUser) return false;
+      if (selectedLogDept !== 'ALL' && deptRaw.trim() !== selectedLogDept) return false;
+      if (selectedLogDate && !tsRaw.includes(selectedLogDate)) return false;
+
+      if (selectedLogCategory !== 'ALL') {
+        const cat = classifyAuditAction(actionRaw, detailsRaw);
+        if (selectedLogCategory === 'alerts') {
+          if (cat !== 'delete' && cat !== 'security') return false;
+        } else if (cat !== selectedLogCategory) {
+          return false;
+        }
+      }
+
+      if (q) {
+        const hay = `${actionRaw} ${userRaw} ${deptRaw} ${detailsRaw} ${tsRaw} ${log.Log_ID || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [auditLogs, searchQuery, selectedLogUser, selectedLogDept, selectedLogCategory, selectedLogDate]);
+
+  const handleExportAuditLogs = () => {
+    const rows = filteredLogs.map((l, idx) => ({
+      'ت': idx + 1,
+      'رقم الحركة': l.Log_ID || '',
+      'نوع الإجراء': l.ActionType || l.Action || '',
+      'القسم': l.Department || l.Section || '',
+      'الموظف القائم بالحركة': l.UserName || l.User || '',
+      'تفاصيل الحركة': l.Details || '',
+      'التاريخ والوقت': l.Timestamp || ''
+    }));
+    exportToExcel(rows, `سجل_الرقابة_والتدقيق_${todayIso}`);
+    addAuditLog('تصدير سجل الرقابة والتدقيق', 'قسم الرقابة والتدقيق', `تم تصدير (${rows.length}) حركة رقابية بصيغة Excel`);
+  };
+
+  const handlePrintAuditLogsA4 = () => {
+    const officeTitle = systemSettings?.officeName || systemSettings?.appName || 'مكتب النائب المهندسة علا عودة الناشي';
+    const printDate = new Date().toLocaleDateString('ar-IQ', { year: 'numeric', month: 'long', day: 'numeric' });
+    const rowsHtml = filteredLogs.slice(0, 400).map((log, idx) => `
+      <tr>
+        <td style="text-align:center;font-weight:700;">${idx + 1}</td>
+        <td style="font-weight:700;color:#0f172a;">${escapeHtml(log.ActionType || log.Action || '—')}</td>
+        <td style="color:#1e40af;font-weight:600;">${escapeHtml(log.Department || log.Section || '—')}</td>
+        <td style="font-weight:700;">${escapeHtml(log.UserName || log.User || '—')}</td>
+        <td style="line-height:1.5;">${escapeHtml(log.Details || '—')}</td>
+        <td style="font-family:monospace;font-size:10px;direction:ltr;text-align:center;">${escapeHtml(log.Timestamp || '—')}</td>
+      </tr>
+    `).join('');
+
+    const html = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<title>تقرير سجل الرقابة والتدقيق الشامل</title>
+<style>
+  @page { size: A4 landscape; margin: 12mm; }
+  body { font-family: 'Tajawal', 'Cairo', Tahoma, Arial, sans-serif; color: #0f172a; margin: 0; padding: 0; direction: rtl; background: #fff; }
+  .header { border-bottom: 2.5px solid #0b192c; padding-bottom: 10px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+  .header h1 { margin: 0; font-size: 17px; color: #0b192c; }
+  .header p { margin: 3px 0 0; font-size: 11px; color: #475569; }
+  .meta { font-size: 11px; text-align: left; color: #334155; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+  .kpi { border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; background: #f8fafc; }
+  .kpi .lbl { font-size: 10px; color: #475569; }
+  .kpi .val { font-size: 16px; font-weight: 800; color: #0b192c; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { background: #0b192c; color: #fff; padding: 7px 6px; border: 1px solid #0b192c; text-align: right; font-weight: 700; }
+  td { padding: 6px; border: 1px solid #cbd5e1; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .footer { margin-top: 16px; padding-top: 8px; border-top: 1px solid #cbd5e1; display: flex; justify-content: space-between; font-size: 10px; color: #64748b; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>${escapeHtml(officeTitle)} — تقرير الرقابة والتدقيق الإداري</h1>
+      <p>سجل نشاط الموظفين والتعديلات والعمليات الحساسة داخل المنظومة</p>
+    </div>
+    <div class="meta">
+      <div>تاريخ الطباعة: ${escapeHtml(printDate)}</div>
+      <div>عدد الحركات بالتقرير: <strong>${filteredLogs.length}</strong></div>
+    </div>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">إجمالي الحركات المسجلة</div><div class="val">${auditLogs.length}</div></div>
+    <div class="kpi"><div class="lbl">نشاط اليوم</div><div class="val">${staffOversightMetrics.todayCount}</div></div>
+    <div class="kpi"><div class="lbl">الموظفون النشطون</div><div class="val">${staffOversightMetrics.activeUsersCount}</div></div>
+    <div class="kpi"><div class="lbl">الحركات الحساسة والتنبيهات</div><div class="val">${staffOversightMetrics.alerts.length}</div></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:32px;text-align:center;">ت</th>
+        <th style="width:145px;">نوع الإجراء</th>
+        <th style="width:120px;">القسم</th>
+        <th style="width:140px;">الموظف القائم بالحركة</th>
+        <th>تفاصيل الحركة الإدارية</th>
+        <th style="width:118px;text-align:center;">الوقت والتاريخ</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml || '<tr><td colspan="6" style="text-align:center;padding:18px;color:#64748b;">لا توجد حركات مطابقة للفلاتر الحالية</td></tr>'}
+    </tbody>
+  </table>
+  <div class="footer">
+    <span>وثيقة رقابية صادرة آلياً من نظام مكتب النائب — سري للاستخدام الإداري</span>
+    <span>توقيع مسؤول الرقابة والتدقيق: _______________________</span>
+  </div>
+</body>
+</html>`;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(html);
+      doc.close();
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => {
+          document.body.removeChild(iframe);
+        }, 1200);
+      }, 250);
+    }
+  };
 
   const handleAddInquiry = (e: React.FormEvent) => {
     e.preventDefault();
@@ -869,31 +1160,278 @@ export const AuditModule: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 2: Audit Trail (سجل الحركات) */}
+      {/* TAB 2: Comprehensive System & Staff Oversight (أدوات الرقابة الشاملة وسجل الحركات) */}
       {activeTab === 'audit_trail' && (
-        <div className="space-y-3">
-          <div className="relative">
-            <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="بحث في سجل العمليات باسم الموظف، القسم، أو نوع الحركة..."
-              className="w-full pr-10 pl-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-800 placeholder-slate-400 text-xs text-right outline-none focus:ring-2 focus:ring-rose-500 shadow-xs"
-            />
+        <div className="space-y-4">
+          {/* 1. Executive Oversight KPI Strip */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-1">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-500">
+                <span>إجمالي العمليات المسجلة</span>
+                <Activity className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              </div>
+              <div className="text-2xl font-black text-slate-900 dark:text-white font-mono tabular-nums">
+                {auditLogs.length.toLocaleString()}
+              </div>
+              <div className="text-[11px] text-slate-500">محفوظة لحظياً في Firebase</div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-1">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-500">
+                <span>حركات ونشاط اليوم</span>
+                <Calendar className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              </div>
+              <div className="text-2xl font-black text-emerald-700 dark:text-emerald-400 font-mono tabular-nums">
+                {staffOversightMetrics.todayCount.toLocaleString()}
+              </div>
+              <div className="text-[11px] text-slate-500">بتاريخ {todayIso}</div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-1">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-500">
+                <span>الموظفون النشطون</span>
+                <UserCheck className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              </div>
+              <div className="text-2xl font-black text-indigo-700 dark:text-indigo-400 font-mono tabular-nums">
+                {staffOversightMetrics.activeUsersCount}
+                <span className="text-xs text-slate-400 font-normal"> / {staffOversightMetrics.registeredStaffCount}</span>
+              </div>
+              <div className="text-[11px] text-slate-500">حساب موظف لديه نشاط مسجل</div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setSelectedLogCategory(prev => (prev === 'alerts' ? 'ALL' : 'alerts'))}
+              className={`p-4 rounded-2xl border shadow-xs space-y-1 text-right transition-all cursor-pointer ${
+                selectedLogCategory === 'alerts'
+                  ? 'bg-rose-50 dark:bg-rose-950/50 border-rose-400 dark:border-rose-600 ring-2 ring-rose-500/30'
+                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-rose-300'
+              }`}
+            >
+              <div className="flex items-center justify-between text-xs font-bold text-rose-700 dark:text-rose-400">
+                <span>عمليات حساسة وتنبيهات أمنية</span>
+                <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+              </div>
+              <div className="text-2xl font-black text-rose-700 dark:text-rose-400 font-mono tabular-nums">
+                {staffOversightMetrics.alerts.length.toLocaleString()}
+              </div>
+              <div className="text-[11px] text-slate-500">حذف، حظر، صلاحيات، أو تصفير (انقر للفرز)</div>
+            </button>
           </div>
 
-          <div className="rounded-2xl bg-white border border-slate-200 overflow-hidden shadow-xs">
-            <div className="p-3.5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-              <span className="text-xs font-bold text-slate-800">سجل النشاطات الإدارية المشفر ({filteredLogs.length})</span>
-              <span className="text-[10px] text-slate-500">حفظ تلقائي لجميع التعديلات وحركات الحذف والطباعة</span>
+          {/* 2. Security & Sensitive Actions Monitor */}
+          {staffOversightMetrics.alerts.length > 0 && (
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900/60 overflow-hidden shadow-xs">
+              <div className="px-4 py-3 bg-rose-50/80 dark:bg-rose-950/35 border-b border-rose-200/80 dark:border-rose-900/50 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-black text-rose-900 dark:text-rose-200">
+                  <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                  <span>مرصد العمليات الحساسة والتعديلات الأمنية ({staffOversightMetrics.alerts.length})</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedLogCategory(prev => (prev === 'alerts' ? 'ALL' : 'alerts'))}
+                  className="text-[11px] font-bold text-rose-700 dark:text-rose-300 hover:underline cursor-pointer"
+                >
+                  {selectedLogCategory === 'alerts' ? 'إظهار كافة الحركات' : 'عرض جميع التنبيهات بالجدول'}
+                </button>
+              </div>
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-44 overflow-y-auto">
+                {staffOversightMetrics.alerts.slice(0, 6).map(({ log, category, severity }, idx) => (
+                  <div key={`${log.Log_ID}-alert-${idx}`} className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-black border shrink-0 ${
+                        severity === 'high'
+                          ? 'bg-rose-100 text-rose-800 border-rose-300 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-800'
+                          : 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-800'
+                      }`}>
+                        {category === 'delete' ? 'حذف / إزالة' : 'أمان / صلاحيات'}
+                      </span>
+                      <span className="font-bold text-slate-900 dark:text-white truncate">{log.ActionType || log.Action}</span>
+                      <span className="text-slate-500 truncate hidden md:inline">— {log.Details}</span>
+                    </div>
+                    <div className="flex items-center gap-3 text-[11px] shrink-0">
+                      <span className="font-bold text-blue-700 dark:text-blue-400">{log.UserName || log.User}</span>
+                      <span className="font-mono text-slate-400" dir="ltr">{log.Timestamp}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 3. Staff Activity Breakdown (Click any staff card to inspect their exact actions) */}
+          {staffOversightMetrics.staffList.length > 0 && (
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-3 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-black text-slate-900 dark:text-white">
+                  <Users className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  <span>مراقبة نشاط وأداء الموظفين (انقر على أي موظف لعرض سجل حركاته)</span>
+                </div>
+                {selectedLogUser !== 'ALL' && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedLogUser('ALL')}
+                    className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                  >
+                    إلغاء تحديد الموظف
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                {staffOversightMetrics.staffList.slice(0, 8).map((staff) => {
+                  const isSelected = selectedLogUser === staff.user;
+                  return (
+                    <button
+                      key={staff.user}
+                      type="button"
+                      onClick={() => setSelectedLogUser(prev => (prev === staff.user ? 'ALL' : staff.user))}
+                      className={`p-3 rounded-xl border text-right transition-all cursor-pointer space-y-2 ${
+                        isSelected
+                          ? 'bg-blue-50 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/25'
+                          : 'bg-slate-50/70 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 hover:border-blue-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-xs text-slate-900 dark:text-white truncate">{staff.user}</span>
+                        <span className="px-2 py-0.5 rounded-md bg-slate-900 dark:bg-blue-600 text-white font-mono text-[10px] font-black tabular-nums shrink-0">
+                          {staff.total}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] font-bold">
+                        <span className="text-emerald-700 dark:text-emerald-400">إضافة: {staff.creates}</span>
+                        <span className="text-blue-700 dark:text-blue-400">تعديل: {staff.updates}</span>
+                        {staff.deletes > 0 && <span className="text-rose-700 dark:text-rose-400">حذف: {staff.deletes}</span>}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono truncate" dir="ltr">
+                        آخر نشاط: {staff.lastSeen || '—'}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 4. Multi-Filter Controls & Export/Print Actions */}
+          <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-3 shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-black text-slate-800 dark:text-slate-100">
+                <Filter className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                <span>فلاتر التدقيق والرقابة المتقدمة</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {(searchQuery || selectedLogUser !== 'ALL' || selectedLogDept !== 'ALL' || selectedLogCategory !== 'ALL' || selectedLogDate) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setSelectedLogUser('ALL');
+                      setSelectedLogDept('ALL');
+                      setSelectedLogCategory('ALL');
+                      setSelectedLogDate('');
+                      setVisibleLogsLimit(50);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>إعادة ضبط</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleExportAuditLogs}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>تصدير Excel</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePrintAuditLogsA4}
+                  className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-700 text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>طباعة تقرير رقابي A4</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+              <div className="relative lg:col-span-2">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="بحث باسم الموظف، نوع العملية، رقم المعاملة أو التفاصيل..."
+                  className="w-full pr-9 pl-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white placeholder-slate-400 text-xs text-right outline-none focus:ring-2 focus:ring-rose-500"
+                />
+              </div>
+
+              <select
+                value={selectedLogUser}
+                onChange={(e) => setSelectedLogUser(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-xs font-bold outline-none focus:ring-2 focus:ring-rose-500"
+              >
+                <option value="ALL">الموظف: الكل ({auditFilterOptions.users.length})</option>
+                {auditFilterOptions.users.map(u => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </select>
+
+              <select
+                value={selectedLogDept}
+                onChange={(e) => setSelectedLogDept(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-xs font-bold outline-none focus:ring-2 focus:ring-rose-500"
+              >
+                <option value="ALL">القسم: الكل ({auditFilterOptions.departments.length})</option>
+                {auditFilterOptions.departments.map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedLogCategory}
+                  onChange={(e) => setSelectedLogCategory(e.target.value)}
+                  className="flex-1 px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-xs font-bold outline-none focus:ring-2 focus:ring-rose-500"
+                >
+                  <option value="ALL">النوع: الكل</option>
+                  <option value="alerts">تنبيهات حساسة</option>
+                  <option value="create">إضافة وتسجيل</option>
+                  <option value="update">تعديل وتحديث</option>
+                  <option value="delete">حذف وتصفير</option>
+                  <option value="security">صلاحيات وأمان</option>
+                  <option value="login">دخول ومصادقة</option>
+                  <option value="export">تصدير واستيراد</option>
+                </select>
+                <input
+                  type="date"
+                  value={selectedLogDate}
+                  onChange={(e) => setSelectedLogDate(e.target.value)}
+                  title="تصفية حسب التاريخ"
+                  className="w-32 px-2 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-[11px] font-mono outline-none focus:ring-2 focus:ring-rose-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 5. Audit Log Table */}
+          <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+            <div className="p-3.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/60">
+              <span className="text-xs font-bold text-slate-800 dark:text-white">
+                سجل النشاطات الإدارية الموثّق ({filteredLogs.length.toLocaleString()} حركة)
+              </span>
+              <span className="text-[10px] text-slate-500">توثيق لحظي في Firebase Firestore لكافة الإضافات والتعديلات والحذف</span>
             </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-right text-xs">
-                <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+                <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-500 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700">
                   <tr>
-                    <th className="p-3">الرقم</th>
+                    <th className="p-3 w-12 text-center">ت</th>
+                    <th className="p-3">التصنيف</th>
                     <th className="p-3">نوع الإجراء</th>
                     <th className="p-3">القسم</th>
                     <th className="p-3">الموظف القائم بالحركة</th>
@@ -901,20 +1439,64 @@ export const AuditModule: React.FC = () => {
                     <th className="p-3">الوقت والتاريخ</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {filteredLogs.map((log, idx) => (
-                    <tr key={`${log.Log_ID || 'log'}-${idx}`} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3 font-mono text-slate-400 text-[11px]">{log.Log_ID}</td>
-                      <td className="p-3 font-bold text-slate-900">{log.ActionType || log.Action}</td>
-                      <td className="p-3 text-blue-700 font-semibold">{log.Department || log.Section}</td>
-                      <td className="p-3 font-semibold text-slate-800">{log.UserName || log.User}</td>
-                      <td className="p-3 text-slate-600">{log.Details}</td>
-                      <td className="p-3 font-mono text-[10px] text-slate-400" dir="ltr">{log.Timestamp}</td>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
+                  {filteredLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-8 text-center text-slate-400 text-xs font-bold">
+                        لا توجد حركات مسجلة مطابقة لمعايير البحث والفلترة الحالية.
+                      </td>
                     </tr>
-                  ))}
+                  ) : (
+                    filteredLogs.slice(0, visibleLogsLimit).map((log, idx) => {
+                      const actionStr = log.ActionType || log.Action || 'إجراء';
+                      const cat = classifyAuditAction(actionStr, log.Details || '');
+                      const badge =
+                        cat === 'delete'
+                          ? { label: 'حذف', icon: Trash2, cls: 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800' }
+                          : cat === 'security'
+                          ? { label: 'أمان', icon: KeyRound, cls: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800' }
+                          : cat === 'update'
+                          ? { label: 'تعديل', icon: Edit3, cls: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800' }
+                          : cat === 'login'
+                          ? { label: 'دخول', icon: LogIn, cls: 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/60 dark:text-indigo-300 dark:border-indigo-800' }
+                          : cat === 'create'
+                          ? { label: 'إضافة', icon: CheckCircle2, cls: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800' }
+                          : { label: 'عملية', icon: Activity, cls: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700' };
+                      const BadgeIcon = badge.icon;
+
+                      return (
+                        <tr key={`${log.Log_ID || 'log'}-${idx}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                          <td className="p-3 text-center font-mono text-slate-400 text-[11px] tabular-nums">{idx + 1}</td>
+                          <td className="p-3 whitespace-nowrap">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${badge.cls}`}>
+                              <BadgeIcon className="w-3 h-3" />
+                              {badge.label}
+                            </span>
+                          </td>
+                          <td className="p-3 font-bold text-slate-900 dark:text-white whitespace-nowrap">{actionStr}</td>
+                          <td className="p-3 text-blue-700 dark:text-blue-400 font-semibold whitespace-nowrap">{log.Department || log.Section || '—'}</td>
+                          <td className="p-3 font-semibold text-slate-800 dark:text-slate-100 whitespace-nowrap">{log.UserName || log.User || '—'}</td>
+                          <td className="p-3 text-slate-600 dark:text-slate-300 max-w-md leading-relaxed">{log.Details}</td>
+                          <td className="p-3 font-mono text-[10px] text-slate-400 whitespace-nowrap tabular-nums" dir="ltr">{log.Timestamp}</td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
+
+            {filteredLogs.length > visibleLogsLimit && (
+              <div className="p-3 border-t border-slate-100 dark:border-slate-800 flex justify-center bg-slate-50/60 dark:bg-slate-800/30">
+                <button
+                  type="button"
+                  onClick={() => setVisibleLogsLimit(prev => prev + 50)}
+                  className="px-5 py-1.5 rounded-xl bg-slate-900 dark:bg-blue-600 hover:opacity-90 text-white text-xs font-bold cursor-pointer"
+                >
+                  عرض المزيد ({(filteredLogs.length - visibleLogsLimit).toLocaleString()} حركة متبقية)
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

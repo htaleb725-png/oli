@@ -32,13 +32,13 @@ import {
   Coins
 } from 'lucide-react';
 import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../utils/permissions';
+import { parseExcelDateValue } from '../utils/outgoingNumberHelper';
 
 export type AnalyticsDepartmentKey =
   | 'executive_all'
   | 'reception'
   | 'admin'
   | 'interviews'
-  | 'machine'
   | 'organization'
   | 'social_care'
   | 'custom';
@@ -56,8 +56,8 @@ const CHART_COLORS = ['#0f766e', '#2563eb', '#d97706', '#7c3aed', '#0891b2', '#d
 
 function extractIsoDay(raw?: string): string {
   if (!raw) return '';
-  const str = String(raw).trim();
-  const match = str.match(/(\d{4}-\d{2}-\d{2})/);
+  const parsed = parseExcelDateValue(raw);
+  const match = String(parsed || raw).trim().match(/(\d{4}-\d{2}-\d{2})/);
   return match ? match[1] : '';
 }
 
@@ -177,7 +177,6 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
       { القسم: 'الإدارة والمعاملات', السجلات: scoped.reqs.length },
       { القسم: 'الرعاية الاجتماعية', السجلات: socialCareRecords.total },
       { القسم: 'المقابلات', السجلات: scoped.ints.length },
-      { القسم: 'الماكنة والكتب', السجلات: scoped.lets.length },
       { القسم: 'التنظيم', السجلات: scoped.orgs.length },
       { القسم: 'الصكوك', السجلات: scoped.chqs.length }
     ];
@@ -272,30 +271,6 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
           { name: 'تمت المقابلة', value: done },
           { name: 'مجدولة', value: scheduled },
           { name: 'أخرى / ملغاة', value: Math.max(0, scoped.ints.length - done - scheduled) }
-        ].filter((d) => d.value > 0)
-      };
-    }
-
-    if (activeDept === 'machine') {
-      const sent = scoped.lets.filter((l) => l.Status === 'صادر' || l.Status === 'مرسل' || l.Status === 'موقّع').length;
-      const draft = scoped.lets.length - sent;
-      return {
-        title: 'لوحة إحصائيات قسم الماكنة والكتب الرسمية',
-        subtitle: 'تتبع حجم الكتب المطبوعة والمخاطبات الصادرة للوزارات والدوائر',
-        kpis: [
-          { label: 'إجمالي الكتب الرسمية', value: scoped.lets.length, note: 'مسجلة بالماكنة', icon: FileText, accent: 'text-blue-600 dark:text-blue-400' },
-          { label: 'كتب صادرة / موقّعة', value: sent, note: scoped.lets.length ? `${Math.round((sent / scoped.lets.length) * 100)}%` : '0%', icon: CheckCircle2, accent: 'text-emerald-600 dark:text-emerald-400' },
-          { label: 'قيد التدقيق / مسودة', value: draft, note: 'بانتظار التوقيع', icon: Clock, accent: 'text-amber-600 dark:text-amber-400' },
-          { label: 'الجهات المخاطبة', value: new Set(scoped.lets.map((l) => l.To_Entity).filter(Boolean)).size, note: 'وزارة ودائرة', icon: Building2, accent: 'text-indigo-600 dark:text-indigo-400' }
-        ],
-        trendTitle: 'إصدار الكتب الرسمية (آخر 10 أيام)',
-        trendData: buildDailySeries(scoped.lets.map((l) => l.LetterDate)),
-        barTitle: 'أكثر الجهات الموجه إليها الكتب',
-        barData: topNMap(scoped.lets.map((l) => l.To_Entity || 'غير محدد'), 6),
-        pieTitle: 'حالة الكتب الرسمية',
-        pieData: [
-          { name: 'صادر / موقّع', value: sent },
-          { name: 'قيد الإعداد', value: draft }
         ].filter((d) => d.value > 0)
       };
     }
@@ -461,7 +436,6 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
               { id: 'admin', label: 'الإدارة والصادر' },
               { id: 'social_care', label: 'الرعاية الاجتماعية' },
               { id: 'interviews', label: 'المقابلات' },
-              { id: 'machine', label: 'الماكنة والكتب' },
               { id: 'organization', label: 'التنظيم' }
             ] as Array<{ id: AnalyticsDepartmentKey; label: string }>
           ).map((d) => (

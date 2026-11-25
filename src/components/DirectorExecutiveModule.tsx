@@ -1045,15 +1045,6 @@ export const DirectorExecutiveModule: React.FC = () => {
                 onClick: () => setActiveSection('organization')
               },
               {
-                id: 'dept_machine',
-                title: 'قسم المكنة والطباعة',
-                subtitle: 'طباعة الكتب الرسمية والصادر والوارد',
-                icon: Printer,
-                iconColor: 'text-indigo-600 dark:text-indigo-400',
-                iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-                onClick: () => setActiveSection('machine')
-              },
-              {
                 id: 'dept_search_archive',
                 title: 'قسم البحث الشامل والأرشيف',
                 subtitle: 'البحث الموحد في سجلات ومعاملات المكتب',

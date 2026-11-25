@@ -7,7 +7,6 @@ import { ReceptionDashboard } from './ReceptionDashboard';
 import { AdminDashboard } from './AdminDashboard';
 import { InterviewsDashboard } from './InterviewsDashboard';
 import { OrganizationDashboard } from './OrganizationDashboard';
-import { MachineDashboard } from './MachineDashboard';
 import { AuditDashboard } from './AuditDashboard';
 import { 
   Users, 
@@ -43,7 +42,7 @@ export const ExecutiveDirectorDashboard: React.FC = () => {
 
   // State to switch view: executive master view, or preview any specific department's dashboard!
   const [activeView, setActiveView] = useState<
-    'master_overview' | 'reception_preview' | 'admin_preview' | 'interviews_preview' | 'org_preview' | 'machine_preview' | 'audit_preview' | 'clans' | 'referrers' | 'employee_dept'
+    'master_overview' | 'reception_preview' | 'admin_preview' | 'interviews_preview' | 'org_preview' | 'audit_preview' | 'clans' | 'referrers' | 'employee_dept'
   >('master_overview');
 
   const totalCitizens = citizens.length;
@@ -173,18 +172,6 @@ export const ExecutiveDirectorDashboard: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveView('machine_preview')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-              activeView === 'machine_preview'
-                ? 'bg-blue-700 text-white shadow-xs'
-                : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-            }`}
-          >
-            <Eye className="w-3.5 h-3.5" />
-            <span>لوحة قسم المكنة والطباعة</span>
-          </button>
-
-          <button
             onClick={() => setActiveView('audit_preview')}
             className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
               activeView === 'audit_preview'
@@ -248,16 +235,6 @@ export const ExecutiveDirectorDashboard: React.FC = () => {
             <button onClick={() => setActiveView('master_overview')} className="text-purple-700 underline text-[11px] cursor-pointer">العودة للوحة الشاملة</button>
           </div>
           <OrganizationDashboard />
-        </div>
-      )}
-
-      {activeView === 'machine_preview' && (
-        <div className="space-y-2">
-          <div className="bg-blue-50 border border-blue-200 text-blue-900 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center justify-between">
-            <span>معاينة إشرافية: هذه هي لوحة التحكم المخصصة لقسم مكنة المكتب والطباعة</span>
-            <button onClick={() => setActiveView('master_overview')} className="text-blue-700 underline text-[11px] cursor-pointer">العودة للوحة الشاملة</button>
-          </div>
-          <MachineDashboard />
         </div>
       )}
 
@@ -507,17 +484,6 @@ export const ExecutiveDirectorDashboard: React.FC = () => {
               </div>
               <div className="font-bold text-xs text-slate-900">التنظيم</div>
               <div className="text-[10px] text-slate-500 mt-0.5">الكوادر والجمهور</div>
-            </button>
-
-            <button
-              onClick={() => setActiveView('machine_preview')}
-              className="p-3 rounded-xl bg-white border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 transition-all text-right shadow-2xs group cursor-pointer"
-            >
-              <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center mb-1.5 group-hover:scale-110 transition-transform">
-                <Printer className="w-3.5 h-3.5" />
-              </div>
-              <div className="font-bold text-xs text-slate-900">المكنة والطباعة</div>
-              <div className="text-[10px] text-slate-500 mt-0.5">سحب الكتب والباجات</div>
             </button>
 
             <button

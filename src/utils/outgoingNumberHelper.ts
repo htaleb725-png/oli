@@ -235,10 +235,6 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
     if (hadRejectedOversizedToken && (only === 12 || only === 14)) {
       return { seq: 0, branch, normalized };
     }
-    // Reject obvious standalone 4-digit year (2020..2040)
-    if (only >= 2020 && only <= 2040) {
-      return { seq: 0, branch, normalized };
-    }
     // Reject bare 5-digit Excel serial date numbers (40000..55000 => years 2009..2050) when no branch prefix is present
     if (branch === 'general' && only >= 40000 && only <= 55000) {
       return { seq: 0, branch, normalized };
@@ -246,7 +242,7 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
     return { seq: only, branch, normalized };
   }
 
-  // Filter out 4-digit years (2020..2040)
+  // Filter out 4-digit years (2020..2040) ONLY when multiple numeric tokens exist (e.g. "450 / 2026" or "2026/450")
   const nonYearTokens = numericTokens.filter((n) => !(n >= 2020 && n <= 2040));
   if (nonYearTokens.length === 0) {
     return { seq: 0, branch, normalized };
@@ -290,14 +286,19 @@ export function extractOutgoingSequence(rawOutgoing?: string | null): ParsedOutg
   };
 }
 
+export interface OutgoingRawEntry {
+  outgoing: string | number | null | undefined;
+  citizenName?: string;
+}
+
 /**
  * Scan raw cell values from an uploaded Excel file's "العدد / الصادر" column in exact file order
- * and extract the LAST valid outgoing number appearing at the bottom of the column.
- * Guarantees that whatever the last number in the uploaded file is (e.g. 1343),
- * the system counts strictly from after that number (1344, 1345, ...).
+ * and extract the authoritative LAST recorded outgoing number (handling ascending files, descending/newest-first
+ * files, trailing unnumbered rows, Arabic digits, and sequential numbers crossing 2020..2040).
+ * Guarantees that the counter resumes cleanly right after the last recorded outgoing entry without duplication or reset.
  */
 export function findLastOutgoingInRawValues(
-  rawValues: Array<string | number | null | undefined>
+  rawValues: Array<string | number | null | undefined | OutgoingRawEntry>
 ): {
   lastSeq: number;
   lastInFileOrder: number;
@@ -305,45 +306,133 @@ export function findLastOutgoingInRawValues(
   recommendedBaseline: number;
   lastBranch: OutgoingBranch;
   lastRaw: string;
+  lastCitizenName: string;
   lastNasiriyah: number;
   lastSuq: number;
   validCount: number;
   totalValidFound: number;
+  orderDirection: 'asc' | 'desc' | 'single';
 } {
-  let lastSeq = 0;
-  let lastBranch: OutgoingBranch = 'general';
-  let lastRaw = '';
-  let lastNasiriyah = 0;
-  let lastSuq = 0;
-  let validCount = 0;
-  const allValidSeqs: number[] = [];
+  interface ParsedRowItem {
+    seq: number;
+    branch: OutgoingBranch;
+    raw: string;
+    citizenName: string;
+    isStandaloneYearRange: boolean;
+  }
 
-  for (const raw of rawValues || []) {
+  const parsedItems: ParsedRowItem[] = [];
+
+  for (const entry of rawValues || []) {
+    const raw =
+      entry !== null && typeof entry === 'object' && 'outgoing' in entry
+        ? entry.outgoing
+        : (entry as string | number | null | undefined);
+    const citizenName =
+      entry !== null && typeof entry === 'object' && 'citizenName' in entry
+        ? String(entry.citizenName || '').trim()
+        : '';
+
     if (raw === null || raw === undefined) continue;
     const str = toWesternDigits(raw).trim();
     if (!str) continue;
     const split = splitCombinedOutgoingAndDate(str);
-    const parsed = extractOutgoingSequence(split.outgoingNumber || str);
+    const candidateStr = split.outgoingNumber || str;
+    const parsed = extractOutgoingSequence(candidateStr);
     if (parsed.seq <= 0 || parsed.seq > MAX_VALID_OUTGOING_SEQ) continue;
 
-    validCount += 1;
-    lastSeq = parsed.seq;
-    allValidSeqs.push(parsed.seq);
-    lastBranch = parsed.branch;
-    lastRaw = split.outgoingNumber || str;
+    // Detect if cell was literally a standalone year like "2026" with no branch prefix
+    const isStandaloneYearRange =
+      parsed.branch === 'general' &&
+      /^\d{4}$/.test(candidateStr.trim()) &&
+      parsed.seq >= 2020 &&
+      parsed.seq <= 2040;
 
-    if (parsed.branch === 'suq_al_shuyoukh') {
-      lastSuq = parsed.seq;
-    } else if (parsed.branch === 'nasiriyah') {
-      lastNasiriyah = parsed.seq;
+    parsedItems.push({
+      seq: parsed.seq,
+      branch: parsed.branch,
+      raw: candidateStr,
+      citizenName,
+      isStandaloneYearRange
+    });
+  }
+
+  // Filter out isolated accidental year cells (e.g. "2025" inside a column whose numbers are 1..400),
+  // while KEEPING genuine sequence numbers 2020..2040 when nearby rows are within ±100!
+  const filteredItems = parsedItems.filter((item, idx) => {
+    if (!item.isStandaloneYearRange) return true;
+    const prev = idx > 0 ? parsedItems[idx - 1].seq : null;
+    const next = idx < parsedItems.length - 1 ? parsedItems[idx + 1].seq : null;
+    const nearPrev = prev !== null && Math.abs(item.seq - prev) <= 100 && prev !== item.seq;
+    const nearNext = next !== null && Math.abs(item.seq - next) <= 100 && next !== item.seq;
+    return nearPrev || nearNext;
+  });
+
+  let lastSeq = 0;
+  let lastBranch: OutgoingBranch = 'general';
+  let lastRaw = '';
+  let lastCitizenName = '';
+  let lastNasiriyah = 0;
+  let lastSuq = 0;
+  const allValidSeqs: number[] = [];
+
+  for (const item of filteredItems) {
+    lastSeq = item.seq;
+    allValidSeqs.push(item.seq);
+    lastBranch = item.branch;
+    lastRaw = item.raw;
+    if (item.citizenName) lastCitizenName = item.citizenName;
+
+    if (item.branch === 'suq_al_shuyoukh') {
+      lastSuq = Math.max(lastSuq, item.seq);
+    } else if (item.branch === 'nasiriyah') {
+      lastNasiriyah = Math.max(lastNasiriyah, item.seq);
     } else {
-      lastNasiriyah = parsed.seq;
-      lastSuq = parsed.seq;
+      lastNasiriyah = Math.max(lastNasiriyah, item.seq);
+      lastSuq = Math.max(lastSuq, item.seq);
     }
   }
 
   const maxValid = findRobustMaxSequence(allValidSeqs);
-  const recommendedBaseline = lastSeq > 0 ? lastSeq : maxValid;
+  const validCount = filteredItems.length;
+
+  // Determine whether the file is ordered ascending (1..N) or descending (N..1)
+  let orderDirection: 'asc' | 'desc' | 'single' = 'single';
+  if (filteredItems.length >= 2) {
+    const firstSeq = filteredItems[0].seq;
+    orderDirection = firstSeq > lastSeq ? 'desc' : 'asc';
+  }
+
+  // Authoritative baseline selection:
+  // - If the file is descending (newest-first, e.g. 1343 -> 1), pick maxValid (top latest record) so we NEVER reset to 1!
+  // - If the file is ascending (normal chronological order), pick the higher of lastSeq (when robust) and maxValid,
+  //   ensuring the counter ALWAYS continues cleanly after the last recorded outgoing number without duplicating earlier ones.
+  let recommendedBaseline = maxValid;
+  let authoritativeItem: ParsedRowItem | undefined;
+
+  if (orderDirection === 'desc') {
+    recommendedBaseline = maxValid > 0 ? maxValid : lastSeq;
+    authoritativeItem = filteredItems.find((i) => i.seq === recommendedBaseline) || filteredItems[0];
+  } else {
+    // Ascending or single-entry: if lastSeq is within the valid robust range, prefer max(lastSeq, maxValid)
+    const lastIsOutlier = maxValid > 0 && lastSeq > maxValid;
+    recommendedBaseline = lastIsOutlier ? maxValid : Math.max(lastSeq, maxValid);
+    // Find the last item in file order matching recommendedBaseline
+    for (let i = filteredItems.length - 1; i >= 0; i--) {
+      if (filteredItems[i].seq === recommendedBaseline) {
+        authoritativeItem = filteredItems[i];
+        break;
+      }
+    }
+  }
+
+  if (authoritativeItem) {
+    lastRaw = authoritativeItem.raw;
+    lastBranch = authoritativeItem.branch;
+    if (authoritativeItem.citizenName) {
+      lastCitizenName = authoritativeItem.citizenName;
+    }
+  }
 
   return {
     lastSeq,
@@ -352,10 +441,12 @@ export function findLastOutgoingInRawValues(
     recommendedBaseline,
     lastBranch,
     lastRaw,
+    lastCitizenName,
     lastNasiriyah,
     lastSuq,
     validCount,
-    totalValidFound: validCount
+    totalValidFound: validCount,
+    orderDirection
   };
 }
 
@@ -466,8 +557,8 @@ export function computeNextOutgoingNumber(
 
     let isAfterAnchor = true;
     if (hasAuthoritativeBaselineAnchor) {
-      // Imported historical rows never advance past an explicit Excel-file anchor;
-      // only real new outgoing books issued AFTER outgoingBaselineSetAt advance the counter.
+      // Imported historical rows never override an explicit Excel-file anchor;
+      // any live outgoing book issued at or after outgoingBaselineSetAt immediately advances the counter.
       if (r.IsHistoricalImported) {
         isAfterAnchor = false;
       } else {
@@ -475,7 +566,7 @@ export function computeNextOutgoingNumber(
           r.UpdatedAt ? Date.parse(r.UpdatedAt) : 0,
           r.CreatedAt && String(r.CreatedAt).includes('T') ? Date.parse(r.CreatedAt) : 0
         );
-        isAfterAnchor = Number.isFinite(recMs) && recMs > baselineSetAtMs + 2000;
+        isAfterAnchor = Number.isFinite(recMs) && recMs >= baselineSetAtMs;
       }
     }
 
@@ -503,7 +594,7 @@ export function computeNextOutgoingNumber(
         (l as any).UpdatedAt ? Date.parse((l as any).UpdatedAt) : 0,
         lCreatedAt && String(lCreatedAt).includes('T') ? Date.parse(String(lCreatedAt)) : 0
       );
-      isAfterAnchor = Number.isFinite(lMs) && lMs > baselineSetAtMs + 2000;
+      isAfterAnchor = Number.isFinite(lMs) && lMs >= baselineSetAtMs;
     }
 
     candidates.push({
@@ -542,13 +633,11 @@ export function computeNextOutgoingNumber(
   // Pick the best record matching the true authoritative max
   let bestRecord: CandidateRecord | undefined;
   if (maxFound > 0) {
-    // Prefer a post-anchor or matching record with seq === maxFound
     for (const c of activeCandidates) {
       if (c.seq === maxFound) {
         bestRecord = c;
       }
     }
-    // If maxFound came from the uploaded file baseline, find the record matching that exact number (even historical)
     if (!bestRecord) {
       for (const c of candidates) {
         if (c.seq === maxFound) {
@@ -556,7 +645,6 @@ export function computeNextOutgoingNumber(
         }
       }
     }
-    // Fallback synthetic display record so the live status bar ALWAYS displays the anchored last number cleanly
     if (!bestRecord && effectiveBaseline > 0 && maxFound === effectiveBaseline) {
       bestRecord = {
         outgoingNumber: `${branchPrefix} / ${branchCode} / ${effectiveBaseline}`,

@@ -349,8 +349,6 @@ const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ on
                 ? 'admin'
                 : currentUser?.Role === 'interviews_officer'
                 ? 'interviews'
-                : currentUser?.Role === 'machine' || currentUser?.Role === 'machine_officer'
-                ? 'machine'
                 : currentUser?.Role === 'organization' || currentUser?.Role === 'organization_officer'
                 ? 'organization'
                 : currentUser?.Role === 'social_care' || currentUser?.Role === 'social_care_officer'

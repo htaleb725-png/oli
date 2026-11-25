@@ -68,9 +68,6 @@ export const Sidebar: React.FC = () => {
   } else if (role === 'organization' || role === 'organization_officer') {
     dashboardLabel = 'سجل التنظيم والموقف الجماهيري';
     dashboardBadge = 'التنظيم';
-  } else if (role === 'machine' || role === 'machine_officer') {
-    dashboardLabel = 'وحدة المكنة والكتب الرسمية';
-    dashboardBadge = 'الطباعة';
   } else if (role === 'audit') {
     dashboardLabel = 'لوحة المتابعة والرقابة والإحصائيات الشاملة';
     dashboardBadge = 'المتابعة';
@@ -135,17 +132,6 @@ export const Sidebar: React.FC = () => {
       glowColor: 'bg-purple-500',
       color: 'text-purple-400',
       activeBg: 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-600/30'
-    },
-    {
-      id: 'machine',
-      label: 'قسم مدير المكنة والطباعة',
-      icon: Printer,
-      badge: null,
-      hoverBg: 'hover:bg-indigo-950/50 hover:border-indigo-500/40 hover:text-indigo-100 hover:shadow-lg hover:shadow-indigo-950/50',
-      hoverIcon: 'group-hover:text-indigo-400 group-hover:drop-shadow-[0_0_10px_rgba(129,140,248,0.9)]',
-      glowColor: 'bg-indigo-500',
-      color: 'text-indigo-400',
-      activeBg: 'bg-gradient-to-r from-blue-700 to-indigo-700 text-white shadow-lg shadow-blue-700/30'
     },
     {
       id: 'director',
@@ -276,7 +262,7 @@ export const Sidebar: React.FC = () => {
         return ['dashboard', 'organization', 'search_archive'].includes(sectionId);
       case 'machine':
       case 'machine_officer':
-        return ['dashboard', 'machine', 'search_archive'].includes(sectionId);
+        return ['dashboard', 'search_archive'].includes(sectionId);
       case 'archive':
         return ['dashboard', 'search_archive'].includes(sectionId);
       default:

@@ -61,6 +61,8 @@ import {
   fsSaveNotification,
   fsMarkNotificationRead,
   fsDeleteNotification,
+  fsAddAuditLog,
+  fsSyncSettingsStructure,
   fsWatchCollection,
   fsWatchCloudConfig,
   fsWatchDeletedRecords,
@@ -411,7 +413,12 @@ interface AppContextType {
   // High-performance atomic bulk import
   batchImportRecords: (
     newCitizens: Citizen[],
-    newRequests: OfficeRequest[]
+    newRequests: OfficeRequest[],
+    options?: {
+      anchoredOutgoingBaseline?: number;
+      anchorTimestamp?: string;
+      anchorLabel?: string;
+    }
   ) => Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }>;
 
   // Compatibility aliases
@@ -683,11 +690,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSplashOpen, setIsSplashOpen] = useState<boolean>(true);
   const [lastLoginError, setLastLoginError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<string>('dashboard');
-  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(true);
+  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(false);
   const [sessionLoadingMessage, setSessionLoadingMessage] = useState<string>('جاري تحميل البيانات، يرجى الانتظار...');
   const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(false);
   const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
   const firestorePasscodeLoadedRef = useRef<boolean>(false);
+  const hasShownLoadingOnceRef = useRef<boolean>(false);
+  const initialHydrationCompleteRef = useRef<boolean>(false);
 
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => {
     return !!(typeof window !== 'undefined' && localStorage.getItem('al_nashi_google_token'));
@@ -1008,6 +1017,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
     unsubs.push(unsubNotifications);
+
+    const unsubAuditLogs = fsWatchCollection<AuditLog>(FS_COLLECTIONS.AUDIT_LOGS, (items) => {
+      if (Array.isArray(items) && items.length > 0) {
+        setAuditLogs(prev => {
+          const map = new Map<string, AuditLog>();
+          prev.forEach(l => {
+            if (l?.Log_ID) map.set(l.Log_ID, l);
+          });
+          items.forEach(l => {
+            if (l?.Log_ID) map.set(l.Log_ID, l);
+          });
+          return Array.from(map.values())
+            .sort((a, b) => {
+              const tsA = Date.parse((a as any).createdAtIso || a.Timestamp || '') || 0;
+              const tsB = Date.parse((b as any).createdAtIso || b.Timestamp || '') || 0;
+              return tsB - tsA;
+            })
+            .slice(0, 600);
+        });
+      }
+    });
+    unsubs.push(unsubAuditLogs);
 
     const unsubSettings = fsWatchCollection<any>(FS_COLLECTIONS.SETTINGS, (docs) => {
       const authDoc = docs.find((d: any) => d && typeof d.passcode === 'string' && d.passcode.trim().length >= 3);
@@ -1497,56 +1528,85 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const triggerSessionDataLoad = (customMsg?: string) => {
-    setIsSessionLoading(true);
-    setSessionLoadingMessage(customMsg || 'جاري تحميل البيانات، يرجى الانتظار...');
+    // Show the fullscreen loading screen ONLY ONCE per session when entering/opening the system.
+    // Any subsequent calls silently refresh data in the background without flashing the overlay again.
+    if (hasShownLoadingOnceRef.current) {
+      refreshAllDataFromAllSources().catch(() => {});
+      return;
+    }
 
-    // Keep the loading screen active until actual data hydration completes (15s safety ceiling only if network hangs)
+    hasShownLoadingOnceRef.current = true;
+    setSessionLoadingMessage(customMsg || 'جاري تحميل البيانات، يرجى الانتظار...');
+    setIsSessionLoading(true);
+
+    const startedAt = Date.now();
     const safetyCeiling = window.setTimeout(() => {
       setIsSessionLoading(false);
-    }, 15000);
+    }, 12000);
+
+    const done = () => {
+      const elapsed = Date.now() - startedAt;
+      const minDisplay = initialHydrationCompleteRef.current ? 450 : 0;
+      const remaining = Math.max(0, minDisplay - elapsed);
+      window.setTimeout(() => {
+        window.clearTimeout(safetyCeiling);
+        setIsSessionLoading(false);
+      }, remaining);
+    };
+
+    if (initialHydrationCompleteRef.current && !activeRefreshPromiseRef.current) {
+      // Data already hydrated during splash — show once briefly and refresh quietly in background
+      refreshAllDataFromAllSources().catch(() => {});
+      done();
+      return;
+    }
 
     refreshAllDataFromAllSources()
       .catch(() => {})
       .finally(() => {
-        window.clearTimeout(safetyCeiling);
-        setIsSessionLoading(false);
+        initialHydrationCompleteRef.current = true;
+        done();
       });
   };
 
-  // Run initial hydration on mount and keep loading curtain active until real data has arrived
+  // Run silent background hydration on initial mount (and sync Firestore settings alignment once)
   useEffect(() => {
     let active = true;
-    const safetyCeiling = window.setTimeout(() => {
-      if (active) setIsSessionLoading(false);
-    }, 15000);
+    fsSyncSettingsStructure().catch(() => {});
 
     refreshAllDataFromAllSources()
       .catch(() => {})
       .finally(() => {
-        window.clearTimeout(safetyCeiling);
-        if (active) setIsSessionLoading(false);
+        if (active) {
+          initialHydrationCompleteRef.current = true;
+          setIsSessionLoading(false);
+        }
       });
 
     return () => {
       active = false;
-      window.clearTimeout(safetyCeiling);
     };
   }, []);
 
   const addAuditLog = (action: string, section: string, details: string) => {
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const actor = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'النظام الآلي';
     const newLog: AuditLog = {
       Log_ID: `LOG-${Date.now()}-${Math.floor(10000 + Math.random() * 90000)}`,
       Timestamp: formattedDate,
-      User: currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'النظام الآلي',
+      User: actor,
+      UserName: actor,
       Action: action,
+      ActionType: action,
       Section: section,
+      Department: section,
       Details: details,
       Ip: '192.168.1.10'
     };
-    setAuditLogs(prev => [newLog, ...prev]);
-    pushToGoogleSheetsRealtime('drive_archive', newLog, 'insert', systemSettings.appsScriptUrl);
+    setAuditLogs(prev => [newLog, ...prev].slice(0, 600));
+    fsAddAuditLog(newLog).catch(() => {});
+    pushToGoogleSheetsRealtime('drive_archive', newLog, 'insert', systemSettingsRef.current.appsScriptUrl);
   };
 
   const activateUserSession = (user: User, sourceMessage: string) => {
@@ -3960,13 +4020,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const batchImportRecords = async (
     newCitizens: Citizen[],
-    newRequests: OfficeRequest[]
+    newRequests: OfficeRequest[],
+    options?: {
+      anchoredOutgoingBaseline?: number;
+      anchorTimestamp?: string;
+      anchorLabel?: string;
+    }
   ): Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }> => {
-    // 1. Strict validation - filter out ghost/undefined
-    const validCitizens = newCitizens.filter(isStrictValidCitizen);
-    const validRequests = newRequests.filter(r => r && r.Request_ID && r.Citizen_ID);
+    // 1. Strict validation - filter out ghost/undefined & ensure imported/restored archive rows never flood Daily Work
+    const validCitizens = newCitizens.filter(isStrictValidCitizen).map(c => ({
+      ...c,
+      IsHistoricalImported: c.IsHistoricalImported !== false ? true : false,
+      IsArchived: c.IsArchived !== false ? true : false
+    }));
+    const validRequests = newRequests
+      .filter(r => r && r.Request_ID && r.Citizen_ID)
+      .map(r => ({
+        ...r,
+        IsHistoricalImported: r.IsHistoricalImported !== false ? true : false,
+        IsArchived: r.IsArchived !== false ? true : false
+      }));
 
-    // 2. Single atomic state update (new records placed safely; localStorage persisted asynchronously without UI freeze!)
+    // 2. Single atomic state update (new records placed safely without UI freeze)
     const citizensCount = validCitizens.length;
     const requestsCount = validRequests.length;
 
@@ -3986,18 +4061,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         validRequests.forEach(r => existingReqMap.set(r.Request_ID, r));
         return Array.from(existingReqMap.values());
       });
+    }
 
-      // Authoritatively advance (and self-heal if poisoned > MAX_VALID_OUTGOING_SEQ) office outgoing counters,
-      // unless SmartExcelImporterModal just anchored the exact last outgoing number from the uploaded file.
-      const recentAnchorMs = systemSettings?.outgoingBaselineSetAt
-        ? Date.parse(systemSettings.outgoingBaselineSetAt)
+    // Authoritatively anchor outgoing counter from the uploaded file's outgoing column (using live ref, never stale closure)
+    const liveSettings = systemSettingsRef.current;
+    const explicitAnchor =
+      options?.anchoredOutgoingBaseline &&
+      Number.isFinite(options.anchoredOutgoingBaseline) &&
+      options.anchoredOutgoingBaseline > 0 &&
+      options.anchoredOutgoingBaseline <= MAX_VALID_OUTGOING_SEQ
+        ? Math.floor(options.anchoredOutgoingBaseline)
+        : 0;
+
+    if (explicitAnchor > 0) {
+      const anchorTs = options?.anchorTimestamp || new Date().toISOString();
+      const anchorLbl = options?.anchorLabel || `آخر عدد في الملف المرفوع (${explicitAnchor})`;
+      updateSettings({
+        lastOutgoingNumberNasiriyah: explicitAnchor,
+        lastOutgoingNumberSuq: explicitAnchor,
+        outgoingBaselineSetAt: anchorTs,
+        outgoingBaselineLabel: anchorLbl
+      });
+      fsSyncSettingsStructure({
+        lastOutgoingNumberNasiriyah: explicitAnchor,
+        lastOutgoingNumberSuq: explicitAnchor,
+        outgoingBaselineSetAt: anchorTs,
+        outgoingBaselineLabel: anchorLbl
+      }).catch(() => {});
+    } else if (requestsCount > 0) {
+      const recentAnchorMs = liveSettings?.outgoingBaselineSetAt
+        ? Date.parse(liveSettings.outgoingBaselineSetAt)
         : 0;
       const hasFreshAnchor = Number.isFinite(recentAnchorMs) && Date.now() - recentAnchorMs < 15_000;
 
       if (!hasFreshAnchor) {
         const scanned = scanMaxOutgoingSequences(validRequests);
-        const rawCurrentNas = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
-        const rawCurrentSuq = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
+        const rawCurrentNas = Number(liveSettings?.lastOutgoingNumberNasiriyah) || 0;
+        const rawCurrentSuq = Number(liveSettings?.lastOutgoingNumberSuq) || 0;
         const nasPoisoned = rawCurrentNas > MAX_VALID_OUTGOING_SEQ;
         const suqPoisoned = rawCurrentSuq > MAX_VALID_OUTGOING_SEQ;
         const safeCurrentNas = nasPoisoned ? 0 : rawCurrentNas;
@@ -4005,10 +4105,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const nextNas = Math.max(safeCurrentNas, scanned.maxNasiriyah);
         const nextSuq = Math.max(safeCurrentSuq, scanned.maxSuq);
         if (nasPoisoned || suqPoisoned || nextNas > safeCurrentNas || nextSuq > safeCurrentSuq) {
+          const anchorTs = new Date().toISOString();
           updateSettings({
             lastOutgoingNumberNasiriyah: nextNas,
-            lastOutgoingNumberSuq: nextSuq
+            lastOutgoingNumberSuq: nextSuq,
+            outgoingBaselineSetAt: anchorTs
           });
+          fsSyncSettingsStructure({
+            lastOutgoingNumberNasiriyah: nextNas,
+            lastOutgoingNumberSuq: nextSuq,
+            outgoingBaselineSetAt: anchorTs
+          }).catch(() => {});
         }
       }
     }
@@ -4185,6 +4292,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (res.notifications && res.notifications.length > 0) {
           setNotifications(res.notifications.slice(0, 80));
+        }
+        if (res.auditLogs && res.auditLogs.length > 0) {
+          setAuditLogs(prev => {
+            const map = new Map<string, AuditLog>();
+            prev.forEach(l => {
+              if (l?.Log_ID) map.set(l.Log_ID, l);
+            });
+            res.auditLogs.forEach(l => {
+              if (l?.Log_ID) map.set(l.Log_ID, l);
+            });
+            return Array.from(map.values())
+              .sort((a, b) => {
+                const tsA = Date.parse((a as any).createdAtIso || a.Timestamp || '') || 0;
+                const tsB = Date.parse((b as any).createdAtIso || b.Timestamp || '') || 0;
+                return tsB - tsA;
+              })
+              .slice(0, 600);
+          });
         }
         if (res.developerPasscode && String(res.developerPasscode).trim().length >= 3) {
           const cleanCode = String(res.developerPasscode).trim();
@@ -4467,23 +4592,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       };
 
-      const rawCitizens = mergeCitizens([], pulled.citizens || [], deletedIds);
-      // Enrich pulled requests with existing Firestore workflow fields (DirectorDecision, DirectorNotes, CurrentStage, RegisteredVia, attachments)
-      // so pulling from Google Sheets NEVER wipes an approved Director decision or Reception workflow state!
+      // Preserve historical/archived flags on restored citizens so database pulls/restores NEVER flood "الأعمال اليومية"
+      const existingCitMap = new Map<string, Citizen>();
+      (citizensRef.current || []).forEach(c => {
+        if (c?.Citizen_ID) existingCitMap.set(c.Citizen_ID, c);
+      });
+      const enrichedPulledCitizens = (pulled.citizens || []).map(c => {
+        if (!c?.Citizen_ID) return c;
+        const existing = existingCitMap.get(c.Citizen_ID);
+        const hasHistoricalHint =
+          Boolean(c.IsHistoricalImported) ||
+          Boolean(c.IsArchived) ||
+          Boolean(existing?.IsHistoricalImported) ||
+          Boolean(existing?.IsArchived) ||
+          String(c.ReferralSource || '').includes('استيراد إكسل') ||
+          String(c.CreatedBy || '').includes('استيراد');
+        const mergedCit = existing ? fillMissingFieldsOnly(c, existing) : c;
+        return hasHistoricalHint
+          ? { ...mergedCit, IsHistoricalImported: true, IsArchived: true }
+          : mergedCit;
+      });
+      const rawCitizens = mergeCitizens([], enrichedPulledCitizens, deletedIds);
+
+      // Enrich pulled requests with existing Firestore workflow fields (DirectorDecision, DirectorNotes, CurrentStage, RegisteredVia, attachments, IsHistoricalImported)
+      // so pulling/restoring from Google Sheets NEVER wipes an approved Director decision or floods Daily Work!
       const existingReqMap = new Map<string, OfficeRequest>();
       (requestsRef.current || []).forEach(r => {
         if (r?.Request_ID) existingReqMap.set(r.Request_ID, r);
       });
       const enrichedPulledRequests = (pulled.requests || []).map(r => {
         const existing = r?.Request_ID ? existingReqMap.get(r.Request_ID) : undefined;
-        if (!existing) return r;
+        const hasHistoricalHint =
+          Boolean(r?.IsHistoricalImported) ||
+          Boolean(r?.IsArchived) ||
+          Boolean(existing?.IsHistoricalImported) ||
+          Boolean(existing?.IsArchived) ||
+          String(r?.Request_ID || '').includes('-IMP-') ||
+          String(r?.CreatedBy || '').includes('استيراد') ||
+          r?.DirectorDecision === 'مؤرشف' ||
+          existing?.DirectorDecision === 'مؤرشف';
+        if (!existing) {
+          return hasHistoricalHint ? { ...r, IsHistoricalImported: true, IsArchived: true } : r;
+        }
         const merged = fillMissingFieldsOnly(r, existing);
+        const withHist = hasHistoricalHint
+          ? { ...merged, IsHistoricalImported: true, IsArchived: true }
+          : merged;
         // If Firestore has a newer UpdatedAt (e.g., Director just approved), keep newer workflow status cleanly
         const existingTs = getRecordTimestamp(existing);
         const pulledTs = getRecordTimestamp(r);
         if (existingTs > pulledTs && existingTs > 0) {
           return {
-            ...merged,
+            ...withHist,
             ...(existing.DirectorDecision ? { DirectorDecision: existing.DirectorDecision } : {}),
             ...(existing.DirectorNotes ? { DirectorNotes: existing.DirectorNotes } : {}),
             ...(existing.DirectorDecisionDate ? { DirectorDecisionDate: existing.DirectorDecisionDate } : {}),
@@ -4497,7 +4657,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...(existing.UpdatedAt ? { UpdatedAt: existing.UpdatedAt } : {})
           };
         }
-        return merged;
+        return withHist;
       });
 
       const rawRequests = mergeRequests([], enrichedPulledRequests, deletedIds);

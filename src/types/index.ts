@@ -54,7 +54,6 @@ export const SYSTEM_SECTIONS_REGISTRY: SystemSectionOption[] = [
   { id: 'director', label: 'قسم مدير المكتب التنفيذي', description: 'اعتماد وتوجيه وارد الاستعلامات والإشراف' },
   { id: 'interviews', label: 'قسم مقابلات النائب', description: 'جدول المواعيد والمقابلات المباشرة' },
   { id: 'organization', label: 'قسم التنظيم والجماهير', description: 'شؤون العشائر والموقف الجماهيري' },
-  { id: 'machine', label: 'قسم المكنة والطباعة', description: 'طباعة الكتب والمخاطبات الرسمية' },
   { id: 'search_archive', label: 'قسم البحث الشامل والأرشيف', description: 'البحث العام واستخراج الهويات والملفات' },
   { id: 'drive_requests', label: 'أرشيف بريد Google Drive', description: 'عرض وبحث وطباعة وحذف ملفات Drive' },
   { id: 'reports', label: 'قسم التقارير والإحصائيات', description: 'مؤشرات الأداء وتصدير Excel' },

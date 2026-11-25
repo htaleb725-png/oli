@@ -38,7 +38,7 @@ export function getHomeSectionForRole(role?: string, user?: User | null): string
         return 'organization';
       case 'machine':
       case 'machine_officer':
-        return 'machine';
+        return 'dashboard';
       case 'audit':
         return 'audit';
       case 'archive':
@@ -173,7 +173,7 @@ export function canUserAccessSection(
       return ['dashboard', 'organization', 'search_archive', 'reports', 'whatsapp'].includes(section);
     case 'machine':
     case 'machine_officer':
-      return ['dashboard', 'machine', 'search_archive', 'reports'].includes(section);
+      return ['dashboard', 'search_archive', 'reports'].includes(section);
     case 'audit':
       return ['dashboard', 'audit', 'search_archive', 'reports', 'blacklist'].includes(section);
     case 'archive':
@@ -199,7 +199,6 @@ export function mapTileIdToSectionId(tileId: string): string {
     tile_social_care: 'social_care',
     tile_interviews: 'interviews',
     tile_organization: 'organization',
-    tile_machine: 'machine',
     tile_drive_requests: 'drive_requests',
     tile_search_archive: 'search_archive',
     tile_reports: 'reports',

@@ -34,17 +34,16 @@ interface UsersAndPermissionsManagerProps {
 }
 
 const ROLE_OPTIONS: { value: UserRole; label: string; department: string; defaultSections: string[] }[] = [
-  { value: 'director', label: 'مدير المكتب التنفيذي', department: 'الإدارة التنفيذية العليا', defaultSections: ['director', 'reception', 'admin', 'social_care', 'interviews', 'organization', 'machine', 'drive_requests', 'search_archive', 'reports', 'whatsapp', 'audit', 'blacklist'] },
+  { value: 'director', label: 'مدير المكتب التنفيذي', department: 'الإدارة التنفيذية العليا', defaultSections: ['director', 'reception', 'admin', 'social_care', 'interviews', 'organization', 'drive_requests', 'search_archive', 'reports', 'whatsapp', 'audit', 'blacklist'] },
   { value: 'deputy', label: 'النائب / المعالي', department: 'مكتب النائب', defaultSections: ['interviews', 'director', 'social_care', 'reports', 'search_archive'] },
   { value: 'admin', label: 'قسم الإدارة والمعاملات', department: 'قسم الإدارة', defaultSections: ['admin', 'drive_requests', 'search_archive', 'reports', 'whatsapp', 'blacklist'] },
   { value: 'reception', label: 'قسم الاستعلامات', department: 'قسم الاستعلامات', defaultSections: ['reception', 'search_archive'] },
   { value: 'social_care', label: 'قسم الرعاية الاجتماعية (مستقل)', department: 'قسم الرعاية الاجتماعية', defaultSections: ['social_care', 'search_archive'] },
   { value: 'interviews_officer', label: 'قسم المقابلات', department: 'قسم المقابلات', defaultSections: ['interviews', 'search_archive', 'reports', 'whatsapp'] },
   { value: 'organization', label: 'قسم التنظيم والعشائر', department: 'قسم التنظيم', defaultSections: ['organization', 'search_archive', 'reports', 'whatsapp'] },
-  { value: 'machine', label: 'قسم المكنة والطباعة', department: 'قسم المكنة والطباعة', defaultSections: ['machine', 'search_archive', 'reports'] },
   { value: 'audit', label: 'قسم الرقابة والتدقيق', department: 'قسم الرقابة والتدقيق', defaultSections: ['audit', 'search_archive', 'reports', 'blacklist'] },
   { value: 'archive', label: 'قسم الأرشيف والبحث', department: 'قسم الأرشيف', defaultSections: ['search_archive', 'reports'] },
-  { value: 'developer', label: 'مطور النظام (صلاحية مطلقة)', department: 'قسم تكنولوجيا المعلومات والبرمجة', defaultSections: ['master_admin', 'apps_script', 'director', 'reception', 'admin', 'social_care', 'interviews', 'organization', 'machine', 'drive_requests', 'search_archive', 'reports', 'whatsapp', 'audit', 'blacklist'] }
+  { value: 'developer', label: 'مطور النظام (صلاحية مطلقة)', department: 'قسم تكنولوجيا المعلومات والبرمجة', defaultSections: ['master_admin', 'apps_script', 'director', 'reception', 'admin', 'social_care', 'interviews', 'organization', 'drive_requests', 'search_archive', 'reports', 'whatsapp', 'audit', 'blacklist'] }
 ];
 
 export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProps> = ({
@@ -687,7 +686,6 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
               { id: 'reception', label: 'الاستعلامات', count: users.filter(u => u.Role === 'reception' || u.Role === 'reception_officer').length },
               { id: 'social_care', label: 'الرعاية الاجتماعية', count: users.filter(u => u.Role === 'social_care' || u.Role === 'social_care_officer' || u.AllowedSections?.includes('social_care') || u.Permissions?.includes('access_social_care')).length },
               { id: 'organization', label: 'التنظيم', count: users.filter(u => u.Role === 'organization').length },
-              { id: 'machine', label: 'المكنة', count: users.filter(u => u.Role === 'machine').length },
               { id: 'audit', label: 'الرقابة', count: users.filter(u => u.Role === 'audit').length }
             ].map(tab => (
               <button

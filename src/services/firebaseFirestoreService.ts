@@ -198,7 +198,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Collections mapping
+// Collections mapping (aligned 1-to-1 with Google Sheets tabs while preserving existing ola-aap-5fa57 collections)
 export const FS_COLLECTIONS = {
   CITIZENS: 'citizens',
   REQUESTS: 'requests',
@@ -214,6 +214,27 @@ export const FS_COLLECTIONS = {
   CUSTOM_RECORDS: 'custom_records',
   DELETED_RECORDS: 'deleted_records',
   NOTIFICATIONS: 'notifications'
+} as const;
+
+// Canonical alignment map between Firebase Firestore collections & Google Sheets official tabs
+export const FIRESTORE_SHEET_ALIGNMENT = {
+  [FS_COLLECTIONS.CITIZENS]: { sheetTab: 'قسم_الاستعلامات_والمراجعين', label: 'قسم الاستعلامات والمراجعين' },
+  [FS_COLLECTIONS.REQUESTS]: { sheetTab: 'قسم_الإدارة_والمعاملات', label: 'قسم الإدارة والمعاملات' },
+  [FS_COLLECTIONS.INTERVIEWS]: { sheetTab: 'قسم_مقابلات_النائب', label: 'قسم مقابلات النائب' },
+  [FS_COLLECTIONS.ORGANIZATIONS]: { sheetTab: 'قسم_التنظيم_والجماهير', label: 'قسم التنظيم والجماهير' },
+  [FS_COLLECTIONS.CHEQUES]: { sheetTab: 'قسم_المساعدات_والصكوك', label: 'قسم المساعدات والصكوك' },
+  [FS_COLLECTIONS.CUSTOM_RECORDS]: { sheetTab: 'قسم_الرعاية_الاجتماعية', label: 'قسم الرعاية الاجتماعية والأقسام المخصصة' },
+  [FS_COLLECTIONS.USERS]: { sheetTab: 'قسم_الرقابة_والمستخدمين', label: 'قسم الرقابة والمستخدمين' },
+  [FS_COLLECTIONS.AUDIT_LOGS]: { sheetTab: 'قسم_الرقابة_والمستخدمين', label: 'سجل الرقابة والتدقيق' },
+  [FS_COLLECTIONS.SETTINGS]: { sheetTab: 'الإعدادات', label: 'إعدادات النظام والهوية والعدادات' }
+} as const;
+
+// Organized Firestore settings sub-documents inside `settings` collection
+export const FS_SETTINGS_DOCS = {
+  GENERAL: 'general',
+  DEVELOPER_AUTH: 'developer_auth',
+  OUTGOING_COUNTER: 'outgoing_counter',
+  SCHEMA_ALIGNMENT: 'schema_alignment'
 } as const;
 
 // Multi-Office Partition and Database Isolation Manager
@@ -992,14 +1013,62 @@ export async function fsDeleteDropdown(category: string, value: string, existing
   }
 }
 
-// 12. Audit Logs
+// 12. Audit Logs (persisted reliably to Firestore for cross-session executive oversight)
 export async function fsAddAuditLog(log: AuditLog): Promise<void> {
+  if (!log || !log.Log_ID || isFirestoreTemporarilyBlocked()) return;
   const col = getFSCol(FS_COLLECTIONS.AUDIT_LOGS);
-  const path = `${col}/${log.Log_ID}`;
+  const safeId = sanitizeFirestoreDocId(log.Log_ID, 'LOG');
+  const payload = {
+    Log_ID: safeId,
+    Timestamp: clipStr(log.Timestamp, 64) || new Date().toISOString().replace('T', ' ').slice(0, 19),
+    User: clipStr(log.User || log.UserName, 200) || 'النظام الآلي',
+    UserName: clipStr(log.UserName || log.User, 200) || 'النظام الآلي',
+    Action: clipStr(log.Action || log.ActionType, 200) || 'إجراء إداري',
+    ActionType: clipStr(log.ActionType || log.Action, 200) || 'إجراء إداري',
+    Section: clipStr(log.Section || log.Department, 200) || 'النظام',
+    Department: clipStr(log.Department || log.Section, 200) || 'النظام',
+    Details: clipStr(log.Details, 1500) || '',
+    Ip: clipStr(log.Ip, 64) || 'local',
+    createdAtIso: new Date().toISOString()
+  };
   try {
-    await setDoc(doc(db, col, log.Log_ID), log);
+    await setDoc(doc(db, col, safeId), payload, { merge: true });
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
+    console.warn('Firestore save audit log notice:', error);
+  }
+}
+
+// Organize schema alignment metadata cleanly inside `settings/schema_alignment`
+export async function fsSyncSettingsStructure(outgoingMeta?: {
+  lastOutgoingNumberNasiriyah?: number;
+  lastOutgoingNumberSuq?: number;
+  outgoingBaselineSetAt?: string;
+  outgoingBaselineLabel?: string;
+}): Promise<void> {
+  if (isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.SETTINGS);
+  try {
+    await setDoc(
+      doc(db, col, FS_SETTINGS_DOCS.SCHEMA_ALIGNMENT),
+      {
+        alignedWithGoogleSheets: true,
+        collections: FIRESTORE_SHEET_ALIGNMENT,
+        updatedAt: new Date().toISOString()
+      },
+      { merge: true }
+    );
+    if (outgoingMeta) {
+      await setDoc(
+        doc(db, col, FS_SETTINGS_DOCS.OUTGOING_COUNTER),
+        {
+          ...outgoingMeta,
+          updatedAt: new Date().toISOString()
+        },
+        { merge: true }
+      );
+    }
+  } catch (e) {
+    console.warn('Firestore settings structure sync notice:', e);
   }
 }
 
@@ -1190,6 +1259,7 @@ export async function fsBulkPullAll(): Promise<{
   customRecords: CustomSectionRecord[];
   dropdowns: DropdownItem[];
   notifications: UrgentNotification[];
+  auditLogs: AuditLog[];
   deletedIds: string[];
   systemSettings?: Partial<SystemSettings>;
   developerPasscode?: string;
@@ -1235,6 +1305,7 @@ export async function fsBulkPullAll(): Promise<{
     const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
     const colDeleted = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
     const colNotifications = getFSCol(FS_COLLECTIONS.NOTIFICATIONS);
+    const colAuditLogs = getFSCol(FS_COLLECTIONS.AUDIT_LOGS);
 
     const [
       rawCitizens,
@@ -1248,6 +1319,7 @@ export async function fsBulkPullAll(): Promise<{
       rawCustomRecords,
       dropdowns,
       rawNotifications,
+      rawAuditLogs,
       rawDeletedDocs,
       settingsSnap,
       passcodeSnap
@@ -1263,6 +1335,7 @@ export async function fsBulkPullAll(): Promise<{
       fetchCol<CustomSectionRecord>(colRecords),
       fetchCol<DropdownItem>(colDropdowns),
       fetchCol<UrgentNotification>(colNotifications),
+      fetchCol<AuditLog>(colAuditLogs),
       fetchCol<any>(colDeleted),
       fetchDocSafe(colSettings, 'general'),
       fetchDocSafe(colSettings, 'developer_auth')
@@ -1285,6 +1358,14 @@ export async function fsBulkPullAll(): Promise<{
     const notifications = rawNotifications
       .filter(n => n && n.id && n.title)
       .sort((a, b) => Date.parse(b.createdAtIso || '') - Date.parse(a.createdAtIso || ''));
+    const auditLogs = rawAuditLogs
+      .filter(a => a && a.Log_ID)
+      .sort((a, b) => {
+        const tsA = Date.parse((a as any).createdAtIso || a.Timestamp || '') || 0;
+        const tsB = Date.parse((b as any).createdAtIso || b.Timestamp || '') || 0;
+        return tsB - tsA;
+      })
+      .slice(0, 600);
 
     const systemSettings = settingsSnap && settingsSnap.exists() ? (settingsSnap.data() as Partial<SystemSettings>) : undefined;
     const developerPasscode = passcodeSnap && passcodeSnap.exists() ? (passcodeSnap.data()?.developerPasscode as string) : undefined;
@@ -1303,6 +1384,7 @@ export async function fsBulkPullAll(): Promise<{
       customRecords,
       dropdowns,
       notifications,
+      auditLogs,
       deletedIds: Array.from(deletedIdsSet),
       systemSettings,
       developerPasscode
@@ -1322,6 +1404,7 @@ export async function fsBulkPullAll(): Promise<{
       customRecords: [],
       dropdowns: [],
       notifications: [],
+      auditLogs: [],
       deletedIds: [],
       error: err.message
     };

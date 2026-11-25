@@ -8,7 +8,6 @@ import { ReceptionModule } from './components/ReceptionModule';
 import { AdminModule } from './components/AdminModule';
 import { InterviewsModule } from './components/InterviewsModule';
 import { OrganizationModule } from './components/OrganizationModule';
-import { MachineModule } from './components/MachineModule';
 import { DirectorExecutiveModule } from './components/DirectorExecutiveModule';
 import { GlobalSearchArchiveModule } from './components/GlobalSearchArchiveModule';
 import { WhatsAppModule } from './components/WhatsAppModule';
@@ -333,8 +332,6 @@ const MainAppLayout: React.FC = () => {
         return <InterviewsModule />;
       case 'organization':
         return <OrganizationModule />;
-      case 'machine':
-        return <MachineModule />;
       case 'director':
         return <DirectorExecutiveModule />;
       case 'drive_requests':

@@ -776,9 +776,18 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
   // Live scan of the uploaded Excel file's (رقم الكتاب / العدد) column across all selected sheets
   const detectedFileOutgoing = useMemo(() => {
     if (!loadedWorkbook || availableSheets.length === 0) {
-      return { lastInFileOrder: 0, maxValid: 0, recommendedBaseline: 0, totalValidFound: 0, columnHeader: '' };
+      return {
+        lastSeq: 0,
+        lastInFileOrder: 0,
+        maxValid: 0,
+        recommendedBaseline: 0,
+        totalValidFound: 0,
+        lastCitizenName: '',
+        lastRaw: '',
+        columnHeader: ''
+      };
     }
-    const rawValues: any[] = [];
+    const rawEntries: Array<{ outgoing: any; citizenName?: string }> = [];
     let usedHeader = '';
     for (const s of availableSheets) {
       if (!s.selected) continue;
@@ -810,18 +819,23 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         columnMapping.outgoingDate && sheetHeaders.includes(columnMapping.outgoingDate)
           ? columnMapping.outgoingDate
           : autoMap.outgoingDate || '';
+      const nameHeader =
+        columnMapping.name && sheetHeaders.includes(columnMapping.name)
+          ? columnMapping.name
+          : autoMap.name || '';
       for (const r of rows) {
         const split = splitCombinedOutgoingAndDate(r[outHeader], dateHeader ? r[dateHeader] : '');
+        const citizenName = nameHeader ? String(r[nameHeader] || '').trim() : '';
         if (split.outgoingNumber) {
-          rawValues.push(split.outgoingNumber);
+          rawEntries.push({ outgoing: split.outgoingNumber, citizenName });
         } else if (r[outHeader] !== undefined && r[outHeader] !== '') {
-          rawValues.push(r[outHeader]);
+          rawEntries.push({ outgoing: r[outHeader], citizenName });
         }
       }
     }
-    const stats = findLastOutgoingInRawValues(rawValues);
+    const stats = findLastOutgoingInRawValues(rawEntries);
     return { ...stats, columnHeader: usedHeader };
-  }, [loadedWorkbook, availableSheets, columnMapping.outgoingNumber, columnMapping.outgoingDate]);
+  }, [loadedWorkbook, availableSheets, columnMapping.outgoingNumber, columnMapping.outgoingDate, columnMapping.name]);
 
   if (!isOpen) return null;
 
@@ -1016,7 +1030,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     let deliveredCount = 0;
     let undeliveredCount = 0;
     let maxAnyOutgoing = 0;
-    const allRawOutgoingInFile: string[] = [];
+    const allRawOutgoingInFile: Array<{ outgoing: string; citizenName?: string }> = [];
     let reqSeqCounter = 1;
 
     const nowStamp = new Date().toISOString().split('T')[0];
@@ -1054,7 +1068,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         const rawNotes = item.notes;
 
         if (rawOutgoing) {
-          allRawOutgoingInFile.push(rawOutgoing);
+          allRawOutgoingInFile.push({ outgoing: rawOutgoing, citizenName: rawName });
         }
 
         if (rawEntity && standardizedEntity !== rawEntity) {
@@ -1108,8 +1122,9 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             CreatedAt: rawOutgoingDate || nowStamp,
             CreatedBy: currentUser?.FullName || 'موظف الإدارة',
             RegisteredVia: isReceptionTarget ? 'استعلامات' : 'إدارة',
-            IsHistoricalImported: !isReceptionTarget,
-            IsArchived: !isReceptionTarget
+            // Always tag restored/imported records as historical archive so they NEVER flood "الأعمال اليومية"
+            IsHistoricalImported: true,
+            IsArchived: true
           };
 
           workingNewCitizensByName.set(normName, targetCitizen);
@@ -1312,7 +1327,11 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         ];
 
         // 1. Determine the exact last outgoing number in the uploaded file's (العدد / الصادر) column
-        const fileOutgoingStats = findLastOutgoingInRawValues(allRawOutgoingInFile);
+        // Prefer full-column detection across the uploaded file so filtering rows never drops the true last sequence
+        const fileOutgoingStats =
+          detectedFileOutgoing.recommendedBaseline > 0
+            ? detectedFileOutgoing
+            : findLastOutgoingInRawValues(allRawOutgoingInFile);
         const manualBaselineNum = parseInt(toWesternDigits(customOutgoingBaseline).replace(/\D/g, ''), 10);
         const targetOutgoingBaseline =
           !isNaN(manualBaselineNum) && manualBaselineNum > 0 && manualBaselineNum <= MAX_VALID_OUTGOING_SEQ
@@ -1322,14 +1341,17 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             : scanMaxOutgoingSequences(allRequestsToCommit).maxAny;
 
         maxAnyOutgoing = targetOutgoingBaseline;
+        const anchorTimestamp = new Date().toISOString();
+        const anchorLabel = fileOutgoingStats.lastCitizenName
+          ? `${fileOutgoingStats.lastCitizenName} (${fileName} — آخر عدد: ${targetOutgoingBaseline})`
+          : `${fileName} (${targetOutgoingBaseline})`;
 
         if (targetOutgoingBaseline > 0) {
-          const anchorTimestamp = new Date().toISOString();
           updateSystemSettings({
             lastOutgoingNumberNasiriyah: targetOutgoingBaseline,
             lastOutgoingNumberSuq: targetOutgoingBaseline,
             outgoingBaselineSetAt: anchorTimestamp,
-            outgoingBaselineLabel: `${fileName} (${targetOutgoingBaseline})`
+            outgoingBaselineLabel: anchorLabel
           });
         }
 
@@ -1407,7 +1429,12 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         }
 
         // 3. Commit new & gap-filled citizens/requests atomically to Server + Firebase + Google Sheets
-        batchImportRecords(allCitizensToCommit, allRequestsToCommit)
+        // Pass the anchored outgoing baseline directly so batchImportRecords NEVER overrides it with stale closure state
+        batchImportRecords(allCitizensToCommit, allRequestsToCommit, {
+          anchoredOutgoingBaseline: targetOutgoingBaseline > 0 ? targetOutgoingBaseline : undefined,
+          anchorTimestamp: targetOutgoingBaseline > 0 ? anchorTimestamp : undefined,
+          anchorLabel: targetOutgoingBaseline > 0 ? anchorLabel : undefined
+        })
           .then((syncRes) => {
             setIsProcessing(false);
             setCurrentStepText('');
@@ -1891,22 +1918,44 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             )}
 
             {/* Step 5: Detected Last Outgoing Number from Uploaded Excel File (عمود العدد / الصادر) */}
-            <div className="p-3.5 rounded-xl bg-teal-50/80 dark:bg-teal-950/40 border border-teal-300 dark:border-teal-800 space-y-2 text-xs">
+            <div className="p-3.5 rounded-xl bg-teal-50/80 dark:bg-teal-950/40 border border-teal-300 dark:border-teal-800 space-y-2.5 text-xs">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="font-black text-teal-950 dark:text-teal-200 flex items-center gap-2">
-                  <span>5. ضبط عداد الصادر تلقائياً من عمود ({detectedFileOutgoing.columnHeader || 'رقم الكتاب / العدد'}) في الملف:</span>
+                  <span>5. ضبط عداد الصادر تلقائياً من عمود الصادر في الملف:</span>
                 </div>
                 {detectedFileOutgoing.recommendedBaseline > 0 && (
-                  <span className="px-2.5 py-0.5 rounded-md bg-teal-700 text-white font-mono font-black text-[11px]">
-                    آخر رقم صادر بالملف: {detectedFileOutgoing.recommendedBaseline}
+                  <span className="px-2.5 py-0.5 rounded-md bg-teal-700 text-white font-mono font-black text-[11px] tabular-nums">
+                    آخر رقم صادر مرصود: {detectedFileOutgoing.recommendedBaseline}
                   </span>
                 )}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-center pt-1">
-                <div className="flex items-center gap-2">
-                  <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 shrink-0">
-                    آخر رقم صادر في الملف:
+              {/* Direct Outgoing Column Selector so user can pick the exact outgoing column anytime */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-center pt-1">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                    عمود الصادر / العدد بالملف:
+                  </label>
+                  <select
+                    value={columnMapping.outgoingNumber || '__NONE__'}
+                    onChange={(e) => {
+                      setColumnMapping((prev) => ({ ...prev, outgoingNumber: e.target.value }));
+                      setCustomOutgoingBaseline('');
+                    }}
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-teal-400 dark:border-teal-700 text-slate-900 dark:text-white font-bold text-[11px] outline-none focus:ring-2 focus:ring-teal-500"
+                  >
+                    <option value="__NONE__">— بدون عمود صادر —</option>
+                    {allDetectedHeaders.map((hdr) => (
+                      <option key={hdr} value={hdr}>
+                        {hdr}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                    آخر رقم صادر مسجل (يستكمل الترقيم بعده):
                   </label>
                   <input
                     type="text"
@@ -1920,13 +1969,13 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
                     }
                     onChange={(e) => setCustomOutgoingBaseline(e.target.value)}
                     placeholder="مثال: 1343"
-                    className="w-32 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-teal-400 dark:border-teal-700 text-slate-900 dark:text-white font-mono font-black text-xs text-center outline-none focus:ring-2 focus:ring-teal-500"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-teal-400 dark:border-teal-700 text-slate-900 dark:text-white font-mono font-black text-xs text-center outline-none focus:ring-2 focus:ring-teal-500 tabular-nums"
                   />
                 </div>
 
-                <div className="p-2 rounded-lg bg-slate-900 text-amber-300 font-bold text-[11px] flex items-center justify-between">
-                  <span>الصادر القادم في النظام بعد الاستيراد:</span>
-                  <span className="font-mono font-black text-xs text-emerald-300" dir="rtl">
+                <div className="p-2.5 rounded-lg bg-slate-900 dark:bg-slate-950 border border-slate-700 text-amber-300 font-bold text-[11px] flex flex-col justify-center gap-0.5">
+                  <span className="text-[10px] text-slate-400">سيبدأ الترقيم القادم تلقائياً من:</span>
+                  <span className="font-mono font-black text-sm text-emerald-300 tabular-nums" dir="rtl">
                     {(() => {
                       const base =
                         parseInt(toWesternDigits(customOutgoingBaseline).replace(/\D/g, ''), 10) ||
@@ -1938,6 +1987,17 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
                   </span>
                 </div>
               </div>
+
+              {detectedFileOutgoing.lastCitizenName && detectedFileOutgoing.recommendedBaseline > 0 && (
+                <div className="text-[11px] text-teal-900 dark:text-teal-200 bg-white/70 dark:bg-slate-900/60 border border-teal-200 dark:border-teal-800/80 rounded-lg px-3 py-1.5 flex items-center justify-between flex-wrap gap-2">
+                  <span>
+                    آخر قيد صادر مرصود بالملف: <strong className="font-black">{detectedFileOutgoing.lastCitizenName}</strong>
+                  </span>
+                  <span className="font-mono text-[10px] text-slate-600 dark:text-slate-300">
+                    القيمة بالملف: ({detectedFileOutgoing.lastRaw || detectedFileOutgoing.recommendedBaseline}) — إجمالي الأعداد المرصودة: {detectedFileOutgoing.totalValidFound}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Action Buttons: Direct Filtered Excel Download + Smart Import & Sync */}

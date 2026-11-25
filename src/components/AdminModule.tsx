@@ -1740,18 +1740,22 @@ export const AdminModule: React.FC = () => {
         }} />
       )}
 
-      {/* Tab 5: Referrers Section in Admin (قسم المعرفين وتزكيات المراجعين) */}
+      {/* Tab 5: Referrers Section in Admin (قسم المعرفين والتزكيات ومتابعة الطلبات) */}
       {activeTab === 'referrers' && (
         <div className="space-y-4">
-          <div className="bg-gradient-to-l from-purple-900 via-slate-900 to-purple-950 text-white rounded-2xl p-4 border border-purple-800/40 shadow-sm flex items-center justify-between">
-            <div className="space-y-1">
-              <h3 className="text-sm font-bold flex items-center gap-2">
-                <Users2 className="w-4 h-4 text-purple-400" />
-                <span>قسم المعرفين والتزكيات - قسم الإدارة</span>
-              </h3>
-              <p className="text-xs text-purple-200">
-                إدارة ومتابعة المعرفين والمزكين للمراجعين، وتحليل إحصائيات المعرفين الأكثر نشاطاً في مكتب النائب.
-              </p>
+          <div className="bg-gradient-to-l from-[#0B192C] via-[#13294B] to-[#0B192C] text-white rounded-2xl p-5 border border-slate-700/60 shadow-sm flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-amber-500/15 border border-amber-400/35 text-amber-300 flex items-center justify-center shrink-0">
+                <Users2 className="w-5 h-5" />
+              </div>
+              <div className="space-y-0.5">
+                <h3 className="text-base font-black text-white">
+                  إحصائيات المعرفين والمنسقين ومتابعة طلباتهم والتزكيات
+                </h3>
+                <p className="text-xs text-slate-300">
+                  لوحة تحليل ومتابعة شاملة للمعرفين والمزكين، نسب الإنجاز والاستلام، مع طباعة رسمية A4 وتصدير Excel فوري.
+                </p>
+              </div>
             </div>
           </div>
           <ReferrersStats />

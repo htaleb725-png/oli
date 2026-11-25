@@ -309,7 +309,7 @@ export const UnifiedCitizenCardModal: React.FC<Props> = ({
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
-                المكنة والكتب الصادرة ({citizenLetters.length})
+                الكتب الرسمية الصادرة ({citizenLetters.length})
               </button>
               <button
                 onClick={() => setActiveTab('org')}
@@ -713,7 +713,7 @@ export const UnifiedCitizenCardModal: React.FC<Props> = ({
                       <ScrollText className="w-4 h-4" />
                     </div>
                     <div>
-                      <h4 className="text-xs font-black text-slate-900">4. الكتب الرسمية والمخاطبات الصادرة (قسم المكنة والطباعة)</h4>
+                      <h4 className="text-xs font-black text-slate-900">4. الكتب الرسمية والمخاطبات الصادرة</h4>
                       <p className="text-[10px] text-slate-500">الكتب الصادرة الموجهة للوزارات والمؤسسات الرسمية</p>
                     </div>
                   </div>

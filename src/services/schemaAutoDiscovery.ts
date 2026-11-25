@@ -58,12 +58,6 @@ export const CORE_SYSTEM_SECTIONS: SectionSchemaDefinition[] = [
     fields: ORGANIZATION_SHEET_HEADERS.map(h => ({ key: h, label: h }))
   },
   {
-    id: 'letters',
-    name: LETTERS_SHEET_NAME,
-    title: 'قسم المكنة والكتب الرسمية',
-    fields: LETTERS_SHEET_HEADERS.map(h => ({ key: h, label: h }))
-  },
-  {
     id: 'cheques',
     name: CHEQUES_SHEET_NAME,
     title: 'قسم المساعدات والصكوك',

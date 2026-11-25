@@ -284,14 +284,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
         onClick: () => setActiveSection('organization')
       },
       {
-        id: 'tile_machine',
-        ...getMeta('tile_machine', 'قسم المكنة والطباعة', 'طباعة الكتب الرسمية والصادر والوارد'),
-        icon: Printer,
-        iconColor: 'text-indigo-600 dark:text-indigo-400',
-        iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800',
-        onClick: () => setActiveSection('machine')
-      },
-      {
         id: 'tile_search_archive',
         ...getMeta('tile_search_archive', 'قسم البحث الشامل والأرشيف', 'البحث الفوري واستخراج السجلات وطباعة الهوية'),
         icon: Search,
@@ -623,8 +615,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
                 ? 'admin'
                 : currentUser?.Role === 'interviews_officer'
                 ? 'interviews'
-                : currentUser?.Role === 'machine' || currentUser?.Role === 'machine_officer'
-                ? 'machine'
                 : currentUser?.Role === 'organization' || currentUser?.Role === 'organization_officer'
                 ? 'organization'
                 : currentUser?.Role === 'social_care' || currentUser?.Role === 'social_care_officer'
@@ -887,7 +877,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
               <option value="interviews_officer">قسم المقابلات</option>
               <option value="audit">قسم الرقابة والتدقيق</option>
               <option value="organization">قسم التنظيم والجماهير</option>
-              <option value="machine">قسم المكنة والطباعة</option>
             </select>
           </div>
         </div>
