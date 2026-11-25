@@ -134,20 +134,23 @@ export function clearSheetsHealthError(): void {
   }
 }
 
+function isFalseConnectionNoise(text: string): boolean {
+  const lower = String(text || '').toLowerCase();
+  return (
+    lower.includes('the client is offline') ||
+    lower.includes('client is offline') ||
+    lower.includes('تعذر الوصول إلى خادم firebase') ||
+    lower.includes('تعذر الوصول الى خادم firebase') ||
+    lower.includes('تعذر الاتصال بخادم firebase') ||
+    lower.includes('unavailable')
+  );
+}
+
 export function pushCloudSyncAlert(alert: Omit<CloudSyncAlert, 'id' | 'timestamp'>): string {
-  // Permanently block all red/yellow Firebase or "the client is offline" popups across the entire app
+  // Permanently block any false "the client is offline" / "تعذر الوصول إلى خادم Firebase Firestore" popups
   if (alert.severity === 'error' || alert.severity === 'warning') {
-    const combined = `${alert.title} ${alert.message} ${alert.details || ''}`.toLowerCase();
-    if (
-      alert.target === 'firebase' ||
-      alert.target === 'env' ||
-      alert.target === 'both' ||
-      combined.includes('firebase') ||
-      combined.includes('firestore') ||
-      combined.includes('the client is offline') ||
-      combined.includes('offline') ||
-      combined.includes('تعذر الوصول')
-    ) {
+    const combined = `${alert.title} ${alert.message} ${alert.details || ''}`;
+    if (alert.target === 'env' || isFalseConnectionNoise(combined)) {
       return '';
     }
   }
@@ -201,7 +204,7 @@ export function reportDualCloudWriteResult(params: {
   sheetsError?: string;
   retry?: () => Promise<void>;
 }): void {
-  const { entityLabel, firebaseOk, firebaseError, sheetsOk, sheetsError } = params;
+  const { entityLabel, firebaseOk, firebaseError, sheetsOk, sheetsError, retry } = params;
 
   if (firebaseOk) {
     updateFirebaseHealth('connected', null);
@@ -215,13 +218,48 @@ export function reportDualCloudWriteResult(params: {
     console.warn(`Google Sheets write notice (${entityLabel}):`, sheetsError);
   }
 
+  // 1. Both Firebase Firestore & Google Sheets succeeded -> Clear success toast
   if (firebaseOk && sheetsOk) {
     pushCloudSyncAlert({
       severity: 'success',
       target: 'both',
       entityLabel,
-      title: `تم الحفظ السحابي بنجاح (${entityLabel})`,
-      message: 'تم ترحيل البيانات بنجاح إلى Firebase Firestore و Google Sheets.'
+      title: `تم الحفظ والترحيل بنجاح (${entityLabel})`,
+      message: 'تم الحفظ في Firebase Firestore وإرسال البيانات فوراً إلى Google Sheets.'
+    });
+    return;
+  }
+
+  // 2. Actual Google Sheets save failure -> Show clear failure reason + Retry
+  if (!sheetsOk) {
+    const cleanSheetReason =
+      sheetsError && !isFalseConnectionNoise(sheetsError)
+        ? sheetsError
+        : 'تعذر استجابة رابط Google Apps Script أثناء ترحيل المعاملة.';
+    pushCloudSyncAlert({
+      severity: 'warning',
+      target: 'google_sheets',
+      entityLabel,
+      title: `فشل إرسال (${entityLabel}) إلى Google Sheets`,
+      message: firebaseOk
+        ? 'تم الحفظ في Firebase Firestore، ولكن تعذر الترحيل الفوري إلى Google Sheets.'
+        : 'تعذر ترحيل البيانات إلى Google Sheets. يرجى التحقق من رابط Apps Script وإعادة المحاولة.',
+      details: cleanSheetReason,
+      retry
+    });
+    return;
+  }
+
+  // 3. Actual Firebase write failure (only if it is a genuine write/permission error, NEVER false offline noise)
+  if (!firebaseOk && firebaseError && !isFalseConnectionNoise(firebaseError)) {
+    pushCloudSyncAlert({
+      severity: 'error',
+      target: 'firebase',
+      entityLabel,
+      title: `تعذر حفظ (${entityLabel}) في قاعدة البيانات`,
+      message: 'تم الإرسال إلى Google Sheets، ولكن فشلت عملية الحفظ في Firebase Firestore.',
+      details: firebaseError,
+      retry
     });
   }
 }

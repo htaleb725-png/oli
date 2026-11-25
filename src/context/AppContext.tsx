@@ -44,6 +44,7 @@ import {
   fsSyncAllUsers,
   fsCheckConnection,
   fsSaveSettings,
+  fsGetSettings,
   fsSaveDropdown,
   fsDeleteDropdown,
   buildSafeDropdownDocId,
@@ -663,22 +664,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeSection, setActiveSection] = useState<string>('dashboard');
   const [isSessionLoading, setIsSessionLoading] = useState<boolean>(false);
   const [sessionLoadingMessage, setSessionLoadingMessage] = useState<string>('يرجى الانتظار لتحميل بياناتك...');
-  const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(() => {
-    const raw = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'is_zeroed') : null;
-    if (raw === 'true') {
-      try {
-        const saved = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens') : null;
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            localStorage.removeItem(STORAGE_KEY_PREFIX + 'is_zeroed');
-            return false;
-          }
-        }
-      } catch {}
-    }
-    return raw === 'true';
-  });
+  const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(false);
 
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => {
     return !!(typeof window !== 'undefined' && localStorage.getItem('al_nashi_google_token'));
@@ -1058,29 +1044,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           serverDeleted.forEach(id => localDeleted.add(id));
 
           if (serverUsers.length > 0) {
-            setUsers(prev => {
-              const merged = mergeUsers(prev, serverUsers, localDeleted);
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(merged));
-              return merged;
-            });
+            setUsers(prev => mergeUsers(prev, serverUsers, localDeleted));
           }
           if (data?.developerPasscode) {
             setDeveloperPasscodeState(String(data.developerPasscode));
             try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', String(data.developerPasscode)); } catch {}
-          }
-          // Push any local users not yet in server DB so shared devices see them immediately
-          const localSaved = localStorage.getItem(STORAGE_KEY_PREFIX + 'users');
-          const localList: User[] = localSaved ? JSON.parse(localSaved) : INITIAL_USERS;
-          if (Array.isArray(localList) && localList.length > 0) {
-            await fetch('/api/users/bulk-sync', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                users: localList,
-                deletedIds: Array.from(localDeleted),
-                developerPasscode: data?.developerPasscode || undefined
-              })
-            }).catch(() => {});
           }
         }
       } catch {
@@ -1497,36 +1465,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         bc.addEventListener('message', handleBroadcastMessage);
       }
 
-      // Cross-tab localStorage 'storage' event fallback (Safari / older WebViews)
+      // Strict Cloud-Only Policy: Ignore any legacy localStorage business record events
+      // Only allow UI appearance/settings updates to sync across tabs via storage events
       const handleStorageEvent = (ev: StorageEvent) => {
         if (!ev.key || !ev.newValue) return;
-        const del = getStoredDeletedIds();
         try {
-          if (ev.key === STORAGE_KEY_PREFIX + 'citizens') {
-            const parsed = JSON.parse(ev.newValue);
-            if (Array.isArray(parsed)) setCitizens(prev => mergeCitizens(prev, parsed, del));
-          } else if (ev.key === STORAGE_KEY_PREFIX + 'requests') {
-            const parsed = JSON.parse(ev.newValue);
-            if (Array.isArray(parsed)) setRequests(prev => mergeRequests(prev, parsed, del));
-          } else if (ev.key === STORAGE_KEY_PREFIX + 'interviews') {
-            const parsed = JSON.parse(ev.newValue);
-            if (Array.isArray(parsed)) setInterviews(prev => mergeInterviews(prev, parsed, del));
-          } else if (ev.key === STORAGE_KEY_PREFIX + 'settings') {
+          if (ev.key === STORAGE_KEY_PREFIX + 'settings') {
             const parsed = JSON.parse(ev.newValue);
             if (parsed && typeof parsed === 'object') {
               setSystemSettings(prev => {
                 const next = normalizeSystemSettings({ ...prev, ...parsed });
                 systemSettingsRef.current = next;
                 return next;
-              });
-            }
-          } else if (ev.key === STORAGE_KEY_PREFIX + 'dropdowns') {
-            const parsed = JSON.parse(ev.newValue);
-            if (Array.isArray(parsed)) {
-              setDropdowns(prev => {
-                const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
-                const added = parsed.filter((d: DropdownItem) => d?.Category && d?.ItemValue && !seen.has(`${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
-                return added.length > 0 ? [...prev, ...added] : prev;
               });
             }
           }
@@ -1669,13 +1619,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const refreshAllDataFromAllSources = async () => {
-    const deletedIds = getStoredDeletedIds();
+    // 0. Always purge any stale business data trapped in Chrome localStorage / IndexedDB
+    //    so legacy browser records can NEVER reappear or conflict with Cloud DB.
+    purgeLegacyBrowserBusinessData();
+    clearBusinessRecordsFromIDB().catch(() => {});
 
-    // 1. CLOUD-FIRST: Pull authoritative data directly from Firebase Firestore FIRST (works identically on Vercel & every browser!)
-    let cloudSettings: Partial<SystemSettings> | undefined;
+    // 1. Resolve cloud connection endpoints (Env vars take priority, enriched by Firestore settings)
+    let cloudSettings: Partial<SystemSettings> | null = null;
     try {
-      const fsResult = await fetchAllFromFirestoreNow();
-      cloudSettings = fsResult.systemSettings;
+      cloudSettings = await fsGetSettings();
       if (cloudSettings) {
         setRuntimeCloudConfig({
           appsScriptUrl: cloudSettings.appsScriptUrl || cloudSettings.googleAppsScriptUrl,
@@ -1684,49 +1636,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
     } catch (e) {
-      console.warn('Cloud Firestore hydration notice:', e);
+      console.warn('Firestore settings lookup notice:', e);
     }
 
-    // 2. CLOUD-SECOND: Pull from Google Sheets using Firestore-hydrated Apps Script URL / Sheet ID (so Vercel gets Sheets data too!)
+    const targetScript =
+      (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
+      cloudSettings?.appsScriptUrl ||
+      cloudSettings?.googleAppsScriptUrl ||
+      systemSettingsRef.current.appsScriptUrl ||
+      systemSettingsRef.current.googleAppsScriptUrl ||
+      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
+
+    const targetSheet =
+      (import.meta as any).env?.VITE_GOOGLE_SHEET_ID ||
+      cloudSettings?.googleSheetId ||
+      cloudSettings?.activeGoogleSheetId ||
+      systemSettingsRef.current.googleSheetId ||
+      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') || '' : '');
+
+    // 2. PRIMARY AUTHORITATIVE SOURCE: Pull all sheets & records from Google Sheet (via Apps Script)
+    //    and immediately sync/update Firebase Firestore directly with the authoritative sheet records.
+    if (targetScript || targetSheet) {
+      try {
+        await fetchAllFromGoogleSheetsNow(targetScript, targetSheet, {
+          syncToFirestore: true,
+          replaceAsPrimary: true
+        });
+      } catch (e) {
+        console.warn('Primary Google Sheets hydration notice:', e);
+      }
+    }
+
+    // 3. SECONDARY HYDRATION: Hydrate Firestore metadata (customSections, settings, dropdowns, notifications)
+    //    and non-destructively merge any Firestore records via semantic gap-filling (zero duplicates).
     try {
-      const targetSheet =
-        cloudSettings?.googleSheetId ||
-        cloudSettings?.activeGoogleSheetId ||
-        systemSettings.googleSheetId ||
-        (import.meta as any).env?.VITE_GOOGLE_SHEET_ID ||
-        '';
-      const targetScript =
-        cloudSettings?.appsScriptUrl ||
-        cloudSettings?.googleAppsScriptUrl ||
-        systemSettings.appsScriptUrl ||
-        (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
-        '';
-      if (targetSheet || targetScript) {
-        await fetchAllFromGoogleSheetsNow(targetScript, targetSheet);
+      const fsResult = await fetchAllFromFirestoreNow();
+      if (fsResult.systemSettings) {
+        setRuntimeCloudConfig({
+          appsScriptUrl: fsResult.systemSettings.appsScriptUrl || fsResult.systemSettings.googleAppsScriptUrl,
+          googleSheetId: fsResult.systemSettings.googleSheetId || fsResult.systemSettings.activeGoogleSheetId,
+          googleDriveFolderId: fsResult.systemSettings.googleDriveFolderId
+        });
       }
     } catch (e) {
-      console.warn('Background Google Sheets hydration notice:', e);
+      console.warn('Cloud Firestore hydration notice:', e);
     }
-
-    // 3. One-time safe migration of any legacy browser-only records up to Cloud Firestore (never leaves data trapped in Chrome!)
-    try {
-      const legacyCitizensRaw = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'citizens') : null;
-      const legacyRequestsRaw = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY_PREFIX + 'requests') : null;
-      const legacyCitizens: Citizen[] = legacyCitizensRaw ? JSON.parse(legacyCitizensRaw) : [];
-      const legacyRequests: OfficeRequest[] = legacyRequestsRaw ? JSON.parse(legacyRequestsRaw) : [];
-      const realLegacyCitizens = Array.isArray(legacyCitizens)
-        ? legacyCitizens.filter(c => c && c.Citizen_ID && !deletedIds.has(c.Citizen_ID) && !String(c.Citizen_ID).startsWith('CIT-00'))
-        : [];
-      const realLegacyRequests = Array.isArray(legacyRequests)
-        ? legacyRequests.filter(r => r && r.Request_ID && !deletedIds.has(r.Request_ID))
-        : [];
-      if (realLegacyCitizens.length > 0 || realLegacyRequests.length > 0) {
-        if (realLegacyCitizens.length > 0) setCitizens(prev => mergeCitizens(prev, realLegacyCitizens, deletedIds));
-        if (realLegacyRequests.length > 0) setRequests(prev => mergeRequests(prev, realLegacyRequests, deletedIds));
-        // Push local records to Firestore without ever deleting local browser / PWA storage
-        fsBulkSaveCitizensAndRequests(realLegacyCitizens, realLegacyRequests).catch(() => {});
-      }
-    } catch {}
   };
 
   const triggerSessionDataLoad = (customMsg?: string) => {
@@ -4555,46 +4509,106 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const fetchAllFromGoogleSheetsNow = async (
     overrideScriptUrl?: string,
-    overrideSheetId?: string
+    overrideSheetId?: string,
+    options?: { syncToFirestore?: boolean; replaceAsPrimary?: boolean }
   ): Promise<{ success: boolean; message: string }> => {
     setIsGoogleSyncing(true);
     const deletedIds = getStoredDeletedIds();
+    const shouldSyncToFirestore = options?.syncToFirestore !== false;
+    const replaceAsPrimary = options?.replaceAsPrimary === true;
+
+    const applyAndMirrorToFirestore = async (pulled: {
+      citizens?: Citizen[];
+      requests?: OfficeRequest[];
+      interviews?: Interview[];
+      officialLetters?: OfficialLetter[];
+      organizationRecords?: OrganizationRecord[];
+      cheques?: ChequeRecord[];
+      customRecords?: CustomSectionRecord[];
+      users?: User[];
+    }) => {
+      const cleanCitizens = mergeCitizens([], pulled.citizens || [], deletedIds);
+      const cleanRequests = mergeRequests([], pulled.requests || [], deletedIds);
+      const cleanInterviews = mergeInterviews([], pulled.interviews || [], deletedIds);
+      const cleanLetters = mergeOfficialLetters([], pulled.officialLetters || [], deletedIds);
+      const cleanOrgs = mergeOrganizationRecords([], pulled.organizationRecords || [], deletedIds);
+      const cleanCheques = mergeCheques([], pulled.cheques || [], deletedIds);
+      const cleanCustomRecords = mergeCustomRecords([], pulled.customRecords || [], deletedIds);
+      const cleanUsers = mergeUsers([], pulled.users || [], deletedIds);
+
+      if (cleanCitizens.length > 0) {
+        setCitizens(prev => (replaceAsPrimary ? cleanCitizens : mergeCitizens(prev, cleanCitizens, deletedIds)));
+      }
+      if (cleanRequests.length > 0) {
+        setRequests(prev => (replaceAsPrimary ? cleanRequests : mergeRequests(prev, cleanRequests, deletedIds)));
+      }
+      if (cleanInterviews.length > 0) {
+        setInterviews(prev => (replaceAsPrimary ? cleanInterviews : mergeInterviews(prev, cleanInterviews, deletedIds)));
+      }
+      if (cleanLetters.length > 0) {
+        setOfficialLetters(prev => (replaceAsPrimary ? cleanLetters : mergeOfficialLetters(prev, cleanLetters, deletedIds)));
+      }
+      if (cleanOrgs.length > 0) {
+        setOrganizationRecords(prev => (replaceAsPrimary ? cleanOrgs : mergeOrganizationRecords(prev, cleanOrgs, deletedIds)));
+      }
+      if (cleanCheques.length > 0) {
+        setCheques(prev => (replaceAsPrimary ? cleanCheques : mergeCheques(prev, cleanCheques, deletedIds)));
+      }
+      if (cleanCustomRecords.length > 0) {
+        setCustomRecords(prev => (replaceAsPrimary ? cleanCustomRecords : mergeCustomRecords(prev, cleanCustomRecords, deletedIds)));
+      }
+      if (cleanUsers.length > 0) {
+        setUsers(prev => mergeUsers(prev, cleanUsers, deletedIds));
+      }
+
+      // Immediately mirror authoritative Google Sheet records directly into Firebase Firestore
+      const totalPulled =
+        cleanCitizens.length +
+        cleanRequests.length +
+        cleanInterviews.length +
+        cleanLetters.length +
+        cleanOrgs.length +
+        cleanCheques.length +
+        cleanCustomRecords.length;
+
+      if (shouldSyncToFirestore && totalPulled > 0) {
+        await fsBulkPushAll({
+          citizens: cleanCitizens,
+          requests: cleanRequests,
+          interviews: cleanInterviews,
+          officialLetters: cleanLetters,
+          cheques: cleanCheques,
+          organizationRecords: cleanOrgs,
+          users: cleanUsers,
+          systemSettings: undefined as unknown as SystemSettings,
+          dropdowns: [],
+          customSections: [],
+          customRecords: cleanCustomRecords
+        }).catch(err => console.warn('Direct Google Sheet -> Firestore sync notice:', err));
+      }
+
+      return { cleanCitizens, cleanRequests, cleanCustomRecords };
+    };
+
     try {
-      // Attempt 1: Google Apps Script Web App (works seamlessly on Vercel & any device with zero OAuth popup!)
+      // Attempt 1: Google Apps Script Web App (Authoritative primary reference — works on Vercel & every device!)
       const targetScriptUrl =
         overrideScriptUrl ||
-        systemSettings.appsScriptUrl ||
-        systemSettings.googleAppsScriptUrl ||
         (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
+        systemSettingsRef.current.appsScriptUrl ||
+        systemSettingsRef.current.googleAppsScriptUrl ||
         (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+
       if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
         try {
           const scriptRes = await pullDataFromGoogleAppsScript(targetScriptUrl);
           if (scriptRes && scriptRes.success && scriptRes.data) {
-            if (scriptRes.data.citizens.length > 0) {
-              setCitizens(prev => mergeCitizens(prev, scriptRes.data!.citizens, deletedIds));
-            }
-            if (scriptRes.data.requests.length > 0) {
-              setRequests(prev => mergeRequests(prev, scriptRes.data!.requests, deletedIds));
-            }
-            if (scriptRes.data.interviews.length > 0) {
-              setInterviews(prev => mergeInterviews(prev, scriptRes.data!.interviews, deletedIds));
-            }
-            if (scriptRes.data.officialLetters.length > 0) {
-              setOfficialLetters(prev => mergeOfficialLetters(prev, scriptRes.data!.officialLetters, deletedIds));
-            }
-            if (scriptRes.data.organizationRecords.length > 0) {
-              setOrganizationRecords(prev => mergeOrganizationRecords(prev, scriptRes.data!.organizationRecords, deletedIds));
-            }
-            if (scriptRes.data.cheques.length > 0) {
-              setCheques(prev => mergeCheques(prev, scriptRes.data!.cheques, deletedIds));
-            }
-            if (scriptRes.data.users && scriptRes.data.users.length > 0) {
-              setUsers(prev => mergeUsers(prev, scriptRes.data!.users || [], deletedIds));
-            }
+            const { cleanCitizens, cleanRequests, cleanCustomRecords } = await applyAndMirrorToFirestore(scriptRes.data);
             return {
               success: true,
-              message: scriptRes.message || `✓ تم جلب (${scriptRes.data.citizens.length}) مراجع و (${scriptRes.data.requests.length}) معاملة من Google Sheets.`
+              message:
+                scriptRes.message ||
+                `✓ تم سحب (${cleanCitizens.length}) مراجع و (${cleanRequests.length}) معاملة و (${cleanCustomRecords.length}) سجل قسم من Google Sheets وتحديث Firebase Firestore مباشرة.`
             };
           }
         } catch (scriptErr) {
@@ -4609,27 +4623,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         const fullData = await sheetsIntegration.fetchAllData();
         if (fullData && ((fullData.citizens && fullData.citizens.length > 0) || (fullData.requests && fullData.requests.length > 0))) {
-          if (fullData.citizens && fullData.citizens.length > 0) {
-            setCitizens(prev => mergeCitizens(prev, fullData.citizens, deletedIds));
-          }
-          if (fullData.requests && fullData.requests.length > 0) {
-            setRequests(prev => mergeRequests(prev, fullData.requests, deletedIds));
-          }
-          if (fullData.interviews && fullData.interviews.length > 0) {
-            setInterviews(prev => mergeInterviews(prev, fullData.interviews, deletedIds));
-          }
-          if (fullData.officialLetters && fullData.officialLetters.length > 0) {
-            setOfficialLetters(prev => mergeOfficialLetters(prev, fullData.officialLetters, deletedIds));
-          }
-          if (fullData.organizationRecords && fullData.organizationRecords.length > 0) {
-            setOrganizationRecords(prev => mergeOrganizationRecords(prev, fullData.organizationRecords, deletedIds));
-          }
-          if (fullData.cheques && fullData.cheques.length > 0) {
-            setCheques(prev => mergeCheques(prev, fullData.cheques, deletedIds));
-          }
+          const { cleanCitizens, cleanRequests } = await applyAndMirrorToFirestore(fullData);
           return {
             success: true,
-            message: `✓ تم دمج ومزامنة (${fullData.citizens.length}) مراجع و (${fullData.requests.length}) معاملة من Google Sheets بنجاح.`
+            message: `✓ تم سحب (${cleanCitizens.length}) مراجع و (${cleanRequests.length}) معاملة من Google Sheets وتحديث Firebase Firestore مباشرة.`
           };
         }
       } catch (directErr) {
@@ -4640,12 +4637,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const res = await pullAllDataFromGoogleSheets();
         if (res.success && res.data && (res.data.citizens.length > 0 || res.data.requests.length > 0)) {
-          if (res.data.citizens.length > 0) setCitizens(prev => mergeCitizens(prev, res.data.citizens, deletedIds));
-          if (res.data.requests.length > 0) setRequests(prev => mergeRequests(prev, res.data.requests, deletedIds));
-          if (res.data.interviews.length > 0) setInterviews(prev => mergeInterviews(prev, res.data.interviews, deletedIds));
-          if (res.data.officialLetters.length > 0) setOfficialLetters(prev => mergeOfficialLetters(prev, res.data.officialLetters, deletedIds));
-          if (res.data.organizationRecords.length > 0) setOrganizationRecords(prev => mergeOrganizationRecords(prev, res.data.organizationRecords, deletedIds));
-          if (res.data.cheques.length > 0) setCheques(prev => mergeCheques(prev, res.data.cheques, deletedIds));
+          await applyAndMirrorToFirestore(res.data);
           return { success: true, message: `✓ ${res.message}` };
         }
       } catch (batchErr) {

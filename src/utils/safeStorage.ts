@@ -24,7 +24,11 @@ const BLOCKED_BUSINESS_KEY_PATTERNS = [
   'custom_records',
   'drive_requests_cache',
   'dynamic_fields',
-  'has_real_data'
+  'has_real_data',
+  'is_zeroed',
+  'notifications',
+  'sync_queue',
+  'backup'
 ];
 
 export function isBusinessRecordStorageKey(key: string): boolean {

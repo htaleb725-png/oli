@@ -47,16 +47,16 @@ export const CloudSyncStatusBanner: React.FC = () => {
 
   const visibleAlerts = health.activeAlerts.filter((alert) => {
     if (alert.severity === 'error' || alert.severity === 'warning') {
-      if (alert.target === 'firebase' || alert.target === 'env' || alert.target === 'both') {
+      if (alert.target === 'env') {
         return false;
       }
       const combined = `${alert.title} ${alert.message} ${alert.details || ''}`.toLowerCase();
       if (
-        combined.includes('firebase') ||
-        combined.includes('firestore') ||
         combined.includes('the client is offline') ||
-        combined.includes('offline') ||
-        combined.includes('تعذر الوصول')
+        combined.includes('client is offline') ||
+        combined.includes('تعذر الوصول إلى خادم firebase') ||
+        combined.includes('تعذر الوصول الى خادم firebase') ||
+        combined.includes('تعذر الاتصال بخادم firebase')
       ) {
         return false;
       }

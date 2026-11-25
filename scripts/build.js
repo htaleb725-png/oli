@@ -8,10 +8,34 @@ const rootDir = path.resolve(__dirname, '..');
 
 console.log('[Build] Starting unified application build...');
 
-// 1. Ensure dist directory exists
+// 1. Ensure dist directory exists & refresh public/version.json on every build
 const distDir = path.join(rootDir, 'dist');
 if (!fs.existsSync(distDir)) {
   fs.mkdirSync(distDir, { recursive: true });
+}
+
+try {
+  const nowMs = Date.now();
+  const versionPayload = JSON.stringify(
+    {
+      version: `5.0.${Math.floor(nowMs / 1000)}`,
+      buildTime: nowMs,
+      buildTimestamp: nowMs,
+      releaseDate: new Date(nowMs).toISOString(),
+      name: 'مكتب النائب علا الناشي — منظومة الإدارة المركزية'
+    },
+    null,
+    2
+  );
+  const publicDir = path.join(rootDir, 'public');
+  if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
+  }
+  fs.writeFileSync(path.join(publicDir, 'version.json'), versionPayload, 'utf-8');
+  fs.writeFileSync(path.join(distDir, 'version.json'), versionPayload, 'utf-8');
+  console.log('[Build] Generated fresh public/version.json and dist/version.json.');
+} catch (vErr) {
+  console.warn('[Build] version.json generation warning:', vErr.message);
 }
 
 // 2. Build Vite production bundle into dist/
