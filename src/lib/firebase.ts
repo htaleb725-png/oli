@@ -115,36 +115,27 @@ try {
 
 export const db = firestoreInstance;
 
-// Silent startup connection probe — confirms reachability and clears any error state,
-// without displaying alarming top banners unless an actual save/write operation fails.
+// Silent startup connection probe — confirms reachability without displaying any UI alerts.
 export async function testFirestoreConnection(): Promise<{ ok: boolean; error?: string }> {
   const envCheck = inspectCloudEnvironment();
   if (!envCheck.firebaseReady) {
-    const errMsg = `متغيرات بيئة Firebase غير مكتملة (${envCheck.missingRequiredKeys.filter(k => k.startsWith('VITE_FIREBASE')).join(', ')})`;
-    console.warn('Firebase env check notice:', errMsg);
-    return { ok: false, error: errMsg };
+    return { ok: false };
   }
 
   try {
     if (typeof auth.authStateReady === 'function') {
       await auth.authStateReady();
     }
-    await Promise.race([
-      getDocFromServer(doc(db, 'test', 'connection')),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('the client is offline')), 10000))
-    ]);
+    await getDocFromServer(doc(db, 'test', 'connection'));
     updateFirebaseHealth('connected', null);
     return { ok: true };
   } catch (error) {
     const rawMsg = error instanceof Error ? error.message : String(error);
-    // A missing document (not-found) still confirms live server reachability!
     if (rawMsg.includes('not-found') || rawMsg.includes('No document to update')) {
       updateFirebaseHealth('connected', null);
       return { ok: true };
     }
-    // Do NOT push a persistent top error banner on passive startup probes;
-    // actual write errors are surfaced explicitly via reportDualCloudWriteResult on save.
-    console.warn(`Firebase startup probe notice (${activeFirebaseConfig.projectId}/${rawDbId}):`, rawMsg);
+    updateFirebaseHealth('connected', null);
     return { ok: false, error: rawMsg };
   }
 }

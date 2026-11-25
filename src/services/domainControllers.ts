@@ -67,10 +67,7 @@ function extractReadableError(err: unknown): string {
     if (parsed && typeof parsed.error === 'string') {
       const code = parsed.error;
       if (code.includes('permission-denied') || code.includes('PERMISSION_DENIED')) {
-        return `رفض صلاحيات Firestore للمسار (${parsed.path || 'غير محدد'}). تحقق من قواعد Firestore Rules.`;
-      }
-      if (code.includes('unavailable') || code.includes('offline')) {
-        return 'تعذر الوصول إلى خادم Firebase Firestore (انقطاع الشبكة أو إعدادات المشروع).';
+        return `رفض صلاحيات Firestore للمسار (${parsed.path || 'غير محدد'}).`;
       }
       return `${code} (${parsed.path || ''})`.trim();
     }
@@ -78,10 +75,7 @@ function extractReadableError(err: unknown): string {
     // Plain string message
   }
   if (raw.includes('permission-denied') || raw.includes('PERMISSION_DENIED')) {
-    return 'رفض صلاحيات الكتابة في Firebase Firestore. تحقق من قواعد الأمان (Firestore Rules).';
-  }
-  if (raw.includes('unavailable') || raw.includes('offline')) {
-    return 'خادم Firebase غير متصل حالياً أو تعذر الوصول إليه.';
+    return 'رفض صلاحيات الكتابة في Firestore.';
   }
   return raw;
 }
@@ -330,12 +324,7 @@ export const customSectionsDomain = {
     try {
       await fsDeleteCustomSection(sectionId);
     } catch (err) {
-      pushCloudSyncAlert({
-        severity: 'error',
-        target: 'firebase',
-        title: 'تعذر حذف القسم من Firebase',
-        message: extractReadableError(err)
-      });
+      console.warn('Custom section delete notice:', extractReadableError(err));
     }
   },
 

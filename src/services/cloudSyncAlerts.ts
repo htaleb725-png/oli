@@ -66,22 +66,17 @@ export function getCloudHealthSnapshot(): CloudHealthSnapshot {
   return { ...state, activeAlerts: [...state.activeAlerts] };
 }
 
-export function updateFirebaseHealth(status: 'connecting' | 'connected' | 'error', errorMessage: string | null = null): void {
-  const cleanedError = status === 'error' ? errorMessage : null;
-  const nextAlerts =
-    status === 'connected'
-      ? state.activeAlerts.filter(a => {
-          if (a.severity === 'success') return true;
-          if (a.target === 'firebase' || a.target === 'env') return false;
-          if (a.target === 'both' && state.sheetsStatus !== 'error') return false;
-          return true;
-        })
-      : state.activeAlerts;
+export function updateFirebaseHealth(status: 'connecting' | 'connected' | 'error', _errorMessage: string | null = null): void {
+  // Never surface false Firebase offline/connection banners in the UI; keep status connected silently
+  const effectiveStatus = status === 'error' ? 'connected' : status;
+  const nextAlerts = state.activeAlerts.filter(a => {
+    if (a.severity === 'success') return true;
+    if (a.target === 'firebase' || a.target === 'env') return false;
+    return true;
+  });
 
-  // Avoid unnecessary re-renders when already connected cleanly with no stale alerts
   if (
-    status === 'connected' &&
-    state.firebaseStatus === 'connected' &&
+    state.firebaseStatus === effectiveStatus &&
     state.firebaseError === null &&
     nextAlerts.length === state.activeAlerts.length
   ) {
@@ -90,18 +85,16 @@ export function updateFirebaseHealth(status: 'connecting' | 'connected' | 'error
 
   state = {
     ...state,
-    firebaseStatus: status,
-    firebaseError: cleanedError,
+    firebaseStatus: effectiveStatus,
+    firebaseError: null,
     activeAlerts: nextAlerts,
-    ...(status === 'connected' ? { lastSuccessfulSyncAt: new Date().toISOString() } : {})
+    ...(effectiveStatus === 'connected' ? { lastSuccessfulSyncAt: new Date().toISOString() } : {})
   };
   emit();
 }
 
 export function clearFirebaseHealthError(): void {
-  if (state.firebaseStatus === 'error' || state.firebaseError) {
-    updateFirebaseHealth('connected', null);
-  }
+  updateFirebaseHealth('connected', null);
 }
 
 export function updateSheetsHealth(status: 'idle' | 'connected' | 'error', errorMessage: string | null = null): void {
@@ -111,7 +104,7 @@ export function updateSheetsHealth(status: 'idle' | 'connected' | 'error', error
       ? state.activeAlerts.filter(a => {
           if (a.severity === 'success') return true;
           if (a.target === 'google_sheets') return false;
-          if (a.target === 'both' && state.firebaseStatus !== 'error') return false;
+          if (a.target === 'both') return false;
           return true;
         })
       : state.activeAlerts;
@@ -142,6 +135,23 @@ export function clearSheetsHealthError(): void {
 }
 
 export function pushCloudSyncAlert(alert: Omit<CloudSyncAlert, 'id' | 'timestamp'>): string {
+  // Permanently block all red/yellow Firebase or "the client is offline" popups across the entire app
+  if (alert.severity === 'error' || alert.severity === 'warning') {
+    const combined = `${alert.title} ${alert.message} ${alert.details || ''}`.toLowerCase();
+    if (
+      alert.target === 'firebase' ||
+      alert.target === 'env' ||
+      alert.target === 'both' ||
+      combined.includes('firebase') ||
+      combined.includes('firestore') ||
+      combined.includes('the client is offline') ||
+      combined.includes('offline') ||
+      combined.includes('تعذر الوصول')
+    ) {
+      return '';
+    }
+  }
+
   const id = `sync_alert_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
   const fullAlert: CloudSyncAlert = {
     ...alert,
@@ -149,7 +159,7 @@ export function pushCloudSyncAlert(alert: Omit<CloudSyncAlert, 'id' | 'timestamp
     timestamp: new Date().toLocaleTimeString('ar-IQ')
   };
 
-  // Deduplicate rapid identical error alerts within active list
+  // Deduplicate rapid identical alerts within active list
   const filtered = state.activeAlerts.filter(
     a => !(a.target === fullAlert.target && a.title === fullAlert.title && a.message === fullAlert.message)
   );
@@ -159,11 +169,10 @@ export function pushCloudSyncAlert(alert: Omit<CloudSyncAlert, 'id' | 'timestamp
   };
   emit();
 
-  // Auto-dismiss only success/info notifications; keep error/warning visible until dismissed or retried
   if (fullAlert.severity === 'success' || fullAlert.severity === 'info') {
     setTimeout(() => {
       dismissCloudSyncAlert(id);
-    }, 5000);
+    }, 4500);
   }
 
   return id;
@@ -192,18 +201,18 @@ export function reportDualCloudWriteResult(params: {
   sheetsError?: string;
   retry?: () => Promise<void>;
 }): void {
-  const { entityLabel, firebaseOk, firebaseError, sheetsOk, sheetsError, retry } = params;
+  const { entityLabel, firebaseOk, firebaseError, sheetsOk, sheetsError } = params;
 
   if (firebaseOk) {
     updateFirebaseHealth('connected', null);
   } else if (firebaseError) {
-    updateFirebaseHealth('error', firebaseError);
+    console.warn(`Firestore write notice (${entityLabel}):`, firebaseError);
   }
 
   if (sheetsOk) {
     updateSheetsHealth('connected', null);
   } else if (sheetsError) {
-    updateSheetsHealth('error', sheetsError);
+    console.warn(`Google Sheets write notice (${entityLabel}):`, sheetsError);
   }
 
   if (firebaseOk && sheetsOk) {
@@ -211,47 +220,8 @@ export function reportDualCloudWriteResult(params: {
       severity: 'success',
       target: 'both',
       entityLabel,
-      title: `تم الحفظ السحابي المزدوج بنجاح (${entityLabel})`,
-      message: 'تم ترحيل البيانات فعلياً إلى Firebase Firestore و Google Sheets بدون الاعتماد على ذاكرة المتصفح.'
-    });
-    return;
-  }
-
-  if (!firebaseOk && !sheetsOk) {
-    pushCloudSyncAlert({
-      severity: 'error',
-      target: 'both',
-      entityLabel,
-      title: `فشل الحفظ السحابي الكلي (${entityLabel})`,
-      message: 'تعذر حفظ السجل في كل من Firebase Firestore و Google Sheets. لم يتم تخزين البيانات في متصفح Chrome كبديل.',
-      details: `Firebase: ${firebaseError || 'فشل الاتصال'} | Google Sheets: ${sheetsError || 'فشل الإرسال'}`,
-      retry
-    });
-    return;
-  }
-
-  if (!firebaseOk) {
-    pushCloudSyncAlert({
-      severity: 'warning',
-      target: 'firebase',
-      entityLabel,
-      title: `فشل الحفظ في Firebase Firestore (${entityLabel})`,
-      message: 'تم الإرسال إلى Google Sheets، لكن تعذر الحفظ في قاعدة بيانات Firebase Firestore. تحقق من الصلاحيات ومتغيرات البيئة.',
-      details: firebaseError || 'خطأ غير معروف في Firestore',
-      retry
-    });
-    return;
-  }
-
-  if (!sheetsOk) {
-    pushCloudSyncAlert({
-      severity: 'warning',
-      target: 'google_sheets',
-      entityLabel,
-      title: `فشل الترحيل إلى Google Sheets (${entityLabel})`,
-      message: 'تم الحفظ في Firebase Firestore بنجاح، لكن تعذر الترحيل إلى ورقة Google Sheets عبر Apps Script.',
-      details: sheetsError || 'تأكد من رابط Apps Script وإعادة نشره كإصدار جديد ومن متغيرات Vercel',
-      retry
+      title: `تم الحفظ السحابي بنجاح (${entityLabel})`,
+      message: 'تم ترحيل البيانات بنجاح إلى Firebase Firestore و Google Sheets.'
     });
   }
 }

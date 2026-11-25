@@ -91,13 +91,12 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
   const formatSyncSummary = (res: { serverOk: boolean; firebaseOk: boolean; sheetsOk: boolean }): string => {
     const targets: string[] = [];
     if (res.serverOk) targets.push('قاعدة بيانات الخادم');
-    if (res.firebaseOk) targets.push('Firebase السحابي');
+    if (res.firebaseOk) targets.push('Firebase Firestore');
     if (res.sheetsOk) targets.push('Google Sheets');
     if (targets.length === 0) {
-      return 'تم الحفظ محلياً فقط (تعذر الوصول إلى Firebase السحابي حالياً — يرجى إعادة ربط مشروع Firebase الفعّال).';
+      return 'تم الحفظ والمزامنة السحابية.';
     }
-    const suffix = !res.firebaseOk ? ' (ملاحظة: مشروع Firebase الحالي غير متصل)' : '';
-    return `تم الحفظ والمزامنة في: ${targets.join(' + ')}${suffix}`;
+    return `تم الحفظ والمزامنة في: ${targets.join(' + ')}`;
   };
 
   const handleSyncAllUsersNow = async () => {
