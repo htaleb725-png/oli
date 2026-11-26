@@ -41,7 +41,9 @@ import {
   Sliders,
   Settings2,
   Upload,
-  ShieldAlert
+  ShieldAlert,
+  Archive,
+  RotateCcw
 } from 'lucide-react';
 import { UnifiedCitizenCardModal } from './UnifiedCitizenCardModal';
 import { SearchableSelect } from './SearchableSelect';
@@ -49,6 +51,7 @@ import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
 import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { RequiredFieldsManager } from './developer/RequiredFieldsManager';
 import { printElementIsolated } from '../utils/printReceiptHelper';
+import { isCitizenArchivedInSection } from '../utils/archiveHelper';
 
 export const DHI_QAR_DISTRICTS = [
   'قضاء الناصرية (المركز)',
@@ -197,8 +200,21 @@ export const ReceptionModule: React.FC = () => {
     deleteReceptionCustomField,
     toggleReceptionDefaultField,
     checkIfCitizenBlocked,
+    archiveDailyWorkItems,
+    restoreDailyWorkItem,
+    restoreDailyWorkItems,
     updateSystemSettings
   } = useApp();
+
+  // Independent Reception Section Archive toggle + feedback toast
+  const [receptionListMode, setReceptionListMode] = useState<'daily' | 'section_archive'>('daily');
+  const [receptionArchiveToast, setReceptionArchiveToast] = useState<string | null>(null);
+  const showReceptionArchiveToast = (msg: string) => {
+    setReceptionArchiveToast(msg);
+    window.setTimeout(() => {
+      setReceptionArchiveToast(prev => (prev === msg ? null : prev));
+    }, 4500);
+  };
 
   const isDeveloper = currentUser?.Role === 'developer';
   const isAuthorizedToEditSchema = isDeveloper || currentUser?.Role === 'director' || currentUser?.Role === 'admin';
@@ -1132,11 +1148,27 @@ export const ReceptionModule: React.FC = () => {
     setShowNewClanModal(false);
   };
 
-  // Filtered citizens for Search view
+  // Independent per-section active vs archived citizens for Reception ('reception')
+  const { activeReceptionCitizens, archivedReceptionCitizens } = useMemo(() => {
+    const active: Citizen[] = [];
+    const archived: Citizen[] = [];
+    for (const c of citizens || []) {
+      if (!c) continue;
+      if (isCitizenArchivedInSection(c, 'reception')) {
+        archived.push(c);
+      } else {
+        active.push(c);
+      }
+    }
+    return { activeReceptionCitizens: active, archivedReceptionCitizens: archived };
+  }, [citizens]);
+
+  // Filtered citizens for Reception Search / Daily view or Reception Section Archive
   const filteredCitizens = useMemo(() => {
+    const sourceList = receptionListMode === 'section_archive' ? archivedReceptionCitizens : activeReceptionCitizens;
     const q = searchQuery.toLowerCase().trim();
-    if (!q) return citizens.slice(0, 50);
-    return citizens.filter(c => {
+    if (!q) return sourceList.slice(0, 50);
+    return sourceList.filter(c => {
       return (
         c.FullName.toLowerCase().includes(q) ||
         c.Citizen_ID.toLowerCase().includes(q) ||
@@ -1146,7 +1178,7 @@ export const ReceptionModule: React.FC = () => {
         (c.ProxyName && c.ProxyName.toLowerCase().includes(q))
       );
     });
-  }, [citizens, searchQuery]);
+  }, [activeReceptionCitizens, archivedReceptionCitizens, receptionListMode, searchQuery]);
 
   // Filtered data for Reports View (الاستعلامات: فقط قسم الاستعلامات ومقابلات النائب لا يتدخل مع قسم الإدارة)
   const reportCitizens = useMemo(() => {
@@ -2277,11 +2309,77 @@ export const ReceptionModule: React.FC = () => {
             />
           </div>
 
+          {/* Independent Reception Section Archive Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setReceptionListMode(prev => (prev === 'daily' ? 'section_archive' : 'daily'))}
+                className={`px-3.5 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 border cursor-pointer transition-all active:scale-95 ${
+                  receptionListMode === 'section_archive'
+                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-xs'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300'
+                }`}
+                title="عرض السجلات المؤرشفة في قسم الاستعلامات فقط مع إمكانية إرجاع أي سجل للعمل اليومي"
+              >
+                {receptionListMode === 'section_archive' ? (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>العودة للعمل اليومي ({activeReceptionCitizens.length})</span>
+                  </>
+                ) : (
+                  <>
+                    <Archive className="w-3.5 h-3.5 text-amber-600" />
+                    <span>عرض المؤرشف / أرشيف الاستعلامات ({archivedReceptionCitizens.length.toLocaleString()})</span>
+                  </>
+                )}
+              </button>
+
+              {receptionListMode === 'section_archive' && filteredCitizens.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = restoreDailyWorkItems({
+                      citizenIds: filteredCitizens.map(c => c.Citizen_ID),
+                      sectionKey: 'reception'
+                    });
+                    showReceptionArchiveToast(`✓ تم إرجاع (${res.restoredCitizens}) مراجع إلى العمل اليومي للاستعلامات.`);
+                  }}
+                  className="px-3.5 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs active:scale-95"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>إرجاع الكل المعروض للعمل اليومي ({filteredCitizens.length})</span>
+                </button>
+              )}
+            </div>
+
+            {receptionArchiveToast && (
+              <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-bold flex items-center gap-2">
+                <span>{receptionArchiveToast}</span>
+                <button
+                  type="button"
+                  onClick={() => setReceptionArchiveToast(null)}
+                  className="text-emerald-700 font-black cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Results Container */}
           <div className="rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
             <div className="p-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 text-xs font-bold text-slate-700">
-              <span>نتائج الاستعلام ({filteredCitizens.length} مراجع)</span>
-              <span className="text-[11px] text-slate-500 font-normal">عرض كافة تفاصيل المراجع والطلبات المرتبطة</span>
+              <span>
+                {receptionListMode === 'section_archive'
+                  ? `أرشيف الاستعلامات المستقل (${filteredCitizens.length} مراجع معروض من أصل ${archivedReceptionCitizens.length})`
+                  : `نتائج الاستعلام / العمل اليومي (${filteredCitizens.length} مراجع)`}
+              </span>
+              <span className="text-[11px] text-slate-500 font-normal">
+                {receptionListMode === 'section_archive'
+                  ? 'الأرشفة هنا تخص قسم الاستعلامات فقط ولا تؤثر على بقية الأقسام'
+                  : 'عرض كافة تفاصيل المراجع والطلبات المرتبطة'}
+              </span>
             </div>
 
             {/* Empty State */}
@@ -2387,6 +2485,38 @@ export const ReceptionModule: React.FC = () => {
                         <Printer className="w-3.5 h-3.5" />
                         <span>طباعة</span>
                       </button>
+
+                      {receptionListMode === 'section_archive' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            restoreDailyWorkItem(cit.Citizen_ID, undefined, 'reception');
+                            showReceptionArchiveToast(`✓ تم إرجاع (${cit.FullName}) إلى العمل اليومي للاستعلامات.`);
+                          }}
+                          className="col-span-2 sm:col-span-4 h-9 px-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[11px] flex items-center justify-center gap-1 transition-colors cursor-pointer active:scale-95"
+                          title="إرجاع المراجع من أرشيف الاستعلامات إلى العمل اليومي"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>إرجاع للعمل اليومي</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            archiveDailyWorkItems({
+                              citizenIds: [cit.Citizen_ID],
+                              sectionKey: 'reception',
+                              reason: 'أرشفة مستقلة في قسم الاستعلامات (لا تؤثر على بقية الأقسام)'
+                            });
+                            showReceptionArchiveToast(`✓ تمت أرشفة (${cit.FullName}) في أرشيف الاستعلامات فقط دون التأثير على بقية الأقسام.`);
+                          }}
+                          className="col-span-2 sm:col-span-4 h-9 px-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 font-black text-[11px] flex items-center justify-center gap-1 transition-colors cursor-pointer border border-amber-300 active:scale-95"
+                          title="أرشفة مستقلة في قسم الاستعلامات فقط (يبقى ظاهراً في بقية الأقسام)"
+                        >
+                          <Archive className="w-3.5 h-3.5 text-amber-600" />
+                          <span>أرشفة (في الاستعلامات فقط)</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -2492,6 +2622,39 @@ export const ReceptionModule: React.FC = () => {
                               <Printer className="w-3 h-3" />
                               <span>طباعة</span>
                             </button>
+
+                            {/* 5. أرشفة مستقلة في الاستعلامات أو إرجاع للعمل اليومي */}
+                            {receptionListMode === 'section_archive' ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  restoreDailyWorkItem(cit.Citizen_ID, undefined, 'reception');
+                                  showReceptionArchiveToast(`✓ تم إرجاع (${cit.FullName}) إلى العمل اليومي للاستعلامات.`);
+                                }}
+                                className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[10px] flex items-center gap-0.5 transition-colors cursor-pointer"
+                                title="إرجاع المراجع للعمل اليومي في قسم الاستعلامات"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                <span>إرجاع للعمل اليومي</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  archiveDailyWorkItems({
+                                    citizenIds: [cit.Citizen_ID],
+                                    sectionKey: 'reception',
+                                    reason: 'أرشفة مستقلة في قسم الاستعلامات (لا تؤثر على بقية الأقسام)'
+                                  });
+                                  showReceptionArchiveToast(`✓ تمت أرشفة (${cit.FullName}) في أرشيف الاستعلامات فقط دون التأثير على بقية الأقسام.`);
+                                }}
+                                className="px-2 py-1 rounded-md bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-black text-[10px] flex items-center gap-0.5 transition-colors cursor-pointer"
+                                title="أرشفة مستقلة في قسم الاستعلامات فقط (يبقى محفوظاً وظاهراً في بقية الأقسام)"
+                              >
+                                <Archive className="w-3 h-3 text-amber-600" />
+                                <span>أرشفة</span>
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

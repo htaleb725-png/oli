@@ -142,6 +142,17 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
       copy.ArchiveCode = '';
     }
   }
+  // Persist independent per-section archive arrays faithfully (including empty [] after unarchiving)
+  if (Array.isArray(citizen.archivedInSections)) {
+    copy.archivedInSections = Array.from(
+      new Set(citizen.archivedInSections.map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
+    ).slice(0, 20);
+  }
+  if (Array.isArray(citizen.unarchivedInSections)) {
+    copy.unarchivedInSections = Array.from(
+      new Set(citizen.unarchivedInSections.map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
+    ).slice(0, 20);
+  }
   // Explicitly clear block fields in Firestore when unblocked (instead of passing undefined which Firestore rejects)
   if (citizen.IsBlocked === false) {
     copy.IsBlocked = false;
@@ -180,6 +191,17 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
       copy.ArchivedAt = '';
       copy.ArchiveCode = '';
     }
+  }
+  // Persist independent per-section archive arrays faithfully (including empty [] after unarchiving)
+  if (Array.isArray(req.archivedInSections)) {
+    copy.archivedInSections = Array.from(
+      new Set(req.archivedInSections.map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
+    ).slice(0, 20);
+  }
+  if (Array.isArray(req.unarchivedInSections)) {
+    copy.unarchivedInSections = Array.from(
+      new Set(req.unarchivedInSections.map(s => String(s || '').trim().toLowerCase()).filter(Boolean))
+    ).slice(0, 20);
   }
   // Strip large inline base64 attachments that exceed Firestore's 1MB document limit
   if (typeof copy.AttachedRequestImage === 'string' && copy.AttachedRequestImage.length > 250000) {

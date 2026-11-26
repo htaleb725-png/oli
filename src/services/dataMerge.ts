@@ -184,9 +184,11 @@ export function smartMergeObject<T extends Record<string, any>>(existing: T, inc
       continue;
     }
 
-    // Preserve populated arrays against accidental empty array overwrites
+    // Preserve populated arrays against accidental empty array overwrites,
+    // EXCEPT for explicit per-section archive arrays where [] intentionally means unarchived.
     if (Array.isArray(value)) {
-      if (value.length === 0 && Array.isArray(prevVal) && prevVal.length > 0) {
+      const isSectionArchiveArray = key === 'archivedInSections' || key === 'unarchivedInSections';
+      if (!isSectionArchiveArray && value.length === 0 && Array.isArray(prevVal) && prevVal.length > 0) {
         continue;
       }
       result[key] = value;

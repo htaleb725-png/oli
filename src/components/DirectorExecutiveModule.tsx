@@ -39,14 +39,19 @@ import {
   FolderPlus,
   HeartHandshake,
   Archive,
-  History
+  History,
+  RotateCcw
 } from 'lucide-react';
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { UsersAndPermissionsManager } from './developer/UsersAndPermissionsManager';
 import { OfficeIconTilesGrid } from './OfficeIconTilesGrid';
 import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
-import { isCitizenArchivedOrRestored, isRequestArchivedOrRestored } from '../utils/archiveHelper';
+import {
+  isCitizenArchivedInSection,
+  isRequestArchivedInSection,
+  isRequestArchivedOrRestored
+} from '../utils/archiveHelper';
 
 // Executive Office Module
 
@@ -72,9 +77,12 @@ export const DirectorExecutiveModule: React.FC = () => {
     currentUser,
     addAuditLog,
     archiveDailyWorkItems,
+    restoreDailyWorkItem,
+    restoreDailyWorkItems,
     setActiveSection
   } = useApp();
 
+  const [directorViewMode, setDirectorViewMode] = useState<'daily' | 'section_archive'>('daily');
   const [confirmClearCompleted, setConfirmClearCompleted] = useState(false);
   const [archiveToast, setArchiveToast] = useState<string | null>(null);
 
@@ -204,34 +212,40 @@ export const DirectorExecutiveModule: React.FC = () => {
     });
   };
 
-  const archivedDirectorCount = useMemo(() => {
-    return (requests || []).filter(r => {
-      if (!r || r.IsDirectInstantRequest) return false;
-      const cit = citizenMap.get(r.Citizen_ID);
-      return isRequestArchivedOrRestored(r) || isCitizenArchivedOrRestored(cit);
-    }).length;
-  }, [requests, citizenMap]);
+  const parseReqTs = (r: OfficeRequest) => {
+    const raw = String(r.UpdatedAt || r.CreatedAt || '').trim();
+    if (!raw) return 0;
+    let t = Date.parse(raw);
+    if (isNaN(t) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(raw)) {
+      t = Date.parse(raw.replace(' ', 'T'));
+    }
+    return isNaN(t) ? 0 : t;
+  };
 
-  // Strictly show ONLY active (non-archived) records in Director Daily Work.
-  // Archiving immediately sets archived: true in Firestore & Google Sheet and clears items from here without navigating away.
-  const activeDirectorRequests = useMemo(() => {
-    const parseTs = (r: OfficeRequest) => {
-      const raw = String(r.UpdatedAt || r.CreatedAt || '').trim();
-      if (!raw) return 0;
-      let t = Date.parse(raw);
-      if (isNaN(t) && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(raw)) {
-        t = Date.parse(raw.replace(' ', 'T'));
-      }
-      return isNaN(t) ? 0 : t;
-    };
+  // Independent per-section archived requests for Director ('director')
+  const archivedDirectorRequests = useMemo(() => {
     return (requests || [])
       .filter(r => {
         if (!r || r.IsDirectInstantRequest) return false;
         const cit = citizenMap.get(r.Citizen_ID);
-        return !(isRequestArchivedOrRestored(r) || isCitizenArchivedOrRestored(cit));
+        return isRequestArchivedInSection(r, 'director') || isCitizenArchivedInSection(cit, 'director');
       })
       .slice()
-      .sort((a, b) => parseTs(b) - parseTs(a));
+      .sort((a, b) => parseReqTs(b) - parseReqTs(a));
+  }, [requests, citizenMap]);
+
+  const archivedDirectorCount = archivedDirectorRequests.length;
+
+  // Strictly show ONLY active (unarchived in 'director') records in Director Daily Work.
+  const activeDirectorRequests = useMemo(() => {
+    return (requests || [])
+      .filter(r => {
+        if (!r || r.IsDirectInstantRequest) return false;
+        const cit = citizenMap.get(r.Citizen_ID);
+        return !(isRequestArchivedInSection(r, 'director') || isCitizenArchivedInSection(cit, 'director'));
+      })
+      .slice()
+      .sort((a, b) => parseReqTs(b) - parseReqTs(a));
   }, [requests, citizenMap]);
 
   const importedDirectorRequests = useMemo(() => {
@@ -255,9 +269,10 @@ export const DirectorExecutiveModule: React.FC = () => {
     }, 4500);
   };
 
-  // Reception requests list (sorted with newest on top)
+  // Reception requests list (active Daily Work OR Director Section Archive depending on directorViewMode)
   const receptionRequests = useMemo(() => {
-    return activeDirectorRequests
+    const sourceList = directorViewMode === 'section_archive' ? archivedDirectorRequests : activeDirectorRequests;
+    return sourceList
       .filter(r => {
         // Match search query
         if (!searchQuery.trim()) return true;
@@ -273,6 +288,7 @@ export const DirectorExecutiveModule: React.FC = () => {
         );
       })
       .filter(r => {
+        if (directorViewMode === 'section_archive') return true;
         if (statusFilter === 'pending') return !r.DirectorDecision;
         if (statusFilter === 'special') return r.DirectorDecision === 'خاص';
         if (statusFilter === 'general') return r.DirectorDecision === 'عام';
@@ -280,7 +296,7 @@ export const DirectorExecutiveModule: React.FC = () => {
         if (statusFilter === 'all') return true;
         return !r.DirectorDecision;
       });
-  }, [activeDirectorRequests, searchQuery, statusFilter, citizenMap]);
+  }, [activeDirectorRequests, archivedDirectorRequests, directorViewMode, searchQuery, statusFilter, citizenMap]);
 
   // Statistics counters (daily live workflow only, never inflated by Excel historical archive imports)
   const stats = useMemo(() => {
@@ -694,30 +710,58 @@ export const DirectorExecutiveModule: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              {importedDirectorRequests.length > 0 && (
+              {/* Toggle Section Archive View for Director */}
+              <button
+                type="button"
+                onClick={() => {
+                  setDirectorViewMode(prev => (prev === 'daily' ? 'section_archive' : 'daily'));
+                  setConfirmClearCompleted(false);
+                }}
+                className={`px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 border cursor-pointer transition-all active:scale-95 ${
+                  directorViewMode === 'section_archive'
+                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-xs'
+                    : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 border-slate-300 dark:border-slate-700'
+                }`}
+                title="عرض السجلات المؤرشفة في قسم مدير المكتب فقط مع إمكانية إرجاع أي سجل للعمل اليومي"
+              >
+                {directorViewMode === 'section_archive' ? (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>العودة للعمل اليومي ({activeDirectorRequests.length})</span>
+                  </>
+                ) : (
+                  <>
+                    <Archive className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                    <span>عرض المؤرشف / أرشيف مدير المكتب ({archivedDirectorCount.toLocaleString()})</span>
+                  </>
+                )}
+              </button>
+
+              {directorViewMode === 'daily' && importedDirectorRequests.length > 0 && (
                 <button
                   type="button"
                   onClick={() => {
                     const res = archiveDailyWorkItems({
                       requestIds: importedDirectorRequests.map(r => r.Request_ID),
-                      reason: 'أرشفة وإخراج الطلبات المستردة/المصفاة من شاشة العمل اليومي للمدير (بدون حذف)'
+                      sectionKey: 'director',
+                      reason: 'أرشفة مستقلة في قسم مدير المكتب للطلبات المستردة/المصفاة'
                     });
                     showArchiveToast(
-                      `✓ تمت أرشفة (${res.archivedRequests}) طلب مسترد/مصفّى وإخراجها فوراً من العمل اليومي — محفوظة بالكامل في القاعدة والأرشيف.`
+                      `✓ تمت أرشفة (${res.archivedRequests}) طلب في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`
                     );
                   }}
                   className="px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-300 cursor-pointer shadow-xs transition-all active:scale-95"
-                  title="تحويل الطلبات المستردة/المصفاة إلى مؤرشف (archived: true) وإخراجها فوراً من العمل اليومي دون حذف"
+                  title="أرشفة الطلبات المستردة/المصفاة في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام"
                 >
                   <Archive className="w-3.5 h-3.5" />
-                  <span>مؤرشف — إخراج المسترد/المصفى ({importedDirectorRequests.length})</span>
+                  <span>أرشفة المسترد/المصفى ({importedDirectorRequests.length})</span>
                 </button>
               )}
 
-              {activeDirectorRequests.length > 0 && (
+              {directorViewMode === 'daily' && activeDirectorRequests.length > 0 && (
                 confirmClearCompleted ? (
                   <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px] flex-wrap">
-                    <span className="font-bold text-emerald-900 dark:text-emerald-200">إخراج للأرشيف بدون حذف؟</span>
+                    <span className="font-bold text-emerald-900 dark:text-emerald-200">أرشفة في قسم مدير المكتب فقط؟</span>
                     {activeDirectorRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision)) && (
                       <button
                         type="button"
@@ -725,10 +769,11 @@ export const DirectorExecutiveModule: React.FC = () => {
                           const targets = activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision));
                           const res = archiveDailyWorkItems({
                             requestIds: targets.map(r => r.Request_ID),
-                            reason: 'أرشفة وإخراج المعاملات المنجزة/المتخذ قرار بشأنها من شاشة العمل اليومي للمدير (محفوظة في الأرشيف)'
+                            sectionKey: 'director',
+                            reason: 'أرشفة مستقلة في قسم مدير المكتب للمعاملات المنجزة/المتخذ قرار بشأنها'
                           });
                           setConfirmClearCompleted(false);
-                          showArchiveToast(`✓ تمت أرشفة (${res.archivedRequests}) معاملة وإخراجها من العمل اليومي دون حذف.`);
+                          showArchiveToast(`✓ تمت أرشفة (${res.archivedRequests}) معاملة في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`);
                         }}
                         className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
                       >
@@ -740,10 +785,11 @@ export const DirectorExecutiveModule: React.FC = () => {
                       onClick={() => {
                         const res = archiveDailyWorkItems({
                           requestIds: receptionRequests.map(r => r.Request_ID),
-                          reason: 'أرشفة وإخراج المعاملات المعروضة من العمل اليومي للمدير (محفوظة بالكامل في القاعدة والأرشيف)'
+                          sectionKey: 'director',
+                          reason: 'أرشفة مستقلة في قسم مدير المكتب للمعاملات المعروضة'
                         });
                         setConfirmClearCompleted(false);
-                        showArchiveToast(`✓ تمت أرشفة (${res.archivedRequests}) معاملة وإخراجها من العمل اليومي دون حذف.`);
+                        showArchiveToast(`✓ تمت أرشفة (${res.archivedRequests}) معاملة في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`);
                       }}
                       className="px-2 py-0.5 rounded-lg bg-amber-500 text-slate-950 font-black cursor-pointer"
                     >
@@ -762,18 +808,30 @@ export const DirectorExecutiveModule: React.FC = () => {
                     type="button"
                     onClick={() => setConfirmClearCompleted(true)}
                     className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 cursor-pointer"
-                    title="تحويل السجلات إلى مؤرشف وإخراجها فوراً من العمل اليومي دون مغادرة الشاشة ودون حذف من قاعدة البيانات"
+                    title="أرشفة السجلات في قسم مدير المكتب فقط دون التأثير على بقية الأقسام ودون حذف"
                   >
                     <Archive className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>مؤرشف (إخراج من العمل اليومي)</span>
+                    <span>أرشفة (إخراج من العمل اليومي)</span>
                   </button>
                 )
               )}
 
-              {archivedDirectorCount > 0 && (
-                <span className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                  المحفوظ بالأرشيف: {archivedDirectorCount.toLocaleString()}
-                </span>
+              {directorViewMode === 'section_archive' && receptionRequests.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = restoreDailyWorkItems({
+                      citizenIds: Array.from(new Set(receptionRequests.map(r => r.Citizen_ID).filter(Boolean))),
+                      requestIds: receptionRequests.map(r => r.Request_ID),
+                      sectionKey: 'director'
+                    });
+                    showArchiveToast(`✓ تم إرجاع (${res.restoredRequests}) معاملة إلى العمل اليومي لقسم مدير المكتب.`);
+                  }}
+                  className="px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs active:scale-95"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>إرجاع الكل للعمل اليومي ({receptionRequests.length})</span>
+                </button>
               )}
             </div>
 
@@ -1085,22 +1143,38 @@ export const DirectorExecutiveModule: React.FC = () => {
                             );
                           })()}
 
-                          {/* 5. أرشفة فورية وإخراج من العمل اليومي بدون حذف */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              archiveDailyWorkItems({
-                                requestIds: [req.Request_ID],
-                                reason: 'أرشفة وإخراج فردي من العمل اليومي للمدير (محفوظ بالكامل في القاعدة والأرشيف)'
-                              });
-                              showArchiveToast(`✓ تمت أرشفة طلب (${req.CitizenName}) وإخراجه فوراً من العمل اليومي دون حذف.`);
-                            }}
-                            className="h-9 px-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700 font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
-                            title="تعيين الطلب كمؤرشف (archived: true) وإخراجه فوراً من العمل اليومي دون حذفه من قاعدة البيانات"
-                          >
-                            <Archive className="w-3.5 h-3.5" />
-                            <span>مؤرشف</span>
-                          </button>
+                          {/* 5. أرشفة مستقلة في قسم مدير المكتب أو إرجاع للعمل اليومي */}
+                          {directorViewMode === 'section_archive' ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                restoreDailyWorkItem(req.Citizen_ID, [req.Request_ID], 'director');
+                                showArchiveToast(`✓ تم إرجاع طلب (${req.CitizenName}) إلى العمل اليومي لقسم مدير المكتب.`);
+                              }}
+                              className="h-9 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
+                              title="إرجاع الطلب من أرشيف مدير المكتب إلى قائمة العمل اليومي"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>إرجاع للعمل اليومي</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                archiveDailyWorkItems({
+                                  requestIds: [req.Request_ID],
+                                  sectionKey: 'director',
+                                  reason: 'أرشفة مستقلة فردية في قسم مدير المكتب (محفوظ بالكامل ولا يؤثر على بقية الأقسام)'
+                                });
+                                showArchiveToast(`✓ تمت أرشفة طلب (${req.CitizenName}) في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`);
+                              }}
+                              className="h-9 px-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700 font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
+                              title="أرشفة مستقلة في قسم مدير المكتب فقط (لا يختفي من بقية الأقسام)"
+                            >
+                              <Archive className="w-3.5 h-3.5" />
+                              <span>أرشفة</span>
+                            </button>
+                          )}
 
                           {/* 6. حذف نهائي من كافة النظام */}
                           <button

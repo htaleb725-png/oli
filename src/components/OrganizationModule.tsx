@@ -23,7 +23,8 @@ import {
   Award,
   Sparkles,
   FileSpreadsheet,
-  Archive
+  Archive,
+  RotateCcw
 } from 'lucide-react';
 import {
   BarChart,
@@ -42,7 +43,7 @@ import { OrgFinalEvaluationModal } from './OrgFinalEvaluationModal';
 import { OfficeIconTilesGrid, OfficeTileItem } from './OfficeIconTilesGrid';
 import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
 import { exportUnifiedSystemExcel } from '../services/unifiedExcelExporter';
-import { isCitizenArchivedOrRestored, isRequestArchivedOrRestored } from '../utils/archiveHelper';
+import { isCitizenArchivedInSection, isRequestArchivedInSection } from '../utils/archiveHelper';
 
 const COLORS = ['#10b981', '#f59e0b', '#3b82f6', '#ef4444'];
 
@@ -72,6 +73,8 @@ export const OrganizationModule: React.FC = () => {
     updateOrganizationRecord,
     setSelectedCitizenForHistory,
     archiveDailyWorkItems,
+    restoreDailyWorkItem,
+    restoreDailyWorkItems,
     addAuditLog
   } = useApp();
 
@@ -84,6 +87,7 @@ export const OrganizationModule: React.FC = () => {
   // Daily Work (العمل اليومي) search, filter & lightweight pagination (prevents Chrome Crashpad on large datasets)
   const [dailySearch, setDailySearch] = useState('');
   const [dailyFilter, setDailyFilter] = useState<'pending' | 'completed' | 'all'>('pending');
+  const [orgViewMode, setOrgViewMode] = useState<'daily' | 'section_archive'>('daily');
   const [confirmArchiveOrgDaily, setConfirmArchiveOrgDaily] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(40);
 
@@ -145,18 +149,9 @@ export const OrganizationModule: React.FC = () => {
     sortTs: number;
   }
 
-  const archivedOrgDailyCount = useMemo(() => {
-    let count = 0;
-    (citizens || []).forEach(cit => {
-      if (!cit?.Citizen_ID) return;
-      const allReqs = requestsByCitizenId.get(cit.Citizen_ID) || [];
-      if (isCitizenArchivedOrRestored(cit, allReqs)) count++;
-    });
-    return count;
-  }, [citizens, requestsByCitizenId]);
-
-  const allDailyWorkEntries = useMemo<DailyWorkEntry[]>(() => {
-    const entries: DailyWorkEntry[] = [];
+  const { allDailyWorkEntries, archivedOrgWorkEntries } = useMemo(() => {
+    const activeEntries: DailyWorkEntry[] = [];
+    const archivedEntries: DailyWorkEntry[] = [];
     const seen = new Set<string>();
 
     (citizens || []).forEach(cit => {
@@ -164,9 +159,10 @@ export const OrganizationModule: React.FC = () => {
       seen.add(cit.Citizen_ID);
 
       const allCitReqs = requestsByCitizenId.get(cit.Citizen_ID) || [];
-      if (isCitizenArchivedOrRestored(cit, allCitReqs)) return;
-
-      const citReqs = allCitReqs.filter(r => !isRequestArchivedOrRestored(r));
+      const isArchivedInOrg = isCitizenArchivedInSection(cit, 'organization', allCitReqs);
+      const citReqs = isArchivedInOrg
+        ? allCitReqs
+        : allCitReqs.filter(r => !isRequestArchivedInSection(r, 'organization'));
       const orgRec = orgRecordByCitizenId.get(cit.Citizen_ID);
 
       const latestReq = citReqs[0];
@@ -176,19 +172,28 @@ export const OrganizationModule: React.FC = () => {
         parseTimestamp(orgRec?.finalEvaluation?.evaluatedAt)
       );
 
-      entries.push({
+      const entry: DailyWorkEntry = {
         citizen: cit,
         latestRequest: latestReq,
         requestCount: citReqs.length,
         orgRecord: orgRec,
         isCompleted: Boolean(orgRec?.finalEvaluation?.finalResult),
         sortTs
-      });
+      };
+
+      if (isArchivedInOrg) {
+        archivedEntries.push(entry);
+      } else {
+        activeEntries.push(entry);
+      }
     });
 
-    entries.sort((a, b) => b.sortTs - a.sortTs);
-    return entries;
+    activeEntries.sort((a, b) => b.sortTs - a.sortTs);
+    archivedEntries.sort((a, b) => b.sortTs - a.sortTs);
+    return { allDailyWorkEntries: activeEntries, archivedOrgWorkEntries: archivedEntries };
   }, [citizens, requestsByCitizenId, orgRecordByCitizenId]);
+
+  const archivedOrgDailyCount = archivedOrgWorkEntries.length;
 
   const dailyStats = useMemo(() => {
     let pending = 0;
@@ -202,9 +207,12 @@ export const OrganizationModule: React.FC = () => {
 
   const filteredDailyWork = useMemo(() => {
     const q = dailySearch.trim().toLowerCase();
-    return allDailyWorkEntries.filter(entry => {
-      if (dailyFilter === 'pending' && entry.isCompleted) return false;
-      if (dailyFilter === 'completed' && !entry.isCompleted) return false;
+    const sourceList = orgViewMode === 'section_archive' ? archivedOrgWorkEntries : allDailyWorkEntries;
+    return sourceList.filter(entry => {
+      if (orgViewMode === 'daily') {
+        if (dailyFilter === 'pending' && entry.isCompleted) return false;
+        if (dailyFilter === 'completed' && !entry.isCompleted) return false;
+      }
       if (!q) return true;
       const c = entry.citizen;
       const req = entry.latestRequest;
@@ -218,7 +226,7 @@ export const OrganizationModule: React.FC = () => {
         req?.Request_ID?.toLowerCase().includes(q)
       );
     });
-  }, [allDailyWorkEntries, dailyFilter, dailySearch]);
+  }, [allDailyWorkEntries, archivedOrgWorkEntries, orgViewMode, dailyFilter, dailySearch]);
 
   // Team Members derived directly from cloud-synced organizationRecords (no mock localStorage!)
   const teamMembersList = useMemo(() => {
@@ -652,11 +660,39 @@ export const OrganizationModule: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              {allDailyWorkEntries.length > 0 && (
+              {/* Toggle Section Archive View for Organization */}
+              <button
+                type="button"
+                onClick={() => {
+                  setOrgViewMode(prev => (prev === 'daily' ? 'section_archive' : 'daily'));
+                  setConfirmArchiveOrgDaily(false);
+                  setVisibleLimit(40);
+                }}
+                className={`px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 border cursor-pointer transition-all active:scale-95 ${
+                  orgViewMode === 'section_archive'
+                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-xs'
+                    : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 border-slate-300 dark:border-slate-700'
+                }`}
+                title="عرض السجلات المؤرشفة في قسم التنظيم فقط مع إمكانية إرجاعها للعمل اليومي"
+              >
+                {orgViewMode === 'section_archive' ? (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>العودة للعمل اليومي ({allDailyWorkEntries.length})</span>
+                  </>
+                ) : (
+                  <>
+                    <Archive className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                    <span>عرض المؤرشف / أرشيف قسم التنظيم ({archivedOrgDailyCount.toLocaleString()})</span>
+                  </>
+                )}
+              </button>
+
+              {orgViewMode === 'daily' && allDailyWorkEntries.length > 0 && (
                 confirmArchiveOrgDaily ? (
                   <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px] flex-wrap">
                     <span className="font-bold text-emerald-900 dark:text-emerald-200">
-                      إخراج للأرشيف بدون حذف؟
+                      أرشفة في قسم التنظيم فقط؟
                     </span>
                     {dailyStats.completed > 0 && (
                       <button
@@ -667,10 +703,11 @@ export const OrganizationModule: React.FC = () => {
                             .map(e => e.citizen.Citizen_ID);
                           const res = archiveDailyWorkItems({
                             citizenIds: completedIds,
-                            reason: 'أرشفة وإخراج المكتمل من العمل اليومي لقسم التنظيم (بدون حذف من قاعدة البيانات)'
+                            sectionKey: 'organization',
+                            reason: 'أرشفة مستقلة في قسم التنظيم للمكتمل (دون التأثير على بقية الأقسام)'
                           });
                           setConfirmArchiveOrgDaily(false);
-                          showToast(`✓ تمت أرشفة (${res.archivedCitizens}) سجل وإخراجها من العمل اليومي دون حذف.`);
+                          showToast(`✓ تمت أرشفة (${res.archivedCitizens}) سجل في أرشيف قسم التنظيم فقط دون التأثير على بقية الأقسام.`);
                         }}
                         className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
                       >
@@ -683,10 +720,11 @@ export const OrganizationModule: React.FC = () => {
                         const visibleIds = filteredDailyWork.map(e => e.citizen.Citizen_ID);
                         const res = archiveDailyWorkItems({
                           citizenIds: visibleIds,
-                          reason: 'أرشفة وإخراج السجلات المعروضة من العمل اليومي لقسم التنظيم (بدون حذف من قاعدة البيانات)'
+                          sectionKey: 'organization',
+                          reason: 'أرشفة مستقلة في قسم التنظيم للسجلات المعروضة (دون التأثير على بقية الأقسام)'
                         });
                         setConfirmArchiveOrgDaily(false);
-                        showToast(`✓ تمت أرشفة (${res.archivedCitizens}) سجل وإخراجها من العمل اليومي دون حذف.`);
+                        showToast(`✓ تمت أرشفة (${res.archivedCitizens}) سجل في أرشيف قسم التنظيم فقط دون التأثير على بقية الأقسام.`);
                       }}
                       className="px-2 py-0.5 rounded-lg bg-amber-500 text-slate-950 font-black cursor-pointer"
                     >
@@ -705,18 +743,29 @@ export const OrganizationModule: React.FC = () => {
                     type="button"
                     onClick={() => setConfirmArchiveOrgDaily(true)}
                     className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 cursor-pointer"
-                    title="تحويل السجلات إلى مؤرشف وإخراجها فوراً من العمل اليومي دون مغادرة الشاشة ودون حذف"
+                    title="أرشفة مستقلة في قسم التنظيم فقط (لا يؤثر على بقية الأقسام)"
                   >
                     <Archive className="w-3.5 h-3.5 text-amber-600" />
-                    <span>مؤرشف (إخراج من العمل اليومي)</span>
+                    <span>أرشفة (إخراج من العمل اليومي)</span>
                   </button>
                 )
               )}
 
-              {archivedOrgDailyCount > 0 && (
-                <span className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                  المحفوظ بالأرشيف: {archivedOrgDailyCount.toLocaleString()}
-                </span>
+              {orgViewMode === 'section_archive' && filteredDailyWork.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = restoreDailyWorkItems({
+                      citizenIds: filteredDailyWork.map(e => e.citizen.Citizen_ID),
+                      sectionKey: 'organization'
+                    });
+                    showToast(`✓ تم إرجاع (${res.restoredCitizens}) سجل إلى العمل اليومي لقسم التنظيم.`);
+                  }}
+                  className="px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs active:scale-95"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>إرجاع الكل للعمل اليومي ({filteredDailyWork.length})</span>
+                </button>
               )}
 
               <div className="text-xs font-bold text-slate-500 dark:text-slate-400">
@@ -797,21 +846,37 @@ export const OrganizationModule: React.FC = () => {
                           <span>{entry.isCompleted ? 'تعديل إكمال الطلب' : 'إكمال الطلب'}</span>
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            archiveDailyWorkItems({
-                              citizenIds: [entry.citizen.Citizen_ID],
-                              reason: 'أرشفة وإخراج فردي من العمل اليومي لقسم التنظيم (محفوظ بالكامل في القاعدة والأرشيف)'
-                            });
-                            showToast(`✓ تمت أرشفة (${entry.citizen.FullName}) وإخراجه فوراً من العمل اليومي دون حذف.`);
-                          }}
-                          className="px-3 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer"
-                          title="تعيين السجل كمؤرشف (archived: true) وإخراجه من العمل اليومي فوراً دون حذفه من قاعدة البيانات"
-                        >
-                          <Archive className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-                          <span>مؤرشف</span>
-                        </button>
+                        {orgViewMode === 'section_archive' ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              restoreDailyWorkItem(entry.citizen.Citizen_ID, undefined, 'organization');
+                              showToast(`✓ تم إرجاع (${entry.citizen.FullName}) إلى العمل اليومي لقسم التنظيم.`);
+                            }}
+                            className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                            title="إرجاع السجل من أرشيف قسم التنظيم إلى العمل اليومي"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                            <span>إرجاع للعمل اليومي</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              archiveDailyWorkItems({
+                                citizenIds: [entry.citizen.Citizen_ID],
+                                sectionKey: 'organization',
+                                reason: 'أرشفة مستقلة فردية في قسم التنظيم (محفوظ بالكامل ولا يؤثر على بقية الأقسام)'
+                              });
+                              showToast(`✓ تمت أرشفة (${entry.citizen.FullName}) في أرشيف قسم التنظيم فقط دون التأثير على بقية الأقسام.`);
+                            }}
+                            className="px-3 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer"
+                            title="أرشفة مستقلة في قسم التنظيم فقط (يبقى محفوظاً ومشاهداً في بقية الأقسام)"
+                          >
+                            <Archive className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                            <span>أرشفة</span>
+                          </button>
+                        )}
 
                         <button
                           type="button"

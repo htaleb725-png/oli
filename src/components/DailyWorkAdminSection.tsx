@@ -45,7 +45,7 @@ import { DHI_QAR_DISTRICTS, IRAQI_MINISTRIES, DEFAULT_CLANS } from './ReceptionM
 import { printSingleOutgoingReceipt, printCollectiveOutgoingReceipt } from '../utils/printReceiptHelper';
 import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
 import { computeNextOutgoingNumber, extractOutgoingSequence, MAX_VALID_OUTGOING_SEQ } from '../utils/outgoingNumberHelper';
-import { isCitizenArchivedOrRestored } from '../utils/archiveHelper';
+import { isCitizenArchivedInSection } from '../utils/archiveHelper';
 
 interface DailyWorkAdminSectionProps {
   onOpenSmartArchive?: () => void;
@@ -70,6 +70,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     checkIfCitizenBlocked,
     archiveDailyWorkItems,
     restoreDailyWorkItem,
+    restoreDailyWorkItems,
     addAuditLog,
     currentUser,
     systemSettings,
@@ -82,6 +83,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'special' | 'general' | 'rejected' | 'completed'>('all');
   const [districtFilter, setDistrictFilter] = useState('all');
+  const [viewMode, setViewMode] = useState<'daily' | 'section_archive'>('daily');
   const [archiveConfirmMode, setArchiveConfirmMode] = useState<'none' | 'imported' | 'completed' | 'all_visible'>('none');
   const [isEditingManualCounter, setIsEditingManualCounter] = useState(false);
   const [manualCounterInput, setManualCounterInput] = useState('');
@@ -98,7 +100,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   // Auto-reset page when filter or search changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, districtFilter]);
+  }, [searchTerm, statusFilter, districtFilter, viewMode]);
 
   // Modals state
   const [completingTarget, setCompletingTarget] = useState<{ citizen: Citizen; request?: OfficeRequest } | null>(null);
@@ -710,15 +712,28 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return map;
   }, [requests]);
 
-  // Count how many archived/restored citizens exist (kept 100% intact in Firestore, Google Sheet & Archive)
-  const archivedDailyCount = useMemo(() => {
-    let count = 0;
-    (citizens || []).forEach(cit => {
-      const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
-      if (isCitizenArchivedOrRestored(cit, citRequests)) count++;
-    });
-    return count;
-  }, [citizens, requestsByCitizenMap]);
+  // Build mapped records helper for Admin section (independent per-section archiving: 'admin')
+  const mapCitizenToAdminItem = (cit: Citizen, archivedFlag: boolean) => {
+    const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
+    const hasRejection = citRequests.some(r => r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض');
+    const hasSpecial = citRequests.some(r => r.DirectorDecision === 'خاص');
+    const hasGeneral = citRequests.some(r => r.DirectorDecision === 'عام');
+    const hasPending = citRequests.some(r => !r.DirectorDecision && r.ProcessingStatus !== 'منجز');
+    const hasCompleted = citRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber));
+    const isImportedOrFiltered = isImportedOrNonNewItem(cit, citRequests);
+
+    return {
+      citizen: cit,
+      requests: citRequests,
+      isArchived: archivedFlag,
+      isImportedOrFiltered,
+      hasRejection,
+      hasSpecial,
+      hasGeneral,
+      hasPending,
+      hasCompleted
+    };
+  };
 
   // Helper: identify imported / database-filtered / non-new records inside Daily Work
   const isImportedOrNonNewItem = (cit: Citizen, citReqs: OfficeRequest[]): boolean => {
@@ -736,36 +751,27 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     );
   };
 
-  // Aggregate daily records: strictly show ONLY active (non-archived) records in Daily Work.
-  // Archived records stay 100% preserved in Firestore, Google Sheet, and the Archive section.
+  // Active Daily Work records for Admin section ONLY (unarchived in 'admin')
   const dailyRecords = useMemo(() => {
     return (citizens || [])
       .filter(cit => {
         const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
-        return !isCitizenArchivedOrRestored(cit, citRequests);
+        return !isCitizenArchivedInSection(cit, 'admin', citRequests);
       })
-      .map(cit => {
-        const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
-        const hasRejection = citRequests.some(r => r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض');
-        const hasSpecial = citRequests.some(r => r.DirectorDecision === 'خاص');
-        const hasGeneral = citRequests.some(r => r.DirectorDecision === 'عام');
-        const hasPending = citRequests.some(r => !r.DirectorDecision && r.ProcessingStatus !== 'منجز');
-        const hasCompleted = citRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber));
-        const isImportedOrFiltered = isImportedOrNonNewItem(cit, citRequests);
-
-        return {
-          citizen: cit,
-          requests: citRequests,
-          isArchived: false,
-          isImportedOrFiltered,
-          hasRejection,
-          hasSpecial,
-          hasGeneral,
-          hasPending,
-          hasCompleted
-        };
-      });
+      .map(cit => mapCitizenToAdminItem(cit, false));
   }, [citizens, requestsByCitizenMap]);
+
+  // Archived records belonging to Admin Section Archive ONLY (archived in 'admin')
+  const archivedAdminRecords = useMemo(() => {
+    return (citizens || [])
+      .filter(cit => {
+        const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
+        return isCitizenArchivedInSection(cit, 'admin', citRequests);
+      })
+      .map(cit => mapCitizenToAdminItem(cit, true));
+  }, [citizens, requestsByCitizenMap]);
+
+  const archivedDailyCount = archivedAdminRecords.length;
 
   const importedActiveDailyItems = useMemo(
     () => dailyRecords.filter(r => r.isImportedOrFiltered),
@@ -793,24 +799,27 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     const res = archiveDailyWorkItems({
       citizenIds,
       requestIds,
+      sectionKey: 'admin',
       reason:
         mode === 'imported'
-          ? 'أرشفة وإخراج السجلات المستردة/المصفاة من شاشة العمل اليومي (محفوظة بالكامل في Firestore و Google Sheet)'
+          ? 'أرشفة مستقلة في قسم الإدارة للسجلات المستردة/المصفاة دون التأثير على بقية الأقسام'
           : mode === 'completed'
-          ? 'أرشفة وإخراج المعاملات المكتملة من شاشة العمل اليومي (محفوظة بالكامل في Firestore و Google Sheet)'
-          : 'أرشفة وإخراج السجلات المعروضة من شاشة العمل اليومي مع بقائها محفوظة بالكامل في القاعدة والأرشيف'
+          ? 'أرشفة مستقلة في قسم الإدارة للمعاملات المكتملة دون التأثير على بقية الأقسام'
+          : 'أرشفة مستقلة في قسم الإدارة للسجلات المعروضة مع بقائها محفوظة بالكامل في Firestore'
     });
     setArchiveConfirmMode('none');
     setCurrentPage(1);
     showBlockBanner(
       'success',
-      `✓ تمت أرشفة (${res.archivedCitizens}) سجل وإخراجها فوراً من العمل اليومي (archived: true) — محفوظة 100% في Firebase Firestore و Google Sheet والأرشيف دون أي حذف.`
+      `✓ تمت أرشفة (${res.archivedCitizens}) سجل في أرشيف قسم الإدارة فقط دون التأثير على بقية الأقسام ودون أي حذف.`
     );
   };
 
-  // Filter daily records
+  // Filter active OR section-archived records depending on current viewMode
+  const sourceRecordsForView = viewMode === 'section_archive' ? archivedAdminRecords : dailyRecords;
+
   const filteredDailyRecords = useMemo(() => {
-    return dailyRecords.filter(item => {
+    return sourceRecordsForView.filter(item => {
       const cit = item.citizen;
       const q = searchTerm.toLowerCase().trim();
 
@@ -839,7 +848,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
 
       return matchesSearch && matchesStatus && matchesDistrict;
     });
-  }, [dailyRecords, searchTerm, statusFilter, districtFilter]);
+  }, [sourceRecordsForView, searchTerm, statusFilter, districtFilter]);
 
   // Districts list for filter dropdown
   const allDistricts = useMemo(() => {
@@ -961,20 +970,46 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           </button>
 
           <div className="mr-auto flex items-center gap-2 flex-wrap">
-            {/* Direct In-Place Archive Button — archives records (archived: true) and clears them from Daily Work WITHOUT opening Archive screen */}
-            {importedActiveDailyItems.length > 0 && (
+            {/* Independent Section Archive Toggle Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode(prev => (prev === 'daily' ? 'section_archive' : 'daily'));
+                setArchiveConfirmMode('none');
+              }}
+              className={`px-3 py-1 rounded-lg font-black transition-all cursor-pointer flex items-center gap-1.5 border shadow-xs active:scale-95 ${
+                viewMode === 'section_archive'
+                  ? 'bg-amber-400 text-slate-950 border-amber-300'
+                  : 'bg-white/15 hover:bg-white/25 text-white border-white/25'
+              }`}
+              title="استعراض السجلات المؤرشفة داخل قسم الإدارة فقط مع إمكانية إرجاع أي سجل للعمل اليومي"
+            >
+              {viewMode === 'section_archive' ? (
+                <>
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>العودة للعمل اليومي ({dailyRecords.length})</span>
+                </>
+              ) : (
+                <>
+                  <Archive className="w-3.5 h-3.5 text-amber-300" />
+                  <span>عرض المؤرشف / أرشيف قسم الإدارة ({archivedDailyCount.toLocaleString()})</span>
+                </>
+              )}
+            </button>
+
+            {viewMode === 'daily' && importedActiveDailyItems.length > 0 && (
               <button
                 type="button"
                 onClick={() => handleConfirmArchiveClear('imported')}
                 className="px-3 py-1 rounded-lg font-black transition-all cursor-pointer flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-300 shadow-sm active:scale-95"
-                title="تحديث حالة السجلات المستردة/المصفاة إلى مؤرشف (archived: true) وإخراجها فوراً من العمل اليومي دون حذفها من القاعدة"
+                title="أرشفة السجلات المستردة/المصفاة في أرشيف قسم الإدارة فقط دون التأثير على بقية الأقسام"
               >
                 <Archive className="w-3.5 h-3.5" />
-                <span>مؤرشف — إخراج المسترد/المصفى ({importedActiveDailyItems.length})</span>
+                <span>أرشفة المسترد/المصفى ({importedActiveDailyItems.length})</span>
               </button>
             )}
 
-            {dailyRecords.length > 0 && (
+            {viewMode === 'daily' && dailyRecords.length > 0 && (
               <button
                 type="button"
                 onClick={() =>
@@ -989,25 +1024,36 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                   )
                 }
                 className="px-3 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 border border-emerald-400/40"
-                title="تحويل السجلات إلى مؤرشف (archived: true) وإخراجها من العمل اليومي مع بقائها محفوظة بالكامل في القاعدة والأرشيف"
+                title="أرشفة السجلات في قسم الإدارة فقط وإخراجها من العمل اليومي مع بقائها محفوظة بالكامل"
               >
                 <Archive className="w-3.5 h-3.5 text-emerald-300" />
                 <span>
                   {completedActiveDailyItems.length > 0
-                    ? `مؤرشف / إخراج المكتمل (${completedActiveDailyItems.length})`
-                    : `مؤرشف / تفريغ العمل اليومي (${dailyRecords.length})`}
+                    ? `أرشفة المكتمل (${completedActiveDailyItems.length})`
+                    : `أرشفة العمل اليومي (${dailyRecords.length})`}
                 </span>
               </button>
             )}
 
-            {archivedDailyCount > 0 && (
-              <span
-                className="px-2.5 py-1 rounded-lg bg-white/10 text-slate-200 border border-white/15 text-[11px] font-bold flex items-center gap-1"
-                title="عدد السجلات المؤرشفة المحفوظة بالكامل في قاعدة البيانات وقسم الأرشيف"
+            {viewMode === 'section_archive' && filteredDailyRecords.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  const res = restoreDailyWorkItems({
+                    citizenIds: filteredDailyRecords.map(r => r.citizen.Citizen_ID),
+                    requestIds: filteredDailyRecords.flatMap(r => r.requests.map(req => req.Request_ID)),
+                    sectionKey: 'admin'
+                  });
+                  showBlockBanner(
+                    'success',
+                    `✓ تم إرجاع (${res.restoredCitizens}) سجل إلى العمل اليومي لقسم الإدارة بنجاح.`
+                  );
+                }}
+                className="px-3 py-1 rounded-lg font-black transition-all cursor-pointer flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-400 text-white border border-emerald-300 shadow-sm active:scale-95"
               >
-                <Archive className="w-3 h-3 text-amber-300" />
-                <span>المحفوظ بالأرشيف: {archivedDailyCount.toLocaleString()}</span>
-              </span>
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>إرجاع الكل المعروض للعمل اليومي ({filteredDailyRecords.length})</span>
+              </button>
             )}
           </div>
         </div>
@@ -1447,6 +1493,24 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         </div>
       )}
 
+      {/* Section Archive Context Banner when viewing archived records of Admin */}
+      {viewMode === 'section_archive' && (
+        <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border-2 border-amber-300 dark:border-amber-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2 text-amber-950 dark:text-amber-100 font-black">
+            <Archive className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>أنت تستعرض الآن: الأرشيف الخاص بقسم الإدارة ({archivedDailyCount.toLocaleString()} سجل) — أرشفة مستقلة لا تؤثر على بقية الأقسام</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setViewMode('daily')}
+            className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>العودة للعمل اليومي</span>
+          </button>
+        </div>
+      )}
+
       {/* Main Citizens Cards Grid with High-Performance Pagination */}
       <div id="daily-records-list" className="space-y-3">
         {/* Top Pagination Toolbar */}
@@ -1763,26 +1827,49 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     <span>صور و Drive 🖼️</span>
                   </button>
 
-                  {/* Direct 1-Click In-Place Archive Button ("مؤرشف") — sets archived: true in Firestore & Google Sheet and clears from Daily Work immediately without leaving screen */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      archiveDailyWorkItems({
-                        citizenIds: [cit.Citizen_ID],
-                        requestIds: citReqs.map(r => r.Request_ID),
-                        reason: 'أرشفة وإخراج فردي من العمل اليومي (محفوظ بالكامل في القاعدة والأرشيف)'
-                      });
-                      showBlockBanner(
-                        'success',
-                        `✓ تمت أرشفة (${cit.FullName}) وإخراجه فوراً من العمل اليومي — محفوظ 100% في Firestore و Google Sheet والأرشيف دون حذف.`
-                      );
-                    }}
-                    className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-200 text-xs font-black flex items-center gap-1.5 cursor-pointer border border-amber-300 dark:border-amber-700 transition-transform active:scale-95"
-                    title="تحويل السجل إلى مؤرشف (archived: true) وإخراجه من العمل اليومي فوراً دون حذفه من قاعدة البيانات"
-                  >
-                    <Archive className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                    <span>مؤرشف</span>
-                  </button>
+                  {/* Per-Section Archive OR Restore to Daily Work Button */}
+                  {item.isArchived ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        restoreDailyWorkItem(
+                          cit.Citizen_ID,
+                          citReqs.map(r => r.Request_ID),
+                          'admin'
+                        );
+                        showBlockBanner(
+                          'success',
+                          `✓ تم إرجاع (${cit.FullName}) إلى قائمة العمل اليومي لقسم الإدارة بنجاح.`
+                        );
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs transition-transform active:scale-95"
+                      title="إرجاع هذا السجل من أرشيف قسم الإدارة إلى قائمة العمل اليومي فوراً"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>إرجاع للعمل اليومي</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        archiveDailyWorkItems({
+                          citizenIds: [cit.Citizen_ID],
+                          requestIds: citReqs.map(r => r.Request_ID),
+                          sectionKey: 'admin',
+                          reason: 'أرشفة مستقلة في قسم الإدارة (محفوظ بالكامل في القاعدة ولا يؤثر على بقية الأقسام)'
+                        });
+                        showBlockBanner(
+                          'success',
+                          `✓ تمت أرشفة (${cit.FullName}) في أرشيف قسم الإدارة فقط وإخراجه من العمل اليومي للإدارة دون التأثير على بقية الأقسام.`
+                        );
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-200 text-xs font-black flex items-center gap-1.5 cursor-pointer border border-amber-300 dark:border-amber-700 transition-transform active:scale-95"
+                      title="أرشفة مستقلة في قسم الإدارة فقط (يختفي من العمل اليومي للإدارة ويبقى محفوظاً ومشاهداً في بقية الأقسام)"
+                    >
+                      <Archive className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                      <span>أرشفة</span>
+                    </button>
+                  )}
 
                   {/* Delete Button (Button 3) */}
                   <button

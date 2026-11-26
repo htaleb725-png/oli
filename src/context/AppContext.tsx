@@ -2,10 +2,15 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import * as XLSX from 'xlsx';
 import { MAX_VALID_OUTGOING_SEQ, scanMaxOutgoingSequences } from '../utils/outgoingNumberHelper';
 import {
+  ArchiveSectionKey,
+  buildSectionArchivedFields,
+  buildSectionUnarchivedFields,
+  getArchiveSectionLabel,
   isCitizenArchivedOrRestored,
   isRequestArchivedOrRestored,
   resolveExplicitArchiveState
 } from '../utils/archiveHelper';
+import { acquireSaveLock, enqueueSerializedSave } from '../utils/saveLock';
 import { toCleanSheetCitizenPayload, toCleanSheetRequestPayload } from '../services/googleSheetsSchema';
 import { extractDriveFolderId } from '../services/driveArchiveService';
 import {
@@ -71,7 +76,6 @@ import {
   fsWatchCollection,
   fsWatchCloudConfig,
   fsWatchDeletedRecords,
-  fsReconcileDeletedDocs,
   fsWipeAllCollections,
   fsWipeSelectedCollections,
   isFirestoreTemporarilyBlocked,
@@ -362,9 +366,16 @@ interface AppContextType {
   archiveDailyWorkItems: (options: {
     citizenIds?: string[];
     requestIds?: string[];
+    sectionKey?: ArchiveSectionKey;
+    globalArchive?: boolean;
     reason?: string;
   }) => { archivedCitizens: number; archivedRequests: number };
-  restoreDailyWorkItem: (citizenId: string, requestIds?: string[]) => void;
+  restoreDailyWorkItem: (citizenId: string, requestIds?: string[], sectionKey?: ArchiveSectionKey) => void;
+  restoreDailyWorkItems: (options: {
+    citizenIds?: string[];
+    requestIds?: string[];
+    sectionKey?: ArchiveSectionKey;
+  }) => { restoredCitizens: number; restoredRequests: number };
   selectedCitizenForHistory: Citizen | null;
   setSelectedCitizenForHistory: (citizen: Citizen | null) => void;
   isDesktopInstallModalOpen: boolean;
@@ -1263,9 +1274,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                   });
                 }
               });
-              const next = Array.from(map.values());
-              safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
-              return next;
+              return Array.from(map.values());
             });
           }
         }
@@ -1274,7 +1283,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Live Cloud Sync: Firebase Firestore onSnapshot is the sole real-time bus across all devices & Vercel instances.
       // Volatile serverless /api/sync/state memory is NEVER allowed to overwrite or resurrect business records!
       let lastCatchupAt = Date.now();
-      let lastSheetResumeSyncAt = 0;
 
       const applyIncomingMutation = (payload: any) => {
         if (!payload || payload.clientId === LIVE_SYNC_CLIENT_ID) return;
@@ -1399,7 +1407,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       window.addEventListener('storage', handleStorageEvent);
 
-      // Lightweight cloud catch-up on tab resume (throttled to prevent memory spikes / Chrome Crashpad)
+      // Lightweight Firebase Firestore catch-up on tab resume (Single Source of Truth — NEVER pull/overwrite from Google Sheets)
       const handleResumeSync = () => {
         if (document.visibilityState === 'hidden') return;
         if (activeRefreshPromiseRef.current) return;
@@ -1408,21 +1416,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         lastCatchupAt = now;
         purgeLegacyBrowserBusinessData();
         fetchAllFromFirestoreNow().catch(() => {});
-        // Reconcile two-way with Google Sheets at most once every 45s on tab resume
-        if (now - lastSheetResumeSyncAt >= 45000) {
-          lastSheetResumeSyncAt = now;
-          const scriptUrl =
-            (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
-            systemSettingsRef.current.appsScriptUrl ||
-            systemSettingsRef.current.googleAppsScriptUrl ||
-            '';
-          if (scriptUrl) {
-            fetchAllFromGoogleSheetsNow(scriptUrl, undefined, {
-              syncToFirestore: true,
-              replaceAsPrimary: true
-            }).catch(() => {});
-          }
-        }
       };
       window.addEventListener('focus', handleResumeSync);
       window.addEventListener('online', handleResumeSync);
@@ -1478,38 +1471,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       purgeLegacyBrowserBusinessData();
       clearBusinessRecordsFromIDB().catch(() => {});
 
-      // 1. PARALLEL HYDRATION:
-      //    Launch Firebase Firestore fetch AND Google Sheets authoritative pull IN PARALLEL
-      const envScript = (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || '';
-      const envSheet = (import.meta as any).env?.VITE_GOOGLE_SHEET_ID || '';
-      const cachedScript =
-        envScript ||
-        systemSettingsRef.current.appsScriptUrl ||
-        systemSettingsRef.current.googleAppsScriptUrl ||
-        (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
-      const cachedSheet =
-        envSheet ||
-        systemSettingsRef.current.googleSheetId ||
-        systemSettingsRef.current.activeGoogleSheetId ||
-        (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') || '' : '');
-
-      let sheetsStartedEarly = false;
-      let sheetsPromise: Promise<any> | null = null;
-      if (cachedScript || cachedSheet) {
-        sheetsStartedEarly = true;
-        sheetsPromise = fetchAllFromGoogleSheetsNow(cachedScript, cachedSheet, {
-          syncToFirestore: true,
-          replaceAsPrimary: true
-        }).catch(e => {
-          console.warn('Primary Google Sheets hydration notice:', e);
-          return null;
-        });
-      }
-
-      let cloudSettings: Partial<SystemSettings> | undefined;
+      // 1. SINGLE SOURCE OF TRUTH: Firebase Firestore (ola-aap-5fa57 / default) ONLY.
+      //    Google Sheets is strictly Push-Only (backup/export log) and NEVER pulls over or replaces Firestore.
       try {
         const fsResult = await fetchAllFromFirestoreNow();
-        cloudSettings = fsResult.systemSettings;
+        const cloudSettings = fsResult.systemSettings;
         if (cloudSettings) {
           setRuntimeCloudConfig({
             appsScriptUrl: cloudSettings.appsScriptUrl || cloudSettings.googleAppsScriptUrl,
@@ -1519,32 +1485,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (e) {
         console.warn('Cloud Firestore hydration notice:', e);
-      }
-
-      if (!sheetsStartedEarly) {
-        const resolvedScript =
-          envScript ||
-          cloudSettings?.appsScriptUrl ||
-          cloudSettings?.googleAppsScriptUrl ||
-          '';
-        const resolvedSheet =
-          envSheet ||
-          cloudSettings?.googleSheetId ||
-          cloudSettings?.activeGoogleSheetId ||
-          '';
-        if (resolvedScript || resolvedSheet) {
-          sheetsPromise = fetchAllFromGoogleSheetsNow(resolvedScript, resolvedSheet, {
-            syncToFirestore: true,
-            replaceAsPrimary: true
-          }).catch(e => {
-            console.warn('Background Google Sheets hydration notice:', e);
-            return null;
-          });
-        }
-      }
-
-      if (sheetsPromise) {
-        await sheetsPromise;
       }
     })();
 
@@ -2239,8 +2179,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addCitizen = (citizenData: Omit<Citizen, 'Citizen_ID' | 'CreatedAt'>): Citizen => {
+    // Save Lock / Debounce Guard: prevent duplicate citizen creation on rapid double-clicks or weak internet
+    const rawNameKey = String(
+      citizenData.FullName ||
+        [citizenData.FirstName, citizenData.FatherName, citizenData.GrandFatherName, citizenData.GreatGrandFatherName, citizenData.Surname]
+          .filter(Boolean)
+          .join(' ')
+    )
+      .trim()
+      .toLowerCase();
+    const rawPhoneKey = String(citizenData.Phone1 || '').trim();
+    const saveLock = acquireSaveLock<Citizen>(`addCitizen::${rawNameKey}::${rawPhoneKey}`, 1800, 2500);
+    if (!saveLock.allowed && saveLock.lastResult) {
+      return saveLock.lastResult;
+    }
+
     // Generate guaranteed unique sequential ID
-    const existingIds = new Set(citizens.map(c => c.Citizen_ID));
+    const existingIds = new Set((citizensRef.current || citizens).map(c => c.Citizen_ID));
     let randomSuffix = Math.floor(10000 + Math.random() * 90000);
     let newCitizenId = `ONA-${randomSuffix}`;
     while (existingIds.has(newCitizenId)) {
@@ -2278,6 +2233,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       candidateName === 'مراجع' ||
       candidateName === 'مراجع عام'
     ) {
+      saveLock.release();
       console.warn('Rejected adding ghost citizen with missing or invalid name:', citizenData);
       throw new Error('يرجى إدخال اسم المواطن الرباعي بشكل صحيح، لا يمكن حفظ سجل فارغ أو مجهول.');
     }
@@ -2299,7 +2255,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       CreatedBy: currentUser ? currentUser.FullName : 'الاستعلامات'
     };
 
-    setCitizens(prev => [newCitizen, ...prev.filter(c => c.Citizen_ID !== newCitizenId)]);
+    saveLock.setResult(newCitizen);
+    setCitizens(prev => {
+      const next = [newCitizen, ...prev.filter(c => c.Citizen_ID !== newCitizenId)];
+      citizensRef.current = next;
+      return next;
+    });
 
     // Auto add dropdowns if new
     if (surname && surname !== 'عام') addDropdownItem('Surname', surname);
@@ -2326,9 +2287,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('citizens', 'upsert', { item: newCitizen });
 
-    // Dual Cloud Save (Firebase Firestore + Google Sheets) with transparent failure reporting
-    receptionDomain.saveCitizen(newCitizen, 'insert', getCloudCtx()).catch(() => {});
-    sheetsIntegration.citizens.insert(newCitizen).catch(() => {});
+    // Serialized Primary Save to Firebase Firestore + Push-Only Backup to Google Sheets
+    enqueueSerializedSave(`citizen::${newCitizenId}`, async () => {
+      try {
+        await receptionDomain.saveCitizen(newCitizen, 'insert', getCloudCtx());
+      } finally {
+        saveLock.release();
+      }
+      sheetsIntegration.citizens.insert(newCitizen).catch(() => {});
+    }).catch(() => {
+      saveLock.release();
+    });
 
     return newCitizen;
   };
@@ -2364,18 +2333,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCitizens(prev => {
       const targetId = (citizen.Citizen_ID || '').trim().toLowerCase();
       const exists = prev.some(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === targetId);
-      return exists
+      const next = exists
         ? prev.map(c => c && c.Citizen_ID && c.Citizen_ID.trim().toLowerCase() === targetId ? updatedCitizen : c)
         : [updatedCitizen, ...prev];
+      citizensRef.current = next;
+      return next;
     });
     addAuditLog('تحديث بيانات مواطن', 'الاستعلامات', `تعديل السجل التعريفي للمواطن ${fullName} (${citizen.Citizen_ID})`);
     
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('citizens', 'upsert', { item: updatedCitizen });
 
-    // Dual Cloud Save (Firebase Firestore + Google Sheets) with transparent failure reporting
-    receptionDomain.saveCitizen(updatedCitizen, 'update', getCloudCtx()).catch(() => {});
-    sheetsIntegration.citizens.update(updatedCitizen).catch(() => {});
+    // Serialized Primary Save to Firebase Firestore + Push-Only Backup to Google Sheets
+    enqueueSerializedSave(`citizen::${updatedCitizen.Citizen_ID}`, async () => {
+      await receptionDomain.saveCitizen(updatedCitizen, 'update', getCloudCtx()).catch(() => {});
+      sheetsIntegration.citizens.update(updatedCitizen).catch(() => {});
+    }).catch(() => {});
   };
 
   const deleteCitizen = (citizenId: string) => {
@@ -2810,11 +2783,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     reqData: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string },
     options?: { skipAuditLog?: boolean; skipNotification?: boolean }
   ): OfficeRequest => {
-    const year = new Date().getFullYear();
-    const existingIds = new Set(requests.map(r => r.Request_ID));
+    // Save Lock / Debounce Guard: prevent duplicate request creation on rapid clicks or weak internet
+    const reqLockKey = `addRequest::${String(reqData.Citizen_ID || reqData.CitizenName || '').trim().toLowerCase()}::${String(reqData.Entity || '').trim().toLowerCase()}::${String(reqData.Details || '').trim().slice(0, 60).toLowerCase()}`;
+    const saveLock = acquireSaveLock<OfficeRequest>(reqLockKey, 1800, 2500);
+    if (!saveLock.allowed && saveLock.lastResult) {
+      return saveLock.lastResult;
+    }
 
-    let maxFound = Math.max(requests.length + 100, requestSeqCounterRef.current);
-    for (const r of requests) {
+    const year = new Date().getFullYear();
+    const liveReqs = requestsRef.current || requests;
+    const existingIds = new Set(liveReqs.map(r => r.Request_ID));
+
+    let maxFound = Math.max(liveReqs.length + 100, requestSeqCounterRef.current);
+    for (const r of liveReqs) {
       if (r && r.Request_ID) {
         existingIds.add(r.Request_ID);
         const m = String(r.Request_ID).match(/REQ-\d+-(\d+)/);
@@ -2855,7 +2836,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       CreatedBy: currentUser ? currentUser.FullName : (isFromReception ? 'الاستعلامات' : 'قسم الإدارة')
     };
 
-    setRequests(prev => [newRequest, ...prev.filter(r => r.Request_ID !== candidate)]);
+    saveLock.setResult(newRequest);
+    setRequests(prev => {
+      const nextList = [newRequest, ...prev.filter(r => r.Request_ID !== candidate)];
+      requestsRef.current = nextList;
+      return nextList;
+    });
 
     // Ensure linked citizen advances to 'مدير المكتب' stage when a new Reception request is registered
     if (isFromReception && reqData.Citizen_ID) {
@@ -2895,22 +2881,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Real-time broadcast to same-browser tabs
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([newRequest])[0] || newRequest });
 
-    // Dual Cloud Save (Firebase Firestore + Google Sheets Apps Script in parallel)
-    adminRequestsDomain.saveRequest(newRequest, 'insert', getCloudCtx()).catch(() => {});
-    if (isGoogleConnected) {
-      sheetsIntegration.requests.insert(newRequest).catch(() => {});
-    }
+    // Serialized Primary Save to Firebase Firestore + Push-Only Backup to Google Sheets
+    enqueueSerializedSave(`request::${candidate}`, async () => {
+      try {
+        await adminRequestsDomain.saveRequest(newRequest, 'insert', getCloudCtx());
+      } finally {
+        saveLock.release();
+      }
+      if (isGoogleConnected) {
+        sheetsIntegration.requests.insert(newRequest).catch(() => {});
+      }
+    }).catch(() => {
+      saveLock.release();
+    });
 
     return newRequest;
   };
 
   const updateRequest = (req: OfficeRequest) => {
-    const prevReq = requests.find(r => r.Request_ID === req.Request_ID);
+    const prevReq = (requestsRef.current || requests).find(r => r.Request_ID === req.Request_ID);
     const updatedReq: OfficeRequest = {
       ...req,
       UpdatedAt: new Date().toISOString()
     };
-    setRequests(prev => prev.map(r => r.Request_ID === req.Request_ID ? updatedReq : r));
+    setRequests(prev => {
+      const nextList = prev.map(r => r.Request_ID === req.Request_ID ? updatedReq : r);
+      requestsRef.current = nextList;
+      return nextList;
+    });
     addAuditLog('تحديث طلب إداري', 'قسم الإدارة', `تم تعديل حالة أو مسار الطلب ${req.Request_ID} إلى (${req.ProcessingStatus})`);
 
     // Smart real-time notifications on key workflow state transitions
@@ -2951,11 +2949,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
     
-    // Dual Cloud Save (Firebase Firestore + Google Sheets Apps Script in parallel)
-    adminRequestsDomain.saveRequest(updatedReq, 'update', getCloudCtx()).catch(() => {});
-    if (isGoogleConnected) {
-      sheetsIntegration.requests.update(updatedReq).catch(() => {});
-    }
+    // Serialized Primary Save to Firebase Firestore + Push-Only Backup to Google Sheets
+    enqueueSerializedSave(`request::${updatedReq.Request_ID}`, async () => {
+      await adminRequestsDomain.saveRequest(updatedReq, 'update', getCloudCtx()).catch(() => {});
+      if (isGoogleConnected) {
+        sheetsIntegration.requests.update(updatedReq).catch(() => {});
+      }
+    }).catch(() => {});
   };
 
   const deleteRequest = (requestId: string) => {
@@ -3628,10 +3628,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   };
 
-  // إخفاء / أرشفة عناصر من شاشة العمل اليومي فقط (تحديث حالة الأرشفة archived: true في Firestore و Google Sheet بدون أي حذف نهائياً)
+  // أرشفة مستقلة لكل قسم: تخفي السجل من "العمل اليومي" للقسم الحالي فقط دون التأثير على بقية الأقسام ودون أي حذف من Firestore
   const archiveDailyWorkItems = (options: {
     citizenIds?: string[];
     requestIds?: string[];
+    sectionKey?: ArchiveSectionKey;
+    globalArchive?: boolean;
     reason?: string;
   }): { archivedCitizens: number; archivedRequests: number } => {
     const targetCitIds = new Set((options.citizenIds || []).filter(Boolean));
@@ -3640,31 +3642,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { archivedCitizens: 0, archivedRequests: 0 };
     }
 
+    const sectionKey: ArchiveSectionKey | undefined = options.globalArchive
+      ? undefined
+      : (options.sectionKey || 'admin');
+    const lockKey = `archive::${sectionKey || 'global'}::${Array.from(targetCitIds).slice(0, 5).join(',')}::${Array.from(targetReqIds).slice(0, 5).join(',')}`;
+    const saveLock = acquireSaveLock<{ archivedCitizens: number; archivedRequests: number }>(lockKey, 700, 2000);
+    if (!saveLock.allowed) {
+      return saveLock.lastResult || { archivedCitizens: 0, archivedRequests: 0 };
+    }
+
     const now = new Date();
     const nowIso = now.toISOString();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const actorName = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'موظف الإدارة';
-    const noteText = options.reason || 'أرشفة وإخراج من شاشة العمل اليومي مع الاحتفاظ الكامل في قاعدة البيانات والأرشيف';
+    const actorName = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'موظف النظام';
+    const sectionLabel = sectionKey ? getArchiveSectionLabel(sectionKey) : 'الأرشيف العام';
+    const noteText = options.reason || `أرشفة مستقلة في (${sectionLabel}) — محفوظ بالكامل في قاعدة البيانات دون حذف`;
 
-    // Compute updated records SYNCHRONOUSLY from live refs (React 18+ batches state updaters asynchronously,
-    // so collecting inside setCitizens/setRequests previously left the arrays empty and skipped Firestore/Sheets writes!)
+    // Compute updated records SYNCHRONOUSLY from live refs
     const updatedCitizensMap = new Map<string, Citizen>();
     const updatedCitizensList: Citizen[] = [];
     if (targetCitIds.size > 0) {
       for (const c of citizensRef.current || []) {
         if (!c || !targetCitIds.has(c.Citizen_ID)) continue;
-        const nextCit: Citizen = {
-          ...c,
-          IsArchived: true,
-          ArchivedAt: c.ArchivedAt || formattedDate,
-          ArchivedBy: c.ArchivedBy || actorName,
-          ArchiveNotes: c.ArchiveNotes || noteText,
-          UpdatedAt: nowIso
-        };
-        (nextCit as any).archived = true;
-        (nextCit as any)['الأرشفة'] = 'نعم';
-        updatedCitizensMap.set(nextCit.Citizen_ID, nextCit);
-        updatedCitizensList.push(nextCit);
+        if (sectionKey) {
+          // Independent per-section archiving: update ONLY archivedInSections / unarchivedInSections, NEVER touch global IsArchived
+          const secFields = buildSectionArchivedFields(c, sectionKey);
+          const nextCit: Citizen = {
+            ...c,
+            archivedInSections: secFields.archivedInSections,
+            unarchivedInSections: secFields.unarchivedInSections,
+            ArchiveNotes: c.ArchiveNotes || noteText,
+            UpdatedAt: nowIso
+          };
+          updatedCitizensMap.set(nextCit.Citizen_ID, nextCit);
+          updatedCitizensList.push(nextCit);
+        } else {
+          const nextCit: Citizen = {
+            ...c,
+            IsArchived: true,
+            ArchivedAt: c.ArchivedAt || formattedDate,
+            ArchivedBy: c.ArchivedBy || actorName,
+            ArchiveNotes: c.ArchiveNotes || noteText,
+            UpdatedAt: nowIso
+          };
+          (nextCit as any).archived = true;
+          (nextCit as any)['الأرشفة'] = 'نعم';
+          updatedCitizensMap.set(nextCit.Citizen_ID, nextCit);
+          updatedCitizensList.push(nextCit);
+        }
       }
     }
 
@@ -3674,23 +3699,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!r) continue;
       const matchesReq = targetReqIds.has(r.Request_ID) || (r.Citizen_ID && targetCitIds.has(r.Citizen_ID));
       if (!matchesReq) continue;
-      const nextReq: OfficeRequest = {
-        ...r,
-        IsArchived: true,
-        ArchivedAt: r.ArchivedAt || formattedDate,
-        UpdatedAt: nowIso
-      };
-      (nextReq as any).archived = true;
-      (nextReq as any)['الأرشفة'] = 'نعم';
-      updatedRequestsMap.set(nextReq.Request_ID, nextReq);
-      updatedRequestsList.push(nextReq);
+      if (sectionKey) {
+        const secFields = buildSectionArchivedFields(r, sectionKey);
+        const nextReq: OfficeRequest = {
+          ...r,
+          archivedInSections: secFields.archivedInSections,
+          unarchivedInSections: secFields.unarchivedInSections,
+          UpdatedAt: nowIso
+        };
+        updatedRequestsMap.set(nextReq.Request_ID, nextReq);
+        updatedRequestsList.push(nextReq);
+      } else {
+        const nextReq: OfficeRequest = {
+          ...r,
+          IsArchived: true,
+          ArchivedAt: r.ArchivedAt || formattedDate,
+          UpdatedAt: nowIso
+        };
+        (nextReq as any).archived = true;
+        (nextReq as any)['الأرشفة'] = 'نعم';
+        updatedRequestsMap.set(nextReq.Request_ID, nextReq);
+        updatedRequestsList.push(nextReq);
+      }
     }
 
     if (updatedCitizensList.length === 0 && updatedRequestsList.length === 0) {
+      saveLock.release();
       return { archivedCitizens: 0, archivedRequests: 0 };
     }
 
-    // Immediate optimistic UI update so records vanish from Daily Work in 0ms without navigating away
+    const resultSummary = {
+      archivedCitizens: updatedCitizensList.length,
+      archivedRequests: updatedRequestsList.length
+    };
+    saveLock.setResult(resultSummary);
+
+    // Immediate optimistic UI update so records vanish from THIS section's Daily Work in 0ms
     if (updatedCitizensMap.size > 0) {
       const nextAllCitizens = (citizensRef.current || []).map(c => updatedCitizensMap.get(c.Citizen_ID) || c);
       citizensRef.current = nextAllCitizens;
@@ -3702,29 +3746,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setRequests(nextAllRequests);
     }
 
-    // Non-destructive Cloud Persistence: Firestore (batched 300-doc writeBatch for speed & reliability) + Google Sheets (ZERO deletions!)
-    if (updatedCitizensList.length + updatedRequestsList.length > 1) {
-      fsBulkSaveCitizensAndRequests(updatedCitizensList, updatedRequestsList).catch(console.error);
-    } else {
-      updatedCitizensList.forEach(cit => fsSaveCitizen(cit).catch(console.error));
-      updatedRequestsList.forEach(req => fsSaveRequest(req).catch(console.error));
-    }
+    // Serialized Primary Persistence to Firebase Firestore + Push-Only Backup to Google Sheets
+    enqueueSerializedSave(`archive-op::${sectionKey || 'global'}`, async () => {
+      try {
+        if (updatedCitizensList.length + updatedRequestsList.length > 1) {
+          await fsBulkSaveCitizensAndRequests(updatedCitizensList, updatedRequestsList);
+        } else {
+          await Promise.all([
+            ...updatedCitizensList.map(cit => fsSaveCitizen(cit)),
+            ...updatedRequestsList.map(req => fsSaveRequest(req))
+          ]);
+        }
+      } catch (err) {
+        console.error('Firestore per-section archive save error:', err);
+      } finally {
+        saveLock.release();
+      }
 
-    // Sync to shared server & Google Sheets cleanly in background
-    const scriptUrl = systemSettingsRef.current.appsScriptUrl;
-    const syncToSheetsAndServer = async () => {
+      const scriptUrl = systemSettingsRef.current.appsScriptUrl;
       const BATCH_CONCURRENCY = 5;
       for (let i = 0; i < updatedCitizensList.length; i += BATCH_CONCURRENCY) {
         const chunk = updatedCitizensList.slice(i, i + BATCH_CONCURRENCY);
         await Promise.all(
           chunk.map(cit => {
             emitServerMutation('citizens', 'upsert', { item: cit });
-            return pushToGoogleSheetsRealtime(
-              'citizens',
-              { ...toCleanSheetCitizenPayload(cit), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' },
-              'update',
-              scriptUrl
-            ).catch(() => {});
+            const payload = sectionKey
+              ? { ...toCleanSheetCitizenPayload(cit), archivedInSections: (cit.archivedInSections || []).join(',') }
+              : { ...toCleanSheetCitizenPayload(cit), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' };
+            return pushToGoogleSheetsRealtime('citizens', payload, 'update', scriptUrl).catch(() => {});
           })
         );
       }
@@ -3733,73 +3782,123 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         await Promise.all(
           chunk.map(req => {
             emitServerMutation('requests', 'upsert', { item: req });
-            return pushToGoogleSheetsRealtime(
-              'requests',
-              { ...toCleanSheetRequestPayload(req), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' },
-              'update',
-              scriptUrl
-            ).catch(() => {});
+            const payload = sectionKey
+              ? { ...toCleanSheetRequestPayload(req), archivedInSections: (req.archivedInSections || []).join(',') }
+              : { ...toCleanSheetRequestPayload(req), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' };
+            return pushToGoogleSheetsRealtime('requests', payload, 'update', scriptUrl).catch(() => {});
           })
         );
       }
-    };
-    syncToSheetsAndServer().catch(() => {});
+    }).catch(() => {
+      saveLock.release();
+    });
 
     addAuditLog(
-      'أرشفة وإخراج من العمل اليومي (بدون حذف)',
-      'قسم الإدارة والأرشيف',
-      `تمت أرشفة (${updatedCitizensList.length}) مراجع و(${updatedRequestsList.length}) طلب وإخراجها من شاشة العمل اليومي مع بقائها محفوظة بالكامل في Firestore و Google Sheet`
+      `أرشفة مستقلة (${sectionLabel})`,
+      sectionLabel,
+      `تمت أرشفة (${updatedCitizensList.length}) مراجع و(${updatedRequestsList.length}) طلب في (${sectionLabel}) وإخراجها من العمل اليومي لهذا القسم فقط دون التأثير على بقية الأقسام`
     );
 
-    return {
-      archivedCitizens: updatedCitizensList.length,
-      archivedRequests: updatedRequestsList.length
-    };
+    return resultSummary;
   };
 
-  // استرجاع سجل مؤرشف إلى عرض العمل اليومي (تحديث غير حذفي فقط)
-  const restoreDailyWorkItem = (citizenId: string, requestIds?: string[]) => {
+  // استرجاع عدة سجلات مؤرشفة للعمل اليومي الخاص بقسم محدد (أو استرجاع عام عند عدم تمرير sectionKey)
+  const restoreDailyWorkItems = (options: {
+    citizenIds?: string[];
+    requestIds?: string[];
+    sectionKey?: ArchiveSectionKey;
+  }): { restoredCitizens: number; restoredRequests: number } => {
+    const targetCitIds = new Set((options.citizenIds || []).filter(Boolean));
+    const targetReqIds = new Set((options.requestIds || []).filter(Boolean));
+    if (targetCitIds.size === 0 && targetReqIds.size === 0) {
+      return { restoredCitizens: 0, restoredRequests: 0 };
+    }
+
+    const sectionKey = options.sectionKey;
+    const lockKey = `restore::${sectionKey || 'global'}::${Array.from(targetCitIds).slice(0, 5).join(',')}::${Array.from(targetReqIds).slice(0, 5).join(',')}`;
+    const saveLock = acquireSaveLock<{ restoredCitizens: number; restoredRequests: number }>(lockKey, 700, 2000);
+    if (!saveLock.allowed) {
+      return saveLock.lastResult || { restoredCitizens: 0, restoredRequests: 0 };
+    }
+
     const nowIso = new Date().toISOString();
-    const targetReqSet = new Set((requestIds || []).filter(Boolean));
+    const sectionLabel = sectionKey ? getArchiveSectionLabel(sectionKey) : 'الأرشيف العام';
 
     const updatedCitsMap = new Map<string, Citizen>();
     const updatedCits: Citizen[] = [];
     for (const c of citizensRef.current || []) {
-      if (!c || c.Citizen_ID !== citizenId) continue;
-      const nextCit: Citizen = {
-        ...c,
-        IsArchived: false,
-        IsHistoricalImported: false,
-        ArchivedAt: undefined,
-        ArchiveCode: undefined,
-        UpdatedAt: nowIso
-      };
-      (nextCit as any).archived = false;
-      (nextCit as any)['الأرشفة'] = 'لا';
-      updatedCitsMap.set(nextCit.Citizen_ID, nextCit);
-      updatedCits.push(nextCit);
+      if (!c || !targetCitIds.has(c.Citizen_ID)) continue;
+      if (sectionKey) {
+        const secFields = buildSectionUnarchivedFields(c as any, sectionKey);
+        const nextCit: Citizen = {
+          ...c,
+          archivedInSections: secFields.archivedInSections,
+          unarchivedInSections: secFields.unarchivedInSections,
+          UpdatedAt: nowIso
+        };
+        updatedCitsMap.set(nextCit.Citizen_ID, nextCit);
+        updatedCits.push(nextCit);
+      } else {
+        const nextCit: Citizen = {
+          ...c,
+          IsArchived: false,
+          IsHistoricalImported: false,
+          ArchivedAt: undefined,
+          ArchiveCode: undefined,
+          archivedInSections: [],
+          UpdatedAt: nowIso
+        };
+        (nextCit as any).archived = false;
+        (nextCit as any)['الأرشفة'] = 'لا';
+        updatedCitsMap.set(nextCit.Citizen_ID, nextCit);
+        updatedCits.push(nextCit);
+      }
     }
 
     const updatedReqsMap = new Map<string, OfficeRequest>();
     const updatedReqs: OfficeRequest[] = [];
     for (const r of requestsRef.current || []) {
       if (!r) continue;
-      const match = r.Citizen_ID === citizenId || targetReqSet.has(r.Request_ID);
+      const match = targetReqIds.has(r.Request_ID) || (r.Citizen_ID && targetCitIds.has(r.Citizen_ID));
       if (!match) continue;
-      const nextReq: OfficeRequest = {
-        ...r,
-        IsArchived: false,
-        IsHistoricalImported: false,
-        ArchivedAt: undefined,
-        ArchiveCode: undefined,
-        DirectorDecision: r.DirectorDecision === 'مؤرشف' ? undefined : r.DirectorDecision,
-        UpdatedAt: nowIso
-      };
-      (nextReq as any).archived = false;
-      (nextReq as any)['الأرشفة'] = 'لا';
-      updatedReqsMap.set(nextReq.Request_ID, nextReq);
-      updatedReqs.push(nextReq);
+      if (sectionKey) {
+        const secFields = buildSectionUnarchivedFields(r as any, sectionKey);
+        const nextReq: OfficeRequest = {
+          ...r,
+          archivedInSections: secFields.archivedInSections,
+          unarchivedInSections: secFields.unarchivedInSections,
+          UpdatedAt: nowIso
+        };
+        updatedReqsMap.set(nextReq.Request_ID, nextReq);
+        updatedReqs.push(nextReq);
+      } else {
+        const nextReq: OfficeRequest = {
+          ...r,
+          IsArchived: false,
+          IsHistoricalImported: false,
+          ArchivedAt: undefined,
+          ArchiveCode: undefined,
+          archivedInSections: [],
+          DirectorDecision: r.DirectorDecision === 'مؤرشف' ? undefined : r.DirectorDecision,
+          UpdatedAt: nowIso
+        };
+        (nextReq as any).archived = false;
+        (nextReq as any)['الأرشفة'] = 'لا';
+        updatedReqsMap.set(nextReq.Request_ID, nextReq);
+        updatedReqs.push(nextReq);
+      }
     }
+
+    if (updatedCits.length === 0 && updatedReqs.length === 0) {
+      saveLock.release();
+      return { restoredCitizens: 0, restoredRequests: 0 };
+    }
+
+    const summary = {
+      restoredCitizens: updatedCits.length,
+      restoredRequests: updatedReqs.length
+    };
+    saveLock.setResult(summary);
 
     if (updatedCitsMap.size > 0) {
       const nextAll = (citizensRef.current || []).map(c => updatedCitsMap.get(c.Citizen_ID) || c);
@@ -3812,38 +3911,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setRequests(nextAll);
     }
 
-    if (updatedCits.length + updatedReqs.length > 1) {
-      fsBulkSaveCitizensAndRequests(updatedCits, updatedReqs).catch(console.error);
-    } else {
-      updatedCits.forEach(cit => fsSaveCitizen(cit).catch(console.error));
-      updatedReqs.forEach(req => fsSaveRequest(req).catch(console.error));
-    }
+    enqueueSerializedSave(`restore-op::${sectionKey || 'global'}`, async () => {
+      try {
+        if (updatedCits.length + updatedReqs.length > 1) {
+          await fsBulkSaveCitizensAndRequests(updatedCits, updatedReqs);
+        } else {
+          await Promise.all([
+            ...updatedCits.map(cit => fsSaveCitizen(cit)),
+            ...updatedReqs.map(req => fsSaveRequest(req))
+          ]);
+        }
+      } catch (err) {
+        console.error('Firestore per-section restore save error:', err);
+      } finally {
+        saveLock.release();
+      }
 
-    updatedCits.forEach(cit => {
-      emitServerMutation('citizens', 'upsert', { item: cit });
-      pushToGoogleSheetsRealtime(
-        'citizens',
-        { ...toCleanSheetCitizenPayload(cit), IsArchived: 'لا', archived: false, الأرشفة: 'لا' },
-        'update',
-        systemSettingsRef.current.appsScriptUrl
-      );
-    });
-
-    updatedReqs.forEach(req => {
-      emitServerMutation('requests', 'upsert', { item: req });
-      pushToGoogleSheetsRealtime(
-        'requests',
-        { ...toCleanSheetRequestPayload(req), IsArchived: 'لا', archived: false, الأرشفة: 'لا' },
-        'update',
-        systemSettingsRef.current.appsScriptUrl
-      );
+      const scriptUrl = systemSettingsRef.current.appsScriptUrl;
+      const BATCH_CONCURRENCY = 5;
+      for (let i = 0; i < updatedCits.length; i += BATCH_CONCURRENCY) {
+        const chunk = updatedCits.slice(i, i + BATCH_CONCURRENCY);
+        await Promise.all(
+          chunk.map(cit => {
+            emitServerMutation('citizens', 'upsert', { item: cit });
+            const payload = sectionKey
+              ? { ...toCleanSheetCitizenPayload(cit), archivedInSections: (cit.archivedInSections || []).join(',') }
+              : { ...toCleanSheetCitizenPayload(cit), IsArchived: 'لا', archived: false, الأرشفة: 'لا' };
+            return pushToGoogleSheetsRealtime('citizens', payload, 'update', scriptUrl).catch(() => {});
+          })
+        );
+      }
+      for (let i = 0; i < updatedReqs.length; i += BATCH_CONCURRENCY) {
+        const chunk = updatedReqs.slice(i, i + BATCH_CONCURRENCY);
+        await Promise.all(
+          chunk.map(req => {
+            emitServerMutation('requests', 'upsert', { item: req });
+            const payload = sectionKey
+              ? { ...toCleanSheetRequestPayload(req), archivedInSections: (req.archivedInSections || []).join(',') }
+              : { ...toCleanSheetRequestPayload(req), IsArchived: 'لا', archived: false, الأرشفة: 'لا' };
+            return pushToGoogleSheetsRealtime('requests', payload, 'update', scriptUrl).catch(() => {});
+          })
+        );
+      }
+    }).catch(() => {
+      saveLock.release();
     });
 
     addAuditLog(
-      'إعادة سجل مؤرشف للعمل اليومي',
-      'قسم الإدارة والأرشيف',
-      `تمت إعادة عرض السجل (${citizenId}) في شاشة العمل اليومي`
+      `إرجاع سجل للعمل اليومي (${sectionLabel})`,
+      sectionLabel,
+      `تم إرجاع (${updatedCits.length}) مراجع و(${updatedReqs.length}) طلب إلى العمل اليومي في (${sectionLabel})`
     );
+
+    return summary;
+  };
+
+  // استرجاع سجل مؤرشف واحد إلى عرض العمل اليومي (يدعم الأرشفة المستقلة للقسم أو الاسترجاع العام)
+  const restoreDailyWorkItem = (citizenId: string, requestIds?: string[], sectionKey?: ArchiveSectionKey) => {
+    restoreDailyWorkItems({
+      citizenIds: citizenId ? [citizenId] : [],
+      requestIds,
+      sectionKey
+    });
   };
 
   // Check RBAC permission for printing the official ID card:
@@ -4853,12 +4982,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const fetchAllFromGoogleSheetsNow = async (
     overrideScriptUrl?: string,
     overrideSheetId?: string,
-    options?: { syncToFirestore?: boolean; replaceAsPrimary?: boolean }
+    _options?: { syncToFirestore?: boolean; replaceAsPrimary?: boolean }
   ): Promise<{ success: boolean; message: string }> => {
     setIsGoogleSyncing(true);
     const deletedIds = getStoredDeletedIds();
-    const shouldSyncToFirestore = options?.syncToFirestore !== false;
-    const replaceAsPrimary = options?.replaceAsPrimary === true;
+    // STRICT SINGLE SOURCE OF TRUTH POLICY:
+    // Firebase Firestore (ola-aap-5fa57 / default) is ALWAYS primary.
+    // Google Sheets NEVER replaces Firestore state and NEVER deletes/overwrites Firestore documents.
+    const shouldSyncToFirestore = false;
+    const replaceAsPrimary = false;
 
     const applyAndMirrorToFirestore = async (
       pulled: {
@@ -5046,84 +5178,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deletedIds
       );
 
-      // Update React UI immediately (including deletions when authoritative sheet snapshot succeeded)
-      if (isAuthoritativeSheetSnapshot && replaceAsPrimary) {
-        setCitizens(cleanCitizens);
-        setRequests(cleanRequests);
-        setInterviews(cleanInterviews);
-        setOfficialLetters(cleanLetters);
-        setOrganizationRecords(cleanOrgs);
-        setCheques(cleanCheques);
-        setCustomRecords(cleanCustomRecords);
-      } else {
-        if (cleanCitizens.length > 0) {
-          setCitizens(prev => (replaceAsPrimary ? cleanCitizens : mergeCitizens(prev, cleanCitizens, deletedIds)));
-        }
-        if (cleanRequests.length > 0) {
-          setRequests(prev => (replaceAsPrimary ? cleanRequests : mergeRequests(prev, cleanRequests, deletedIds)));
-        }
-        if (cleanInterviews.length > 0) {
-          setInterviews(prev => (replaceAsPrimary ? cleanInterviews : mergeInterviews(prev, cleanInterviews, deletedIds)));
-        }
-        if (cleanLetters.length > 0) {
-          setOfficialLetters(prev => (replaceAsPrimary ? cleanLetters : mergeOfficialLetters(prev, cleanLetters, deletedIds)));
-        }
-        if (cleanOrgs.length > 0) {
-          setOrganizationRecords(prev => (replaceAsPrimary ? cleanOrgs : mergeOrganizationRecords(prev, cleanOrgs, deletedIds)));
-        }
-        if (cleanCheques.length > 0) {
-          setCheques(prev => (replaceAsPrimary ? cleanCheques : mergeCheques(prev, cleanCheques, deletedIds)));
-        }
-        if (cleanCustomRecords.length > 0) {
-          setCustomRecords(prev => (replaceAsPrimary ? cleanCustomRecords : mergeCustomRecords(prev, cleanCustomRecords, deletedIds)));
-        }
+      // Non-destructive read-only gap-fill merge into UI memory (NEVER replaces Firestore state and NEVER overwrites or deletes Firestore docs!)
+      if (cleanCitizens.length > 0) {
+        setCitizens(prev => mergeCitizens(prev, cleanCitizens, deletedIds));
+      }
+      if (cleanRequests.length > 0) {
+        setRequests(prev => mergeRequests(prev, cleanRequests, deletedIds));
+      }
+      if (cleanInterviews.length > 0) {
+        setInterviews(prev => mergeInterviews(prev, cleanInterviews, deletedIds));
+      }
+      if (cleanLetters.length > 0) {
+        setOfficialLetters(prev => mergeOfficialLetters(prev, cleanLetters, deletedIds));
+      }
+      if (cleanOrgs.length > 0) {
+        setOrganizationRecords(prev => mergeOrganizationRecords(prev, cleanOrgs, deletedIds));
+      }
+      if (cleanCheques.length > 0) {
+        setCheques(prev => mergeCheques(prev, cleanCheques, deletedIds));
+      }
+      if (cleanCustomRecords.length > 0) {
+        setCustomRecords(prev => mergeCustomRecords(prev, cleanCustomRecords, deletedIds));
       }
       if (cleanUsers.length > 0) {
-        // Non-authoritative merge from Google Sheets: never revert newer passwords locked in Firebase Firestore
+        // Non-authoritative merge from Google Sheets: never revert newer passwords/roles locked in Firebase Firestore
         setUsers(prev => mergeUsers(prev, cleanUsers, deletedIds, { incomingAuthoritative: false }));
       }
 
-      // Immediately mirror authoritative Google Sheet records & deletions directly into Firebase Firestore
-      const totalPulled =
-        cleanCitizens.length +
-        cleanRequests.length +
-        cleanInterviews.length +
-        cleanLetters.length +
-        cleanOrgs.length +
-        cleanCheques.length +
-        cleanCustomRecords.length;
-
-      if (shouldSyncToFirestore) {
-        if (totalPulled > 0) {
-          void fsBulkPushAll({
-            citizens: cleanCitizens,
-            requests: cleanRequests,
-            interviews: cleanInterviews,
-            officialLetters: cleanLetters,
-            cheques: cleanCheques,
-            organizationRecords: cleanOrgs,
-            // Lock users in Firestore: never overwrite Firestore staff passwords with stale Google Sheet rows
-            users: [],
-            systemSettings: undefined as unknown as SystemSettings,
-            dropdowns: [],
-            customSections: [],
-            customRecords: cleanCustomRecords
-          }).catch(err => console.warn('Direct Google Sheet -> Firestore sync notice:', err));
-        }
-
-        // Two-way deletion reconciliation: if rows were deleted directly in Google Sheets, remove them from Firestore too
-        if (isAuthoritativeSheetSnapshot && replaceAsPrimary) {
-          void Promise.allSettled([
-            fsReconcileDeletedDocs(FS_COLLECTIONS.CITIZENS, new Set(cleanCitizens.map(c => c.Citizen_ID)), 'Citizen_ID', recentWindowMs),
-            fsReconcileDeletedDocs(FS_COLLECTIONS.REQUESTS, new Set(cleanRequests.map(r => r.Request_ID)), 'Request_ID', recentWindowMs),
-            fsReconcileDeletedDocs(FS_COLLECTIONS.INTERVIEWS, new Set(cleanInterviews.map(i => i.Interview_ID)), 'Interview_ID', recentWindowMs),
-            fsReconcileDeletedDocs(FS_COLLECTIONS.LETTERS, new Set(cleanLetters.map(l => l.Letter_ID)), 'Letter_ID', recentWindowMs),
-            fsReconcileDeletedDocs(FS_COLLECTIONS.ORGANIZATIONS, new Set(cleanOrgs.map(o => o.Citizen_ID)), 'Citizen_ID', recentWindowMs),
-            fsReconcileDeletedDocs(FS_COLLECTIONS.CHEQUES, new Set(cleanCheques.map(ch => ch.id)), 'id', recentWindowMs),
-            fsReconcileDeletedDocs(FS_COLLECTIONS.CUSTOM_RECORDS, new Set(cleanCustomRecords.map(cr => cr.id)), 'id', recentWindowMs)
-          ]).catch(() => {});
-        }
-      }
+      // Suppress unused local flags explicitly while preserving signature compatibility
+      void shouldSyncToFirestore;
+      void replaceAsPrimary;
+      void isAuthoritativeSheetSnapshot;
 
       return { cleanCitizens, cleanRequests, cleanCustomRecords };
     };
@@ -5287,6 +5372,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         smartArchiveCitizen,
         archiveDailyWorkItems,
         restoreDailyWorkItem,
+        restoreDailyWorkItems,
         selectedCitizenForHistory,
         setSelectedCitizenForHistory,
         isDesktopInstallModalOpen,

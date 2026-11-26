@@ -146,6 +146,8 @@ export interface Citizen {
   ArchivedBy?: string;   // الموظف الذي قام بالأرشفة
   ArchiveNotes?: string; // ملاحظات الأرشفة
   ArchiveCode?: string;  // كود الحفظ الأرشيفي
+  archivedInSections?: string[];   // أرشفة مستقلة لكل قسم (مثل: reception, director, admin, organization)
+  unarchivedInSections?: string[]; // استرجاع مستقل لكل قسم لسجلات الأرشيف/المسترد
   UpdatedAt?: string;
 }
 
@@ -224,6 +226,8 @@ export interface OfficeRequest {
   TargetDepartment?: string; // القسم المخصص الذي تنزل فيه المعاملة (admin, social_care, interviews, reception, organization, أو معرف قسم مخصص)
   SerialNumber?: string;  // التسلسل الأصلي في ملف الإكسل
   IsDirectInstantRequest?: boolean; // طلب إداري فوري مباشر (بدون إشعارات ودون تسجيل في القسم الرقابي)
+  archivedInSections?: string[];    // أرشفة مستقلة لكل قسم (مثل: reception, director, admin, organization)
+  unarchivedInSections?: string[];  // استرجاع مستقل لكل قسم لسجلات الأرشيف/المسترد
   UpdatedAt?: string;
 }
 
