@@ -131,10 +131,11 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
     UpdatedAt: nowIso,
     updatedAt: nowIso
   };
-  // Keep IsArchived and archived boolean flags synchronized in Firestore (never deleting records)
+  // Keep IsArchived, archived, and الأرشفة flags synchronized in Firestore (never deleting records)
   if (typeof citizen.IsArchived === 'boolean') {
     copy.IsArchived = citizen.IsArchived;
     copy.archived = citizen.IsArchived;
+    copy['الأرشفة'] = citizen.IsArchived ? 'نعم' : 'لا';
     if (citizen.IsArchived === false) {
       copy.ArchivedAt = '';
       copy.ArchiveCode = '';
@@ -173,6 +174,7 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
   if (typeof req.IsArchived === 'boolean') {
     copy.IsArchived = req.IsArchived;
     copy.archived = req.IsArchived;
+    copy['الأرشفة'] = req.IsArchived ? 'نعم' : 'لا';
     if (req.IsArchived === false) {
       copy.ArchivedAt = '';
       copy.ArchiveCode = '';

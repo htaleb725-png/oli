@@ -84,7 +84,6 @@ export const OrganizationModule: React.FC = () => {
   // Daily Work (العمل اليومي) search, filter & lightweight pagination (prevents Chrome Crashpad on large datasets)
   const [dailySearch, setDailySearch] = useState('');
   const [dailyFilter, setDailyFilter] = useState<'pending' | 'completed' | 'all'>('pending');
-  const [showArchivedDaily, setShowArchivedDaily] = useState(false);
   const [confirmArchiveOrgDaily, setConfirmArchiveOrgDaily] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(40);
 
@@ -165,12 +164,9 @@ export const OrganizationModule: React.FC = () => {
       seen.add(cit.Citizen_ID);
 
       const allCitReqs = requestsByCitizenId.get(cit.Citizen_ID) || [];
-      const archived = isCitizenArchivedOrRestored(cit, allCitReqs);
-      if (showArchivedDaily ? !archived : archived) return;
+      if (isCitizenArchivedOrRestored(cit, allCitReqs)) return;
 
-      const citReqs = showArchivedDaily
-        ? allCitReqs
-        : allCitReqs.filter(r => !isRequestArchivedOrRestored(r));
+      const citReqs = allCitReqs.filter(r => !isRequestArchivedOrRestored(r));
       const orgRec = orgRecordByCitizenId.get(cit.Citizen_ID);
 
       const latestReq = citReqs[0];
@@ -192,7 +188,7 @@ export const OrganizationModule: React.FC = () => {
 
     entries.sort((a, b) => b.sortTs - a.sortTs);
     return entries;
-  }, [citizens, requestsByCitizenId, orgRecordByCitizenId, showArchivedDaily]);
+  }, [citizens, requestsByCitizenId, orgRecordByCitizenId]);
 
   const dailyStats = useMemo(() => {
     let pending = 0;
@@ -656,45 +652,45 @@ export const OrganizationModule: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowArchivedDaily(prev => !prev);
-                  setConfirmArchiveOrgDaily(false);
-                }}
-                className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border cursor-pointer transition-all ${
-                  showArchivedDaily
-                    ? 'bg-amber-500 text-slate-950 border-amber-400'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
-                }`}
-              >
-                <Archive className="w-3.5 h-3.5" />
-                <span>
-                  {showArchivedDaily ? 'إخفاء المؤرشف' : `عرض المؤرشف (${archivedOrgDailyCount.toLocaleString()})`}
-                </span>
-              </button>
-
-              {!showArchivedDaily && dailyStats.completed > 0 && (
+              {allDailyWorkEntries.length > 0 && (
                 confirmArchiveOrgDaily ? (
-                  <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px]">
+                  <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px] flex-wrap">
                     <span className="font-bold text-emerald-900 dark:text-emerald-200">
-                      أرشفة ({dailyStats.completed}) مكتمل بدون حذف؟
+                      إخراج للأرشيف بدون حذف؟
                     </span>
+                    {dailyStats.completed > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const completedIds = allDailyWorkEntries
+                            .filter(e => e.isCompleted)
+                            .map(e => e.citizen.Citizen_ID);
+                          const res = archiveDailyWorkItems({
+                            citizenIds: completedIds,
+                            reason: 'أرشفة وإخراج المكتمل من العمل اليومي لقسم التنظيم (بدون حذف من قاعدة البيانات)'
+                          });
+                          setConfirmArchiveOrgDaily(false);
+                          showToast(`✓ تمت أرشفة (${res.archivedCitizens}) سجل وإخراجها من العمل اليومي دون حذف.`);
+                        }}
+                        className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
+                      >
+                        المكتمل ({dailyStats.completed})
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
-                        const completedIds = allDailyWorkEntries
-                          .filter(e => e.isCompleted)
-                          .map(e => e.citizen.Citizen_ID);
-                        archiveDailyWorkItems({
-                          citizenIds: completedIds,
-                          reason: 'أرشفة وإخفاء المكتمل من العمل اليومي لقسم التنظيم (بدون حذف من قاعدة البيانات)'
+                        const visibleIds = filteredDailyWork.map(e => e.citizen.Citizen_ID);
+                        const res = archiveDailyWorkItems({
+                          citizenIds: visibleIds,
+                          reason: 'أرشفة وإخراج السجلات المعروضة من العمل اليومي لقسم التنظيم (بدون حذف من قاعدة البيانات)'
                         });
                         setConfirmArchiveOrgDaily(false);
+                        showToast(`✓ تمت أرشفة (${res.archivedCitizens}) سجل وإخراجها من العمل اليومي دون حذف.`);
                       }}
-                      className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
+                      className="px-2 py-0.5 rounded-lg bg-amber-500 text-slate-950 font-black cursor-pointer"
                     >
-                      تأكيد
+                      المعروض ({filteredDailyWork.length})
                     </button>
                     <button
                       type="button"
@@ -708,12 +704,19 @@ export const OrganizationModule: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setConfirmArchiveOrgDaily(true)}
-                    className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                    className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 cursor-pointer"
+                    title="تحويل السجلات إلى مؤرشف وإخراجها فوراً من العمل اليومي دون مغادرة الشاشة ودون حذف"
                   >
-                    <Archive className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>إخفاء المكتمل للأرشيف ({dailyStats.completed})</span>
+                    <Archive className="w-3.5 h-3.5 text-amber-600" />
+                    <span>مؤرشف (إخراج من العمل اليومي)</span>
                   </button>
                 )
+              )}
+
+              {archivedOrgDailyCount > 0 && (
+                <span className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                  المحفوظ بالأرشيف: {archivedOrgDailyCount.toLocaleString()}
+                </span>
               )}
 
               <div className="text-xs font-bold text-slate-500 dark:text-slate-400">
@@ -792,6 +795,22 @@ export const OrganizationModule: React.FC = () => {
                         >
                           <ClipboardCheck className="w-4 h-4" />
                           <span>{entry.isCompleted ? 'تعديل إكمال الطلب' : 'إكمال الطلب'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            archiveDailyWorkItems({
+                              citizenIds: [entry.citizen.Citizen_ID],
+                              reason: 'أرشفة وإخراج فردي من العمل اليومي لقسم التنظيم (محفوظ بالكامل في القاعدة والأرشيف)'
+                            });
+                            showToast(`✓ تمت أرشفة (${entry.citizen.FullName}) وإخراجه فوراً من العمل اليومي دون حذف.`);
+                          }}
+                          className="px-3 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer"
+                          title="تعيين السجل كمؤرشف (archived: true) وإخراجه من العمل اليومي فوراً دون حذفه من قاعدة البيانات"
+                        >
+                          <Archive className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                          <span>مؤرشف</span>
                         </button>
 
                         <button

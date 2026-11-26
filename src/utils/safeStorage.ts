@@ -1,55 +1,52 @@
 import { OfficeRequest } from '../types';
 
 /**
- * Chrome Browser Storage Policy (سياسة التخزين الصارمة)
- * -----------------------------------------------------
- * Strictly prohibits storing office business records (citizens, requests,
+ * Strict Zero-Chrome-Persistence Policy (سياسة منع التخزين الدائم للسجلات والجلسات في Chrome)
+ * ------------------------------------------------------------------------------------------
+ * Strictly prohibits storing ANY office business records (citizens, requests,
  * interviews, letters, cheques, organization records, custom sections/records,
- * users, dropdowns, archive documents) inside Chrome localStorage.
- * ONLY login session metadata and UI appearance/theme preferences are allowed.
+ * users, dropdowns, archive documents) OR user sessions/passcodes/tokens inside
+ * Chrome localStorage or sessionStorage.
+ * All business records & active sessions live strictly in live React memory
+ * and the unified Cloud Databases (Firebase Firestore + Google Sheets).
+ * ONLY lightweight cosmetic UI flags (theme / dark mode / sound / sidebar) are permitted.
  */
 
-const BLOCKED_BUSINESS_KEY_PATTERNS = [
-  'citizens',
-  'requests',
-  'cheques',
-  'interviews',
-  'org',
-  'documents',
-  'letters',
-  'users',
-  'dropdowns',
-  'audit',
-  'custom_sections',
-  'custom_records',
-  'drive_requests_cache',
-  'dynamic_fields',
-  'has_real_data',
-  'is_zeroed',
-  'notifications',
-  'sync_queue',
-  'backup',
-  'deleted_ids'
+const ALLOWED_COSMETIC_UI_KEYS = [
+  'theme',
+  'dark',
+  'sidebar',
+  'sound'
 ];
+
+export function isAllowedCosmeticUiKey(key: string): boolean {
+  const lower = String(key || '').toLowerCase();
+  if (!lower) return false;
+  // Never allow settings, sessions, tokens, passcodes, or data collections
+  if (
+    lower.includes('user') ||
+    lower.includes('session') ||
+    lower.includes('token') ||
+    lower.includes('passcode') ||
+    lower.includes('settings') ||
+    lower.includes('sheet') ||
+    lower.includes('drive') ||
+    lower.includes('script') ||
+    lower.includes('citizen') ||
+    lower.includes('request') ||
+    lower.includes('record') ||
+    lower.includes('audit')
+  ) {
+    return false;
+  }
+  return ALLOWED_COSMETIC_UI_KEYS.some(allowed => lower.includes(allowed));
+}
 
 export function isBusinessRecordStorageKey(key: string): boolean {
   const lower = String(key || '').toLowerCase();
   if (!lower) return false;
-  // Allow explicitly permitted session & UI keys
-  if (
-    lower.includes('assigned_workstation_user') ||
-    lower.includes('theme') ||
-    lower.includes('dark') ||
-    lower.includes('sidebar') ||
-    lower.includes('sound') ||
-    lower.includes('google_token') ||
-    lower.includes('google_user_email') ||
-    lower.includes('office_partition') ||
-    lower.includes('dev_passcode')
-  ) {
-    return false;
-  }
-  return BLOCKED_BUSINESS_KEY_PATTERNS.some(pattern => lower.includes(pattern));
+  if (isAllowedCosmeticUiKey(lower)) return false;
+  return true;
 }
 
 /**
@@ -88,27 +85,25 @@ export function sanitizeRequestsForStorage(requests: OfficeRequest[]): OfficeReq
 }
 
 /**
- * Writes ONLY whitelisted session/UI preference keys to localStorage.
- * Business data keys are strictly blocked so Chrome never acts as a fake database.
+ * Writes ONLY cosmetic UI preference keys (e.g., dark mode).
+ * All business records, settings, and user sessions are strictly blocked from Chrome storage.
  */
 export function safeLocalStorageSet(key: string, value: string): boolean {
   if (typeof window === 'undefined' || !window.localStorage) return false;
-  if (isBusinessRecordStorageKey(key)) {
-    // Strictly block persisting office records in Chrome localStorage
+  if (!isAllowedCosmeticUiKey(key)) {
     return false;
   }
 
   try {
     localStorage.setItem(key, value);
     return true;
-  } catch (err) {
-    console.warn(`[SafeStorage] Unable to save UI/session preference "${key}":`, err);
+  } catch {
     return false;
   }
 }
 
 /**
- * Debounced writer for UI preferences only (blocks all business record keys).
+ * Debounced writer for cosmetic UI preferences only (blocks all records & sessions).
  */
 const _pendingStorageTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -118,7 +113,7 @@ export function scheduleSafeLocalStorageSet(
   delayMs: number = 350
 ): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
-  if (isBusinessRecordStorageKey(key)) return;
+  if (!isAllowedCosmeticUiKey(key)) return;
 
   const existing = _pendingStorageTimers.get(key);
   if (existing) clearTimeout(existing);
@@ -134,8 +129,8 @@ export function scheduleSafeLocalStorageSet(
 }
 
 /**
- * Purges any legacy business records previously cached in Chrome localStorage OR sessionStorage
- * so stale browser data can never shadow or overwrite Cloud DB records.
+ * Purges ALL business records, user sessions, passcodes, and cached settings
+ * from Chrome localStorage AND sessionStorage on startup.
  */
 export function purgeLegacyBrowserBusinessData(): number {
   if (typeof window === 'undefined') return 0;
@@ -147,7 +142,7 @@ export function purgeLegacyBrowserBusinessData(): number {
       const keysToRemove: string[] = [];
       for (let i = 0; i < storage.length; i++) {
         const k = storage.key(i);
-        if (k && isBusinessRecordStorageKey(k)) {
+        if (k && !isAllowedCosmeticUiKey(k)) {
           keysToRemove.push(k);
         }
       }

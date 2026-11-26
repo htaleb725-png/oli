@@ -70,6 +70,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     checkIfCitizenBlocked,
     archiveDailyWorkItems,
     restoreDailyWorkItem,
+    addAuditLog,
     currentUser,
     systemSettings,
     updateSystemSettings,
@@ -81,8 +82,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'special' | 'general' | 'rejected' | 'completed'>('all');
   const [districtFilter, setDistrictFilter] = useState('all');
-  const [showArchivedInDaily, setShowArchivedInDaily] = useState(false);
-  const [archiveConfirmMode, setArchiveConfirmMode] = useState<'none' | 'completed' | 'all_visible'>('none');
+  const [archiveConfirmMode, setArchiveConfirmMode] = useState<'none' | 'imported' | 'completed' | 'all_visible'>('none');
   const [isEditingManualCounter, setIsEditingManualCounter] = useState(false);
   const [manualCounterInput, setManualCounterInput] = useState('');
 
@@ -98,10 +98,17 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   // Auto-reset page when filter or search changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, districtFilter, showArchivedInDaily]);
+  }, [searchTerm, statusFilter, districtFilter]);
 
   // Modals state
   const [completingTarget, setCompletingTarget] = useState<{ citizen: Citizen; request?: OfficeRequest } | null>(null);
+  const [allowBlockedOverride, setAllowBlockedOverride] = useState<boolean>(false);
+  const [blockedCompleteWarningTarget, setBlockedCompleteWarningTarget] = useState<{
+    citizen: Citizen;
+    request?: OfficeRequest;
+    matchedBlockedCitizen: Citizen;
+    reason: string;
+  } | null>(null);
   const [editingTarget, setEditingTarget] = useState<{ citizen: Citizen; request?: OfficeRequest } | null>(null);
   const [blockingTarget, setBlockingTarget] = useState<Citizen | null>(null);
   const [blockReasonInput, setBlockReasonInput] = useState('');
@@ -111,6 +118,10 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [deletingTarget, setDeletingTarget] = useState<{ citizen: Citizen; request?: OfficeRequest } | null>(null);
   const [rejectingTarget, setRejectingTarget] = useState<{ citizen: Citizen; request: OfficeRequest } | null>(null);
   const [rejectionReasonInput, setRejectionReasonInput] = useState('');
+
+  const canProceedCautiouslyWithBlocked = ['developer', 'director', 'deputy', 'admin', 'admin_officer'].includes(
+    currentUser?.Role || ''
+  );
 
   const showBlockBanner = (type: 'success' | 'error', text: string) => {
     setBlockStatusBanner({ type, text });
@@ -406,10 +417,11 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   };
 
   // Open "إكمال الطلب"
-  const handleOpenCompleteRequest = (citizen: Citizen, req?: OfficeRequest) => {
+  const handleOpenCompleteRequest = (citizen: Citizen, req?: OfficeRequest, overrideBlocked: boolean = false) => {
     const todayStr = new Date().toISOString().split('T')[0];
     const initialOutgoing = req?.OutgoingNumber || generateOutgoingNumber();
 
+    setAllowBlockedOverride(overrideBlocked);
     setCompletingTarget({ citizen, request: req });
     setFormApplicantName(citizen.FullName || req?.CitizenName || '');
     setFormEntity(req?.Entity || 'مجلس الوزراء / الدوائر ذات العلاقة');
@@ -434,7 +446,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
 
     const { citizen, request } = completingTarget;
     const liveBlockCheck = checkIfCitizenBlocked(citizen.FullName, citizen.Phone1);
-    if (citizen.IsBlocked || liveBlockCheck.isBlocked) {
+    const isCurrentlyBlocked = Boolean(citizen.IsBlocked || liveBlockCheck.isBlocked);
+    if (isCurrentlyBlocked && !allowBlockedOverride) {
       const bCit = liveBlockCheck.citizen || citizen;
       showBlockBanner(
         'error',
@@ -442,6 +455,14 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       );
       setCompletingTarget(null);
       return;
+    }
+    if (isCurrentlyBlocked && allowBlockedOverride) {
+      const bCit = liveBlockCheck.citizen || citizen;
+      addAuditLog(
+        'استمرار بحذر في إكمال طلب لمحظور',
+        'قسم الإدارة',
+        `تم إكمال الطلب بحذر للمراجع المحظور (${bCit.FullName}) بصلاحية (${currentUser?.FullName || 'موظف الإدارة'}) — سبب الحظر المسجل: ${bCit.BlockReason || 'غير محدد'}`
+      );
     }
     const finalOutgoingNumber = formOutgoingNumber.trim() || generateOutgoingNumber();
     const finalOutgoingDate = formOutgoingDate.trim() || new Date().toISOString().split('T')[0];
@@ -699,29 +720,44 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return count;
   }, [citizens, requestsByCitizenMap]);
 
-  // Aggregate daily records: strictly exclude archived/restored records from default "العمل اليومي"
-  // while keeping an optional toggle (showArchivedInDaily) to inspect archived items without deleting anything
+  // Helper: identify imported / database-filtered / non-new records inside Daily Work
+  const isImportedOrNonNewItem = (cit: Citizen, citReqs: OfficeRequest[]): boolean => {
+    const importRegex = /استيراد|إكسل|اكسل|مسترد|تصفية|ملف|مقاطعة|سابق|أرشيف/i;
+    if (cit.IsHistoricalImported) return true;
+    if (importRegex.test(String(cit.ReferralSource || '')) || importRegex.test(String(cit.CreatedBy || ''))) return true;
+    if (String(cit.Citizen_ID || '').includes('-IMP-') || String(cit.Citizen_ID || '').startsWith('IMP')) return true;
+    return citReqs.some(
+      r =>
+        Boolean(r.IsHistoricalImported) ||
+        String(r.Request_ID || '').includes('-IMP-') ||
+        importRegex.test(String(r.CreatedBy || '')) ||
+        importRegex.test(String(r.RegisteredVia || '')) ||
+        importRegex.test(String(r.OtherNotes || ''))
+    );
+  };
+
+  // Aggregate daily records: strictly show ONLY active (non-archived) records in Daily Work.
+  // Archived records stay 100% preserved in Firestore, Google Sheet, and the Archive section.
   const dailyRecords = useMemo(() => {
     return (citizens || [])
       .filter(cit => {
         const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
-        const archived = isCitizenArchivedOrRestored(cit, citRequests);
-        return showArchivedInDaily ? archived : !archived;
+        return !isCitizenArchivedOrRestored(cit, citRequests);
       })
       .map(cit => {
         const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
-        const isArchived = isCitizenArchivedOrRestored(cit, citRequests);
-        // Determine overall director state
         const hasRejection = citRequests.some(r => r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض');
         const hasSpecial = citRequests.some(r => r.DirectorDecision === 'خاص');
         const hasGeneral = citRequests.some(r => r.DirectorDecision === 'عام');
         const hasPending = citRequests.some(r => !r.DirectorDecision && r.ProcessingStatus !== 'منجز');
         const hasCompleted = citRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber));
+        const isImportedOrFiltered = isImportedOrNonNewItem(cit, citRequests);
 
         return {
           citizen: cit,
           requests: citRequests,
-          isArchived,
+          isArchived: false,
+          isImportedOrFiltered,
           hasRejection,
           hasSpecial,
           hasGeneral,
@@ -729,18 +765,28 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           hasCompleted
         };
       });
-  }, [citizens, requestsByCitizenMap, showArchivedInDaily]);
+  }, [citizens, requestsByCitizenMap]);
 
-  const completedActiveDailyItems = useMemo(
-    () => (showArchivedInDaily ? [] : dailyRecords.filter(r => r.hasCompleted || r.hasRejection)),
-    [dailyRecords, showArchivedInDaily]
+  const importedActiveDailyItems = useMemo(
+    () => dailyRecords.filter(r => r.isImportedOrFiltered),
+    [dailyRecords]
   );
 
-  const handleConfirmArchiveClear = (mode: 'completed' | 'all_visible') => {
-    const targets = mode === 'completed' ? completedActiveDailyItems : dailyRecords;
+  const completedActiveDailyItems = useMemo(
+    () => dailyRecords.filter(r => r.hasCompleted || r.hasRejection),
+    [dailyRecords]
+  );
+
+  const handleConfirmArchiveClear = (mode: 'imported' | 'completed' | 'all_visible') => {
+    const targets =
+      mode === 'imported'
+        ? importedActiveDailyItems
+        : mode === 'completed'
+        ? completedActiveDailyItems
+        : dailyRecords;
     const citizenIds = targets.map(t => t.citizen.Citizen_ID).filter(Boolean);
     const requestIds = targets.flatMap(t => t.requests.map(r => r.Request_ID)).filter(Boolean);
-    if (citizenIds.length === 0) {
+    if (citizenIds.length === 0 && requestIds.length === 0) {
       setArchiveConfirmMode('none');
       return;
     }
@@ -748,14 +794,17 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       citizenIds,
       requestIds,
       reason:
-        mode === 'completed'
-          ? 'أرشفة وإخفاء المعاملات المكتملة من شاشة العمل اليومي (محفوظة بالكامل في قاعدة البيانات والأرشيف)'
-          : 'تفريغ شاشة العمل اليومي ونقل السجلات إلى الأرشيف بدون حذف من قاعدة البيانات'
+        mode === 'imported'
+          ? 'أرشفة وإخراج السجلات المستردة/المصفاة من شاشة العمل اليومي (محفوظة بالكامل في Firestore و Google Sheet)'
+          : mode === 'completed'
+          ? 'أرشفة وإخراج المعاملات المكتملة من شاشة العمل اليومي (محفوظة بالكامل في Firestore و Google Sheet)'
+          : 'أرشفة وإخراج السجلات المعروضة من شاشة العمل اليومي مع بقائها محفوظة بالكامل في القاعدة والأرشيف'
     });
     setArchiveConfirmMode('none');
+    setCurrentPage(1);
     showBlockBanner(
       'success',
-      `✓ تم نقل (${res.archivedCitizens}) سجل من شاشة العمل اليومي إلى الأرشيف بنجاح — كافة البيانات محفوظة 100% في Firestore و Google Sheet دون أي حذف.`
+      `✓ تمت أرشفة (${res.archivedCitizens}) سجل وإخراجها فوراً من العمل اليومي (archived: true) — محفوظة 100% في Firebase Firestore و Google Sheet والأرشيف دون أي حذف.`
     );
   };
 
@@ -912,83 +961,94 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           </button>
 
           <div className="mr-auto flex items-center gap-2 flex-wrap">
-            {/* Optional Toggle to View/Hide Archived Records */}
-            <button
-              type="button"
-              onClick={() => {
-                setShowArchivedInDaily(prev => !prev);
-                setArchiveConfirmMode('none');
-              }}
-              className={`px-3 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1.5 border ${
-                showArchivedInDaily
-                  ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-sm'
-                  : 'bg-white/10 text-slate-100 hover:bg-white/20 border-white/20'
-              }`}
-              title="عرض أو إخفاء السجلات المؤرشفة والمستردة (تبقى محفوظة بالكامل في قاعدة البيانات والأرشيف)"
-            >
-              <Archive className="w-3.5 h-3.5" />
-              <span>
-                {showArchivedInDaily
-                  ? `العودة للعمل اليومي النشط`
-                  : `عرض المؤرشف (${archivedDailyCount.toLocaleString()})`}
-              </span>
-            </button>
+            {/* Direct In-Place Archive Button — archives records (archived: true) and clears them from Daily Work WITHOUT opening Archive screen */}
+            {importedActiveDailyItems.length > 0 && (
+              <button
+                type="button"
+                onClick={() => handleConfirmArchiveClear('imported')}
+                className="px-3 py-1 rounded-lg font-black transition-all cursor-pointer flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-300 shadow-sm active:scale-95"
+                title="تحديث حالة السجلات المستردة/المصفاة إلى مؤرشف (archived: true) وإخراجها فوراً من العمل اليومي دون حذفها من القاعدة"
+              >
+                <Archive className="w-3.5 h-3.5" />
+                <span>مؤرشف — إخراج المسترد/المصفى ({importedActiveDailyItems.length})</span>
+              </button>
+            )}
 
-            {/* Quick Non-Destructive Clear / Archive from Daily Work Display */}
-            {!showArchivedInDaily && dailyRecords.length > 0 && (
+            {dailyRecords.length > 0 && (
               <button
                 type="button"
                 onClick={() =>
                   setArchiveConfirmMode(prev =>
                     prev === 'none'
-                      ? completedActiveDailyItems.length > 0
+                      ? importedActiveDailyItems.length > 0
+                        ? 'imported'
+                        : completedActiveDailyItems.length > 0
                         ? 'completed'
                         : 'all_visible'
                       : 'none'
                   )
                 }
                 className="px-3 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 border border-emerald-400/40"
-                title="نقل العناصر المكتملة أو المعروضة من شاشة العمل اليومي إلى الأرشيف بدون حذف أي سجل من قاعدة البيانات"
+                title="تحويل السجلات إلى مؤرشف (archived: true) وإخراجها من العمل اليومي مع بقائها محفوظة بالكامل في القاعدة والأرشيف"
               >
                 <Archive className="w-3.5 h-3.5 text-emerald-300" />
                 <span>
                   {completedActiveDailyItems.length > 0
-                    ? `أرشفة وإخفاء المكتمل (${completedActiveDailyItems.length})`
-                    : `تفريغ العرض اليومي للأرشيف (${dailyRecords.length})`}
+                    ? `مؤرشف / إخراج المكتمل (${completedActiveDailyItems.length})`
+                    : `مؤرشف / تفريغ العمل اليومي (${dailyRecords.length})`}
                 </span>
               </button>
+            )}
+
+            {archivedDailyCount > 0 && (
+              <span
+                className="px-2.5 py-1 rounded-lg bg-white/10 text-slate-200 border border-white/15 text-[11px] font-bold flex items-center gap-1"
+                title="عدد السجلات المؤرشفة المحفوظة بالكامل في قاعدة البيانات وقسم الأرشيف"
+              >
+                <Archive className="w-3 h-3 text-amber-300" />
+                <span>المحفوظ بالأرشيف: {archivedDailyCount.toLocaleString()}</span>
+              </span>
             )}
           </div>
         </div>
 
-        {/* Safe Non-Destructive Archive Confirmation Bar */}
-        {archiveConfirmMode !== 'none' && !showArchivedInDaily && (
+        {/* Safe Non-Destructive In-Place Archive Bar (Never leaves Daily Work & Never deletes) */}
+        {archiveConfirmMode !== 'none' && (
           <div className="mt-3 p-3 rounded-xl bg-slate-950/60 border border-emerald-400/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
             <div className="space-y-0.5">
               <div className="font-black text-emerald-300 flex items-center gap-1.5">
                 <Archive className="w-4 h-4 shrink-0" />
-                <span>تأكيد إخفاء السجلات من شاشة العمل اليومي (حماية كاملة لقاعدة البيانات)</span>
+                <span>أرشفة وإخراج من العمل اليومي (يبقى كل شيء محفوظاً في القاعدة والأرشيف)</span>
               </div>
               <p className="text-[11px] text-slate-200/90">
-                هذا الإجراء ينقل السجلات من قائمة العمل اليومي إلى الأرشيف فقط عبر تحديث حالة الأرشفة، ولا يحذف أي سجل من Firebase Firestore أو Google Sheet نهائياً.
+                سيتم تعيين حالة السجلات إلى «مؤرشف» في Firebase Firestore و Google Sheet وإخراجها فوراً من عرض العمل اليومي مع بقائك في شاشتك الحالية دون أي حذف.
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              {importedActiveDailyItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handleConfirmArchiveClear('imported')}
+                  className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-[11px] cursor-pointer transition-colors"
+                >
+                  أرشفة المسترد/المصفى ({importedActiveDailyItems.length})
+                </button>
+              )}
               {completedActiveDailyItems.length > 0 && (
                 <button
                   type="button"
                   onClick={() => handleConfirmArchiveClear('completed')}
                   className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] cursor-pointer transition-colors"
                 >
-                  إخفاء المكتمل فقط ({completedActiveDailyItems.length})
+                  أرشفة المكتمل ({completedActiveDailyItems.length})
                 </button>
               )}
               <button
                 type="button"
                 onClick={() => handleConfirmArchiveClear('all_visible')}
-                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] cursor-pointer transition-colors"
+                className="px-3 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 text-white font-black text-[11px] cursor-pointer transition-colors"
               >
-                تفريغ الكل للأرشيف ({dailyRecords.length})
+                أرشفة الكل المعروض ({dailyRecords.length})
               </button>
               <button
                 type="button"
@@ -998,22 +1058,6 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                 إلغاء
               </button>
             </div>
-          </div>
-        )}
-
-        {/* Notice when viewing Archived Records */}
-        {showArchivedInDaily && (
-          <div className="mt-3 p-2.5 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-100 text-xs font-bold flex items-center justify-between gap-2">
-            <span>
-              📦 أنت تستعرض الآن السجلات المؤرشفة / المستردة ({dailyRecords.length.toLocaleString()} سجل) — جميعها محفوظة في Firestore و Google Sheet ويمكنك إعادة أي سجل للعمل اليومي بنقرة واحدة.
-            </span>
-            <button
-              type="button"
-              onClick={() => setShowArchivedInDaily(false)}
-              className="px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 font-black text-[11px] cursor-pointer shrink-0"
-            >
-              إخفاء المؤرشف
-            </button>
           </div>
         )}
       </div>
@@ -1668,23 +1712,30 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                   <button
                     onClick={() => {
                       if (isBlocked) {
-                        showBlockBanner(
-                          'error',
-                          `⛔ هذا المراجع مدرج في القائمة السوداء (السبب: ${cit.BlockReason || liveBlockInfo.reason || 'غير محدد'}) — لا يمكن إكمال المعاملة أو إصدار صادر قبل إلغاء الحظر.`
-                        );
+                        const matchedCit = liveBlockInfo.citizen || cit;
+                        setBlockedCompleteWarningTarget({
+                          citizen: cit,
+                          request: primaryReq,
+                          matchedBlockedCitizen: matchedCit,
+                          reason: matchedCit.BlockReason || cit.BlockReason || liveBlockInfo.reason || 'مدرج في القائمة السوداء'
+                        });
                         return;
                       }
-                      handleOpenCompleteRequest(cit, primaryReq);
+                      handleOpenCompleteRequest(cit, primaryReq, false);
                     }}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs transition-transform active:scale-95 ${
                       isBlocked
-                        ? 'bg-slate-300 dark:bg-slate-700 text-slate-500 cursor-not-allowed opacity-80'
+                        ? 'bg-rose-600 hover:bg-rose-700 text-white ring-2 ring-rose-300 dark:ring-rose-800'
                         : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white'
                     }`}
-                    title={isBlocked ? 'محظور بالقائمة السوداء - لا يمكن إكمال الطلب' : 'استكمال بيانات المعاملة وتوثيق رقم الصادر الرسمي'}
+                    title={isBlocked ? 'تنبيه: هذا الاسم محظور — اضغط لعرض خيارات إلغاء الحظر أو الاستمرار بحذر' : 'استكمال بيانات المعاملة وتوثيق رقم الصادر الرسمي'}
                   >
-                    <CheckCircle2 className="w-4 h-4 text-emerald-300" />
-                    <span>إكمال الطلب</span>
+                    {isBlocked ? (
+                      <AlertTriangle className="w-4 h-4 text-amber-200" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-300" />
+                    )}
+                    <span>{isBlocked ? 'إكمال الطلب (محظور ⚠️)' : 'إكمال الطلب'}</span>
                   </button>
 
                   {/* Edit Button (Button 2) */}
@@ -1712,44 +1763,26 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     <span>صور و Drive 🖼️</span>
                   </button>
 
-                  {/* Non-Destructive Hide to Archive / Restore to Daily Work Button */}
-                  {item.isArchived ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        restoreDailyWorkItem(
-                          cit.Citizen_ID,
-                          citReqs.map(r => r.Request_ID)
-                        );
-                        showBlockBanner('success', `✓ تمت إعادة (${cit.FullName}) إلى عرض العمل اليومي النشط.`);
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer border border-amber-200 dark:border-amber-800"
-                      title="إعادة هذا السجل للعمل اليومي النشط"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
-                      <span>إعادة للعمل اليومي</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        archiveDailyWorkItems({
-                          citizenIds: [cit.Citizen_ID],
-                          requestIds: citReqs.map(r => r.Request_ID),
-                          reason: 'إخفاء فردي من العمل اليومي إلى الأرشيف (بدون حذف من قاعدة البيانات)'
-                        });
-                        showBlockBanner(
-                          'success',
-                          `✓ تم إخفاء (${cit.FullName}) من شاشة العمل اليومي ونقله للأرشيف — محفوظ بالكامل في Firestore و Google Sheet.`
-                        );
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-amber-50 dark:bg-slate-800 dark:hover:bg-amber-950/40 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer border border-slate-200 dark:border-slate-700"
-                      title="إخفاء من العمل اليومي فقط (يبقى محفوظاً في Firestore و Google Sheet والأرشيف بدون حذف)"
-                    >
-                      <Archive className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                      <span>إخفاء للأرشيف</span>
-                    </button>
-                  )}
+                  {/* Direct 1-Click In-Place Archive Button ("مؤرشف") — sets archived: true in Firestore & Google Sheet and clears from Daily Work immediately without leaving screen */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      archiveDailyWorkItems({
+                        citizenIds: [cit.Citizen_ID],
+                        requestIds: citReqs.map(r => r.Request_ID),
+                        reason: 'أرشفة وإخراج فردي من العمل اليومي (محفوظ بالكامل في القاعدة والأرشيف)'
+                      });
+                      showBlockBanner(
+                        'success',
+                        `✓ تمت أرشفة (${cit.FullName}) وإخراجه فوراً من العمل اليومي — محفوظ 100% في Firestore و Google Sheet والأرشيف دون حذف.`
+                      );
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-200 text-xs font-black flex items-center gap-1.5 cursor-pointer border border-amber-300 dark:border-amber-700 transition-transform active:scale-95"
+                    title="تحويل السجل إلى مؤرشف (archived: true) وإخراجه من العمل اليومي فوراً دون حذفه من قاعدة البيانات"
+                  >
+                    <Archive className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                    <span>مؤرشف</span>
+                  </button>
 
                   {/* Delete Button (Button 3) */}
                   <button
@@ -2000,19 +2033,23 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
 
             <form onSubmit={handleSaveCompletedRequest} className="space-y-4">
               {/* Blacklist Warning inside complete request modal if citizen is blocked */}
-              {completingTarget.citizen.IsBlocked && (
-                <div className="p-3.5 rounded-2xl bg-red-50 border-2 border-red-500 text-red-950 space-y-1 shadow-sm">
+              {(completingTarget.citizen.IsBlocked || allowBlockedOverride) && (
+                <div className="p-3.5 rounded-2xl bg-red-50 dark:bg-red-950/50 border-2 border-red-500 text-red-950 dark:text-red-100 space-y-1 shadow-sm">
                   <div className="flex items-center gap-2">
                     <span className="text-xl">⛔</span>
-                    <h4 className="font-black text-xs text-red-900">تنبيه فوري: هذا المراجع مدرج في «القائمة السوداء» (الأشخاص المحظورين)!</h4>
+                    <h4 className="font-black text-xs text-red-900 dark:text-red-200">
+                      تنبيه: هذا الاسم محظور — {allowBlockedOverride ? 'وضع الاستمرار بحذر مُفعّل' : 'مدرج في القائمة السوداء'}
+                    </h4>
                   </div>
-                  <p className="text-[11px] text-red-800 font-bold">
+                  <p className="text-[11px] text-red-800 dark:text-red-200 font-bold">
                     سبب الحظر: {completingTarget.citizen.BlockReason || 'غير محدد'}
                     {completingTarget.citizen.BlockedAt ? ` • تاريخ الحظر: ${completingTarget.citizen.BlockedAt}` : ''}
                     {completingTarget.citizen.BlockedBy ? ` • بواسطة: ${completingTarget.citizen.BlockedBy}` : ''}
                   </p>
-                  <p className="text-[10px] text-red-700 font-black">
-                    🚫 يمنع النظام استكمال المعاملة أو إصدار كتاب صادر رسمي لهذا الشخص قبل إلغاء الحظر من قسم الإدارة.
+                  <p className="text-[10px] text-red-700 dark:text-red-300 font-black">
+                    {allowBlockedOverride
+                      ? '⚠️ تم تفعيل الاستمرار بحذر وفق صلاحيتك — سيتم توثيق هذا الإجراء تلقائياً في سجل التدقيق الإداري.'
+                      : '🚫 يمنع النظام استكمال المعاملة أو إصدار كتاب صادر رسمي لهذا الشخص قبل إلغاء الحظر أو تفعيل خيار الاستمرار بحذر.'}
                   </p>
                 </div>
               )}
@@ -3156,6 +3193,100 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
               >
                 <XCircle className="w-4 h-4 text-rose-200" />
                 <span>تثبيت قرار الرفض</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Blocked Citizen Warning Modal on "إكمال الطلب" */}
+      {blockedCompleteWarningTarget && (
+        <div
+          className="fixed inset-0 z-[70] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+          dir="rtl"
+        >
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border-2 border-rose-500 max-w-lg w-full p-6 shadow-2xl space-y-4 text-right animate-in zoom-in-95">
+            <div className="flex items-start gap-3 pb-3 border-b border-rose-100 dark:border-rose-900/60">
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 dark:bg-rose-950/70 border border-rose-300 dark:border-rose-800 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6 text-rose-600 dark:text-rose-400" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <span className="inline-block px-2.5 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-black mb-1">
+                  تنبيه القائمة السوداء الفوري
+                </span>
+                <h3 className="text-base font-black text-rose-700 dark:text-rose-300">
+                  تنبيه: هذا الاسم محظور!
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 font-semibold">
+                  المراجع <strong className="text-slate-900 dark:text-white">{blockedCompleteWarningTarget.citizen.FullName}</strong> مدرج ضمن قائمة المحظورين في النظام.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/70 text-xs space-y-1.5">
+              <div className="flex items-start gap-2">
+                <span className="font-black text-rose-700 dark:text-rose-300 shrink-0">سبب الحظر:</span>
+                <span className="font-bold text-slate-900 dark:text-white">
+                  {blockedCompleteWarningTarget.reason}
+                </span>
+              </div>
+              {blockedCompleteWarningTarget.matchedBlockedCitizen.BlockedAt && (
+                <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                  تاريخ الحظر: <span className="font-mono font-bold">{blockedCompleteWarningTarget.matchedBlockedCitizen.BlockedAt}</span>
+                  {blockedCompleteWarningTarget.matchedBlockedCitizen.BlockedBy
+                    ? ` • بواسطة: ${blockedCompleteWarningTarget.matchedBlockedCitizen.BlockedBy}`
+                    : ''}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const { citizen, request, matchedBlockedCitizen } = blockedCompleteWarningTarget;
+                  unblockCitizen(matchedBlockedCitizen.Citizen_ID);
+                  if (citizen.Citizen_ID !== matchedBlockedCitizen.Citizen_ID) {
+                    unblockCitizen(citizen.Citizen_ID);
+                  }
+                  const unblockedCitizen: Citizen = {
+                    ...citizen,
+                    IsBlocked: false,
+                    BlockReason: undefined,
+                    BlockedAt: undefined,
+                    BlockedBy: undefined
+                  };
+                  setBlockedCompleteWarningTarget(null);
+                  showBlockBanner('success', `✓ تم إلغاء الحظر عن (${citizen.FullName}) بنجاح — يمكنك إكمال الطلب الآن.`);
+                  handleOpenCompleteRequest(unblockedCitizen, request, false);
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-emerald-600/20 transition-all active:scale-[0.99]"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>إلغاء الحظر وإكمال الطلب</span>
+              </button>
+
+              {canProceedCautiouslyWithBlocked && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const { citizen, request } = blockedCompleteWarningTarget;
+                    setBlockedCompleteWarningTarget(null);
+                    handleOpenCompleteRequest(citizen, request, true);
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all active:scale-[0.99]"
+                >
+                  <AlertTriangle className="w-4 h-4" />
+                  <span>الاستمرار بحذر في إكمال الطلب (مع إبقاء الحظر)</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setBlockedCompleteWarningTarget(null)}
+                className="w-full py-2 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs cursor-pointer transition-colors"
+              >
+                تراجع وإلغاء
               </button>
             </div>
           </div>

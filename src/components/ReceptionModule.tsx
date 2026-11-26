@@ -563,28 +563,174 @@ export const ReceptionModule: React.FC = () => {
     return matchCitizen || null;
   }, [firstName, fatherName, grandFatherName, greatGrandFatherName, surname, phone1, citizens]);
 
-  // فحص وتدقيق القائمة السوداء الفوري أثناء كتابة الاسم أو رقم الهاتف لمنع المراجع المحظور
-  const blockedCitizenMatch = useMemo(() => {
-    // 1. إذا كان المواطن المطابق مسبقاً محظوراً
-    if (existingMatchedCitizen && existingMatchedCitizen.IsBlocked) {
-      return existingMatchedCitizen;
+  // دالة توحيد النص العربي (إزالة الهمزات والتشكيل وتوحيد المسافات وحالة الأحرف) لفحص المحظورين بدقة حية
+  const normalizeBlacklistName = (val?: string): string =>
+    String(val || '')
+      .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+      .toLowerCase()
+      .replace(/[إأآاٱ]/g, 'ا')
+      .replace(/ى/g, 'ي')
+      .replace(/ة/g, 'ه')
+      .replace(/ؤ/g, 'و')
+      .replace(/ئ/g, 'ي')
+      .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  // مطابقة حية دقيقة مع قائمة المحظورين: تظهر فور التطابق وتختفي فوراً عند حذف أو تعديل أي جزء من الاسم
+  const matchLiveBlockedCitizen = (
+    nameFields: {
+      first: string;
+      father: string;
+      grand: string;
+      great: string;
+      surname: string;
+    },
+    phoneInput: string
+  ): Citizen | null => {
+    const blockedList = citizens.filter(c => c && c.IsBlocked);
+    if (blockedList.length === 0) return null;
+
+    const cleanSurname =
+      nameFields.surname && nameFields.surname !== 'عام / بدون لقب' ? nameFields.surname : '';
+    const normCore = normalizeBlacklistName(
+      [nameFields.first, nameFields.father, nameFields.grand, nameFields.great].filter(Boolean).join(' ')
+    );
+    const normFull = normalizeBlacklistName(
+      [nameFields.first, nameFields.father, nameFields.grand, nameFields.great, cleanSurname]
+        .filter(Boolean)
+        .join(' ')
+    );
+    const coreWords = normCore.split(' ').filter(Boolean);
+    const fullWords = normFull.split(' ').filter(Boolean);
+
+    const normalizePhoneDigits = (p?: string) =>
+      String(p || '')
+        .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+        .replace(/[^0-9]/g, '');
+
+    const inputPhoneDigits = normalizePhoneDigits(phoneInput);
+
+    // 1. مطابقة حية للاسم المدخل حالياً فقط (بدون مطابقة جزئية لكلمتين تبقي التحذير معلقاً بعد المسح)
+    if (normFull.length > 0) {
+      const matchedByName = blockedList.find(c => {
+        const citSurname = c.Surname && c.Surname !== 'عام / بدون لقب' ? c.Surname : '';
+        const citCandidates = Array.from(
+          new Set(
+            [
+              normalizeBlacklistName(c.FullName),
+              normalizeBlacklistName(
+                [c.FirstName, c.FatherName, c.GrandFatherName, c.GreatGrandFatherName, citSurname]
+                  .filter(Boolean)
+                  .join(' ')
+              ),
+              normalizeBlacklistName(
+                [c.FirstName, c.FatherName, c.GrandFatherName, c.GreatGrandFatherName]
+                  .filter(Boolean)
+                  .join(' ')
+              )
+            ].filter(Boolean)
+          )
+        );
+
+        for (const normCit of citCandidates) {
+          // تطابق كامل مباشر بعد التوحيد (ينطبق على الأسماء الثنائية أو الثلاثية أو الرباعية بالضبط)
+          if (normFull === normCit || (normCore && normCore === normCit)) {
+            return true;
+          }
+
+          const citWords = normCit.split(' ').filter(Boolean);
+          // إذا كان الاسم المكتوب ثلاثياً أو أكثر، نطابق بدقة كل كلمة مكتوبة (لا يطابق إذا حُذفت الكلمة الثالثة أو تغيّرت أي كلمة)
+          const checkWords = coreWords.length >= 3 ? coreWords : fullWords;
+          if (checkWords.length >= 3 && citWords.length >= 3) {
+            const compareLen = Math.min(checkWords.length, citWords.length);
+            let allMatch = true;
+            for (let i = 0; i < compareLen; i++) {
+              if (checkWords[i] !== citWords[i]) {
+                allMatch = false;
+                break;
+              }
+            }
+            if (allMatch) {
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+
+      if (matchedByName) return matchedByName;
     }
-    // 2. فحص الاسم المكتوب حالياً
-    const composed = [firstName, fatherName, grandFatherName, greatGrandFatherName, surname && surname !== 'عام / بدون لقب' ? surname : '']
-      .map(s => s.trim())
-      .filter(Boolean)
-      .join(' ');
-    if (composed.length >= 3) {
-      const res = checkIfCitizenBlocked(composed);
-      if (res.isBlocked && res.citizen) return res.citizen;
+
+    // 2. مطابقة رقم الهاتف الكامل فقط (10 أرقام فأكثر) وتختفي فور تعديل أو مسح الرقم
+    if (inputPhoneDigits.length >= 10) {
+      const last10 = inputPhoneDigits.slice(-10);
+      const matchedByPhone = blockedList.find(c => {
+        const p1 = normalizePhoneDigits(c.Phone1);
+        const p2 = normalizePhoneDigits(c.Phone2);
+        return (
+          (p1.length >= 10 && p1.slice(-10) === last10) ||
+          (p2.length >= 10 && p2.slice(-10) === last10)
+        );
+      });
+      if (matchedByPhone) return matchedByPhone;
     }
-    // 3. فحص رقم الهاتف
-    if (phone1.trim().length >= 8) {
-      const resPhone = checkIfCitizenBlocked(phone1.trim());
-      if (resPhone.isBlocked && resPhone.citizen) return resPhone.citizen;
-    }
+
     return null;
-  }, [existingMatchedCitizen, firstName, fatherName, grandFatherName, greatGrandFatherName, surname, phone1, checkIfCitizenBlocked]);
+  };
+
+  // فحص وتدقيق القائمة السوداء الفوري الحي أثناء كتابة أو تعديل أو مسح الاسم في الاستعلامات
+  const blockedCitizenMatch = useMemo(() => {
+    return matchLiveBlockedCitizen(
+      {
+        first: firstName,
+        father: fatherName,
+        grand: grandFatherName,
+        great: greatGrandFatherName,
+        surname
+      },
+      phone1
+    );
+  }, [citizens, firstName, fatherName, grandFatherName, greatGrandFatherName, surname, phone1]);
+
+  // استخراج سبب الحظر أو سبب الرفض المسجل للمواطن المحظور
+  const blockedCitizenReason = useMemo(() => {
+    if (!blockedCitizenMatch) return '';
+    if (blockedCitizenMatch.BlockReason && blockedCitizenMatch.BlockReason.trim()) {
+      return blockedCitizenMatch.BlockReason.trim();
+    }
+    const rejectedReq = requests.find(
+      r =>
+        r.Citizen_ID === blockedCitizenMatch.Citizen_ID &&
+        (r.RejectionReason || r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض')
+    );
+    return (
+      rejectedReq?.RejectionReason?.trim() ||
+      rejectedReq?.DirectorNotes?.trim() ||
+      'مدرج في قائمة المحظورين'
+    );
+  }, [blockedCitizenMatch, requests]);
+
+  // مسح أي رسالة خطأ سابقة فوراً بمجرد تعديل الاسم وعدم وجود تطابق مع المحظورين
+  useEffect(() => {
+    if (!blockedCitizenMatch && errorMessage && (errorMessage.includes('محظور') || errorMessage.includes('القائمة السوداء'))) {
+      setErrorMessage(null);
+    }
+  }, [blockedCitizenMatch, errorMessage]);
+
+  // فحص حي للمحظورين في نموذج المقابلات أيضاً
+  const intvBlockedCitizenMatch = useMemo(() => {
+    return matchLiveBlockedCitizen(
+      {
+        first: intvFirstName,
+        father: intvFatherName,
+        grand: intvGrandFatherName,
+        great: intvGreatGrandFatherName,
+        surname: intvSurname
+      },
+      intvPhone1
+    );
+  }, [citizens, intvFirstName, intvFatherName, intvGrandFatherName, intvGreatGrandFatherName, intvSurname, intvPhone1]);
 
   // Filtered citizens matching interview search query (e.g. حسن طالب)
   const matchedInterviewCitizens = useMemo(() => {
@@ -866,11 +1012,10 @@ export const ReceptionModule: React.FC = () => {
       return;
     }
 
-    // التحقق الصارم من القائمة السوداء: إظهار تنبيه فوري يوضح سبب الحظر ومنع إتمام العملية نهائياً
-    const targetBlocked = blockedCitizenMatch || (existingMatchedCitizen && existingMatchedCitizen.IsBlocked ? existingMatchedCitizen : null);
-    if (targetBlocked) {
+    // التحقق الصارم من القائمة السوداء بالمطابقة الحية الدقيقة: يمنع التسجيل فقط إذا كان الاسم الحالي مطابقاً فعلياً لمحظور
+    if (blockedCitizenMatch) {
       setErrorMessage(
-        `⛔ تنبيه فوري أمني ورقابي: المواطن "${targetBlocked.FullName}" مدرج في «القائمة السوداء» (سبب الحظر: ${targetBlocked.BlockReason || 'غير محدد'}) — يمنع النظام تسجيل أي طلب جديد لهذا الشخص نهائياً.`
+        `⛔ هذا محظور — المواطن "${blockedCitizenMatch.FullName}" مدرج في قائمة المحظورين (سبب الرفض / الحظر: ${blockedCitizenReason || 'غير محدد'}) — يمنع النظام تسجيل طلب جديد لهذا الشخص.`
       );
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
@@ -881,16 +1026,6 @@ export const ReceptionModule: React.FC = () => {
     if (greatGrandFatherName.trim()) nameParts.push(greatGrandFatherName.trim());
     if (surname.trim() && surname.trim() !== 'عام / بدون لقب') nameParts.push(surname.trim());
     const finalFullName = nameParts.join(' ');
-
-    // فحص إضافي للتأكد بالاسم النهائي الكامل أو رقم الهاتف
-    const finalCheck = checkIfCitizenBlocked(finalFullName, phone1.trim());
-    if (finalCheck.isBlocked && finalCheck.citizen) {
-      setErrorMessage(
-        `⛔ تنبيه فوري أمني ورقابي: الاسم المدخل "${finalCheck.citizen.FullName}" مسجل في «القائمة السوداء» (سبب الحظر: ${finalCheck.citizen.BlockReason || 'غير محدد'}) — يمنع النظام تسجيل أي طلب جديد لهذا الشخص نهائياً.`
-      );
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      return;
-    }
 
     const finalDistrict = district === 'أخرى' && customDistrict.trim() ? customDistrict.trim() : district;
 
@@ -1386,9 +1521,9 @@ export const ReceptionModule: React.FC = () => {
                   <div className="flex items-center gap-2.5">
                     <span className="text-2xl animate-pulse">⛔</span>
                     <div>
-                      <h4 className="font-black text-sm">تنبيه فوري مشدد: هذا المواطن مدرج في «القائمة السوداء» (الأشخاص المحظورين)!</h4>
+                      <h4 className="font-black text-sm">هذا محظور — تنبيه: هذا الاسم مدرج في قائمة المحظورين!</h4>
                       <p className="text-xs text-red-100 font-bold mt-0.5">
-                        سبب الحظر: {blockedCitizenMatch.BlockReason || 'غير محدد'}
+                        سبب الرفض / الحظر: {blockedCitizenReason || blockedCitizenMatch.BlockReason || 'غير محدد'}
                         {blockedCitizenMatch.BlockedAt ? ` • تاريخ الحظر: ${blockedCitizenMatch.BlockedAt}` : ''}
                         {blockedCitizenMatch.BlockedBy ? ` • جهة الحظر: ${blockedCitizenMatch.BlockedBy}` : ''}
                       </p>
@@ -1491,15 +1626,26 @@ export const ReceptionModule: React.FC = () => {
             ) : null}
 
             {/* SECTION 1: SEPARATED 4-PART NAME + CLAN DROPDOWN */}
-            <div className="space-y-2.5 p-3 sm:p-4 rounded-xl bg-slate-50 border border-slate-200">
+            <div className={`space-y-2.5 p-3 sm:p-4 rounded-xl border transition-colors ${
+              blockedCitizenMatch
+                ? 'bg-red-50/80 border-2 border-red-500 ring-2 ring-red-300/60'
+                : 'bg-slate-50 border-slate-200'
+            }`}>
               <div className="flex flex-col xs:flex-row items-start xs:items-center justify-between pb-1 border-b border-slate-200 gap-1">
                 <div className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
-                  <UserCheck className="w-3.5 h-3.5 text-blue-600" />
+                  <UserCheck className={`w-3.5 h-3.5 ${blockedCitizenMatch ? 'text-red-600' : 'text-blue-600'}`} />
                   <span>1. الاسم بالتقسيم الرباعي واللقب (العشيرة) *</span>
                 </div>
-                <span className="text-[10px] text-slate-500">
-                  كشف لحظي مباشر بدون الحاجة للحفظ
-                </span>
+                {blockedCitizenMatch ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-red-600 text-white text-[11px] font-black shadow-xs animate-pulse">
+                    <span>⛔ هذا محظور</span>
+                    <span>— سبب الرفض / الحظر: {blockedCitizenReason || 'غير محدد'}</span>
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-slate-500">
+                    فحص حي فوري للمحظورين أثناء الكتابة
+                  </span>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
@@ -2556,10 +2702,22 @@ export const ReceptionModule: React.FC = () => {
               <form onSubmit={handleSaveInterviewWithFullDetails} className="space-y-4 sm:space-y-5 text-xs">
                 
                 {/* 1. SEPARATED NAME PARTS IDENTICAL TO REGISTRATION */}
-                <div className="space-y-3 p-3.5 sm:p-4 rounded-2xl bg-slate-50 border border-slate-200">
-                  <div className="font-bold text-slate-900 text-xs flex items-center gap-1.5 pb-1 border-b border-slate-200">
-                    <UserCheck className="w-4 h-4 text-amber-600" />
-                    <span>1. الاسم بالتقسيم الرباعي واللقب (نفس شاشة تسجيل المراجع تماماً):</span>
+                <div className={`space-y-3 p-3.5 sm:p-4 rounded-2xl border transition-colors ${
+                  intvBlockedCitizenMatch
+                    ? 'bg-red-50/90 border-2 border-red-500 ring-2 ring-red-300/60'
+                    : 'bg-slate-50 border-slate-200'
+                }`}>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 pb-1 border-b border-slate-200">
+                    <div className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+                      <UserCheck className={`w-4 h-4 ${intvBlockedCitizenMatch ? 'text-red-600' : 'text-amber-600'}`} />
+                      <span>1. الاسم بالتقسيم الرباعي واللقب (نفس شاشة تسجيل المراجع تماماً):</span>
+                    </div>
+                    {intvBlockedCitizenMatch && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-red-600 text-white text-[11px] font-black shadow-xs animate-pulse">
+                        <span>⛔ هذا محظور</span>
+                        <span>— سبب الرفض / الحظر: {intvBlockedCitizenMatch.BlockReason || 'غير محدد'}</span>
+                      </span>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">

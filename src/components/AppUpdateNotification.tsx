@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { RefreshCw, ArrowUpCircle } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { RefreshCw, ArrowUpCircle, X } from 'lucide-react';
 
 interface AppVersionData {
   version?: string;
@@ -10,8 +9,8 @@ interface AppVersionData {
   notes?: string;
 }
 
-const POLL_INTERVAL_MS = 15_000; // Check /version.json every 15 seconds
-const COUNTDOWN_SECONDS = 60; // 60-second automatic update countdown
+// Gentle low-bandwidth interval (10 minutes) — never stalls weak internet or forces reloads
+const POLL_INTERVAL_MS = 10 * 60 * 1000;
 
 function getVersionUrl(): string {
   const base = (import.meta as any).env?.BASE_URL || '/';
@@ -19,88 +18,52 @@ function getVersionUrl(): string {
   return `${normalizedBase}/version.json?t=${Date.now()}`;
 }
 
+/**
+ * Non-Intrusive Update Banner
+ * ---------------------------
+ * - NEVER auto-reloads the browser (prevents kicking logged-in staff back to the passcode screen).
+ * - Does NOT reload on Firestore settings changes (Firestore onSnapshot applies settings live in memory).
+ * - Only shows a small, dismissible corner notification when a new production build is deployed.
+ */
 export const AppUpdateNotification: React.FC = () => {
-  const { systemSettings } = useApp();
-  const [updateActive, setUpdateActive] = useState(false);
-  const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS);
-  const [updateSubtitle, setUpdateSubtitle] = useState(
-    'تم إصدار نسخة محدثة من منظومة مكتب النائب علا الناشي. سيتم تحديث الصفحة تلقائياً لتطبيق آخر التحسينات ومزامنة البيانات.'
-  );
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const [detectedVersion, setDetectedVersion] = useState<string>('');
+  const [updateNote, setUpdateNote] = useState<string>('');
   const [isReloadingNow, setIsReloadingNow] = useState(false);
 
   const initialVersionRef = useRef<string | null>(null);
-  const baselineSettingsVersionRef = useRef<number>(0);
-  const hasTriggeredReloadRef = useRef(false);
+  const dismissedVersionRef = useRef<string | null>(null);
 
-  const executeCleanReload = useCallback(async () => {
-    if (hasTriggeredReloadRef.current) return;
-    hasTriggeredReloadRef.current = true;
+  const executeManualReload = useCallback(async () => {
     setIsReloadingNow(true);
-
     try {
-      // Clear browser static asset caches so fresh index.html and JS chunks load immediately
       if (typeof window !== 'undefined' && 'caches' in window) {
         const cacheNames = await caches.keys();
         await Promise.all(cacheNames.map((name) => caches.delete(name)));
       }
-      // Update any registered service workers cleanly
       if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map((reg) => reg.update().catch(() => {})));
       }
     } catch {
-      // Proceed to reload regardless
+      // Proceed cleanly
     }
-
     window.location.reload();
   }, []);
 
-  // Trigger the 60-second Glassmorphism update overlay
-  const startUpdateOverlay = useCallback((versionLabel?: string, subtitle?: string) => {
-    setUpdateActive((alreadyOpen) => {
-      if (alreadyOpen) return true;
-      setCountdown(COUNTDOWN_SECONDS);
-      if (versionLabel) setDetectedVersion(versionLabel);
-      if (subtitle) setUpdateSubtitle(subtitle);
-      return true;
-    });
-  }, []);
-
-  // Initialize settings baseline version
-  useEffect(() => {
-    try {
-      const storedBaseline = Number(sessionStorage.getItem('al_nashi_baseline_settings_ver') || '0');
-      const localVer = Number(systemSettings?.settingsVersion || 0);
-      baselineSettingsVersionRef.current = Math.max(storedBaseline, localVer);
-    } catch {
-      baselineSettingsVersionRef.current = Number(systemSettings?.settingsVersion || 0);
-    }
-  }, []);
-
-  // Poll /version.json every 15 seconds with no-store cache busting
   useEffect(() => {
     let isMounted = true;
 
     const checkBuildVersion = async () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       try {
-        let response = await fetch(getVersionUrl(), {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+        const response = await fetch(getVersionUrl(), {
           cache: 'no-store',
-          headers: {
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            Pragma: 'no-cache'
-          }
+          signal: controller.signal
         });
-        // Fallback to root /version.json if relative path fails on nested route
-        if (!response.ok) {
-          response = await fetch(`/version.json?t=${Date.now()}`, {
-            cache: 'no-store',
-            headers: {
-              'Cache-Control': 'no-cache, no-store, must-revalidate',
-              Pragma: 'no-cache'
-            }
-          });
-        }
+        window.clearTimeout(timeoutId);
         if (!response.ok || !isMounted) return;
 
         const data: AppVersionData = await response.json();
@@ -112,164 +75,66 @@ export const AppUpdateNotification: React.FC = () => {
           return;
         }
 
-        if (latestVer !== initialVersionRef.current) {
-          startUpdateOverlay(
-            latestVer,
-            data.notes ||
-              'تم إطلاق تحديث جديد للمنظومة على الخادم. سيتم تحديث الصفحة تلقائياً خلال ثوانٍ لتطبيق النسخة الأحدث.'
-          );
+        if (latestVer !== initialVersionRef.current && latestVer !== dismissedVersionRef.current) {
+          setDetectedVersion(latestVer);
+          setUpdateNote(data.notes || 'يتوفر إصدار محدث من المنظومة — يمكنك التحديث متى شئت.');
+          setUpdateAvailable(true);
         }
       } catch {
-        // Silently ignore transient network hiccups during background version check
+        // Ignore silently on weak internet
       }
     };
 
-    // Immediate baseline check on mount, then every 15 seconds
-    checkBuildVersion();
+    // Establish initial baseline once after idle delay, then check gently every 10 minutes
+    const startupTimer = window.setTimeout(checkBuildVersion, 8000);
     const pollTimer = window.setInterval(checkBuildVersion, POLL_INTERVAL_MS);
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        checkBuildVersion();
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', checkBuildVersion);
 
     return () => {
       isMounted = false;
+      window.clearTimeout(startupTimer);
       window.clearInterval(pollTimer);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', checkBuildVersion);
     };
-  }, [startUpdateOverlay]);
+  }, []);
 
-  // Also detect remote developer icon/settings version bumps via Firestore real-time state
-  useEffect(() => {
-    const remoteVer = Number(systemSettings?.settingsVersion || 0);
-    if (!remoteVer) return;
-
-    let localInitiatedVer = 0;
-    try {
-      localInitiatedVer = Number(sessionStorage.getItem('al_nashi_local_initiated_settings_ver') || '0');
-    } catch {}
-
-    if (
-      baselineSettingsVersionRef.current > 0 &&
-      remoteVer > baselineSettingsVersionRef.current &&
-      remoteVer > localInitiatedVer
-    ) {
-      try {
-        sessionStorage.setItem('al_nashi_baseline_settings_ver', String(remoteVer));
-      } catch {}
-      startUpdateOverlay(
-        `v${remoteVer}`,
-        systemSettings.lastUpdateNote ||
-          'تم تحديث إعدادات وأيقونات المنظومة من قبل الإدارة. سيتم إعادة تحميل الصفحة تلقائياً لتطبيق التحديث.'
-      );
-    }
-  }, [systemSettings?.settingsVersion, systemSettings?.lastUpdateNote, startUpdateOverlay]);
-
-  // 60-second live countdown -> automatic window.location.reload()
-  useEffect(() => {
-    if (!updateActive) return;
-
-    const timer = window.setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          window.clearInterval(timer);
-          executeCleanReload();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => window.clearInterval(timer);
-  }, [updateActive, executeCleanReload]);
-
-  if (!updateActive) return null;
-
-  const progressPercent = Math.min(
-    100,
-    Math.max(0, Math.round(((COUNTDOWN_SECONDS - countdown) / COUNTDOWN_SECONDS) * 100))
-  );
+  if (!updateAvailable) return null;
 
   return (
     <div
-      className="fixed inset-0 z-[10000] flex items-center justify-center p-4 sm:p-6 bg-slate-950/60 backdrop-blur-xl transition-opacity duration-300 font-['Tajawal',sans-serif]"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="system-update-title"
+      className="fixed bottom-4 left-4 z-[9950] max-w-sm w-[calc(100%-2rem)] animate-in fade-in slide-in-from-bottom-3 duration-200 font-['Tajawal',sans-serif]"
       dir="rtl"
     >
-      {/* Glassmorphism Card */}
-      <div className="relative w-full max-w-md rounded-3xl bg-slate-900/75 border border-white/15 shadow-[0_24px_80px_-16px_rgba(0,0,0,0.65)] backdrop-blur-2xl overflow-hidden text-white">
-        {/* Subtle top specular hairline */}
-        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-l from-transparent via-sky-300/60 to-transparent pointer-events-none" />
-
-        <div className="p-7 sm:p-8 flex flex-col items-center text-center">
-          {/* Animated Refresh Icon Emblem */}
-          <div className="relative mb-5 flex items-center justify-center">
-            <div className="w-16 h-16 rounded-2xl bg-sky-500/15 border border-sky-400/30 flex items-center justify-center shadow-inner">
-              <RefreshCw
-                className="w-8 h-8 text-sky-300 animate-spin"
-                style={{ animationDuration: '2.4s' }}
-              />
-            </div>
-          </div>
-
-          {/* Primary Heading */}
-          <h2
-            id="system-update-title"
-            className="text-xl sm:text-2xl font-extrabold tracking-tight text-white mb-2"
-          >
-            جاري تحديث النظام...
-          </h2>
-
-          {/* Explanatory Copy */}
-          <p className="text-sm text-slate-300 leading-relaxed max-w-sm mb-6">
-            {updateSubtitle}
+      <div className="rounded-2xl bg-slate-900/95 border border-sky-400/40 shadow-2xl p-3.5 text-white flex items-center gap-3 backdrop-blur-md">
+        <div className="w-9 h-9 rounded-xl bg-sky-500/20 border border-sky-400/30 flex items-center justify-center shrink-0">
+          <ArrowUpCircle className="w-5 h-5 text-sky-300" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-black text-white leading-tight">
+            تحديث جديد متوفر {detectedVersion ? `(${detectedVersion})` : ''}
           </p>
-
-          {/* Countdown & Progress Panel */}
-          <div className="w-full rounded-2xl bg-white/[0.05] border border-white/10 p-4 mb-6">
-            <div className="flex items-center justify-between text-xs mb-2.5">
-              <span className="text-slate-300 font-semibold">
-                {isReloadingNow ? 'جاري إعادة تحميل المنظومة الآن...' : 'الوقت المتبقي للتحديث التلقائي'}
-              </span>
-              <span className="font-mono tabular-nums text-sky-300 font-bold text-sm">
-                {countdown} ثانية
-              </span>
-            </div>
-
-            {/* Progress Bar */}
-            <div className="w-full h-2.5 rounded-full bg-white/10 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-l from-sky-400 to-blue-500 transition-all duration-1000 ease-linear"
-                style={{ width: `${isReloadingNow ? 100 : progressPercent}%` }}
-              />
-            </div>
-
-            <div className="flex items-center justify-between text-[11px] text-slate-400 mt-2.5">
-              <span>{detectedVersion ? `الإصدار الجديد: ${detectedVersion}` : 'نسخة محدثة جاهزة'}</span>
-              <span className="font-mono tabular-nums">{isReloadingNow ? '100%' : `${progressPercent}%`}</span>
-            </div>
-          </div>
-
-          {/* Immediate Reload Action */}
+          <p className="text-[11px] text-slate-300 leading-snug mt-0.5 line-clamp-2">
+            {updateNote}
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
-            onClick={executeCleanReload}
+            onClick={executeManualReload}
             disabled={isReloadingNow}
-            className="w-full py-3 px-5 rounded-xl bg-sky-500 hover:bg-sky-400 active:scale-[0.99] text-slate-950 font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg shadow-sky-500/20 transition-all cursor-pointer disabled:opacity-70"
+            className="px-2.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
           >
-            {isReloadingNow ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <ArrowUpCircle className="w-4 h-4" />
-            )}
-            <span>{isReloadingNow ? 'جاري إعادة التحميل...' : 'تحديث النظام الآن'}</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${isReloadingNow ? 'animate-spin' : ''}`} />
+            <span>تحديث</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              dismissedVersionRef.current = detectedVersion;
+              setUpdateAvailable(false);
+            }}
+            className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 cursor-pointer"
+            title="تأجيل التحديث"
+          >
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>

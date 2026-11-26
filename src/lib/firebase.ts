@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, setPersistence, inMemoryPersistence } from 'firebase/auth';
 import { initializeFirestore, getFirestore, memoryLocalCache, doc, getDocFromServer, Firestore, setLogLevel } from 'firebase/firestore';
 import localFirebaseConfig from '../../firebase-applet-config.json';
 import { inspectCloudEnvironment, isPlaceholderOrInvalidValue } from '../utils/cloudEnvDiagnostics';
@@ -92,8 +92,9 @@ export const activeFirebaseConfig = {
 // Initialize Firebase App singleton
 export const app = getApps().length > 0 ? getApp() : initializeApp(activeFirebaseConfig);
 
-// Initialize Firebase Auth
+// Initialize Firebase Auth (strictly in-memory persistence — never stores sessions in Chrome IndexedDB/localStorage)
 export const auth = getAuth(app);
+setPersistence(auth, inMemoryPersistence).catch(() => {});
 export const googleAuthProvider = new GoogleAuthProvider();
 
 // Target Firestore database ID — omit custom DB arg when targeting "(default)"

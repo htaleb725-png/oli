@@ -38,7 +38,8 @@ import {
   Trash2,
   FolderPlus,
   HeartHandshake,
-  Archive
+  Archive,
+  History
 } from 'lucide-react';
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { UsersAndPermissionsManager } from './developer/UsersAndPermissionsManager';
@@ -74,8 +75,8 @@ export const DirectorExecutiveModule: React.FC = () => {
     setActiveSection
   } = useApp();
 
-  const [showArchivedQueue, setShowArchivedQueue] = useState(false);
   const [confirmClearCompleted, setConfirmClearCompleted] = useState(false);
+  const [archiveToast, setArchiveToast] = useState<string | null>(null);
 
   const handleDirectorExportUnifiedExcel = () => {
     exportUnifiedSystemExcel({
@@ -98,6 +99,15 @@ export const DirectorExecutiveModule: React.FC = () => {
   // Deletion modals state for permanent removal
   const [requestToDelete, setRequestToDelete] = useState<OfficeRequest | null>(null);
   const [citizenToDelete, setCitizenToDelete] = useState<Citizen | null>(null);
+
+  // Cumulative History Modal ("السجل التراكمي") for Director
+  const [cumulativeModalTarget, setCumulativeModalTarget] = useState<{
+    citizenName: string;
+    citizenId?: string;
+    phone?: string;
+    district?: string;
+    requests: OfficeRequest[];
+  } | null>(null);
 
   // Search & Filter state for Director Inbox: default to 'pending' so decided items disappear
   const [searchQuery, setSearchQuery] = useState('');
@@ -131,6 +141,69 @@ export const DirectorExecutiveModule: React.FC = () => {
     return map;
   }, [citizens]);
 
+  // Fast O(N) index of ALL requests (active + archived/historical) for instant "السجل التراكمي" lookup
+  const cumulativeRequestsIndex = useMemo(() => {
+    const normalizeName = (s?: string) =>
+      String(s || '')
+        .toLowerCase()
+        .replace(/[إأآا]/g, 'ا')
+        .replace(/ى/g, 'ي')
+        .replace(/ة/g, 'ه')
+        .replace(/[\u064B-\u065F\u0640]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const normalizePhone = (s?: string) => {
+      const digits = String(s || '')
+        .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+        .replace(/[^0-9]/g, '');
+      return digits.length >= 8 ? digits.slice(-10) : '';
+    };
+
+    const byCitizenId = new Map<string, OfficeRequest[]>();
+    const byName = new Map<string, OfficeRequest[]>();
+    const byPhone = new Map<string, OfficeRequest[]>();
+
+    const pushTo = (map: Map<string, OfficeRequest[]>, key: string, item: OfficeRequest) => {
+      if (!key) return;
+      const list = map.get(key);
+      if (list) list.push(item);
+      else map.set(key, [item]);
+    };
+
+    (requests || []).forEach(r => {
+      if (!r) return;
+      if (r.Citizen_ID) pushTo(byCitizenId, r.Citizen_ID, r);
+      const cit = r.Citizen_ID ? citizenMap.get(r.Citizen_ID) : undefined;
+      const normName = normalizeName(r.CitizenName || cit?.FullName);
+      if (normName.length >= 4) pushTo(byName, normName, r);
+      const normPh = normalizePhone(r.CitizenPhone || cit?.Phone1);
+      if (normPh) pushTo(byPhone, normPh, r);
+    });
+
+    return { byCitizenId, byName, byPhone, normalizeName, normalizePhone };
+  }, [requests, citizenMap]);
+
+  const getCumulativeRequestsFor = (req: OfficeRequest, cit?: Citizen): OfficeRequest[] => {
+    const seen = new Map<string, OfficeRequest>();
+    const addAll = (list?: OfficeRequest[]) => {
+      if (!list) return;
+      for (const item of list) {
+        if (item?.Request_ID) seen.set(item.Request_ID, item);
+      }
+    };
+    if (req.Citizen_ID) addAll(cumulativeRequestsIndex.byCitizenId.get(req.Citizen_ID));
+    const normName = cumulativeRequestsIndex.normalizeName(req.CitizenName || cit?.FullName);
+    if (normName.length >= 4) addAll(cumulativeRequestsIndex.byName.get(normName));
+    const normPh = cumulativeRequestsIndex.normalizePhone(req.CitizenPhone || cit?.Phone1);
+    if (normPh) addAll(cumulativeRequestsIndex.byPhone.get(normPh));
+
+    return Array.from(seen.values()).sort((a, b) => {
+      const tsA = Date.parse(String(a.UpdatedAt || a.CreatedAt || '').replace(' ', 'T')) || 0;
+      const tsB = Date.parse(String(b.UpdatedAt || b.CreatedAt || '').replace(' ', 'T')) || 0;
+      return tsB - tsA;
+    });
+  };
+
   const archivedDirectorCount = useMemo(() => {
     return (requests || []).filter(r => {
       if (!r || r.IsDirectInstantRequest) return false;
@@ -139,7 +212,8 @@ export const DirectorExecutiveModule: React.FC = () => {
     }).length;
   }, [requests, citizenMap]);
 
-  // Strictly exclude archived / restored records from Director's daily queue unless user toggles Show Archived
+  // Strictly show ONLY active (non-archived) records in Director Daily Work.
+  // Archiving immediately sets archived: true in Firestore & Google Sheet and clears items from here without navigating away.
   const activeDirectorRequests = useMemo(() => {
     const parseTs = (r: OfficeRequest) => {
       const raw = String(r.UpdatedAt || r.CreatedAt || '').trim();
@@ -154,12 +228,32 @@ export const DirectorExecutiveModule: React.FC = () => {
       .filter(r => {
         if (!r || r.IsDirectInstantRequest) return false;
         const cit = citizenMap.get(r.Citizen_ID);
-        const archived = isRequestArchivedOrRestored(r) || isCitizenArchivedOrRestored(cit);
-        return showArchivedQueue ? archived : !archived;
+        return !(isRequestArchivedOrRestored(r) || isCitizenArchivedOrRestored(cit));
       })
       .slice()
       .sort((a, b) => parseTs(b) - parseTs(a));
-  }, [requests, citizenMap, showArchivedQueue]);
+  }, [requests, citizenMap]);
+
+  const importedDirectorRequests = useMemo(() => {
+    const importRegex = /استيراد|إكسل|اكسل|مسترد|تصفية|ملف|مقاطعة/i;
+    return activeDirectorRequests.filter(r => {
+      const cit = citizenMap.get(r.Citizen_ID);
+      return (
+        Boolean(r.IsHistoricalImported || cit?.IsHistoricalImported) ||
+        String(r.Request_ID || '').includes('-IMP-') ||
+        importRegex.test(String(r.CreatedBy || '')) ||
+        importRegex.test(String(r.RegisteredVia || '')) ||
+        importRegex.test(String(cit?.ReferralSource || ''))
+      );
+    });
+  }, [activeDirectorRequests, citizenMap]);
+
+  const showArchiveToast = (msg: string) => {
+    setArchiveToast(msg);
+    window.setTimeout(() => {
+      setArchiveToast(prev => (prev === msg ? null : prev));
+    }, 4500);
+  };
 
   // Reception requests list (sorted with newest on top)
   const receptionRequests = useMemo(() => {
@@ -600,41 +694,60 @@ export const DirectorExecutiveModule: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowArchivedQueue(prev => !prev);
-                  setConfirmClearCompleted(false);
-                }}
-                className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer ${
-                  showArchivedQueue
-                    ? 'bg-amber-500 text-slate-950 border-amber-400'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
-                }`}
-              >
-                <Archive className="w-3.5 h-3.5" />
-                <span>
-                  {showArchivedQueue ? 'إخفاء المؤرشف' : `عرض المؤرشف (${archivedDirectorCount.toLocaleString()})`}
-                </span>
-              </button>
+              {importedDirectorRequests.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = archiveDailyWorkItems({
+                      requestIds: importedDirectorRequests.map(r => r.Request_ID),
+                      reason: 'أرشفة وإخراج الطلبات المستردة/المصفاة من شاشة العمل اليومي للمدير (بدون حذف)'
+                    });
+                    showArchiveToast(
+                      `✓ تمت أرشفة (${res.archivedRequests}) طلب مسترد/مصفّى وإخراجها فوراً من العمل اليومي — محفوظة بالكامل في القاعدة والأرشيف.`
+                    );
+                  }}
+                  className="px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-300 cursor-pointer shadow-xs transition-all active:scale-95"
+                  title="تحويل الطلبات المستردة/المصفاة إلى مؤرشف (archived: true) وإخراجها فوراً من العمل اليومي دون حذف"
+                >
+                  <Archive className="w-3.5 h-3.5" />
+                  <span>مؤرشف — إخراج المسترد/المصفى ({importedDirectorRequests.length})</span>
+                </button>
+              )}
 
-              {!showArchivedQueue && activeDirectorRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision)) && (
+              {activeDirectorRequests.length > 0 && (
                 confirmClearCompleted ? (
-                  <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px]">
-                    <span className="font-bold text-emerald-900 dark:text-emerald-200">إخفاء للأرشيف بدون حذف؟</span>
+                  <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px] flex-wrap">
+                    <span className="font-bold text-emerald-900 dark:text-emerald-200">إخراج للأرشيف بدون حذف؟</span>
+                    {activeDirectorRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision)) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const targets = activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision));
+                          const res = archiveDailyWorkItems({
+                            requestIds: targets.map(r => r.Request_ID),
+                            reason: 'أرشفة وإخراج المعاملات المنجزة/المتخذ قرار بشأنها من شاشة العمل اليومي للمدير (محفوظة في الأرشيف)'
+                          });
+                          setConfirmClearCompleted(false);
+                          showArchiveToast(`✓ تمت أرشفة (${res.archivedRequests}) معاملة وإخراجها من العمل اليومي دون حذف.`);
+                        }}
+                        className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
+                      >
+                        المكتمل ({activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision)).length})
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
-                        const targets = activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision));
-                        archiveDailyWorkItems({
-                          requestIds: targets.map(r => r.Request_ID),
-                          reason: 'إخفاء المعاملات المنجزة/المتخذ قرار بشأنها من شاشة العمل اليومي للمدير (محفوظة في الأرشيف)'
+                        const res = archiveDailyWorkItems({
+                          requestIds: receptionRequests.map(r => r.Request_ID),
+                          reason: 'أرشفة وإخراج المعاملات المعروضة من العمل اليومي للمدير (محفوظة بالكامل في القاعدة والأرشيف)'
                         });
                         setConfirmClearCompleted(false);
+                        showArchiveToast(`✓ تمت أرشفة (${res.archivedRequests}) معاملة وإخراجها من العمل اليومي دون حذف.`);
                       }}
-                      className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
+                      className="px-2 py-0.5 rounded-lg bg-amber-500 text-slate-950 font-black cursor-pointer"
                     >
-                      تأكيد
+                      المعروض ({receptionRequests.length})
                     </button>
                     <button
                       type="button"
@@ -649,14 +762,33 @@ export const DirectorExecutiveModule: React.FC = () => {
                     type="button"
                     onClick={() => setConfirmClearCompleted(true)}
                     className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 cursor-pointer"
-                    title="إخفاء المعاملات المكتملة من شاشة العمل اليومي ونقلها للأرشيف بدون حذفها من قاعدة البيانات"
+                    title="تحويل السجلات إلى مؤرشف وإخراجها فوراً من العمل اليومي دون مغادرة الشاشة ودون حذف من قاعدة البيانات"
                   >
                     <Archive className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>إخفاء المكتمل للأرشيف</span>
+                    <span>مؤرشف (إخراج من العمل اليومي)</span>
                   </button>
                 )
               )}
+
+              {archivedDirectorCount > 0 && (
+                <span className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                  المحفوظ بالأرشيف: {archivedDirectorCount.toLocaleString()}
+                </span>
+              )}
             </div>
+
+            {archiveToast && (
+              <div className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-200 text-xs font-bold flex items-center justify-between gap-2">
+                <span>{archiveToast}</span>
+                <button
+                  type="button"
+                  onClick={() => setArchiveToast(null)}
+                  className="text-emerald-700 dark:text-emerald-300 font-black px-1 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
             <div className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-2 self-start sm:self-auto font-medium">
               <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
@@ -876,20 +1008,20 @@ export const DirectorExecutiveModule: React.FC = () => {
                           />
                         </div>
 
-                        {/* 3 Decision Action Buttons: خاص / عام / رفض */}
-                        <div className="flex items-center gap-2">
+                        {/* Decision Action Buttons: خاص / عام / رفض الطلب + السجل التراكمي */}
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           {/* 1. خاص */}
                           <button
                             type="button"
                             onClick={() => handleDirectorDecision(req, 'خاص')}
-                            className={`flex-1 h-9 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 ${
+                            className={`flex-1 min-w-[66px] h-9 rounded-xl font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 ${
                               currentDecision === 'خاص'
                                 ? 'bg-purple-700 text-white ring-2 ring-purple-400 shadow-purple-600/30'
                                 : 'bg-purple-600 hover:bg-purple-700 text-white'
                             }`}
                             title="اعتماد الطلب كمسار خاص"
                           >
-                            <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                            <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                             <span>خاص</span>
                           </button>
 
@@ -897,14 +1029,14 @@ export const DirectorExecutiveModule: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => handleDirectorDecision(req, 'عام')}
-                            className={`flex-1 h-9 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 ${
+                            className={`flex-1 min-w-[66px] h-9 rounded-xl font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 ${
                               currentDecision === 'عام'
                                 ? 'bg-emerald-700 text-white ring-2 ring-emerald-400 shadow-emerald-600/30'
                                 : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                             }`}
                             title="اعتماد الطلب كمسار عام روتيني"
                           >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                             <span>عام</span>
                           </button>
 
@@ -915,18 +1047,62 @@ export const DirectorExecutiveModule: React.FC = () => {
                               setRejectModalRequest(req);
                               setRejectionReasonText(req.DirectorNotes || '');
                             }}
-                            className={`flex-1 h-9 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 ${
+                            className={`flex-1 min-w-[82px] h-9 rounded-xl font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 ${
                               currentDecision === 'رفض'
                                 ? 'bg-red-700 text-white ring-2 ring-red-400 shadow-red-600/30'
                                 : 'bg-red-600 hover:bg-red-700 text-white'
                             }`}
                             title="رفض الطلب وتحديد سبب الرفض لتبليغ الإدارة والمواطن به"
                           >
-                            <XCircle className="w-3.5 h-3.5" />
+                            <XCircle className="w-3.5 h-3.5 shrink-0" />
                             <span>رفض الطلب</span>
                           </button>
 
-                          {/* 4. حذف نهائي من كافة النظام */}
+                          {/* 4. السجل التراكمي للمراجع */}
+                          {(() => {
+                            const cumulativeList = getCumulativeRequestsFor(req, cit);
+                            return (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCumulativeModalTarget({
+                                    citizenName: req.CitizenName || cit?.FullName || 'مراجع',
+                                    citizenId: req.Citizen_ID || cit?.Citizen_ID,
+                                    phone: req.CitizenPhone || cit?.Phone1,
+                                    district: cit?.District || req.Address,
+                                    requests: cumulativeList
+                                  })
+                                }
+                                className="h-9 px-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
+                                title="عرض السجل التراكمي الكامل لجميع الطلبات السابقة والحالية لهذا المراجع"
+                              >
+                                <History className="w-3.5 h-3.5 shrink-0" />
+                                <span>السجل التراكمي</span>
+                                <span className="px-1.5 py-0.5 rounded-md bg-white/20 text-[10px] font-mono tabular-nums">
+                                  {cumulativeList.length}
+                                </span>
+                              </button>
+                            );
+                          })()}
+
+                          {/* 5. أرشفة فورية وإخراج من العمل اليومي بدون حذف */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              archiveDailyWorkItems({
+                                requestIds: [req.Request_ID],
+                                reason: 'أرشفة وإخراج فردي من العمل اليومي للمدير (محفوظ بالكامل في القاعدة والأرشيف)'
+                              });
+                              showArchiveToast(`✓ تمت أرشفة طلب (${req.CitizenName}) وإخراجه فوراً من العمل اليومي دون حذف.`);
+                            }}
+                            className="h-9 px-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700 font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
+                            title="تعيين الطلب كمؤرشف (archived: true) وإخراجه فوراً من العمل اليومي دون حذفه من قاعدة البيانات"
+                          >
+                            <Archive className="w-3.5 h-3.5" />
+                            <span>مؤرشف</span>
+                          </button>
+
+                          {/* 6. حذف نهائي من كافة النظام */}
                           <button
                             type="button"
                             onClick={() => setRequestToDelete(req)}
@@ -1385,6 +1561,192 @@ export const DirectorExecutiveModule: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Cumulative History Modal ("السجل التراكمي للمراجع") for Director */}
+      {cumulativeModalTarget && (() => {
+        const list = cumulativeModalTarget.requests;
+        const completedCount = list.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber)).length;
+        const specialCount = list.filter(r => r.DirectorDecision === 'خاص').length;
+        const generalCount = list.filter(r => r.DirectorDecision === 'عام').length;
+        const rejectedCount = list.filter(r => r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض').length;
+        const pendingCount = list.filter(r => !r.DirectorDecision && r.ProcessingStatus !== 'منجز' && r.ProcessingStatus !== 'مرفوض').length;
+
+        return (
+          <div
+            className="fixed inset-0 z-[70] bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 animate-in fade-in duration-150"
+            dir="rtl"
+          >
+            <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95">
+              {/* Header */}
+              <div className="p-4 sm:p-5 bg-gradient-to-l from-slate-900 via-sky-950 to-slate-900 text-white flex items-center justify-between gap-3 shrink-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-11 h-11 rounded-2xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center shrink-0">
+                    <History className="w-6 h-6 text-sky-300" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-base sm:text-lg font-black text-white truncate">
+                      السجل التراكمي للمراجع: {cumulativeModalTarget.citizenName}
+                    </h3>
+                    <div className="flex items-center gap-2.5 flex-wrap text-[11px] text-sky-200 mt-0.5">
+                      {cumulativeModalTarget.citizenId && (
+                        <span className="font-mono bg-white/10 px-2 py-0.5 rounded-md">
+                          {cumulativeModalTarget.citizenId}
+                        </span>
+                      )}
+                      {cumulativeModalTarget.phone && (
+                        <span className="font-mono" dir="ltr">
+                          📞 {cumulativeModalTarget.phone}
+                        </span>
+                      )}
+                      {cumulativeModalTarget.district && (
+                        <span>📍 {cumulativeModalTarget.district}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCumulativeModalTarget(null)}
+                  className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer shrink-0 transition-colors"
+                  title="إغلاق"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* KPI Summary Strip */}
+              <div className="p-3.5 sm:p-4 bg-slate-50 dark:bg-slate-950/60 border-b border-slate-200 dark:border-slate-800 grid grid-cols-3 sm:grid-cols-6 gap-2 text-center shrink-0">
+                <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="text-[10px] font-bold text-slate-500">إجمالي الطلبات</div>
+                  <div className="text-lg font-black text-slate-900 dark:text-white tabular-nums">{list.length}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
+                  <div className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">منجز / صادر</div>
+                  <div className="text-lg font-black text-emerald-700 dark:text-emerald-300 tabular-nums">{completedCount}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800">
+                  <div className="text-[10px] font-bold text-amber-700 dark:text-amber-300">بانتظار القرار</div>
+                  <div className="text-lg font-black text-amber-700 dark:text-amber-300 tabular-nums">{pendingCount}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800">
+                  <div className="text-[10px] font-bold text-purple-700 dark:text-purple-300">مسار خاص</div>
+                  <div className="text-lg font-black text-purple-700 dark:text-purple-300 tabular-nums">{specialCount}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800">
+                  <div className="text-[10px] font-bold text-sky-700 dark:text-sky-300">مسار عام</div>
+                  <div className="text-lg font-black text-sky-700 dark:text-sky-300 tabular-nums">{generalCount}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800">
+                  <div className="text-[10px] font-bold text-rose-700 dark:text-rose-300">مرفوض</div>
+                  <div className="text-lg font-black text-rose-700 dark:text-rose-300 tabular-nums">{rejectedCount}</div>
+                </div>
+              </div>
+
+              {/* Scrollable Chronological List of All Requests */}
+              <div className="p-4 sm:p-5 overflow-y-auto space-y-3 flex-1">
+                {list.length === 0 ? (
+                  <div className="py-10 text-center text-slate-500 text-sm font-bold">
+                    لا توجد طلبات مسجلة لهذا المراجع حتى الآن.
+                  </div>
+                ) : (
+                  list.map((r, idx) => {
+                    const archived = isRequestArchivedOrRestored(r);
+                    return (
+                      <div
+                        key={r.Request_ID || idx}
+                        className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="px-2 py-0.5 rounded-lg bg-slate-900 dark:bg-slate-700 text-white font-mono font-bold text-[11px]">
+                              #{idx + 1} • {r.Request_ID}
+                            </span>
+                            <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                              📅 {r.CreatedAt || r.OutgoingDate || 'غير محدد'}
+                            </span>
+                            {r.Entity && (
+                              <span className="px-2 py-0.5 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-[11px] font-bold">
+                                الجهة: {r.Entity}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {r.DirectorDecision && (
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                                  r.DirectorDecision === 'خاص'
+                                    ? 'bg-purple-600 text-white'
+                                    : r.DirectorDecision === 'عام'
+                                    ? 'bg-emerald-600 text-white'
+                                    : r.DirectorDecision === 'رفض'
+                                    ? 'bg-red-600 text-white'
+                                    : 'bg-slate-600 text-white'
+                                }`}
+                              >
+                                قرار المدير: {r.DirectorDecision}
+                              </span>
+                            )}
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200">
+                              الحالة: {r.ProcessingStatus || 'قيد الإجراء'}
+                            </span>
+                            {archived && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                                مؤرشف
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <p className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 leading-relaxed">
+                          {r.Details || 'بدون تفاصيل مسجلة'}
+                        </p>
+
+                        <div className="flex items-center gap-3 flex-wrap text-[11px] text-slate-600 dark:text-slate-300 pt-1.5 border-t border-slate-200/80 dark:border-slate-700/80">
+                          {r.OutgoingNumber && (
+                            <span className="px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 font-mono font-bold">
+                              الصادر: {r.OutgoingNumber} {r.OutgoingDate ? `(${r.OutgoingDate})` : ''}
+                            </span>
+                          )}
+                          {r.DeliveryStatus && (
+                            <span className="font-semibold">
+                              الاستلام: {r.DeliveryStatus}
+                            </span>
+                          )}
+                          {r.DirectorNotes && (
+                            <span className="text-amber-800 dark:text-amber-300 font-semibold">
+                              ملاحظات المدير: {r.DirectorNotes}
+                            </span>
+                          )}
+                          {r.OtherNotes && !r.DirectorNotes && (
+                            <span className="text-slate-600 dark:text-slate-300">
+                              ملاحظات: {r.OtherNotes}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="p-3.5 bg-slate-50 dark:bg-slate-950/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between shrink-0">
+                <span className="text-[11px] font-bold text-slate-500">
+                  يشمل كافة المعاملات النشطة والمؤرشفة والمستردة للمراجع
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCumulativeModalTarget(null)}
+                  className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600 text-white text-xs font-black cursor-pointer transition-colors"
+                >
+                  إغلاق السجل التراكمي
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
   );

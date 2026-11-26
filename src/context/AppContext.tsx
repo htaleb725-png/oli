@@ -1,7 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { MAX_VALID_OUTGOING_SEQ, scanMaxOutgoingSequences } from '../utils/outgoingNumberHelper';
-import { isCitizenArchivedOrRestored, isRequestArchivedOrRestored } from '../utils/archiveHelper';
+import {
+  isCitizenArchivedOrRestored,
+  isRequestArchivedOrRestored,
+  resolveExplicitArchiveState
+} from '../utils/archiveHelper';
 import { toCleanSheetCitizenPayload, toCleanSheetRequestPayload } from '../services/googleSheetsSchema';
 import { extractDriveFolderId } from '../services/driveArchiveService';
 import {
@@ -466,14 +470,10 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 const STORAGE_KEY_PREFIX = 'ola_alnashi_office_';
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Load state from localStorage or initial defaults
-  const [developerPasscode, setDeveloperPasscodeState] = useState<string>(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY_PREFIX + 'dev_passcode') || INITIAL_SETTINGS.developerPasscode || '2026';
-    } catch {
-      return '2026';
-    }
-  });
+  // Strictly Cloud-First & In-Memory (hydrated live from Firebase Firestore — ZERO Chrome localStorage)
+  const [developerPasscode, setDeveloperPasscodeState] = useState<string>(
+    () => INITIAL_SETTINGS.developerPasscode || '2026'
+  );
 
   const [customSections, setCustomSections] = useState<CustomSection[]>(() => {
     const defaultSections: CustomSection[] = [
@@ -643,14 +643,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!merged.appsScriptUrl || merged.appsScriptUrl === INITIAL_SETTINGS.appsScriptUrl || !merged.appsScriptUrl.includes('/exec')) {
         merged.appsScriptUrl = envScriptUrl;
       }
-      try {
-        if (typeof window !== 'undefined') {
-          const cached = localStorage.getItem('al_nashi_apps_script_url');
-          if (!cached || cached === INITIAL_SETTINGS.appsScriptUrl || !cached.includes('/exec')) {
-            localStorage.setItem('al_nashi_apps_script_url', envScriptUrl);
-          }
-        }
-      } catch {}
     } else if (!merged.appsScriptUrl && INITIAL_SETTINGS.appsScriptUrl) {
       merged.appsScriptUrl = INITIAL_SETTINGS.appsScriptUrl;
     }
@@ -660,17 +652,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return merged;
   };
 
-  const [systemSettings, setSystemSettings] = useState<SystemSettings>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'settings');
-      const parsed = saved ? JSON.parse(saved) : INITIAL_SETTINGS;
-      const normalized = normalizeSystemSettings(parsed);
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(normalized));
-      return normalized;
-    } catch {
-      return INITIAL_SETTINGS;
-    }
-  });
+  // Cloud-First: settings hydrate live from Firebase Firestore (zero persistence in Chrome localStorage/IndexedDB)
+  const [systemSettings, setSystemSettings] = useState<SystemSettings>(() => normalizeSystemSettings(INITIAL_SETTINGS));
   // Synchronous ref prevents stale-closure overwrites when consecutive updateSettings calls fire in the same tick
   const systemSettingsRef = useRef<SystemSettings>(systemSettings);
   systemSettingsRef.current = systemSettings;
@@ -685,14 +668,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return INITIAL_USERS[0];
   });
 
-  const [assignedWorkstationUser, setAssignedWorkstationUserState] = useState<User | null>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PREFIX + 'assigned_workstation_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  // Strictly in-memory workstation assignment (zero Chrome localStorage persistence for sessions)
+  const [assignedWorkstationUser, setAssignedWorkstationUserState] = useState<User | null>(null);
 
   const [isSplashOpen, setIsSplashOpen] = useState<boolean>(true);
   const [lastLoginError, setLastLoginError] = useState<string | null>(null);
@@ -705,19 +682,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const hasShownLoadingOnceRef = useRef<boolean>(false);
   const initialHydrationCompleteRef = useRef<boolean>(false);
 
-  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => {
-    return !!(typeof window !== 'undefined' && localStorage.getItem('al_nashi_google_token'));
-  });
+  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(false);
   const [isGoogleSyncing, setIsGoogleSyncing] = useState<boolean>(false);
-  const [googleUserEmail, setGoogleUserEmail] = useState<string>(() => {
-    return (typeof window !== 'undefined' && localStorage.getItem('al_nashi_google_user_email')) || 'htaleb725@gmail.com';
-  });
-  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
-    return (typeof window !== 'undefined' && localStorage.getItem('al_nashi_sheet_id')) || null;
-  });
-  const [driveFolderId, setDriveFolderId] = useState<string | null>(() => {
-    return (typeof window !== 'undefined' && localStorage.getItem('al_nashi_drive_folder_id')) || null;
-  });
+  const [googleUserEmail, setGoogleUserEmail] = useState<string>('htaleb725@gmail.com');
+  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(
+    () => INITIAL_SETTINGS.googleSheetId || null
+  );
+  const [driveFolderId, setDriveFolderId] = useState<string | null>(
+    () => INITIAL_SETTINGS.googleDriveFolderId || null
+  );
   const [globalSearchQuery, setGlobalSearchQuery] = useState<string>('');
 
   // Strict Cloud-First State Initialization:
@@ -759,11 +732,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     if (cleanDriveId && cleanDriveId !== driveFolderId) {
       setDriveFolderId(cleanDriveId);
-      try {
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('al_nashi_drive_folder_id', cleanDriveId);
-        }
-      } catch {}
     }
     if (systemSettings.googleSheetId && systemSettings.googleSheetId !== spreadsheetId) {
       setSpreadsheetId(systemSettings.googleSheetId);
@@ -803,18 +771,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setRuntimeCustomSections(customSections);
   }, [customSections]);
 
-  // Strict Chrome Storage Policy: purge legacy business data from Chrome localStorage & IndexedDB on mount
+  // Strict Zero-Chrome-Storage Policy: purge ALL legacy records, settings & sessions from Chrome localStorage, sessionStorage & IndexedDB on mount
   useEffect(() => {
     purgeLegacyBrowserBusinessData();
     clearBusinessRecordsFromIDB().catch(() => {});
   }, []);
-
-  // Only UI appearance / theme / workstation preferences are persisted locally; NEVER office business records
-  useEffect(() => {
-    const normalized = normalizeSystemSettings(systemSettings);
-    scheduleSafeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', () => JSON.stringify(normalized));
-    idbSetJSON(STORAGE_KEY_PREFIX + 'settings', normalized).catch(() => {});
-  }, [systemSettings]);
 
   const getCloudCtx = () => ({
     appsScriptUrl: systemSettingsRef.current.appsScriptUrl || systemSettingsRef.current.googleAppsScriptUrl,
@@ -1072,7 +1033,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
         if (cleanRemoteDrive) {
           setDriveFolderId(cleanRemoteDrive);
-          try { localStorage.setItem('al_nashi_drive_folder_id', cleanRemoteDrive); } catch {}
         }
         setSystemSettings(prev => {
           const next = normalizeSystemSettings({
@@ -1101,7 +1061,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       if (cleanRemoteDrive) {
         setDriveFolderId(cleanRemoteDrive);
-        try { localStorage.setItem('al_nashi_drive_folder_id', cleanRemoteDrive); } catch {}
       }
       setSystemSettings(prev => {
         const next = normalizeSystemSettings({
@@ -1130,7 +1089,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (cleanCode.length >= 3) {
         firestorePasscodeLoadedRef.current = true;
         setDeveloperPasscodeState(cleanCode);
-        try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', cleanCode); } catch {}
       }
     }).catch(() => {});
 
@@ -1153,7 +1111,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const srvCode = String(data?.developerPasscode || '').trim();
           if (srvCode.length >= 3 && !firestorePasscodeLoadedRef.current && srvCode !== '2026') {
             setDeveloperPasscodeState(srvCode);
-            try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', srvCode); } catch {}
           }
         }
       } catch {
@@ -1167,13 +1124,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const sData = await sRes.json();
           if (sData?.systemSettings && Object.keys(sData.systemSettings).length > 0) {
             const remoteVer = Number(sData.settingsVersion || sData.systemSettings.settingsVersion || 0);
-            if (remoteVer > 0) {
-              try {
-                if (!sessionStorage.getItem('al_nashi_baseline_settings_ver')) {
-                  sessionStorage.setItem('al_nashi_baseline_settings_ver', String(remoteVer));
-                }
-              } catch {}
-            }
             const { developerPasscode: _ignoredServerPasscode, ...safeServerSettings } = sData.systemSettings;
             setSystemSettings(prev => {
               const merged = { ...prev, ...safeServerSettings, settingsVersion: remoteVer || prev.settingsVersion };
@@ -1912,17 +1862,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const assignWorkstationUser = (user: User | null) => {
+    // Strictly kept in live React memory — never written to Chrome localStorage
     setAssignedWorkstationUserState(user);
-    try {
-      if (user) {
-        localStorage.setItem(STORAGE_KEY_PREFIX + 'assigned_workstation_user', JSON.stringify(user));
-        addAuditLog('تخصيص محطة عمل', 'إدارة الأجهزة', `تم تخصيص هذه المحطة للمستخدم ${user.FullName} للدخول المباشر`);
-      } else {
-        localStorage.removeItem(STORAGE_KEY_PREFIX + 'assigned_workstation_user');
-        addAuditLog('إلغاء تخصيص محطة عمل', 'إدارة الأجهزة', 'تم إلغاء تخصيص محطة العمل وتفعيل الدخول العام');
-      }
-    } catch (err) {
-      console.warn('Failed to save assigned workstation user', err);
+    if (user) {
+      addAuditLog('تخصيص محطة عمل', 'إدارة الأجهزة', `تم تخصيص هذه المحطة للمستخدم ${user.FullName} للجلسة الحالية`);
+    } else {
+      addAuditLog('إلغاء تخصيص محطة عمل', 'إدارة الأجهزة', 'تم إلغاء تخصيص محطة العمل وتفعيل الدخول العام');
     }
   };
 
@@ -2700,26 +2645,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    // 3. Match by Name (Arabic normalized — exact, substring, or 2-3 matching tokens)
+    // 3. Match by Name (Arabic normalized — exact, triple name, full name, or substring)
     const normInput = normalizeAr(nameOrId);
     const inputWords = normInput.split(' ').filter(Boolean);
 
     const matchByName = blockedList.find(c => {
-      const normCit = normalizeAr(c.FullName || '');
-      if (!normCit) return false;
-      if (normCit === normInput) return true;
-      if (normInput.length >= 5 && normCit.includes(normInput)) return true;
-      if (normCit.length >= 5 && normInput.includes(normCit)) return true;
+      const composedFromParts = [c.FirstName, c.FatherName, c.GrandFatherName, c.Surname]
+        .filter(Boolean)
+        .join(' ');
+      const candidateNames = [c.FullName || '', composedFromParts]
+        .map(normalizeAr)
+        .filter(Boolean);
 
-      const citWords = normCit.split(' ').filter(Boolean);
-      if (inputWords.length >= 3 && citWords.length >= 3) {
-        if (inputWords[0] === citWords[0] && inputWords[1] === citWords[1] && inputWords[2] === citWords[2]) {
-          return true;
+      for (const normCit of candidateNames) {
+        if (normCit === normInput) return true;
+        if (normInput.length >= 5 && normCit.includes(normInput)) return true;
+        if (normCit.length >= 5 && normInput.includes(normCit)) return true;
+
+        const citWords = normCit.split(' ').filter(Boolean);
+        // Triple-name exact match (e.g. First + Father + Grandfather)
+        if (inputWords.length >= 3 && citWords.length >= 3) {
+          if (
+            inputWords[0] === citWords[0] &&
+            inputWords[1] === citWords[1] &&
+            inputWords[2] === citWords[2]
+          ) {
+            return true;
+          }
+          // Also match if input's 3 words all appear in the blocked citizen's name in order
+          const inputTrio = `${inputWords[0]} ${inputWords[1]} ${inputWords[2]}`;
+          const citTrio = `${citWords[0]} ${citWords[1]} ${citWords[2]}`;
+          if (normCit.startsWith(inputTrio) || normInput.startsWith(citTrio)) {
+            return true;
+          }
         }
-      }
-      if (inputWords.length === 2 && citWords.length >= 2) {
-        if (inputWords[0] === citWords[0] && inputWords[1] === citWords[1]) {
-          return true;
+        // Two-part exact match when typing first + father name matching a 2-word blocked name
+        if (inputWords.length === 2 && citWords.length >= 2) {
+          if (inputWords[0] === citWords[0] && inputWords[1] === citWords[1]) {
+            return true;
+          }
         }
       }
       return false;
@@ -3556,7 +3520,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   };
 
-  // إخفاء / أرشفة عناصر من شاشة العمل اليومي فقط (تحديث حالة الأرشفة في Firestore و Google Sheet بدون أي حذف نهائياً)
+  // إخفاء / أرشفة عناصر من شاشة العمل اليومي فقط (تحديث حالة الأرشفة archived: true في Firestore و Google Sheet بدون أي حذف نهائياً)
   const archiveDailyWorkItems = (options: {
     citizenIds?: string[];
     requestIds?: string[];
@@ -3569,72 +3533,114 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const now = new Date();
+    const nowIso = now.toISOString();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const actorName = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'موظف الإدارة';
-    const noteText = options.reason || 'أرشفة وإخفاء من شاشة العمل اليومي مع الاحتفاظ الكامل في قاعدة البيانات والأرشيف';
+    const noteText = options.reason || 'أرشفة وإخراج من شاشة العمل اليومي مع الاحتفاظ الكامل في قاعدة البيانات والأرشيف';
 
+    // Compute updated records SYNCHRONOUSLY from live refs (React 18+ batches state updaters asynchronously,
+    // so collecting inside setCitizens/setRequests previously left the arrays empty and skipped Firestore/Sheets writes!)
+    const updatedCitizensMap = new Map<string, Citizen>();
     const updatedCitizensList: Citizen[] = [];
     if (targetCitIds.size > 0) {
-      setCitizens(prev =>
-        prev.map(c => {
-          if (!targetCitIds.has(c.Citizen_ID)) return c;
-          const nextCit: Citizen = {
-            ...c,
-            IsArchived: true,
-            ArchivedAt: c.ArchivedAt || formattedDate,
-            ArchivedBy: c.ArchivedBy || actorName,
-            ArchiveNotes: c.ArchiveNotes || noteText,
-            UpdatedAt: now.toISOString()
-          };
-          updatedCitizensList.push(nextCit);
-          return nextCit;
-        })
-      );
+      for (const c of citizensRef.current || []) {
+        if (!c || !targetCitIds.has(c.Citizen_ID)) continue;
+        const nextCit: Citizen = {
+          ...c,
+          IsArchived: true,
+          ArchivedAt: c.ArchivedAt || formattedDate,
+          ArchivedBy: c.ArchivedBy || actorName,
+          ArchiveNotes: c.ArchiveNotes || noteText,
+          UpdatedAt: nowIso
+        };
+        (nextCit as any).archived = true;
+        (nextCit as any)['الأرشفة'] = 'نعم';
+        updatedCitizensMap.set(nextCit.Citizen_ID, nextCit);
+        updatedCitizensList.push(nextCit);
+      }
     }
 
+    const updatedRequestsMap = new Map<string, OfficeRequest>();
     const updatedRequestsList: OfficeRequest[] = [];
-    setRequests(prev =>
-      prev.map(r => {
-        const matchesReq = targetReqIds.has(r.Request_ID) || (r.Citizen_ID && targetCitIds.has(r.Citizen_ID));
-        if (!matchesReq) return r;
-        const nextReq: OfficeRequest = {
-          ...r,
-          IsArchived: true,
-          ArchivedAt: r.ArchivedAt || formattedDate,
-          UpdatedAt: now.toISOString()
-        };
-        updatedRequestsList.push(nextReq);
-        return nextReq;
-      })
-    );
+    for (const r of requestsRef.current || []) {
+      if (!r) continue;
+      const matchesReq = targetReqIds.has(r.Request_ID) || (r.Citizen_ID && targetCitIds.has(r.Citizen_ID));
+      if (!matchesReq) continue;
+      const nextReq: OfficeRequest = {
+        ...r,
+        IsArchived: true,
+        ArchivedAt: r.ArchivedAt || formattedDate,
+        UpdatedAt: nowIso
+      };
+      (nextReq as any).archived = true;
+      (nextReq as any)['الأرشفة'] = 'نعم';
+      updatedRequestsMap.set(nextReq.Request_ID, nextReq);
+      updatedRequestsList.push(nextReq);
+    }
 
-    // Non-destructive updates ONLY (merge: true in Firestore, update in Google Sheets — ZERO deletions!)
-    updatedCitizensList.forEach(cit => {
-      emitServerMutation('citizens', 'upsert', { item: cit });
-      fsSaveCitizen(cit).catch(console.error);
-      pushToGoogleSheetsRealtime(
-        'citizens',
-        { ...toCleanSheetCitizenPayload(cit), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' },
-        'update',
-        systemSettingsRef.current.appsScriptUrl
-      );
-    });
+    if (updatedCitizensList.length === 0 && updatedRequestsList.length === 0) {
+      return { archivedCitizens: 0, archivedRequests: 0 };
+    }
 
-    updatedRequestsList.forEach(req => {
-      emitServerMutation('requests', 'upsert', { item: req });
-      fsSaveRequest(req).catch(console.error);
-      pushToGoogleSheetsRealtime(
-        'requests',
-        { ...toCleanSheetRequestPayload(req), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' },
-        'update',
-        systemSettingsRef.current.appsScriptUrl
-      );
-    });
+    // Immediate optimistic UI update so records vanish from Daily Work in 0ms without navigating away
+    if (updatedCitizensMap.size > 0) {
+      const nextAllCitizens = (citizensRef.current || []).map(c => updatedCitizensMap.get(c.Citizen_ID) || c);
+      citizensRef.current = nextAllCitizens;
+      setCitizens(nextAllCitizens);
+    }
+    if (updatedRequestsMap.size > 0) {
+      const nextAllRequests = (requestsRef.current || []).map(r => updatedRequestsMap.get(r.Request_ID) || r);
+      requestsRef.current = nextAllRequests;
+      setRequests(nextAllRequests);
+    }
+
+    // Non-destructive Cloud Persistence: Firestore (batched 300-doc writeBatch for speed & reliability) + Google Sheets (ZERO deletions!)
+    if (updatedCitizensList.length + updatedRequestsList.length > 1) {
+      fsBulkSaveCitizensAndRequests(updatedCitizensList, updatedRequestsList).catch(console.error);
+    } else {
+      updatedCitizensList.forEach(cit => fsSaveCitizen(cit).catch(console.error));
+      updatedRequestsList.forEach(req => fsSaveRequest(req).catch(console.error));
+    }
+
+    // Sync to shared server & Google Sheets cleanly in background
+    const scriptUrl = systemSettingsRef.current.appsScriptUrl;
+    const syncToSheetsAndServer = async () => {
+      const BATCH_CONCURRENCY = 5;
+      for (let i = 0; i < updatedCitizensList.length; i += BATCH_CONCURRENCY) {
+        const chunk = updatedCitizensList.slice(i, i + BATCH_CONCURRENCY);
+        await Promise.all(
+          chunk.map(cit => {
+            emitServerMutation('citizens', 'upsert', { item: cit });
+            return pushToGoogleSheetsRealtime(
+              'citizens',
+              { ...toCleanSheetCitizenPayload(cit), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' },
+              'update',
+              scriptUrl
+            ).catch(() => {});
+          })
+        );
+      }
+      for (let i = 0; i < updatedRequestsList.length; i += BATCH_CONCURRENCY) {
+        const chunk = updatedRequestsList.slice(i, i + BATCH_CONCURRENCY);
+        await Promise.all(
+          chunk.map(req => {
+            emitServerMutation('requests', 'upsert', { item: req });
+            return pushToGoogleSheetsRealtime(
+              'requests',
+              { ...toCleanSheetRequestPayload(req), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' },
+              'update',
+              scriptUrl
+            ).catch(() => {});
+          })
+        );
+      }
+    };
+    syncToSheetsAndServer().catch(() => {});
 
     addAuditLog(
-      'أرشفة وإخفاء من العمل اليومي (بدون حذف)',
+      'أرشفة وإخراج من العمل اليومي (بدون حذف)',
       'قسم الإدارة والأرشيف',
-      `تم نقل (${updatedCitizensList.length}) مراجع و(${updatedRequestsList.length}) طلب من شاشة العمل اليومي إلى الأرشيف مع بقاء كافة السجلات محفوظة بالكامل في Firestore و Google Sheet`
+      `تمت أرشفة (${updatedCitizensList.length}) مراجع و(${updatedRequestsList.length}) طلب وإخراجها من شاشة العمل اليومي مع بقائها محفوظة بالكامل في Firestore و Google Sheet`
     );
 
     return {
@@ -3648,45 +3654,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nowIso = new Date().toISOString();
     const targetReqSet = new Set((requestIds || []).filter(Boolean));
 
+    const updatedCitsMap = new Map<string, Citizen>();
     const updatedCits: Citizen[] = [];
-    setCitizens(prev =>
-      prev.map(c => {
-        if (c.Citizen_ID !== citizenId) return c;
-        const nextCit: Citizen = {
-          ...c,
-          IsArchived: false,
-          IsHistoricalImported: false,
-          ArchivedAt: undefined,
-          ArchiveCode: undefined,
-          UpdatedAt: nowIso
-        };
-        updatedCits.push(nextCit);
-        return nextCit;
-      })
-    );
+    for (const c of citizensRef.current || []) {
+      if (!c || c.Citizen_ID !== citizenId) continue;
+      const nextCit: Citizen = {
+        ...c,
+        IsArchived: false,
+        IsHistoricalImported: false,
+        ArchivedAt: undefined,
+        ArchiveCode: undefined,
+        UpdatedAt: nowIso
+      };
+      (nextCit as any).archived = false;
+      (nextCit as any)['الأرشفة'] = 'لا';
+      updatedCitsMap.set(nextCit.Citizen_ID, nextCit);
+      updatedCits.push(nextCit);
+    }
 
+    const updatedReqsMap = new Map<string, OfficeRequest>();
     const updatedReqs: OfficeRequest[] = [];
-    setRequests(prev =>
-      prev.map(r => {
-        const match = r.Citizen_ID === citizenId || targetReqSet.has(r.Request_ID);
-        if (!match) return r;
-        const nextReq: OfficeRequest = {
-          ...r,
-          IsArchived: false,
-          IsHistoricalImported: false,
-          ArchivedAt: undefined,
-          ArchiveCode: undefined,
-          DirectorDecision: r.DirectorDecision === 'مؤرشف' ? undefined : r.DirectorDecision,
-          UpdatedAt: nowIso
-        };
-        updatedReqs.push(nextReq);
-        return nextReq;
-      })
-    );
+    for (const r of requestsRef.current || []) {
+      if (!r) continue;
+      const match = r.Citizen_ID === citizenId || targetReqSet.has(r.Request_ID);
+      if (!match) continue;
+      const nextReq: OfficeRequest = {
+        ...r,
+        IsArchived: false,
+        IsHistoricalImported: false,
+        ArchivedAt: undefined,
+        ArchiveCode: undefined,
+        DirectorDecision: r.DirectorDecision === 'مؤرشف' ? undefined : r.DirectorDecision,
+        UpdatedAt: nowIso
+      };
+      (nextReq as any).archived = false;
+      (nextReq as any)['الأرشفة'] = 'لا';
+      updatedReqsMap.set(nextReq.Request_ID, nextReq);
+      updatedReqs.push(nextReq);
+    }
+
+    if (updatedCitsMap.size > 0) {
+      const nextAll = (citizensRef.current || []).map(c => updatedCitsMap.get(c.Citizen_ID) || c);
+      citizensRef.current = nextAll;
+      setCitizens(nextAll);
+    }
+    if (updatedReqsMap.size > 0) {
+      const nextAll = (requestsRef.current || []).map(r => updatedReqsMap.get(r.Request_ID) || r);
+      requestsRef.current = nextAll;
+      setRequests(nextAll);
+    }
+
+    if (updatedCits.length + updatedReqs.length > 1) {
+      fsBulkSaveCitizensAndRequests(updatedCits, updatedReqs).catch(console.error);
+    } else {
+      updatedCits.forEach(cit => fsSaveCitizen(cit).catch(console.error));
+      updatedReqs.forEach(req => fsSaveRequest(req).catch(console.error));
+    }
 
     updatedCits.forEach(cit => {
       emitServerMutation('citizens', 'upsert', { item: cit });
-      fsSaveCitizen(cit).catch(console.error);
       pushToGoogleSheetsRealtime(
         'citizens',
         { ...toCleanSheetCitizenPayload(cit), IsArchived: 'لا', archived: false, الأرشفة: 'لا' },
@@ -3697,7 +3723,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     updatedReqs.forEach(req => {
       emitServerMutation('requests', 'upsert', { item: req });
-      fsSaveRequest(req).catch(console.error);
       pushToGoogleSheetsRealtime(
         'requests',
         { ...toCleanSheetRequestPayload(req), IsArchived: 'لا', archived: false, الأرشفة: 'لا' },
@@ -4756,7 +4781,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       };
 
-      // Preserve historical/archived flags on restored citizens so database pulls/restores NEVER flood "الأعمال اليومية"
+      // Preserve authoritative archive/unarchive state cleanly so Firestore & Google Sheets NEVER conflict or hide records
       const existingCitMap = new Map<string, Citizen>();
       (citizensRef.current || []).forEach(c => {
         if (c?.Citizen_ID) existingCitMap.set(c.Citizen_ID, c);
@@ -4764,41 +4789,90 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const enrichedPulledCitizens = (pulled.citizens || []).map(c => {
         if (!c?.Citizen_ID) return c;
         const existing = existingCitMap.get(c.Citizen_ID);
+        const existingTs = existing ? getRecordTimestamp(existing) : 0;
+        const pulledTs = getRecordTimestamp(c);
+        const existingExplicit = resolveExplicitArchiveState(existing as any);
+        const pulledExplicit = resolveExplicitArchiveState(c as any);
+
+        const mergedCit = existing ? fillMissingFieldsOnly(c, existing) : c;
+
+        // If existing Firestore record is newer and has an explicit archive choice (true OR false), preserve it authoritatively!
+        if (existing && existingExplicit !== null && existingTs >= pulledTs && existingTs > 0) {
+          return {
+            ...mergedCit,
+            IsArchived: existingExplicit,
+            IsHistoricalImported: existingExplicit ? Boolean(mergedCit.IsHistoricalImported || existing.IsHistoricalImported) : false,
+            ...(existingExplicit ? {} : { ArchivedAt: undefined, ArchiveCode: undefined })
+          };
+        }
+
+        // If pulled record explicitly specifies archived/unarchived, honor it directly
+        if (pulledExplicit !== null) {
+          return {
+            ...mergedCit,
+            IsArchived: pulledExplicit,
+            IsHistoricalImported: pulledExplicit ? Boolean(mergedCit.IsHistoricalImported) : false,
+            ...(pulledExplicit ? {} : { ArchivedAt: undefined, ArchiveCode: undefined })
+          };
+        }
+
         const hasHistoricalHint =
           isCitizenArchivedOrRestored(c) ||
           isCitizenArchivedOrRestored(existing) ||
           String(c.ReferralSource || '').includes('استيراد إكسل') ||
           String(c.CreatedBy || '').includes('استيراد');
-        const mergedCit = existing ? fillMissingFieldsOnly(c, existing) : c;
         return hasHistoricalHint
           ? { ...mergedCit, IsHistoricalImported: Boolean(mergedCit.IsHistoricalImported || existing?.IsHistoricalImported), IsArchived: true }
-          : mergedCit;
+          : { ...mergedCit, IsArchived: false };
       });
       const rawCitizens = mergeCitizens([], enrichedPulledCitizens, deletedIds);
 
-      // Enrich pulled requests with existing Firestore workflow fields (DirectorDecision, DirectorNotes, CurrentStage, RegisteredVia, attachments, IsHistoricalImported)
-      // so pulling/restoring from Google Sheets NEVER wipes an approved Director decision or floods Daily Work!
+      // Enrich pulled requests with existing Firestore workflow fields & authoritative archive state
+      // so pulling/restoring from Google Sheets NEVER wipes an approved Director decision or causes archive conflicts!
       const existingReqMap = new Map<string, OfficeRequest>();
       (requestsRef.current || []).forEach(r => {
         if (r?.Request_ID) existingReqMap.set(r.Request_ID, r);
       });
       const enrichedPulledRequests = (pulled.requests || []).map(r => {
         const existing = r?.Request_ID ? existingReqMap.get(r.Request_ID) : undefined;
-        const hasHistoricalHint =
-          isRequestArchivedOrRestored(r) ||
-          isRequestArchivedOrRestored(existing) ||
-          String(r?.Request_ID || '').includes('-IMP-') ||
-          String(r?.CreatedBy || '').includes('استيراد');
+        const existingTs = existing ? getRecordTimestamp(existing) : 0;
+        const pulledTs = getRecordTimestamp(r);
+        const existingExplicit = resolveExplicitArchiveState(existing as any);
+        const pulledExplicit = resolveExplicitArchiveState(r as any);
+
+        const resolveArchiveFields = (base: OfficeRequest): OfficeRequest => {
+          if (existing && existingExplicit !== null && existingTs >= pulledTs && existingTs > 0) {
+            return {
+              ...base,
+              IsArchived: existingExplicit,
+              IsHistoricalImported: existingExplicit ? Boolean(base.IsHistoricalImported || existing.IsHistoricalImported) : false,
+              ...(existingExplicit ? {} : { ArchivedAt: undefined, ArchiveCode: undefined })
+            };
+          }
+          if (pulledExplicit !== null) {
+            return {
+              ...base,
+              IsArchived: pulledExplicit,
+              IsHistoricalImported: pulledExplicit ? Boolean(base.IsHistoricalImported) : false,
+              ...(pulledExplicit ? {} : { ArchivedAt: undefined, ArchiveCode: undefined })
+            };
+          }
+          const hasHistoricalHint =
+            isRequestArchivedOrRestored(r) ||
+            isRequestArchivedOrRestored(existing) ||
+            String(r?.Request_ID || '').includes('-IMP-') ||
+            String(r?.CreatedBy || '').includes('استيراد');
+          return hasHistoricalHint
+            ? { ...base, IsHistoricalImported: Boolean(base.IsHistoricalImported || existing?.IsHistoricalImported), IsArchived: true }
+            : { ...base, IsArchived: false };
+        };
+
         if (!existing) {
-          return hasHistoricalHint ? { ...r, IsHistoricalImported: Boolean(r?.IsHistoricalImported), IsArchived: true } : r;
+          return resolveArchiveFields(r);
         }
         const merged = fillMissingFieldsOnly(r, existing);
-        const withHist = hasHistoricalHint
-          ? { ...merged, IsHistoricalImported: Boolean(merged.IsHistoricalImported || existing?.IsHistoricalImported), IsArchived: true }
-          : merged;
+        const withHist = resolveArchiveFields(merged);
         // If Firestore has a newer UpdatedAt (e.g., Director just approved), keep newer workflow status cleanly
-        const existingTs = getRecordTimestamp(existing);
-        const pulledTs = getRecordTimestamp(r);
         if (existingTs > pulledTs && existingTs > 0) {
           return {
             ...withHist,
