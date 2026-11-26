@@ -1,5 +1,10 @@
 import localFirebaseConfig from '../../firebase-applet-config.json';
 
+export const PINNED_BACKUP_APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbzZjjn-nyfPa8GYC17GphCV2v5CJSsB-f-YsCFebkLtMWpnxi-0eUq_vTUYXvRkxD_4/exec';
+export const PINNED_BACKUP_SHEET_ID = '1deoTjgvDflnJBh4B4EGuHN2h_1UiD1VEhssiSS7pDfM';
+export const PINNED_BACKUP_SHEET_GID = '1677268204';
+
 export interface EnvVarCheckResult {
   key: string;
   label: string;
@@ -49,48 +54,24 @@ export function inspectCloudEnvironment(runtimeOverrides?: {
   appsScriptUrl?: string;
   googleSheetId?: string;
 }): CloudEnvDiagnosticsReport {
-  const env = import.meta.env || ({} as ImportMetaEnv);
   const localCfg = (localFirebaseConfig || {}) as Record<string, string>;
 
-  const checkFirebaseVar = (
-    key: Extract<keyof ImportMetaEnv, string>,
+  // Firebase alaa-office-2026 is pinned directly in code as Single Source of Truth
+  const checkPinnedFirebaseVar = (
+    key: string,
     localKey: string,
     label: string,
     showFull = false
   ): EnvVarCheckResult => {
-    const envRaw = cleanVal(env[key]);
-    const localRaw = cleanVal(localCfg[localKey]);
-
-    if (envRaw && !isPlaceholderOrInvalidValue(envRaw)) {
-      return {
-        key,
-        label,
-        category: 'firebase',
-        configured: true,
-        source: 'vercel_env',
-        maskedValue: maskSecret(envRaw, showFull),
-        required: true
-      };
-    }
-    if (envRaw && isPlaceholderOrInvalidValue(envRaw)) {
-      return {
-        key,
-        label,
-        category: 'firebase',
-        configured: false,
-        source: 'placeholder',
-        maskedValue: 'قيمة تجريبية/غير صالحة',
-        required: true
-      };
-    }
-    if (localRaw && !isPlaceholderOrInvalidValue(localRaw)) {
+    const pinnedRaw = cleanVal(localCfg[localKey]);
+    if (pinnedRaw && !isPlaceholderOrInvalidValue(pinnedRaw)) {
       return {
         key,
         label,
         category: 'firebase',
         configured: true,
         source: 'local_config',
-        maskedValue: maskSecret(localRaw, showFull),
+        maskedValue: maskSecret(pinnedRaw, showFull),
         required: true
       };
     }
@@ -105,45 +86,26 @@ export function inspectCloudEnvironment(runtimeOverrides?: {
     };
   };
 
-  const checkGoogleVar = (
-    key: Extract<keyof ImportMetaEnv, string>,
+  const checkGoogleBackupVar = (
+    key: string,
     runtimeVal: string | undefined,
+    pinnedFallback: string,
     label: string,
     validator: (v: string) => boolean
   ): EnvVarCheckResult => {
-    const envRaw = cleanVal(env[key]);
     const runRaw = cleanVal(runtimeVal);
+    const effective = runRaw && !isPlaceholderOrInvalidValue(runRaw) && validator(runRaw)
+      ? runRaw
+      : pinnedFallback;
 
-    if (envRaw && !isPlaceholderOrInvalidValue(envRaw) && validator(envRaw)) {
-      return {
-        key,
-        label,
-        category: 'google_sheets',
-        configured: true,
-        source: 'vercel_env',
-        maskedValue: maskSecret(envRaw),
-        required: true
-      };
-    }
-    if (envRaw && (isPlaceholderOrInvalidValue(envRaw) || !validator(envRaw))) {
-      return {
-        key,
-        label,
-        category: 'google_sheets',
-        configured: false,
-        source: 'placeholder',
-        maskedValue: 'قيمة غير صالحة أو نص إرشادي',
-        required: true
-      };
-    }
-    if (runRaw && !isPlaceholderOrInvalidValue(runRaw) && validator(runRaw)) {
+    if (effective && validator(effective)) {
       return {
         key,
         label,
         category: 'google_sheets',
         configured: true,
         source: 'local_config',
-        maskedValue: maskSecret(runRaw),
+        maskedValue: maskSecret(effective),
         required: true
       };
     }
@@ -159,23 +121,25 @@ export function inspectCloudEnvironment(runtimeOverrides?: {
   };
 
   const items: EnvVarCheckResult[] = [
-    checkFirebaseVar('VITE_FIREBASE_API_KEY', 'apiKey', 'مفتاح Firebase API'),
-    checkFirebaseVar('VITE_FIREBASE_AUTH_DOMAIN', 'authDomain', 'نطاق المصادقة (Auth Domain)', true),
-    checkFirebaseVar('VITE_FIREBASE_PROJECT_ID', 'projectId', 'معرف مشروع Firebase', true),
-    checkFirebaseVar('VITE_FIREBASE_STORAGE_BUCKET', 'storageBucket', 'حاوية التخزين (Storage Bucket)', true),
-    checkFirebaseVar('VITE_FIREBASE_MESSAGING_SENDER_ID', 'messagingSenderId', 'معرف المراسلة (Sender ID)', true),
-    checkFirebaseVar('VITE_FIREBASE_APP_ID', 'appId', 'معرف تطبيق Firebase'),
-    checkFirebaseVar('VITE_FIREBASE_FIRESTORE_DATABASE_ID', 'firestoreDatabaseId', 'معرف قاعدة بيانات Firestore', true),
-    checkGoogleVar(
+    checkPinnedFirebaseVar('VITE_FIREBASE_API_KEY', 'apiKey', 'مفتاح Firebase API (مثبت)'),
+    checkPinnedFirebaseVar('VITE_FIREBASE_AUTH_DOMAIN', 'authDomain', 'نطاق المصادقة (Auth Domain)', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_PROJECT_ID', 'projectId', 'معرف مشروع Firebase (المصدر الأساسي)', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_STORAGE_BUCKET', 'storageBucket', 'حاوية التخزين (Storage Bucket)', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_MESSAGING_SENDER_ID', 'messagingSenderId', 'معرف المراسلة (Sender ID)', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_APP_ID', 'appId', 'معرف تطبيق Firebase'),
+    checkPinnedFirebaseVar('VITE_FIREBASE_FIRESTORE_DATABASE_ID', 'firestoreDatabaseId', 'قاعدة بيانات Firestore', true),
+    checkGoogleBackupVar(
       'VITE_GOOGLE_APPS_SCRIPT_URL',
       runtimeOverrides?.appsScriptUrl,
-      'رابط تطبيق الويب (Google Apps Script)',
+      PINNED_BACKUP_APPS_SCRIPT_URL,
+      'رابط النسخ الاحتياطي اليدوي (Google Apps Script)',
       (v) => v.startsWith('https://script.google.com/macros/s/')
     ),
-    checkGoogleVar(
+    checkGoogleBackupVar(
       'VITE_GOOGLE_SHEET_ID',
       runtimeOverrides?.googleSheetId,
-      'معرف ملف Google Sheets',
+      PINNED_BACKUP_SHEET_ID,
+      'معرف ملف Google Sheets للنسخ الاحتياطي اليدوي',
       (v) => /^[a-zA-Z0-9-_]{20,}$/.test(v)
     )
   ];
@@ -186,14 +150,9 @@ export function inspectCloudEnvironment(runtimeOverrides?: {
   const googleSheetsReady = items.filter(i => i.category === 'google_sheets').every(i => i.configured);
   const allReady = firebaseReady && googleSheetsReady;
 
-  let summaryMessage = 'جميع متغيرات الربط السحابي (Firebase + Google Sheets) مهيأة بشكل صحيح.';
-  if (!firebaseReady && !googleSheetsReady) {
-    summaryMessage = 'متغيرات Firebase و Google Sheets غير مكتملة أو تحتوي قيماً تجريبية. يرجى ضبطها في Vercel ثم إعادة النشر (Redeploy).';
-  } else if (!firebaseReady) {
-    summaryMessage = 'إعدادات Firebase غير مكتملة. يرجى التحقق من متغيرات VITE_FIREBASE_* في Vercel.';
-  } else if (!googleSheetsReady) {
-    summaryMessage = 'إعدادات Google Sheets / Apps Script غير مكتملة. يرجى ضبط VITE_GOOGLE_APPS_SCRIPT_URL و VITE_GOOGLE_SHEET_ID في Vercel.';
-  }
+  const summaryMessage = allReady
+    ? 'Firebase Firestore (alaa-office-2026 / default) مثبت كمصدر وحيد وأساسي، وGoogle Sheets مهيأ للنسخ الاحتياطي اليدوي فقط.'
+    : 'يرجى التحقق من إعدادات الربط السحابي.';
 
   return {
     firebaseReady,

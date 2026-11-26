@@ -9,7 +9,7 @@
  * 2. Precise row indexing & mapping: finds records by primary key (Citizen_ID, Request_ID) and updates in-place.
  * 3. Direct Google Drive file storage: uploads citizen photos and scanner attachments to Drive and links them.
  * 4. Automatic table schema provisioning: creates all required tabs and styled headers if missing.
- * 5. Full replacement for any external database engine (No Firebase, No Supabase).
+ * 5. Manual backup, export, and optional import companion for Firebase Firestore (alaa-office-2026).
  */
 
 import { Citizen, OfficeRequest, Interview, OfficialLetter, OrganizationRecord, ChequeRecord, AuditLog } from '../types';

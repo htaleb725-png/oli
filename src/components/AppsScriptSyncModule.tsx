@@ -71,8 +71,8 @@ export const AppsScriptSyncModule: React.FC = () => {
     addAuditLog 
   } = useApp();
 
-  const envSheetId = import.meta.env?.VITE_GOOGLE_SHEET_ID || '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
-  const envScriptUrl = import.meta.env?.VITE_GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec';
+  const envSheetId = '1deoTjgvDflnJBh4B4EGuHN2h_1UiD1VEhssiSS7pDfM';
+  const envScriptUrl = 'https://script.google.com/macros/s/AKfycbzZjjn-nyfPa8GYC17GphCV2v5CJSsB-f-YsCFebkLtMWpnxi-0eUq_vTUYXvRkxD_4/exec';
 
   // Live Env Diagnostics & Cloud Health
   const envReport = inspectCloudEnvironment({

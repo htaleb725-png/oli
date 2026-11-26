@@ -1,12 +1,11 @@
 {
-  "projectId": "ola-aap-5fa57",
-  "appId": "1:364353645300:web:230b3299331d7271accca1",
-  "apiKey": "AIzaSyB3yeS0tmdvi9-hhB0QixqUhKUW_eCyLMA",
-  "authDomain": "ola-aap-5fa57.firebaseapp.com",
-  "storageBucket": "ola-aap-5fa57.firebasestorage.app",
+  "projectId": "alaa-office-2026",
+  "appId": "1:1045853891678:web:ecbac6c7a99c45145a98cf",
+  "apiKey": "AIzaSyABAAALUEpnLQ8RmPL5GEHZMacX_CRdDmjw",
+  "authDomain": "alaa-office-2026.firebaseapp.com",
+  "storageBucket": "alaa-office-2026.firebasestorage.app",
   "firestoreDatabaseId": "(default)",
-  "messagingSenderId": "364353645300",
-  "measurementId": "G-56LXF989SM",
+  "messagingSenderId": "1045853891678",
   "oAuthClientId": "",
   "recaptchaSiteKey": ""
 }

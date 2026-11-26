@@ -14,7 +14,7 @@ import {
   Unsubscribe 
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { updateFirebaseHealth } from './cloudSyncAlerts';
+import { updateFirebaseHealth, pushCloudSyncAlert } from './cloudSyncAlerts';
 import { resolveCanonicalUserRole, normalizeUserRecord } from '../utils/permissions';
 import { 
   Citizen, 
@@ -120,6 +120,14 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
   const safeId = sanitizeFirestoreDocId(citizen.Citizen_ID, 'ONA');
   const fullName = clipStr(citizen.FullName, 250) || 'مراجع';
   const nowIso = new Date().toISOString();
+  const resolvedDepartment =
+    clipStr((citizen as any).department, 100) ||
+    clipStr(citizen.CurrentStage, 100) ||
+    'الاستعلامات';
+  const resolvedStatus =
+    clipStr((citizen as any).status, 60) ||
+    (citizen.IsBlocked ? 'محظور' : citizen.IsArchived ? 'مؤرشف' : 'نشط');
+
   const copy: any = {
     ...citizen,
     Citizen_ID: safeId,
@@ -128,6 +136,8 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
     Rating: clipStr(citizen.Rating, 50) || 'مؤيد',
     District: clipStr(citizen.District, 100) || 'الناصرية',
     SubDistrict: clipStr(citizen.SubDistrict, 100) || 'المركز',
+    department: resolvedDepartment,
+    status: resolvedStatus,
     CreatedAt: clipStr(citizen.CreatedAt, 100) || nowIso.split('T')[0],
     UpdatedAt: nowIso,
     updatedAt: nowIso
@@ -240,43 +250,56 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Collections mapping (aligned 1-to-1 with Google Sheets tabs while preserving existing ola-aap-5fa57 collections)
+// Clean Firestore Collections Architecture for alaa-office-2026 / (default)
 export const FS_COLLECTIONS = {
-  CITIZENS: 'citizens',
+  // 8 Core Organized Collections
+  VISITORS: 'visitors',
+  CITIZENS: 'visitors',
+  ARCHIVES: 'archives',
+  DEPARTMENTS: 'departments',
+  USERS: 'users',
+  REFERRERS: 'referrers',
+  BLACKLIST: 'blacklist',
+  AUDIT_LOGS: 'audit_logs',
+  SYSTEM_SETTINGS: 'system_settings',
+  SETTINGS: 'system_settings',
+  // Operational Sub-Collections
   REQUESTS: 'requests',
   INTERVIEWS: 'interviews',
   LETTERS: 'letters',
   CHEQUES: 'cheques',
   ORGANIZATIONS: 'organizations',
-  SETTINGS: 'settings',
-  USERS: 'users',
   DROPDOWNS: 'dropdowns',
-  AUDIT_LOGS: 'audit_logs',
   CUSTOM_SECTIONS: 'custom_sections',
   CUSTOM_RECORDS: 'custom_records',
   DELETED_RECORDS: 'deleted_records',
   NOTIFICATIONS: 'notifications'
 } as const;
 
-// Canonical alignment map between Firebase Firestore collections & Google Sheets official tabs
+// Canonical alignment map between Firebase Firestore collections & manual Google Sheets backup tabs
 export const FIRESTORE_SHEET_ALIGNMENT = {
-  [FS_COLLECTIONS.CITIZENS]: { sheetTab: 'قسم_الاستعلامات_والمراجعين', label: 'قسم الاستعلامات والمراجعين' },
+  [FS_COLLECTIONS.VISITORS]: { sheetTab: 'قسم_الاستعلامات_والمراجعين', label: 'سجل المراجعين النشطين (visitors)' },
+  [FS_COLLECTIONS.ARCHIVES]: { sheetTab: 'الأرشيف_المستقل', label: 'الأرشيف المستقل لكل قسم (archives)' },
+  [FS_COLLECTIONS.DEPARTMENTS]: { sheetTab: 'الأقسام_واللجان', label: 'الأقسام واللجان والصلاحيات (departments)' },
+  [FS_COLLECTIONS.USERS]: { sheetTab: 'قسم_الرقابة_والمستخدمين', label: 'حسابات الموظفين والأدوار (users)' },
+  [FS_COLLECTIONS.REFERRERS]: { sheetTab: 'المعرفون_الموحدون', label: 'المعرّفون الموحدون (referrers)' },
+  [FS_COLLECTIONS.BLACKLIST]: { sheetTab: 'قائمة_المحظورين', label: 'قائمة المحظورين والمرفوضين (blacklist)' },
+  [FS_COLLECTIONS.AUDIT_LOGS]: { sheetTab: 'سجل_الحركات', label: 'سجل الحركات والتدقيق (audit_logs)' },
+  [FS_COLLECTIONS.SYSTEM_SETTINGS]: { sheetTab: 'الإعدادات', label: 'إعدادات النظام وحالة النسخ الاحتياطي (system_settings)' },
   [FS_COLLECTIONS.REQUESTS]: { sheetTab: 'قسم_الإدارة_والمعاملات', label: 'قسم الإدارة والمعاملات' },
   [FS_COLLECTIONS.INTERVIEWS]: { sheetTab: 'قسم_مقابلات_النائب', label: 'قسم مقابلات النائب' },
   [FS_COLLECTIONS.ORGANIZATIONS]: { sheetTab: 'قسم_التنظيم_والجماهير', label: 'قسم التنظيم والجماهير' },
   [FS_COLLECTIONS.CHEQUES]: { sheetTab: 'قسم_المساعدات_والصكوك', label: 'قسم المساعدات والصكوك' },
-  [FS_COLLECTIONS.CUSTOM_RECORDS]: { sheetTab: 'قسم_الرعاية_الاجتماعية', label: 'قسم الرعاية الاجتماعية والأقسام المخصصة' },
-  [FS_COLLECTIONS.USERS]: { sheetTab: 'قسم_الرقابة_والمستخدمين', label: 'قسم الرقابة والمستخدمين' },
-  [FS_COLLECTIONS.AUDIT_LOGS]: { sheetTab: 'قسم_الرقابة_والمستخدمين', label: 'سجل الرقابة والتدقيق' },
-  [FS_COLLECTIONS.SETTINGS]: { sheetTab: 'الإعدادات', label: 'إعدادات النظام والهوية والعدادات' }
+  [FS_COLLECTIONS.CUSTOM_RECORDS]: { sheetTab: 'قسم_الرعاية_الاجتماعية', label: 'قسم الرعاية الاجتماعية والأقسام المخصصة' }
 } as const;
 
-// Organized Firestore settings sub-documents inside `settings` collection
+// Organized Firestore settings sub-documents inside `system_settings` collection
 export const FS_SETTINGS_DOCS = {
   GENERAL: 'general',
   DEVELOPER_AUTH: 'developer_auth',
   OUTGOING_COUNTER: 'outgoing_counter',
-  SCHEMA_ALIGNMENT: 'schema_alignment'
+  SCHEMA_ALIGNMENT: 'schema_alignment',
+  BACKUP_STATUS: 'backup_status'
 } as const;
 
 // Multi-Office Partition and Database Isolation Manager
@@ -1661,14 +1684,285 @@ export function fsWatchCollection<T>(
         onData(list, removedIds, { fromCache, hasPendingWrites });
       },
       (err) => {
-        // Never throw uncaught errors or trip global write circuit-breaker from a listener warning
-        console.warn(`Firestore watcher notice (${dynamicCol}):`, err?.message || err);
+        const msg = err?.message || String(err || '');
+        console.warn(`Firestore watcher notice (${dynamicCol}):`, msg);
+        const lower = msg.toLowerCase();
+        if (lower.includes('permission-denied') || lower.includes('permission_denied')) {
+          const arMsg = `رفض صلاحيات القراءة الحية للمجموعة (${dynamicCol}) في Firebase Firestore.`;
+          updateFirebaseHealth('error', arMsg);
+          pushCloudSyncAlert({
+            severity: 'error',
+            target: 'firebase',
+            title: 'تعذر القراءة من Firebase Firestore',
+            message: arMsg,
+            details: msg
+          });
+        }
         if (onError) onError(err);
       }
     );
   } catch (setupErr: any) {
     if (onError) onError(setupErr);
     return () => {};
+  }
+}
+
+// ============================================================================
+// 18. Dedicated Organized Collections Helpers (alaa-office-2026)
+//     archives | departments | referrers | blacklist | system_settings/backup_status
+// ============================================================================
+
+export function normalizeArabicEntityKey(raw: string): string {
+  return String(raw || '')
+    .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+    .trim()
+    .toLowerCase()
+    .replace(/[إأآا]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[\u064B-\u065F\u0640]/g, '')
+    .replace(/[^\u0600-\u06FFa-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// 18.1 Independent Per-Department Archives (`archives` collection)
+export interface FirestoreArchiveEntry {
+  id: string;
+  recordId: string;
+  recordType: 'visitor' | 'request';
+  department: string;
+  departmentLabel: string;
+  fullName: string;
+  phone?: string;
+  archivedAt: string;
+  archivedBy?: string;
+  notes?: string;
+  updatedAt: string;
+}
+
+export async function fsSaveSectionArchiveEntries(entries: FirestoreArchiveEntry[]): Promise<void> {
+  if (!entries.length || isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.ARCHIVES);
+  const CHUNK = 250;
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const slice = entries.slice(i, i + CHUNK);
+    try {
+      const batch = writeBatch(db);
+      for (const entry of slice) {
+        const safeId = sanitizeFirestoreDocId(entry.id, 'ARC');
+        batch.set(doc(db, col, safeId), stripUndefinedProps({ ...entry, id: safeId }), { merge: true });
+      }
+      await batch.commit();
+    } catch (err) {
+      noteFirestoreFailure(err);
+    }
+  }
+}
+
+export async function fsDeleteSectionArchiveEntries(docIds: string[]): Promise<void> {
+  if (!docIds.length || isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.ARCHIVES);
+  const CHUNK = 250;
+  for (let i = 0; i < docIds.length; i += CHUNK) {
+    const slice = docIds.slice(i, i + CHUNK);
+    try {
+      const batch = writeBatch(db);
+      for (const rawId of slice) {
+        const safeId = sanitizeFirestoreDocId(rawId, 'ARC');
+        batch.delete(doc(db, col, safeId));
+      }
+      await batch.commit();
+    } catch (err) {
+      noteFirestoreFailure(err);
+    }
+  }
+}
+
+// 18.2 Dedicated Blacklist Collection (`blacklist`)
+export interface FirestoreBlacklistEntry {
+  Citizen_ID: string;
+  FullName: string;
+  normalizedName: string;
+  Phone1?: string;
+  District?: string;
+  BlockReason: string;
+  BlockedAt: string;
+  BlockedBy: string;
+  IsBlocked: boolean;
+  UpdatedAt: string;
+}
+
+export async function fsSaveBlacklistEntry(entry: FirestoreBlacklistEntry): Promise<void> {
+  if (!entry.Citizen_ID || isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.BLACKLIST);
+  const safeId = sanitizeFirestoreDocId(entry.Citizen_ID, 'BLK');
+  const path = `${col}/${safeId}`;
+  try {
+    await setDoc(
+      doc(db, col, safeId),
+      stripUndefinedProps({
+        ...entry,
+        Citizen_ID: safeId,
+        normalizedName: normalizeArabicEntityKey(entry.FullName),
+        IsBlocked: true,
+        UpdatedAt: new Date().toISOString()
+      }),
+      { merge: true }
+    );
+    updateFirebaseHealth('connected', null);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function fsDeleteBlacklistEntry(citizenId: string): Promise<void> {
+  if (!citizenId || isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.BLACKLIST);
+  const safeId = sanitizeFirestoreDocId(citizenId, 'BLK');
+  try {
+    await deleteDoc(doc(db, col, safeId));
+  } catch (error) {
+    console.warn('Firestore blacklist delete notice:', error);
+  }
+}
+
+// 18.3 Unified Referrers Collection (`referrers`) — merges similar spellings under one canonical document
+export async function fsSyncReferrer(rawReferrerName?: string): Promise<void> {
+  const cleanName = String(rawReferrerName || '').trim();
+  if (!cleanName || cleanName.length < 2 || isFirestoreTemporarilyBlocked()) return;
+  const normKey = normalizeArabicEntityKey(cleanName);
+  if (!normKey || normKey === 'مباشر' || normKey === 'بدون' || normKey === 'غير محدد') return;
+
+  const col = getFSCol(FS_COLLECTIONS.REFERRERS);
+  const docId = sanitizeFirestoreDocId(`ref_${normKey}`, 'REF');
+  try {
+    const ref = doc(db, col, docId);
+    const existing = await getDoc(ref).catch(() => null);
+    const prevData = existing?.exists() ? existing.data() : null;
+    const prevAliases: string[] = Array.isArray(prevData?.aliases) ? prevData.aliases : [];
+    const nextAliases = Array.from(new Set([...prevAliases, cleanName])).slice(0, 30);
+    await setDoc(
+      ref,
+      {
+        id: docId,
+        canonicalName: prevData?.canonicalName || cleanName,
+        normalizedKey: normKey,
+        aliases: nextAliases,
+        usageCount: Number(prevData?.usageCount || 0) + 1,
+        updatedAt: new Date().toISOString()
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn('Firestore referrer sync notice:', err);
+  }
+}
+
+// 18.4 Departments & Staff Permissions Registry (`departments`)
+const CORE_OFFICE_DEPARTMENTS = [
+  { id: 'reception', name: 'قسم الاستعلامات والمراجعين', type: 'core' },
+  { id: 'admin', name: 'قسم الإدارة والمعاملات', type: 'core' },
+  { id: 'director', name: 'مكتب المدير التنفيذي', type: 'core' },
+  { id: 'interviews', name: 'قسم مقابلات النائب', type: 'core' },
+  { id: 'organization', name: 'قسم التنظيم والجماهير', type: 'core' },
+  { id: 'social_care', name: 'قسم الرعاية الاجتماعية', type: 'core' },
+  { id: 'blacklist', name: 'قسم الرقابة والمحظورين', type: 'core' }
+] as const;
+
+export async function fsSyncDepartmentsRegistry(
+  usersList: User[],
+  customSectionsList: CustomSection[] = []
+): Promise<void> {
+  if (isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.DEPARTMENTS);
+  const nowIso = new Date().toISOString();
+  try {
+    const batch = writeBatch(db);
+    for (const dept of CORE_OFFICE_DEPARTMENTS) {
+      const members = (usersList || [])
+        .filter(u => {
+          if (!u) return false;
+          const allowed = Array.isArray(u.AllowedSections) ? u.AllowedSections : [];
+          return u.Role === dept.id || allowed.includes(dept.id);
+        })
+        .map(u => ({
+          userId: u.User_ID,
+          fullName: u.FullName,
+          role: u.Role,
+          roleArabic: u.RoleArabic || '',
+          status: u.Status || 'active',
+          permissions: Array.isArray(u.Permissions) ? u.Permissions : []
+        }));
+      batch.set(
+        doc(db, col, dept.id),
+        {
+          id: dept.id,
+          name: dept.name,
+          type: dept.type,
+          membersCount: members.length,
+          members,
+          updatedAt: nowIso
+        },
+        { merge: true }
+      );
+    }
+
+    for (const sec of customSectionsList || []) {
+      if (!sec?.id) continue;
+      const safeId = sanitizeFirestoreDocId(sec.id, 'DEPT');
+      const members = (usersList || [])
+        .filter(u => Array.isArray(u?.AllowedSections) && (u.AllowedSections.includes(sec.id) || u.AllowedSections.includes(`custom_section_${sec.id}`)))
+        .map(u => ({
+          userId: u.User_ID,
+          fullName: u.FullName,
+          role: u.Role,
+          status: u.Status || 'active'
+        }));
+      batch.set(
+        doc(db, col, safeId),
+        {
+          id: safeId,
+          name: sec.title || safeId,
+          type: 'custom',
+          description: sec.description || '',
+          membersCount: members.length,
+          members,
+          updatedAt: nowIso
+        },
+        { merge: true }
+      );
+    }
+
+    await batch.commit();
+  } catch (err) {
+    console.warn('Firestore departments registry sync notice:', err);
+  }
+}
+
+// 18.5 Manual Google Sheets Backup Status (`system_settings/backup_status`)
+export async function fsSaveBackupStatus(meta: {
+  action: 'manual_backup' | 'manual_import' | 'manual_export';
+  status: 'success' | 'error';
+  actor: string;
+  sheetId: string;
+  sheetGid: string;
+  counts?: Record<string, number>;
+  message?: string;
+}): Promise<void> {
+  if (isFirestoreTemporarilyBlocked()) return;
+  const col = getFSCol(FS_COLLECTIONS.SYSTEM_SETTINGS);
+  try {
+    await setDoc(
+      doc(db, col, FS_SETTINGS_DOCS.BACKUP_STATUS),
+      stripUndefinedProps({
+        ...meta,
+        updatedAt: new Date().toISOString()
+      }),
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn('Firestore backup_status save notice:', err);
   }
 }
 

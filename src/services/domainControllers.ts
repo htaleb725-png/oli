@@ -1,10 +1,10 @@
 /**
  * Modular Department Domain Controllers (عزل منطق وحفظ كل قسم بشكل مستقل)
  * ----------------------------------------------------------------------
- * Isolates cloud persistence, error reporting, and dual-sync retry logic
- * per office department so modifying or troubleshooting one section
- * (e.g. Reception, Admin, Interviews, Organization, Letters, Cheques, Custom Sections)
- * cannot disrupt or corrupt any other module.
+ * Single Source of Truth: Firebase Firestore (alaa-office-2026 / (default)).
+ * All live CRUD operations execute directly against Firestore and surface
+ * real persistence errors clearly with instant retry support.
+ * Google Sheets is reserved strictly for explicit manual backup/import/export.
  */
 
 import {
@@ -37,13 +37,8 @@ import {
   fsSaveUser,
   fsDeleteUser
 } from './firebaseFirestoreService';
-import {
-  pushToGoogleSheetsRealtime,
-  registerCustomSectionInGoogleSheets,
-  RealtimeActionType
-} from './realtimeGoogleSync';
-import { reportDualCloudWriteResult, pushCloudSyncAlert } from './cloudSyncAlerts';
-import { autoSyncAllSchemas } from './schemaAutoDiscovery';
+import { RealtimeActionType } from './realtimeGoogleSync';
+import { reportDualCloudWriteResult } from './cloudSyncAlerts';
 
 export interface CloudConnectionContext {
   appsScriptUrl?: string;
@@ -80,74 +75,60 @@ function extractReadableError(err: unknown): string {
   return raw;
 }
 
-async function executeDualCloudOperation(params: {
+async function executeFirestoreOperation(params: {
   entityLabel: string;
   firestoreOp: () => Promise<void>;
-  sheetsOp: () => Promise<{ success: boolean; error?: string; sheet?: string }>;
   silentSuccess?: boolean;
 }): Promise<DualWriteOutcome> {
-  const { entityLabel, firestoreOp, sheetsOp, silentSuccess = false } = params;
+  const { entityLabel, firestoreOp, silentSuccess = true } = params;
 
-  const [fsResult, sheetsResult] = await Promise.allSettled([firestoreOp(), sheetsOp()]);
+  let firebaseOk = false;
+  let firebaseError: string | undefined;
 
-  const firebaseOk = fsResult.status === 'fulfilled';
-  const firebaseError =
-    fsResult.status === 'rejected' ? extractReadableError(fsResult.reason) : undefined;
-
-  let sheetsOk = false;
-  let sheetsError: string | undefined;
-  let sheetName: string | undefined;
-
-  if (sheetsResult.status === 'fulfilled') {
-    sheetsOk = Boolean(sheetsResult.value?.success);
-    sheetsError = sheetsResult.value?.error;
-    sheetName = sheetsResult.value?.sheet;
-  } else {
-    sheetsOk = false;
-    sheetsError = extractReadableError(sheetsResult.reason);
+  try {
+    await firestoreOp();
+    firebaseOk = true;
+  } catch (err) {
+    firebaseOk = false;
+    firebaseError = extractReadableError(err);
   }
 
   const retryFn = async () => {
-    await executeDualCloudOperation({ entityLabel, firestoreOp, sheetsOp, silentSuccess: false });
+    await executeFirestoreOperation({ entityLabel, firestoreOp, silentSuccess: false });
   };
 
-  if (!silentSuccess || !firebaseOk || !sheetsOk) {
+  if (!silentSuccess || !firebaseOk) {
     reportDualCloudWriteResult({
       entityLabel,
       firebaseOk,
       firebaseError,
-      sheetsOk,
-      sheetsError,
-      retry: (!firebaseOk || !sheetsOk) ? retryFn : undefined
+      sheetsOk: true,
+      retry: !firebaseOk ? retryFn : undefined
     });
   }
 
-  return { firebaseOk, firebaseError, sheetsOk, sheetsError, sheetName };
+  return { firebaseOk, firebaseError, sheetsOk: true };
 }
 
 // ============================================================================
-// 1. قسم الاستعلامات والمراجعين (Reception / Citizens Domain Controller)
+// 1. قسم الاستعلامات والمراجعين (Reception / Visitors Domain Controller)
 // ============================================================================
 export const receptionDomain = {
   async saveCitizen(
     citizen: Citizen,
-    action: RealtimeActionType,
-    ctx: CloudConnectionContext
+    _action: RealtimeActionType,
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `المراجع: ${citizen.FullName || citizen.Citizen_ID}`,
-      firestoreOp: () => fsSaveCitizen(citizen),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('citizens', citizen, action, ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsSaveCitizen(citizen)
     });
   },
 
-  async deleteCitizen(citizenId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+  async deleteCitizen(citizenId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
       entityLabel: `حذف مراجع: ${citizenId}`,
-      firestoreOp: () => fsDeleteCitizen(citizenId),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('citizens', citizenId, 'delete', ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsDeleteCitizen(citizenId)
     });
   }
 };
@@ -158,23 +139,19 @@ export const receptionDomain = {
 export const adminRequestsDomain = {
   async saveRequest(
     request: OfficeRequest,
-    action: RealtimeActionType,
-    ctx: CloudConnectionContext
+    _action: RealtimeActionType,
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `المعاملة: ${request.Request_ID}`,
-      firestoreOp: () => fsSaveRequest(request),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('requests', request, action, ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsSaveRequest(request)
     });
   },
 
-  async deleteRequest(requestId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+  async deleteRequest(requestId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
       entityLabel: `حذف معاملة: ${requestId}`,
-      firestoreOp: () => fsDeleteRequest(requestId),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('requests', requestId, 'delete', ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsDeleteRequest(requestId)
     });
   }
 };
@@ -185,23 +162,19 @@ export const adminRequestsDomain = {
 export const interviewsDomain = {
   async saveInterview(
     interview: Interview,
-    action: RealtimeActionType,
-    ctx: CloudConnectionContext
+    _action: RealtimeActionType,
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `مقابلة: ${interview.FullName || interview.Interview_ID}`,
-      firestoreOp: () => fsSaveInterview(interview),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('interviews', interview, action, ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsSaveInterview(interview)
     });
   },
 
-  async deleteInterview(interviewId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+  async deleteInterview(interviewId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
       entityLabel: `حذف مقابلة: ${interviewId}`,
-      firestoreOp: () => fsDeleteInterview(interviewId),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('interviews', interviewId, 'delete', ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsDeleteInterview(interviewId)
     });
   }
 };
@@ -212,14 +185,12 @@ export const interviewsDomain = {
 export const organizationDomain = {
   async saveRecord(
     record: OrganizationRecord,
-    action: RealtimeActionType,
-    ctx: CloudConnectionContext
+    _action: RealtimeActionType,
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `تنظيم وجماهير: ${record.FullName || record.Citizen_ID}`,
-      firestoreOp: () => fsSaveOrgRecord(record),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('organization', record, action, ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsSaveOrgRecord(record)
     });
   }
 };
@@ -230,23 +201,19 @@ export const organizationDomain = {
 export const lettersDomain = {
   async saveLetter(
     letter: OfficialLetter,
-    action: RealtimeActionType,
-    ctx: CloudConnectionContext
+    _action: RealtimeActionType,
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `كتاب رسمي: ${letter.LetterNumber || letter.Letter_ID}`,
-      firestoreOp: () => fsSaveOfficialLetter(letter),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('letters', letter, action, ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsSaveOfficialLetter(letter)
     });
   },
 
-  async deleteLetter(letterId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+  async deleteLetter(letterId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
       entityLabel: `حذف كتاب رسمي: ${letterId}`,
-      firestoreOp: () => fsDeleteOfficialLetter(letterId),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('letters', letterId, 'delete', ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsDeleteOfficialLetter(letterId)
     });
   }
 };
@@ -257,70 +224,40 @@ export const lettersDomain = {
 export const chequesDomain = {
   async saveCheque(
     cheque: ChequeRecord,
-    action: RealtimeActionType,
-    ctx: CloudConnectionContext
+    _action: RealtimeActionType,
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `صك مساعدة: ${cheque.CitizenName || cheque.ChequeNumber}`,
-      firestoreOp: () => fsSaveCheque(cheque),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('cheques', cheque, action, ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsSaveCheque(cheque)
     });
   },
 
-  async deleteCheque(chequeId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+  async deleteCheque(chequeId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
       entityLabel: `حذف صك: ${chequeId}`,
-      firestoreOp: () => fsDeleteCheque(chequeId),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('cheques', chequeId, 'delete', ctx.appsScriptUrl, ctx.googleSheetId)
+      firestoreOp: () => fsDeleteCheque(chequeId)
     });
   }
 };
 
 // ============================================================================
-// 7. الأقسام المخصصة والأيقونات الديناميكية (Custom Sections & Dynamic Sheets)
+// 7. الأقسام المخصصة والأيقونات الديناميكية (Custom Sections & Departments)
 // ============================================================================
 export const customSectionsDomain = {
   async saveSectionAndProvisionSheet(
     section: CustomSection,
-    allUpdatedSections: CustomSection[],
-    ctx: CloudConnectionContext
+    _allUpdatedSections: CustomSection[],
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    const outcome = await executeDualCloudOperation({
-      entityLabel: `إنشاء/تنظيم ورقة قسم: ${section.title}`,
+    return executeFirestoreOperation({
+      entityLabel: `قسم مخصص: ${section.title}`,
       firestoreOp: () => fsSaveCustomSection(section),
-      sheetsOp: async () => {
-        const res = await registerCustomSectionInGoogleSheets(
-          section,
-          ctx.appsScriptUrl,
-          ctx.googleSheetId
-        );
-        return {
-          success: res.success,
-          sheet: res.sheets?.[0]?.sheetName,
-          error: res.error
-        };
-      }
+      silentSuccess: false
     });
-
-    // Keep schema manifest in Firestore + Apps Script synchronized in background
-    autoSyncAllSchemas(allUpdatedSections, ctx.appsScriptUrl).catch(() => {});
-
-    if (outcome.sheetsOk && outcome.sheetName) {
-      pushCloudSyncAlert({
-        severity: 'success',
-        target: 'google_sheets',
-        title: `تم إنشاء وتنظيم ورقة Google Sheet تلقائياً (${section.title})`,
-        message: `تم تخصيص الورقة "${outcome.sheetName}" وترتيب أعمدتها تلقائياً بدون التأثير على الأوراق القديمة.`
-      });
-    }
-
-    return outcome;
   },
 
   async deleteSection(sectionId: string): Promise<void> {
-    // Non-destructive on Google Sheets: removes UI section definition in Firestore while preserving historical spreadsheet tab
     try {
       await fsDeleteCustomSection(sectionId);
     } catch (err) {
@@ -330,41 +267,23 @@ export const customSectionsDomain = {
 
   async saveRecord(
     record: CustomSectionRecord,
-    action: RealtimeActionType,
-    ctx: CloudConnectionContext
+    _action: RealtimeActionType,
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `قيد قسم مخصص (${record.id})`,
-      firestoreOp: () => fsSaveCustomRecord(record),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime(
-          'custom_records',
-          record,
-          action,
-          ctx.appsScriptUrl,
-          ctx.googleSheetId,
-          { customSections: ctx.customSections }
-        )
+      firestoreOp: () => fsSaveCustomRecord(record)
     });
   },
 
   async deleteRecord(
     record: CustomSectionRecord | string,
-    ctx: CloudConnectionContext
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     const recordId = typeof record === 'string' ? record : record.id;
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `حذف قيد مخصص (${recordId})`,
-      firestoreOp: () => fsDeleteCustomRecord(recordId),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime(
-          'custom_records',
-          record,
-          'delete',
-          ctx.appsScriptUrl,
-          ctx.googleSheetId,
-          { customSections: ctx.customSections }
-        )
+      firestoreOp: () => fsDeleteCustomRecord(recordId)
     });
   }
 };
@@ -375,23 +294,21 @@ export const customSectionsDomain = {
 export const usersDomain = {
   async saveUser(
     user: User,
-    action: RealtimeActionType,
-    ctx: CloudConnectionContext
+    _action: RealtimeActionType,
+    _ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+    return executeFirestoreOperation({
       entityLabel: `مستخدم: ${user.FullName || user.Username}`,
       firestoreOp: () => fsSaveUser(user),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('users', user, action, ctx.appsScriptUrl, ctx.googleSheetId)
+      silentSuccess: false
     });
   },
 
-  async deleteUser(userId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
-    return executeDualCloudOperation({
+  async deleteUser(userId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
       entityLabel: `حذف مستخدم: ${userId}`,
       firestoreOp: () => fsDeleteUser(userId),
-      sheetsOp: () =>
-        pushToGoogleSheetsRealtime('users', userId, 'delete', ctx.appsScriptUrl, ctx.googleSheetId)
+      silentSuccess: false
     });
   }
 };

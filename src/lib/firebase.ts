@@ -1,9 +1,15 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, setPersistence, inMemoryPersistence } from 'firebase/auth';
-import { initializeFirestore, getFirestore, memoryLocalCache, doc, getDocFromServer, Firestore, setLogLevel } from 'firebase/firestore';
-import localFirebaseConfig from '../../firebase-applet-config.json';
-import { inspectCloudEnvironment, isPlaceholderOrInvalidValue } from '../utils/cloudEnvDiagnostics';
-import { updateFirebaseHealth } from '../services/cloudSyncAlerts';
+import {
+  initializeFirestore,
+  getFirestore,
+  memoryLocalCache,
+  doc,
+  getDocFromServer,
+  Firestore,
+  setLogLevel
+} from 'firebase/firestore';
+import { updateFirebaseHealth, pushCloudSyncAlert } from '../services/cloudSyncAlerts';
 
 // Keep critical error visibility while avoiding noisy debug spam
 try {
@@ -12,94 +18,35 @@ try {
   // Ignore
 }
 
-// Default production Firebase config for ola-aap-5fa57 (used only if VITE_FIREBASE_* env vars are absent)
-const DEFAULT_FIREBASE_CONFIG = {
-  apiKey: 'AIzaSyB3yeS0tmdvi9-hhB0QixqUhKUW_eCyLMA',
-  authDomain: 'ola-aap-5fa57.firebaseapp.com',
-  projectId: 'ola-aap-5fa57',
-  storageBucket: 'ola-aap-5fa57.firebasestorage.app',
-  messagingSenderId: '364353645300',
-  appId: '1:364353645300:web:230b3299331d7271accca1',
-  measurementId: 'G-56LXF989SM',
+/**
+ * Authoritative Pinned Firebase Configuration — alaa-office-2026 / (default)
+ * --------------------------------------------------------------------------
+ * Pinned directly in code as the Single Source of Truth so stale Vercel
+ * environment variables from legacy projects can never override the active DB.
+ */
+export const firebaseConfig = {
+  apiKey: 'AIzaSyABAAALUEpnLQ8RmPL5GEHZMacX_CRdDmjw',
+  authDomain: 'alaa-office-2026.firebaseapp.com',
+  projectId: 'alaa-office-2026',
+  storageBucket: 'alaa-office-2026.firebasestorage.app',
+  messagingSenderId: '1045853891678',
+  appId: '1:1045853891678:web:ecbac6c7a99c45145a98cf'
+} as const;
+
+export const activeFirebaseConfig = {
+  ...firebaseConfig,
   firestoreDatabaseId: '(default)'
 } as const;
 
-// Helper to strip accidental quotes pasted into Vercel environment variables
-const cleanEnv = (val?: string) => (val || '').replace(/^["']|["']$/g, '').trim();
+// Initialize Firebase App singleton directly against alaa-office-2026
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-const resolveEnvOrFallback = (
-  envVal: string | undefined,
-  localJsonVal: string | undefined,
-  defaultVal: string
-): string => {
-  const cleanedEnv = cleanEnv(envVal);
-  if (cleanedEnv && !isPlaceholderOrInvalidValue(cleanedEnv)) {
-    return cleanedEnv;
-  }
-  const cleanedLocal = cleanEnv(localJsonVal);
-  if (cleanedLocal && !isPlaceholderOrInvalidValue(cleanedLocal)) {
-    return cleanedLocal;
-  }
-  return defaultVal;
-};
-
-// 1. Universal Environment Variable Resolution for Vercel, GitHub, and Local/AI Studio
-// Strictly prioritizes Vercel VITE_FIREBASE_* env vars, then falls back to firebase-applet-config.json / DEFAULT_FIREBASE_CONFIG
-export const activeFirebaseConfig = {
-  apiKey: resolveEnvOrFallback(
-    import.meta.env.VITE_FIREBASE_API_KEY,
-    (localFirebaseConfig as any).apiKey,
-    DEFAULT_FIREBASE_CONFIG.apiKey
-  ),
-  authDomain: resolveEnvOrFallback(
-    import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-    (localFirebaseConfig as any).authDomain,
-    DEFAULT_FIREBASE_CONFIG.authDomain
-  ),
-  projectId: resolveEnvOrFallback(
-    import.meta.env.VITE_FIREBASE_PROJECT_ID,
-    (localFirebaseConfig as any).projectId,
-    DEFAULT_FIREBASE_CONFIG.projectId
-  ),
-  storageBucket: resolveEnvOrFallback(
-    import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-    (localFirebaseConfig as any).storageBucket,
-    DEFAULT_FIREBASE_CONFIG.storageBucket
-  ),
-  messagingSenderId: resolveEnvOrFallback(
-    import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-    (localFirebaseConfig as any).messagingSenderId,
-    DEFAULT_FIREBASE_CONFIG.messagingSenderId
-  ),
-  appId: resolveEnvOrFallback(
-    import.meta.env.VITE_FIREBASE_APP_ID,
-    (localFirebaseConfig as any).appId,
-    DEFAULT_FIREBASE_CONFIG.appId
-  ),
-  measurementId: resolveEnvOrFallback(
-    import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
-    (localFirebaseConfig as any).measurementId,
-    DEFAULT_FIREBASE_CONFIG.measurementId
-  ),
-  firestoreDatabaseId:
-    resolveEnvOrFallback(
-      import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID,
-      (localFirebaseConfig as any).firestoreDatabaseId,
-      DEFAULT_FIREBASE_CONFIG.firestoreDatabaseId
-    ) || '(default)'
-};
-
-// Initialize Firebase App singleton
-export const app = getApps().length > 0 ? getApp() : initializeApp(activeFirebaseConfig);
-
-// Initialize Firebase Auth (strictly in-memory persistence — never stores sessions in Chrome IndexedDB/localStorage)
+// Initialize Firebase Auth (strictly in-memory persistence — zero business cache in IndexedDB/localStorage)
 export const auth = getAuth(app);
 setPersistence(auth, inMemoryPersistence).catch(() => {});
 export const googleAuthProvider = new GoogleAuthProvider();
 
-// Target Firestore database ID — omit custom DB arg when targeting "(default)"
-const rawDbId = cleanEnv(activeFirebaseConfig.firestoreDatabaseId) || '(default)';
-const customNamedDbId = rawDbId !== '(default)' ? rawDbId : undefined;
+// Target Firestore database: "(default)"
 const firestoreSettings = {
   localCache: memoryLocalCache(),
   ignoreUndefinedProperties: true,
@@ -108,20 +55,17 @@ const firestoreSettings = {
 
 let firestoreInstance: Firestore;
 try {
-  firestoreInstance = customNamedDbId
-    ? initializeFirestore(app, firestoreSettings, customNamedDbId)
-    : initializeFirestore(app, firestoreSettings);
+  firestoreInstance = initializeFirestore(app, firestoreSettings);
 } catch {
-  firestoreInstance = customNamedDbId ? getFirestore(app, customNamedDbId) : getFirestore(app);
+  firestoreInstance = getFirestore(app);
 }
 
 export const db = firestoreInstance;
 
-// Silent startup connection probe — confirms reachability without displaying any UI alerts.
+// Startup connection probe against Firestore "(default)" — surfaces genuine permission/config errors clearly
 export async function testFirestoreConnection(): Promise<{ ok: boolean; error?: string }> {
-  const envCheck = inspectCloudEnvironment();
-  if (!envCheck.firebaseReady) {
-    return { ok: false };
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { ok: false, error: 'لا يوجد اتصال بالإنترنت حالياً.' };
   }
 
   try {
@@ -133,11 +77,48 @@ export async function testFirestoreConnection(): Promise<{ ok: boolean; error?: 
     return { ok: true };
   } catch (error) {
     const rawMsg = error instanceof Error ? error.message : String(error);
-    if (rawMsg.includes('not-found') || rawMsg.includes('No document to update')) {
+    const lower = rawMsg.toLowerCase();
+
+    // Missing test document still confirms live server reachability
+    if (lower.includes('not-found') && !lower.includes('database')) {
       updateFirebaseHealth('connected', null);
       return { ok: true };
     }
-    updateFirebaseHealth('connected', null);
+
+    // Surface real Firestore database/permission errors clearly in the UI
+    if (
+      lower.includes('permission-denied') ||
+      lower.includes('permission_denied') ||
+      lower.includes('missing or insufficient permissions')
+    ) {
+      const msg = 'تعذر القراءة من Firebase Firestore (alaa-office-2026): صلاحيات قواعد الأمان غير مفعّلة.';
+      updateFirebaseHealth('error', msg);
+      pushCloudSyncAlert({
+        severity: 'error',
+        target: 'firebase',
+        title: 'خطأ في صلاحيات قاعدة البيانات (Firestore)',
+        message: msg,
+        details: rawMsg
+      });
+      return { ok: false, error: msg };
+    }
+
+    if (lower.includes('database') && lower.includes('not found')) {
+      const msg = 'قاعدة بيانات Firestore (default) غير مهيأة في مشروع alaa-office-2026.';
+      updateFirebaseHealth('error', msg);
+      pushCloudSyncAlert({
+        severity: 'error',
+        target: 'firebase',
+        title: 'خطأ في الاتصال بقاعدة البيانات',
+        message: msg,
+        details: rawMsg
+      });
+      return { ok: false, error: msg };
+    }
+
+    if (lower.includes('the client is offline')) {
+      console.error('Please check your Firebase configuration (alaa-office-2026).', rawMsg);
+    }
     return { ok: false, error: rawMsg };
   }
 }

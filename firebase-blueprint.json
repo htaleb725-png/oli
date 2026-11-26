@@ -1,8 +1,59 @@
 {
   "entities": {
+    "Visitor": {
+      "title": "Visitor",
+      "description": "Active visitor / citizen record filtered by department and operational status",
+      "type": "object",
+      "properties": {
+        "Citizen_ID": { "type": "string" },
+        "FullName": { "type": "string" },
+        "Phone1": { "type": "string" },
+        "District": { "type": "string" },
+        "SubDistrict": { "type": "string" },
+        "Gender": { "type": "string" },
+        "Rating": { "type": "string" },
+        "department": { "type": "string" },
+        "status": { "type": "string" },
+        "archivedInSections": { "type": "array", "items": { "type": "string" } },
+        "CreatedAt": { "type": "string" },
+        "UpdatedAt": { "type": "string" }
+      },
+      "required": ["Citizen_ID", "FullName", "CreatedAt"]
+    },
+    "ArchiveEntry": {
+      "title": "ArchiveEntry",
+      "description": "Independent per-department archive record separated from active visitors with restore support",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recordId": { "type": "string" },
+        "recordType": { "type": "string" },
+        "department": { "type": "string" },
+        "departmentLabel": { "type": "string" },
+        "fullName": { "type": "string" },
+        "phone": { "type": "string" },
+        "archivedAt": { "type": "string" },
+        "archivedBy": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "recordId", "department", "archivedAt"]
+    },
+    "Department": {
+      "title": "Department",
+      "description": "Office department or committee with assigned employees and section permissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "members": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
     "User": {
       "title": "User",
-      "description": "System user account with role, department assignments, section access matrix, and granular permissions",
+      "description": "Staff account with exact-match login code, role, department, and section permissions",
       "type": "object",
       "properties": {
         "User_ID": { "type": "string" },
@@ -22,21 +73,66 @@
       },
       "required": ["User_ID", "Username", "Role", "FullName"]
     },
-    "Citizen": {
-      "title": "Citizen",
-      "description": "Citizen record holding personal, contact and residential information",
+    "Referrer": {
+      "title": "Referrer",
+      "description": "Unified referrer entity consolidating similar name variations for the same person or source",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "canonicalName": { "type": "string" },
+        "normalizedKey": { "type": "string" },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "usageCount": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "canonicalName", "normalizedKey"]
+    },
+    "BlacklistEntry": {
+      "title": "BlacklistEntry",
+      "description": "Blocked or rejected individual record with reason and audit metadata",
       "type": "object",
       "properties": {
         "Citizen_ID": { "type": "string" },
         "FullName": { "type": "string" },
+        "normalizedName": { "type": "string" },
         "Phone1": { "type": "string" },
         "District": { "type": "string" },
-        "SubDistrict": { "type": "string" },
-        "Gender": { "type": "string" },
-        "Rating": { "type": "string" },
-        "CreatedAt": { "type": "string" }
+        "BlockReason": { "type": "string" },
+        "BlockedAt": { "type": "string" },
+        "BlockedBy": { "type": "string" },
+        "IsBlocked": { "type": "boolean" }
       },
-      "required": ["Citizen_ID", "FullName", "Phone1", "CreatedAt"]
+      "required": ["Citizen_ID", "FullName", "BlockReason", "IsBlocked"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Concise operational audit log for add, edit, direct, archive, restore, and manual backup/import/export",
+      "type": "object",
+      "properties": {
+        "Log_ID": { "type": "string" },
+        "Timestamp": { "type": "string" },
+        "UserName": { "type": "string" },
+        "Action": { "type": "string" },
+        "Department": { "type": "string" },
+        "Details": { "type": "string" },
+        "createdAtIso": { "type": "string" }
+      },
+      "required": ["Log_ID", "Timestamp", "Action"]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Global office configuration, outgoing counters, and manual Google Sheets backup status",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "appName": { "type": "string" },
+        "deputyName": { "type": "string" },
+        "googleSheetId": { "type": "string" },
+        "googleSheetGid": { "type": "string" },
+        "lastManualBackupAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id"]
     },
     "OfficeRequest": {
       "title": "OfficeRequest",
@@ -63,12 +159,10 @@
       "properties": {
         "Interview_ID": { "type": "string" },
         "Citizen_ID": { "type": "string" },
-        "CitizenName": { "type": "string" },
         "Date": { "type": "string" },
-        "Status": { "type": "string" },
-        "CreatedAt": { "type": "string" }
+        "Status": { "type": "string" }
       },
-      "required": ["Interview_ID", "Citizen_ID", "Date", "CreatedAt"]
+      "required": ["Interview_ID", "Citizen_ID"]
     },
     "OfficialLetter": {
       "title": "OfficialLetter",
@@ -77,13 +171,10 @@
       "properties": {
         "Letter_ID": { "type": "string" },
         "LetterNumber": { "type": "string" },
-        "LetterDate": { "type": "string" },
         "Recipient": { "type": "string" },
-        "Subject": { "type": "string" },
-        "Body": { "type": "string" },
-        "Citizen_ID": { "type": "string" }
+        "Subject": { "type": "string" }
       },
-      "required": ["Letter_ID", "LetterNumber", "Recipient", "Subject"]
+      "required": ["Letter_ID", "LetterNumber"]
     },
     "ChequeRecord": {
       "title": "ChequeRecord",
@@ -92,35 +183,19 @@
       "properties": {
         "id": { "type": "string" },
         "Citizen_ID": { "type": "string" },
-        "CitizenName": { "type": "string" },
-        "Amount": { "type": "number" },
-        "CreatedAt": { "type": "string" }
+        "Amount": { "type": "number" }
       },
-      "required": ["id", "Citizen_ID", "Amount", "CreatedAt"]
+      "required": ["id", "Citizen_ID"]
     },
     "OrganizationRecord": {
       "title": "OrganizationRecord",
-      "description": "Organizational and political assessment records",
+      "description": "Organizational and community assessment records",
       "type": "object",
       "properties": {
         "Org_ID": { "type": "string" },
-        "Citizen_ID": { "type": "string" },
-        "Rating": { "type": "string" },
-        "UpdatedAt": { "type": "string" }
+        "Citizen_ID": { "type": "string" }
       },
-      "required": ["Org_ID", "Citizen_ID", "Rating"]
-    },
-    "SystemSettings": {
-      "title": "SystemSettings",
-      "description": "Global office system settings and operational parameters",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string" },
-        "systemTitle": { "type": "string" },
-        "deputyName": { "type": "string" },
-        "updatedAt": { "type": "string" }
-      },
-      "required": ["id"]
+      "required": ["Org_ID", "Citizen_ID"]
     },
     "DropdownItem": {
       "title": "DropdownItem",
@@ -133,32 +208,15 @@
       },
       "required": ["id", "Category", "ItemValue"]
     },
-    "AuditLog": {
-      "title": "AuditLog",
-      "description": "System event and security audit trail record",
-      "type": "object",
-      "properties": {
-        "Log_ID": { "type": "string" },
-        "Timestamp": { "type": "string" },
-        "User_ID": { "type": "string" },
-        "Action": { "type": "string" },
-        "Details": { "type": "string" }
-      },
-      "required": ["Log_ID", "Timestamp", "Action"]
-    },
     "CustomSection": {
       "title": "CustomSection",
       "description": "Dynamically added office departments and custom functional sections",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "title": { "type": "string" },
-        "description": { "type": "string" },
-        "icon": { "type": "string" },
-        "badgeColor": { "type": "string" },
-        "createdAt": { "type": "string" }
+        "title": { "type": "string" }
       },
-      "required": ["id", "title", "createdAt"]
+      "required": ["id", "title"]
     },
     "CustomSectionRecord": {
       "title": "CustomSectionRecord",
@@ -166,10 +224,9 @@
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "sectionId": { "type": "string" },
-        "createdAt": { "type": "string" }
+        "sectionId": { "type": "string" }
       },
-      "required": ["id", "sectionId", "createdAt"]
+      "required": ["id", "sectionId"]
     },
     "Notification": {
       "title": "Notification",
@@ -179,27 +236,43 @@
         "id": { "type": "string" },
         "title": { "type": "string" },
         "message": { "type": "string" },
-        "type": { "type": "string" },
-        "category": { "type": "string" },
-        "priority": { "type": "string" },
-        "linkSection": { "type": "string" },
-        "entityId": { "type": "string" },
-        "createdBy": { "type": "string" },
-        "createdAtIso": { "type": "string" },
-        "timestamp": { "type": "string" },
         "read": { "type": "boolean" }
       },
       "required": ["id", "title", "message", "read"]
     }
   },
   "firestore": {
+    "/visitors/{visitorId}": {
+      "schema": "Visitor",
+      "description": "Active citizen / visitor records filtered by department and status"
+    },
+    "/archives/{archiveId}": {
+      "schema": "ArchiveEntry",
+      "description": "Independent per-department archive entries with restore capability"
+    },
+    "/departments/{departmentId}": {
+      "schema": "Department",
+      "description": "Office departments/committees and linked staff permissions"
+    },
     "/users/{userId}": {
       "schema": "User",
-      "description": "User accounts and employee permissions"
+      "description": "Staff accounts and roles with exact-match login codes"
     },
-    "/citizens/{citizenId}": {
-      "schema": "Citizen",
-      "description": "Registered citizen records"
+    "/referrers/{referrerId}": {
+      "schema": "Referrer",
+      "description": "Unified referrers consolidating similar spellings under one canonical record"
+    },
+    "/blacklist/{citizenId}": {
+      "schema": "BlacklistEntry",
+      "description": "Blocked and rejected individuals registry"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Concise operational audit trail"
+    },
+    "/system_settings/{settingId}": {
+      "schema": "SystemSettings",
+      "description": "System configuration, counters, and manual backup status"
     },
     "/requests/{requestId}": {
       "schema": "OfficeRequest",
@@ -221,17 +294,9 @@
       "schema": "OrganizationRecord",
       "description": "Organizational evaluations"
     },
-    "/settings/{settingId}": {
-      "schema": "SystemSettings",
-      "description": "Global office configuration"
-    },
     "/dropdowns/{dropdownId}": {
       "schema": "DropdownItem",
       "description": "System dropdown menus and categories"
-    },
-    "/audit_logs/{logId}": {
-      "schema": "AuditLog",
-      "description": "System audit logs"
     },
     "/custom_sections/{sectionId}": {
       "schema": "CustomSection",
@@ -243,7 +308,7 @@
     },
     "/notifications/{notificationId}": {
       "schema": "Notification",
-      "description": "Real-time workflow notifications synchronized across all office devices"
+      "description": "Real-time workflow notifications synchronized across office devices"
     }
   }
 }

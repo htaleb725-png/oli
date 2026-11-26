@@ -489,11 +489,15 @@ export interface SystemSettings {
   maintenanceMode: boolean;
   tickerNews: string[];
   googleSheetId?: string;
+  googleSheetGid?: string;
   activeGoogleSheetId?: string;
   activeGoogleSheetUrl?: string;
   googleDriveFolderId?: string;
   appsScriptUrl?: string;
   googleAppsScriptUrl?: string;
+  lastManualBackupAt?: string;
+  lastManualBackupBy?: string;
+  lastManualBackupStatus?: string;
   primaryThemeColor?: string;
   allowAdminOpenDriveFolder?: boolean; // للمطور لتحديد هل يحق لمدير الإدارة فتح مجلد Google Drive المباشر
   developerPasscode?: string; // رمز دخول المطور السري القابل للتغيير

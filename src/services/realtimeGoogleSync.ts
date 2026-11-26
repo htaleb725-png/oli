@@ -117,44 +117,34 @@ export function getRuntimeCloudConfig() {
   return { ..._runtimeCloudConfig };
 }
 
-export function resolveTargetSheetId(customSheetId?: string): string {
-  if (customSheetId && customSheetId.trim()) {
-    const cleaned = stripQuotes(customSheetId);
-    if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
-  }
-  if (_runtimeCloudConfig.googleSheetId) {
-    const cleaned = stripQuotes(_runtimeCloudConfig.googleSheetId);
-    if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
-  }
-  const envSheetId = import.meta.env?.VITE_GOOGLE_SHEET_ID;
-  if (envSheetId && envSheetId.trim()) {
-    const cleaned = stripQuotes(envSheetId);
-    if (!cleaned.startsWith('(') && !cleaned.includes('معرف') && !cleaned.includes('الشيت')) return cleaned;
-  }
-
-  if (typeof window !== 'undefined') {
-    const direct = localStorage.getItem('al_nashi_sheet_id');
-    if (direct && direct.trim()) {
-      const cleaned = stripQuotes(direct);
-      if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
-    }
-    try {
-      const savedSettings = localStorage.getItem('al_nashi_office_settings');
-      if (savedSettings) {
-        const parsed = JSON.parse(savedSettings);
-        const candidate = parsed.googleSheetId || parsed.activeGoogleSheetId;
-        if (candidate && String(candidate).trim()) {
-          const cleaned = stripQuotes(String(candidate));
-          if (!cleaned.startsWith('(') && !cleaned.includes('معرف')) return cleaned;
-        }
-      }
-    } catch {}
-  }
-  return '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
-}
-
-export const LEGACY_DEFAULT_APPS_SCRIPT_URL =
+export const LEGACY_OLD_SHEET_ID = '1wqPXKzzrMJJqfGIyAwEZC1tvWXf28JFS8lUN1YGiFVQ';
+export const LEGACY_OLD_APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbxvsACdMiERlpp03F6zeuBpwU6OE6bJ2u8FA2QsZgcp4n4p38UkIMyIcvwBs37L6rZd/exec';
+
+// Authoritative Pinned Manual Backup / Import-Export Google Sheet Configuration
+export const PINNED_GOOGLE_SHEET_ID = '1deoTjgvDflnJBh4B4EGuHN2h_1UiD1VEhssiSS7pDfM';
+export const PINNED_GOOGLE_SHEET_GID = '1677268204';
+export const LEGACY_DEFAULT_APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbzZjjn-nyfPa8GYC17GphCV2v5CJSsB-f-YsCFebkLtMWpnxi-0eUq_vTUYXvRkxD_4/exec';
+export const PINNED_APPS_SCRIPT_URL = LEGACY_DEFAULT_APPS_SCRIPT_URL;
+
+export function resolveTargetSheetId(customSheetId?: string): string {
+  const isUsable = (val?: string | null) => {
+    const cleaned = stripQuotes(val || '');
+    return (
+      Boolean(cleaned) &&
+      !cleaned.startsWith('(') &&
+      !cleaned.includes('معرف') &&
+      !cleaned.includes('الشيت') &&
+      cleaned !== LEGACY_OLD_SHEET_ID &&
+      cleaned !== '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms'
+    );
+  };
+
+  if (isUsable(customSheetId)) return stripQuotes(customSheetId);
+  if (isUsable(_runtimeCloudConfig.googleSheetId)) return stripQuotes(_runtimeCloudConfig.googleSheetId);
+  return PINNED_GOOGLE_SHEET_ID;
+}
 
 export function isValidExecAppsScriptUrl(url?: string | null): boolean {
   if (!url) return false;
@@ -164,56 +154,16 @@ export function isValidExecAppsScriptUrl(url?: string | null): boolean {
 }
 
 export function resolveAppsScriptUrl(customUrl?: string): string {
-  const rawEnvUrl = import.meta.env?.VITE_GOOGLE_APPS_SCRIPT_URL;
-  const envUrl = isValidExecAppsScriptUrl(rawEnvUrl) ? stripQuotes(rawEnvUrl) : '';
+  const isFreshExecUrl = (url?: string | null) =>
+    isValidExecAppsScriptUrl(url) && stripQuotes(url || '') !== LEGACY_OLD_APPS_SCRIPT_URL;
 
-  // Clean stale localStorage Apps Script URL if Vercel env var is configured with a newer /exec URL
-  if (envUrl && typeof window !== 'undefined') {
-    try {
-      const stored = localStorage.getItem('al_nashi_apps_script_url');
-      if (stored && stripQuotes(stored) !== envUrl && stripQuotes(stored) === LEGACY_DEFAULT_APPS_SCRIPT_URL) {
-        localStorage.setItem('al_nashi_apps_script_url', envUrl);
-      }
-    } catch {}
+  if (isFreshExecUrl(customUrl)) {
+    return stripQuotes(customUrl);
   }
-
-  // 1. Explicit customUrl wins ONLY if it is a valid /exec URL and is NOT the stale legacy fallback when envUrl is configured
-  if (isValidExecAppsScriptUrl(customUrl)) {
-    const cleaned = stripQuotes(customUrl);
-    if (!envUrl || cleaned !== LEGACY_DEFAULT_APPS_SCRIPT_URL) {
-      return cleaned;
-    }
-  }
-
-  // 2. Authoritative Vercel / environment VITE_GOOGLE_APPS_SCRIPT_URL (/exec)
-  if (envUrl) {
-    return envUrl;
-  }
-
-  // 3. Live runtime cloud config from Firestore settings/general
-  if (isValidExecAppsScriptUrl(_runtimeCloudConfig.appsScriptUrl)) {
+  if (isFreshExecUrl(_runtimeCloudConfig.appsScriptUrl)) {
     return stripQuotes(_runtimeCloudConfig.appsScriptUrl);
   }
-
-  // 4. Saved direct URL preference (only valid /exec)
-  if (typeof window !== 'undefined') {
-    const direct = localStorage.getItem('al_nashi_apps_script_url');
-    if (isValidExecAppsScriptUrl(direct)) {
-      return stripQuotes(direct || '');
-    }
-    try {
-      const savedSettings = localStorage.getItem('al_nashi_office_settings');
-      if (savedSettings) {
-        const parsed = JSON.parse(savedSettings);
-        const candidate = parsed.appsScriptUrl || parsed.googleAppsScriptUrl;
-        if (isValidExecAppsScriptUrl(candidate)) {
-          return stripQuotes(String(candidate));
-        }
-      }
-    } catch {}
-  }
-
-  return LEGACY_DEFAULT_APPS_SCRIPT_URL;
+  return PINNED_APPS_SCRIPT_URL;
 }
 
 /**
@@ -549,8 +499,14 @@ export async function pushToGoogleSheetsRealtime(
   action: RealtimeActionType = 'insert',
   appsScriptUrl?: string,
   sheetId?: string,
-  options?: { customSections?: CustomSection[] }
+  options?: { customSections?: CustomSection[]; manual?: boolean }
 ): Promise<RealtimePushResult> {
+  // Architecture Policy: Firebase Firestore (alaa-office-2026) is the SOLE live database.
+  // Google Sheets is strictly reserved for explicit manual backup & manual import/export actions.
+  if (!options?.manual) {
+    return { success: true, via: 'skipped' };
+  }
+
   const resolvedSheetId = resolveTargetSheetId(sheetId);
   const resolvedUrl = resolveAppsScriptUrl(appsScriptUrl);
   const timestamp = new Date().toISOString();
@@ -806,6 +762,8 @@ export async function pushBulkDataToGoogleSheets(
       }
       const res = await postToAppsScriptWithServerProxy(resolvedUrl, {
         action: 'bulk_sync',
+        spreadsheetId: resolvedSheetId,
+        sheetGid: PINNED_GOOGLE_SHEET_GID,
         customSections: i === 0 ? activeSections : undefined,
         data: {
           citizens: citSlice,
@@ -818,7 +776,7 @@ export async function pushBulkDataToGoogleSheets(
           users: usrSlice
         },
         timestamp: new Date().toISOString(),
-        source: 'al_nashi_bulk_sync'
+        source: 'al_nashi_manual_backup'
       });
       if (res.success) {
         appsScriptSent = true;

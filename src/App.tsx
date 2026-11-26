@@ -473,9 +473,6 @@ const MainAppLayout: React.FC = () => {
         }}
       />
 
-      {/* Live System Update Notification */}
-      <AppUpdateNotification />
-
       {/* Ceremonial Post-Login Loading Screen Overlay */}
       <SessionLoadingOverlay 
         isLoading={isSessionLoading} 
@@ -500,6 +497,7 @@ export default function App() {
     <AppProvider>
       <MainAppLayout />
       <NetworkStatusModal />
+      <AppUpdateNotification />
     </AppProvider>
   );
 }

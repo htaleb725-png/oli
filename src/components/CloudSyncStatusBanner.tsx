@@ -46,18 +46,13 @@ export const CloudSyncStatusBanner: React.FC = () => {
   };
 
   const visibleAlerts = health.activeAlerts.filter((alert) => {
-    if (alert.severity === 'error' || alert.severity === 'warning') {
-      if (alert.target === 'env') {
-        return false;
-      }
+    if (alert.target === 'env') {
+      return false;
+    }
+    // When browser is offline, NetworkStatusModal handles the full-screen overlay lock cleanly
+    if (typeof navigator !== 'undefined' && !navigator.onLine && alert.severity === 'error') {
       const combined = `${alert.title} ${alert.message} ${alert.details || ''}`.toLowerCase();
-      if (
-        combined.includes('the client is offline') ||
-        combined.includes('client is offline') ||
-        combined.includes('تعذر الوصول إلى خادم firebase') ||
-        combined.includes('تعذر الوصول الى خادم firebase') ||
-        combined.includes('تعذر الاتصال بخادم firebase')
-      ) {
+      if (combined.includes('client is offline')) {
         return false;
       }
     }

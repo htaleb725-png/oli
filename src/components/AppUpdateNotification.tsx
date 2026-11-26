@@ -1,16 +1,16 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { RefreshCw, ArrowUpCircle, X } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { RefreshCw } from 'lucide-react';
 
 interface AppVersionData {
   version?: string;
   buildTime?: number;
   buildTimestamp?: number;
   releaseDate?: string;
-  notes?: string;
 }
 
-// Gentle low-bandwidth interval (10 minutes) — never stalls weak internet or forces reloads
-const POLL_INTERVAL_MS = 10 * 60 * 1000;
+// Poll /version.json cleanly every 45 seconds + immediately on tab focus/visibility
+const POLL_INTERVAL_MS = 45 * 1000;
+const AUTO_RELOAD_DELAY_MS = 1800; // 1.8 seconds (within 1.5s–2s calm transition window)
 
 function getVersionUrl(): string {
   const base = (import.meta as any).env?.BASE_URL || '/';
@@ -19,43 +19,62 @@ function getVersionUrl(): string {
 }
 
 /**
- * Non-Intrusive Update Banner
- * ---------------------------
- * - NEVER auto-reloads the browser (prevents kicking logged-in staff back to the passcode screen).
- * - Does NOT reload on Firestore settings changes (Firestore onSnapshot applies settings live in memory).
- * - Only shows a small, dismissible corner notification when a new production build is deployed.
+ * Self-Contained Auto-Update Modal ("جاري التحديث")
+ * -------------------------------------------------
+ * - Detects new GitHub/Vercel deployments via /version.json build version changes.
+ * - Renders a calm, completely isolated centered modal with smooth progress bar.
+ * - Auto-reloads after ~1.8s without touching login session, Firestore data, or app theme.
  */
 export const AppUpdateNotification: React.FC = () => {
-  const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [detectedVersion, setDetectedVersion] = useState<string>('');
-  const [updateNote, setUpdateNote] = useState<string>('');
-  const [isReloadingNow, setIsReloadingNow] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [progress, setProgress] = useState(12);
 
   const initialVersionRef = useRef<string | null>(null);
-  const dismissedVersionRef = useRef<string | null>(null);
-
-  const executeManualReload = useCallback(async () => {
-    setIsReloadingNow(true);
-    try {
-      if (typeof window !== 'undefined' && 'caches' in window) {
-        const cacheNames = await caches.keys();
-        await Promise.all(cacheNames.map((name) => caches.delete(name)));
-      }
-      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.map((reg) => reg.update().catch(() => {})));
-      }
-    } catch {
-      // Proceed cleanly
-    }
-    window.location.reload();
-  }, []);
+  const hasTriggeredReloadRef = useRef<boolean>(false);
 
   useEffect(() => {
     let isMounted = true;
+    let reloadTimer: number | null = null;
+    let progressTimer: number | null = null;
+
+    const triggerGracefulReload = () => {
+      if (hasTriggeredReloadRef.current || !isMounted) return;
+      hasTriggeredReloadRef.current = true;
+      setIsUpdating(true);
+      setProgress(18);
+
+      // Smooth visual fill over ~1.8s
+      const startedAt = Date.now();
+      progressTimer = window.setInterval(() => {
+        const elapsed = Date.now() - startedAt;
+        const pct = Math.min(98, Math.round(18 + (elapsed / AUTO_RELOAD_DELAY_MS) * 80));
+        setProgress(pct);
+      }, 60);
+
+      reloadTimer = window.setTimeout(async () => {
+        if (progressTimer !== null) window.clearInterval(progressTimer);
+        setProgress(100);
+        try {
+          // Clear stale browser Cache API assets only — NEVER touch localStorage auth session or Firestore!
+          if (typeof window !== 'undefined' && 'caches' in window) {
+            const cacheNames = await caches.keys();
+            await Promise.all(cacheNames.map((name) => caches.delete(name)));
+          }
+          if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map((reg) => reg.update().catch(() => {})));
+          }
+        } catch {
+          // Proceed safely with reload
+        }
+        window.location.reload();
+      }, AUTO_RELOAD_DELAY_MS);
+    };
 
     const checkBuildVersion = async () => {
+      if (hasTriggeredReloadRef.current) return;
       if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+
       try {
         const controller = new AbortController();
         const timeoutId = window.setTimeout(() => controller.abort(), 5000);
@@ -67,7 +86,9 @@ export const AppUpdateNotification: React.FC = () => {
         if (!response.ok || !isMounted) return;
 
         const data: AppVersionData = await response.json();
-        const latestVer = String(data.version || data.buildTime || data.buildTimestamp || '').trim();
+        const latestVer = String(
+          data.version || data.buildTimestamp || data.buildTime || data.releaseDate || ''
+        ).trim();
         if (!latestVer) return;
 
         if (initialVersionRef.current === null) {
@@ -75,67 +96,64 @@ export const AppUpdateNotification: React.FC = () => {
           return;
         }
 
-        if (latestVer !== initialVersionRef.current && latestVer !== dismissedVersionRef.current) {
-          setDetectedVersion(latestVer);
-          setUpdateNote(data.notes || 'يتوفر إصدار محدث من المنظومة — يمكنك التحديث متى شئت.');
-          setUpdateAvailable(true);
+        if (latestVer !== initialVersionRef.current) {
+          triggerGracefulReload();
         }
       } catch {
-        // Ignore silently on weak internet
+        // Ignore transient network hiccups quietly
       }
     };
 
-    // Establish initial baseline once after idle delay, then check gently every 10 minutes
-    const startupTimer = window.setTimeout(checkBuildVersion, 8000);
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      checkBuildVersion();
+    };
+
+    // Capture baseline immediately on startup, then check periodically and on tab focus
+    checkBuildVersion();
     const pollTimer = window.setInterval(checkBuildVersion, POLL_INTERVAL_MS);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     return () => {
       isMounted = false;
-      window.clearTimeout(startupTimer);
       window.clearInterval(pollTimer);
+      if (reloadTimer !== null) window.clearTimeout(reloadTimer);
+      if (progressTimer !== null) window.clearInterval(progressTimer);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, []);
 
-  if (!updateAvailable) return null;
+  if (!isUpdating) return null;
 
   return (
     <div
-      className="fixed bottom-4 left-4 z-[9950] max-w-sm w-[calc(100%-2rem)] animate-in fade-in slide-in-from-bottom-3 duration-200 font-['Tajawal',sans-serif]"
+      className="fixed inset-0 z-[10050] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200"
       dir="rtl"
+      role="status"
+      aria-live="polite"
+      data-no-text-replace="true"
     >
-      <div className="rounded-2xl bg-slate-900/95 border border-sky-400/40 shadow-2xl p-3.5 text-white flex items-center gap-3 backdrop-blur-md">
-        <div className="w-9 h-9 rounded-xl bg-sky-500/20 border border-sky-400/30 flex items-center justify-center shrink-0">
-          <ArrowUpCircle className="w-5 h-5 text-sky-300" />
+      <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-700/80 shadow-2xl p-6 text-center space-y-4">
+        <div className="mx-auto w-14 h-14 rounded-2xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200/70 dark:border-blue-800/60 flex items-center justify-center shadow-inner">
+          <RefreshCw className="w-7 h-7 text-blue-600 dark:text-blue-400 animate-spin" />
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-black text-white leading-tight">
-            تحديث جديد متوفر {detectedVersion ? `(${detectedVersion})` : ''}
-          </p>
-          <p className="text-[11px] text-slate-300 leading-snug mt-0.5 line-clamp-2">
-            {updateNote}
+
+        <div className="space-y-1.5">
+          <h3 className="text-lg font-extrabold text-slate-900 dark:text-white tracking-tight">
+            جاري التحديث
+          </h3>
+          <p className="text-xs font-medium text-slate-600 dark:text-slate-300 leading-relaxed">
+            يتم الآن تحميل أحدث نسخة من النظام تلقائياً...
           </p>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={executeManualReload}
-            disabled={isReloadingNow}
-            className="px-2.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isReloadingNow ? 'animate-spin' : ''}`} />
-            <span>تحديث</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              dismissedVersionRef.current = detectedVersion;
-              setUpdateAvailable(false);
-            }}
-            className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 cursor-pointer"
-            title="تأجيل التحديث"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+
+        <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-l from-blue-600 via-sky-500 to-blue-500 transition-all duration-150 ease-out"
+            style={{ width: `${progress}%` }}
+          />
         </div>
       </div>
     </div>

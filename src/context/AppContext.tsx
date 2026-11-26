@@ -79,6 +79,13 @@ import {
   fsWipeAllCollections,
   fsWipeSelectedCollections,
   isFirestoreTemporarilyBlocked,
+  fsSaveSectionArchiveEntries,
+  fsDeleteSectionArchiveEntries,
+  fsSaveBlacklistEntry,
+  fsDeleteBlacklistEntry,
+  fsSyncReferrer,
+  fsSyncDepartmentsRegistry,
+  fsSaveBackupStatus,
   FS_COLLECTIONS
 } from '../services/firebaseFirestoreService';
 import { getHomeSectionForRole, normalizeUserRecord, canUserAccessSection } from '../utils/permissions';
@@ -98,7 +105,20 @@ import {
 } from '../data/initialData';
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
-import { pushToGoogleSheetsRealtime, pushBulkDataToGoogleSheets, pullDataFromGoogleAppsScript, verifyLoginWithGoogleSheets, setRuntimeCloudConfig, setRuntimeCustomSections, wipeGoogleSheetsViaAppsScript } from '../services/realtimeGoogleSync';
+import {
+  pushToGoogleSheetsRealtime,
+  pushBulkDataToGoogleSheets,
+  pullDataFromGoogleAppsScript,
+  verifyLoginWithGoogleSheets,
+  setRuntimeCloudConfig,
+  setRuntimeCustomSections,
+  wipeGoogleSheetsViaAppsScript,
+  PINNED_GOOGLE_SHEET_ID,
+  PINNED_GOOGLE_SHEET_GID,
+  PINNED_APPS_SCRIPT_URL,
+  LEGACY_OLD_SHEET_ID,
+  LEGACY_OLD_APPS_SCRIPT_URL
+} from '../services/realtimeGoogleSync';
 import { pushCloudSyncAlert } from '../services/cloudSyncAlerts';
 import { sheetsIntegration } from '../services/sheetsIntegrationLayer';
 import { 
@@ -452,12 +472,8 @@ interface AppContextType {
     }
   ) => Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }>;
 
-  // Compatibility aliases
+  // Compatibility alias
   triggerDeveloper3WaySync?: () => Promise<{ success: boolean; sheetsSynced?: boolean; message: string }>;
-  isSupabaseConnected?: boolean;
-  isSupabaseSyncing?: boolean;
-  syncAllDataToSupabase?: () => Promise<{ success: boolean; message: string; counts?: Record<string, number> }>;
-  fetchAllDataFromSupabase?: () => Promise<{ success: boolean; message: string }>;
 }
 
 export const isStrictValidCitizen = (c: any): boolean => {
@@ -652,19 +668,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!merged.pwaIcon512 || merged.pwaIcon512.startsWith('data:image/')) {
       merged.pwaIcon512 = '/icon-512.png';
     }
-    // Upgrade legacy Google sample sheet ID or empty Apps Script URL to the real office cloud endpoints
-    if (!merged.googleSheetId || merged.googleSheetId === '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms') {
-      merged.googleSheetId = INITIAL_SETTINGS.googleSheetId;
-      merged.activeGoogleSheetId = INITIAL_SETTINGS.activeGoogleSheetId;
-      merged.activeGoogleSheetUrl = INITIAL_SETTINGS.activeGoogleSheetUrl;
+    // Upgrade legacy Google Sheet ID or legacy Apps Script URL to the pinned manual backup endpoints
+    if (
+      !merged.googleSheetId ||
+      merged.googleSheetId === '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms' ||
+      merged.googleSheetId === LEGACY_OLD_SHEET_ID
+    ) {
+      merged.googleSheetId = PINNED_GOOGLE_SHEET_ID;
+      merged.googleSheetGid = PINNED_GOOGLE_SHEET_GID;
+      merged.activeGoogleSheetId = PINNED_GOOGLE_SHEET_ID;
+      merged.activeGoogleSheetUrl = `https://docs.google.com/spreadsheets/d/${PINNED_GOOGLE_SHEET_ID}/edit#gid=${PINNED_GOOGLE_SHEET_GID}`;
+    } else if (!merged.googleSheetGid) {
+      merged.googleSheetGid = PINNED_GOOGLE_SHEET_GID;
     }
-    const envScriptUrl = String((import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || '').trim();
-    if (envScriptUrl && envScriptUrl.startsWith('https://script.google.com/macros/s/') && envScriptUrl.includes('/exec')) {
-      if (!merged.appsScriptUrl || merged.appsScriptUrl === INITIAL_SETTINGS.appsScriptUrl || !merged.appsScriptUrl.includes('/exec')) {
-        merged.appsScriptUrl = envScriptUrl;
-      }
-    } else if (!merged.appsScriptUrl && INITIAL_SETTINGS.appsScriptUrl) {
-      merged.appsScriptUrl = INITIAL_SETTINGS.appsScriptUrl;
+    if (
+      !merged.appsScriptUrl ||
+      merged.appsScriptUrl === LEGACY_OLD_APPS_SCRIPT_URL ||
+      !merged.appsScriptUrl.includes('/exec')
+    ) {
+      merged.appsScriptUrl = PINNED_APPS_SCRIPT_URL;
+      merged.googleAppsScriptUrl = PINNED_APPS_SCRIPT_URL;
     }
     if (!merged.googleDriveFolderId && INITIAL_SETTINGS.googleDriveFolderId) {
       merged.googleDriveFolderId = INITIAL_SETTINGS.googleDriveFolderId;
@@ -1471,8 +1494,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       purgeLegacyBrowserBusinessData();
       clearBusinessRecordsFromIDB().catch(() => {});
 
-      // 1. SINGLE SOURCE OF TRUTH: Firebase Firestore (ola-aap-5fa57 / default) ONLY.
-      //    Google Sheets is strictly Push-Only (backup/export log) and NEVER pulls over or replaces Firestore.
+      // 1. SINGLE SOURCE OF TRUTH: Firebase Firestore (alaa-office-2026 / (default)) ONLY.
+      //    Google Sheets is strictly manual backup / manual import-export and NEVER overwrites Firestore.
       try {
         const fsResult = await fetchAllFromFirestoreNow();
         const cloudSettings = fsResult.systemSettings;
@@ -2287,14 +2310,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('citizens', 'upsert', { item: newCitizen });
 
-    // Serialized Primary Save to Firebase Firestore + Push-Only Backup to Google Sheets
+    // Serialized Primary Save directly to Firebase Firestore (visitors + unified referrers)
     enqueueSerializedSave(`citizen::${newCitizenId}`, async () => {
       try {
         await receptionDomain.saveCitizen(newCitizen, 'insert', getCloudCtx());
+        if (newCitizen.ReferralSource) {
+          fsSyncReferrer(newCitizen.ReferralSource).catch(() => {});
+        }
       } finally {
         saveLock.release();
       }
-      sheetsIntegration.citizens.insert(newCitizen).catch(() => {});
     }).catch(() => {
       saveLock.release();
     });
@@ -2344,10 +2369,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Real-time broadcast to all connected browsers, shared links & Desktop PWAs
     emitServerMutation('citizens', 'upsert', { item: updatedCitizen });
 
-    // Serialized Primary Save to Firebase Firestore + Push-Only Backup to Google Sheets
+    // Serialized Primary Save directly to Firebase Firestore (visitors + unified referrers)
     enqueueSerializedSave(`citizen::${updatedCitizen.Citizen_ID}`, async () => {
       await receptionDomain.saveCitizen(updatedCitizen, 'update', getCloudCtx()).catch(() => {});
-      sheetsIntegration.citizens.update(updatedCitizen).catch(() => {});
+      if (updatedCitizen.ReferralSource) {
+        fsSyncReferrer(updatedCitizen.ReferralSource).catch(() => {});
+      }
     }).catch(() => {});
   };
 
@@ -2415,8 +2442,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       matchingLetterIds.forEach(letId => {
         lettersDomain.deleteLetter(letId, cloudCtx).catch(() => {});
       });
-
-      sheetsIntegration.citizens.delete(citizenId).catch(() => {});
     }
   };
 
@@ -2567,7 +2592,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
 
-    // 3. Persist to shared server blacklist DB (when running with local Express server)
+    // 3. Persist directly to Firestore `blacklist` collection (Single Source of Truth)
+    fsSaveBlacklistEntry({
+      Citizen_ID: targetCitizen.Citizen_ID,
+      FullName: targetCitizen.FullName,
+      normalizedName: targetCitizen.FullName,
+      Phone1: targetCitizen.Phone1 || '',
+      District: targetCitizen.District || 'الناصرية - المركز',
+      BlockReason: cleanReason,
+      BlockedAt: nowStamp,
+      BlockedBy: operator,
+      IsBlocked: true,
+      UpdatedAt: nowIso
+    }).catch(() => {});
+
+    // 4. Mirror to local Express server if active
     fetch('/api/blacklist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2584,7 +2623,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(() => {});
 
     addAuditLog('إدراج بالقائمة السوداء', 'الإدارة / الرقابة', `تم حظر المراجع ${targetCitizen.FullName} (${targetCitizen.Citizen_ID}) بسبب: ${cleanReason}`);
-    pushToGoogleSheetsRealtime('citizens', targetCitizen, 'upsert', systemSettings.appsScriptUrl);
   };
 
   const unblockCitizen = (citizenId: string) => {
@@ -2668,11 +2706,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
 
-    // 3. Remove from shared server blacklist DB
+    // 3. Remove from Firestore `blacklist` collection + local Express server if active
+    fsDeleteBlacklistEntry(cit.Citizen_ID).catch(() => {});
+    matchingBlockedDuplicates.forEach(c => {
+      if (c.Citizen_ID) fsDeleteBlacklistEntry(c.Citizen_ID).catch(() => {});
+    });
     fetch(`/api/blacklist/${encodeURIComponent(cit.Citizen_ID)}`, { method: 'DELETE' }).catch(() => {});
 
     addAuditLog('إلغاء حظر مراجع', 'الإدارة / الرقابة', `تم إلغاء حظر المراجع ${cit.FullName} (${cit.Citizen_ID}) وإعادته للقائمة المسموح بها`);
-    pushToGoogleSheetsRealtime('citizens', updated, 'update', systemSettings.appsScriptUrl);
   };
 
   const checkIfCitizenBlocked = (nameOrId: string, phone?: string): { isBlocked: boolean; citizen?: Citizen; reason?: string } => {
@@ -2881,15 +2922,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Real-time broadcast to same-browser tabs
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([newRequest])[0] || newRequest });
 
-    // Serialized Primary Save to Firebase Firestore + Push-Only Backup to Google Sheets
+    // Serialized Primary Save directly to Firebase Firestore (requests + unified referrers)
     enqueueSerializedSave(`request::${candidate}`, async () => {
       try {
         await adminRequestsDomain.saveRequest(newRequest, 'insert', getCloudCtx());
+        if (newRequest.ReferralSource) {
+          fsSyncReferrer(newRequest.ReferralSource).catch(() => {});
+        }
       } finally {
         saveLock.release();
-      }
-      if (isGoogleConnected) {
-        sheetsIntegration.requests.insert(newRequest).catch(() => {});
       }
     }).catch(() => {
       saveLock.release();
@@ -2949,11 +2990,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
     
-    // Serialized Primary Save to Firebase Firestore + Push-Only Backup to Google Sheets
+    // Serialized Primary Save directly to Firebase Firestore
     enqueueSerializedSave(`request::${updatedReq.Request_ID}`, async () => {
       await adminRequestsDomain.saveRequest(updatedReq, 'update', getCloudCtx()).catch(() => {});
-      if (isGoogleConnected) {
-        sheetsIntegration.requests.update(updatedReq).catch(() => {});
+      if (updatedReq.ReferralSource) {
+        fsSyncReferrer(updatedReq.ReferralSource).catch(() => {});
       }
     }).catch(() => {});
   };
@@ -2964,9 +3005,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     emitServerMutation('requests', 'delete', { id: requestId });
     addAuditLog('حذف نهائي لطلب إداري', 'قسم الإدارة', `تم حذف الطلب ${requestId} نهائياً من قاعدة البيانات`);
     adminRequestsDomain.deleteRequest(requestId, getCloudCtx()).catch(() => {});
-    if (isGoogleConnected) {
-      sheetsIntegration.requests.delete(requestId).catch(() => {});
-    }
   };
 
   const addCheque = (newChequeData: Omit<ChequeRecord, 'id' | 'CreatedAt'>): ChequeRecord => {
@@ -3746,7 +3784,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setRequests(nextAllRequests);
     }
 
-    // Serialized Primary Persistence to Firebase Firestore + Push-Only Backup to Google Sheets
+    // Serialized Primary Persistence to Firebase Firestore (`visitors`/`requests` + dedicated `archives` collection)
     enqueueSerializedSave(`archive-op::${sectionKey || 'global'}`, async () => {
       try {
         if (updatedCitizensList.length + updatedRequestsList.length > 1) {
@@ -3757,38 +3795,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...updatedRequestsList.map(req => fsSaveRequest(req))
           ]);
         }
+        // Mirror per-department archive entries cleanly into dedicated Firestore `archives` collection
+        const archiveDept = sectionKey || 'global';
+        const archiveActorName = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'النظام';
+        const archiveNoteText = options.reason || '';
+        const archiveEntries = [
+          ...updatedCitizensList.map(cit => ({
+            id: `${archiveDept}_visitor_${cit.Citizen_ID}`,
+            recordId: cit.Citizen_ID,
+            recordType: 'visitor' as const,
+            department: archiveDept,
+            departmentLabel: sectionLabel,
+            fullName: cit.FullName || cit.Citizen_ID,
+            phone: cit.Phone1 || '',
+            archivedAt: formattedDate,
+            archivedBy: archiveActorName,
+            notes: archiveNoteText,
+            updatedAt: nowIso
+          })),
+          ...updatedRequestsList.map(req => ({
+            id: `${archiveDept}_request_${req.Request_ID}`,
+            recordId: req.Request_ID,
+            recordType: 'request' as const,
+            department: archiveDept,
+            departmentLabel: sectionLabel,
+            fullName: req.CitizenName || req.Request_ID,
+            phone: (req as any).Phone1 || (req as any).CitizenPhone || '',
+            archivedAt: formattedDate,
+            archivedBy: archiveActorName,
+            notes: archiveNoteText,
+            updatedAt: nowIso
+          }))
+        ];
+        await fsSaveSectionArchiveEntries(archiveEntries).catch(() => {});
       } catch (err) {
         console.error('Firestore per-section archive save error:', err);
       } finally {
         saveLock.release();
       }
 
-      const scriptUrl = systemSettingsRef.current.appsScriptUrl;
-      const BATCH_CONCURRENCY = 5;
-      for (let i = 0; i < updatedCitizensList.length; i += BATCH_CONCURRENCY) {
-        const chunk = updatedCitizensList.slice(i, i + BATCH_CONCURRENCY);
-        await Promise.all(
-          chunk.map(cit => {
-            emitServerMutation('citizens', 'upsert', { item: cit });
-            const payload = sectionKey
-              ? { ...toCleanSheetCitizenPayload(cit), archivedInSections: (cit.archivedInSections || []).join(',') }
-              : { ...toCleanSheetCitizenPayload(cit), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' };
-            return pushToGoogleSheetsRealtime('citizens', payload, 'update', scriptUrl).catch(() => {});
-          })
-        );
-      }
-      for (let i = 0; i < updatedRequestsList.length; i += BATCH_CONCURRENCY) {
-        const chunk = updatedRequestsList.slice(i, i + BATCH_CONCURRENCY);
-        await Promise.all(
-          chunk.map(req => {
-            emitServerMutation('requests', 'upsert', { item: req });
-            const payload = sectionKey
-              ? { ...toCleanSheetRequestPayload(req), archivedInSections: (req.archivedInSections || []).join(',') }
-              : { ...toCleanSheetRequestPayload(req), IsArchived: 'نعم', archived: true, الأرشفة: 'نعم' };
-            return pushToGoogleSheetsRealtime('requests', payload, 'update', scriptUrl).catch(() => {});
-          })
-        );
-      }
+      updatedCitizensList.forEach(cit => emitServerMutation('citizens', 'upsert', { item: cit }));
+      updatedRequestsList.forEach(req => emitServerMutation('requests', 'upsert', { item: req }));
     }).catch(() => {
       saveLock.release();
     });
@@ -3921,38 +3968,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...updatedReqs.map(req => fsSaveRequest(req))
           ]);
         }
+        // Remove restored entries from dedicated Firestore `archives` collection for this department
+        const archiveDept = sectionKey || 'global';
+        const removeDocIds = [
+          ...updatedCits.map(cit => `${archiveDept}_visitor_${cit.Citizen_ID}`),
+          ...updatedReqs.map(req => `${archiveDept}_request_${req.Request_ID}`)
+        ];
+        await fsDeleteSectionArchiveEntries(removeDocIds).catch(() => {});
       } catch (err) {
         console.error('Firestore per-section restore save error:', err);
       } finally {
         saveLock.release();
       }
 
-      const scriptUrl = systemSettingsRef.current.appsScriptUrl;
-      const BATCH_CONCURRENCY = 5;
-      for (let i = 0; i < updatedCits.length; i += BATCH_CONCURRENCY) {
-        const chunk = updatedCits.slice(i, i + BATCH_CONCURRENCY);
-        await Promise.all(
-          chunk.map(cit => {
-            emitServerMutation('citizens', 'upsert', { item: cit });
-            const payload = sectionKey
-              ? { ...toCleanSheetCitizenPayload(cit), archivedInSections: (cit.archivedInSections || []).join(',') }
-              : { ...toCleanSheetCitizenPayload(cit), IsArchived: 'لا', archived: false, الأرشفة: 'لا' };
-            return pushToGoogleSheetsRealtime('citizens', payload, 'update', scriptUrl).catch(() => {});
-          })
-        );
-      }
-      for (let i = 0; i < updatedReqs.length; i += BATCH_CONCURRENCY) {
-        const chunk = updatedReqs.slice(i, i + BATCH_CONCURRENCY);
-        await Promise.all(
-          chunk.map(req => {
-            emitServerMutation('requests', 'upsert', { item: req });
-            const payload = sectionKey
-              ? { ...toCleanSheetRequestPayload(req), archivedInSections: (req.archivedInSections || []).join(',') }
-              : { ...toCleanSheetRequestPayload(req), IsArchived: 'لا', archived: false, الأرشفة: 'لا' };
-            return pushToGoogleSheetsRealtime('requests', payload, 'update', scriptUrl).catch(() => {});
-          })
-        );
-      }
+      updatedCits.forEach(cit => emitServerMutation('citizens', 'upsert', { item: cit }));
+      updatedReqs.forEach(req => emitServerMutation('requests', 'upsert', { item: req }));
     }).catch(() => {
       saveLock.release();
     });
@@ -4663,6 +4693,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         customSections,
         customRecords
       });
+      await fsSyncDepartmentsRegistry(users, customSections).catch(() => {});
+      const blockedNow = citizens.filter(c => c && c.IsBlocked && c.Citizen_ID);
+      if (blockedNow.length > 0) {
+        await Promise.all(
+          blockedNow.map(c =>
+            fsSaveBlacklistEntry({
+              Citizen_ID: c.Citizen_ID,
+              FullName: c.FullName,
+              normalizedName: c.FullName,
+              Phone1: c.Phone1 || '',
+              District: c.District || '',
+              BlockReason: c.BlockReason || 'محظور إدارياً',
+              BlockedAt: c.BlockedAt || new Date().toISOString().split('T')[0],
+              BlockedBy: c.BlockedBy || 'الإدارة',
+              IsBlocked: true,
+              UpdatedAt: new Date().toISOString()
+            }).catch(() => {})
+          )
+        );
+      }
       return { successCount: res.count, total: citizens.length + requests.length + interviews.length };
     } catch (e: any) {
       return { successCount: 0, total: 0, error: e.message };
@@ -4910,13 +4960,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Direct REST Sync note:', directErr);
       }
 
-      // 2. Reliable Apps Script Web App Bulk Sync (uses server proxy + CORE_SCHEMAS clean payloads, NEVER silent no-cors!)
-      const envScriptUrl = String((import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL || '').trim();
+      // 2. Manual Backup Push to Pinned Google Apps Script Web App + Sheet ID/GID
       const targetScriptUrl =
-        envScriptUrl ||
-        systemSettings.appsScriptUrl ||
-        systemSettings.googleAppsScriptUrl ||
-        (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
+        (systemSettings.appsScriptUrl && systemSettings.appsScriptUrl !== LEGACY_OLD_APPS_SCRIPT_URL
+          ? systemSettings.appsScriptUrl
+          : '') || PINNED_APPS_SCRIPT_URL;
+      const targetSheetId =
+        (systemSettings.googleSheetId && systemSettings.googleSheetId !== LEGACY_OLD_SHEET_ID
+          ? systemSettings.googleSheetId
+          : '') || PINNED_GOOGLE_SHEET_ID;
       let appsScriptError = '';
 
       if (targetScriptUrl && targetScriptUrl.startsWith('http')) {
@@ -4925,7 +4977,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             citizens,
             requests,
             targetScriptUrl,
-            systemSettings.googleSheetId || systemSettings.activeGoogleSheetId,
+            targetSheetId,
             {
               interviews,
               officialLetters,
@@ -4940,32 +4992,55 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             sheetsSynced = true;
             hasAnySuccess = true;
             if (!successMessage) {
-              successMessage = `تم بنجاح إرسال وتحديث (${citizens.length}) مراجع و (${requests.length}) معاملة و (${customRecords.length}) سجل قسم في Google Sheets عبر Apps Script.`;
+              successMessage = `تم بنجاح إرسال النسخة الاحتياطية اليدوية (${citizens.length} مراجع، ${requests.length} معاملة، ${customRecords.length} سجل قسم) إلى Google Sheets.`;
             }
           } else if (bulkRes.error) {
             appsScriptError = bulkRes.error;
           }
         } catch (scriptErr: any) {
           appsScriptError = scriptErr?.message || 'تعذر الاتصال برابط Google Apps Script';
-          console.warn('Apps Script bulk_sync error:', scriptErr);
+          console.warn('Apps Script manual backup error:', scriptErr);
         }
       }
 
+      const actorName = currentUser?.FullName || 'مدير النظام';
       if (hasAnySuccess) {
+        fsSaveBackupStatus({
+          action: 'manual_backup',
+          status: 'success',
+          actor: actorName,
+          sheetId: targetSheetId,
+          sheetGid: PINNED_GOOGLE_SHEET_GID,
+          counts: { visitors: citizens.length, requests: requests.length, users: users.length },
+          message: successMessage
+        }).catch(() => {});
+        addAuditLog(
+          'نسخ احتياطي يدوي إلى Google Sheet',
+          'النسخ الاحتياطي والتصدير',
+          `تم تصدير نسخة احتياطية يدوية (${citizens.length} مراجع، ${requests.length} معاملة) إلى شيت Google (${targetSheetId})`
+        );
         return {
           success: true,
           sheetsSynced: true,
-          message: successMessage || 'تم بنجاح إرسال وحفظ كافة السجلات في Google Sheets و Google Drive.'
+          message: successMessage || 'تم بنجاح حفظ النسخة الاحتياطية اليدوية في Google Sheets.'
         };
       }
 
       const failureMsg =
         appsScriptError ||
-        'يرجى التأكد من صحة رابط Google Apps Script (/exec) وصلاحية النشر (Anyone) لإتمام الإرسال.';
+        'يرجى التأكد من صحة رابط Google Apps Script (/exec) وصلاحية النشر (Anyone) لإتمام النسخ الاحتياطي اليدوي.';
+      fsSaveBackupStatus({
+        action: 'manual_backup',
+        status: 'error',
+        actor: actorName,
+        sheetId: targetSheetId,
+        sheetGid: PINNED_GOOGLE_SHEET_GID,
+        message: failureMsg
+      }).catch(() => {});
       pushCloudSyncAlert({
         severity: 'error',
         target: 'google_sheets',
-        title: 'فشل مزامنة البيانات مع Google Sheets',
+        title: 'فشل النسخ الاحتياطي اليدوي مع Google Sheets',
         message: 'تعذر إرسال البيانات إلى Google Apps Script.',
         details: failureMsg
       });
@@ -4987,8 +5062,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsGoogleSyncing(true);
     const deletedIds = getStoredDeletedIds();
     // STRICT SINGLE SOURCE OF TRUTH POLICY:
-    // Firebase Firestore (ola-aap-5fa57 / default) is ALWAYS primary.
-    // Google Sheets NEVER replaces Firestore state and NEVER deletes/overwrites Firestore documents.
+    // Firebase Firestore (alaa-office-2026 / (default)) is ALWAYS primary.
+    // Google Sheets is manual backup/import/export ONLY and NEVER wipes or replaces Firestore documents.
     const shouldSyncToFirestore = false;
     const replaceAsPrimary = false;
 
@@ -5431,12 +5506,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         syncAllToFirestoreNow,
         fetchAllFromFirestoreNow,
         batchImportRecords,
-        // Compatibility aliases
-        triggerDeveloper3WaySync,
-        isSupabaseConnected: false,
-        isSupabaseSyncing: isGoogleSyncing,
-        syncAllDataToSupabase: syncAllToGoogleSheetsNow,
-        fetchAllDataFromSupabase: fetchAllFromGoogleSheetsNow
+        // Compatibility alias
+        triggerDeveloper3WaySync
       }}
     >
       {children}
