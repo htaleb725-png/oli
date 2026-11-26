@@ -1,16 +1,22 @@
-import { OfficeRequest } from '../types';
+import { OfficeRequest, User } from '../types';
 
 /**
- * Strict Zero-Chrome-Persistence Policy (سياسة منع التخزين الدائم للسجلات والجلسات في Chrome)
- * ------------------------------------------------------------------------------------------
+ * Strict Zero-Chrome-Persistence Policy for Business Records
+ * ----------------------------------------------------------
  * Strictly prohibits storing ANY office business records (citizens, requests,
  * interviews, letters, cheques, organization records, custom sections/records,
- * users, dropdowns, archive documents) OR user sessions/passcodes/tokens inside
- * Chrome localStorage or sessionStorage.
- * All business records & active sessions live strictly in live React memory
- * and the unified Cloud Databases (Firebase Firestore + Google Sheets).
- * ONLY lightweight cosmetic UI flags (theme / dark mode / sound / sidebar) are permitted.
+ * staff directory, dropdowns, archive documents) inside Chrome localStorage or
+ * sessionStorage. All business records live strictly in live React memory and
+ * the unified Cloud Databases (Firebase Firestore + Google Sheets).
+ *
+ * PERMITTED browser keys ONLY:
+ * 1) Lightweight cosmetic UI flags (theme / dark mode / sound / sidebar)
+ * 2) Dedicated employee login session key (`al_nashi_auth_session_v1`) storing
+ *    ONLY the currently signed-in user profile/permissions (NEVER passwords) and
+ *    active section so F5 / tab reopen keeps the employee signed in until manual logout.
  */
+
+export const AUTH_SESSION_STORAGE_KEY = 'al_nashi_auth_session_v1';
 
 const ALLOWED_COSMETIC_UI_KEYS = [
   'theme',
@@ -19,10 +25,20 @@ const ALLOWED_COSMETIC_UI_KEYS = [
   'sound'
 ];
 
+export interface PersistedAuthSession {
+  user: Omit<User, 'Password'>;
+  activeSection: string;
+  savedAt: number;
+}
+
+export function isAuthSessionStorageKey(key: string): boolean {
+  return key === AUTH_SESSION_STORAGE_KEY;
+}
+
 export function isAllowedCosmeticUiKey(key: string): boolean {
   const lower = String(key || '').toLowerCase();
   if (!lower) return false;
-  // Never allow settings, sessions, tokens, passcodes, or data collections
+  // Never allow settings, sessions, tokens, passcodes, or data collections via generic writer
   if (
     lower.includes('user') ||
     lower.includes('session') ||
@@ -43,10 +59,79 @@ export function isAllowedCosmeticUiKey(key: string): boolean {
 }
 
 export function isBusinessRecordStorageKey(key: string): boolean {
-  const lower = String(key || '').toLowerCase();
-  if (!lower) return false;
-  if (isAllowedCosmeticUiKey(lower)) return false;
+  if (!key) return false;
+  if (isAuthSessionStorageKey(key)) return false;
+  if (isAllowedCosmeticUiKey(key)) return false;
   return true;
+}
+
+/**
+ * Safely persists ONLY the signed-in employee's session identity, role/permissions,
+ * and active section in localStorage (explicitly strips Password/secrets).
+ * Zero citizen or request records are ever stored.
+ */
+export function savePersistedAuthSession(user: User, activeSection: string): boolean {
+  if (typeof window === 'undefined' || !window.localStorage) return false;
+  if (!user || !user.User_ID || !user.Role) return false;
+
+  try {
+    const { Password: _omittedPassword, ...safeUser } = user;
+    const payload: PersistedAuthSession = {
+      user: safeUser,
+      activeSection: activeSection || 'dashboard',
+      savedAt: Date.now()
+    };
+    window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Loads the persisted employee login session on page load / F5 / tab reopen.
+ * Returns null if no valid session exists (forcing login screen).
+ */
+export function loadPersistedAuthSession(): PersistedAuthSession | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !parsed.user ||
+      typeof parsed.user !== 'object' ||
+      !parsed.user.User_ID ||
+      !parsed.user.Role
+    ) {
+      return null;
+    }
+    const { Password: _omittedPassword, ...safeUser } = parsed.user as User;
+    return {
+      user: safeUser,
+      activeSection: typeof parsed.activeSection === 'string' && parsed.activeSection.trim()
+        ? parsed.activeSection.trim()
+        : 'dashboard',
+      savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now()
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clears the persisted employee login session ONLY when the user manually logs out.
+ */
+export function clearPersistedAuthSession(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage?.removeItem(AUTH_SESSION_STORAGE_KEY);
+  } catch {}
+  try {
+    window.sessionStorage?.removeItem(AUTH_SESSION_STORAGE_KEY);
+  } catch {}
 }
 
 /**
@@ -86,7 +171,7 @@ export function sanitizeRequestsForStorage(requests: OfficeRequest[]): OfficeReq
 
 /**
  * Writes ONLY cosmetic UI preference keys (e.g., dark mode).
- * All business records, settings, and user sessions are strictly blocked from Chrome storage.
+ * All business records, settings, and citizen collections remain strictly blocked from Chrome storage.
  */
 export function safeLocalStorageSet(key: string, value: string): boolean {
   if (typeof window === 'undefined' || !window.localStorage) return false;
@@ -103,7 +188,7 @@ export function safeLocalStorageSet(key: string, value: string): boolean {
 }
 
 /**
- * Debounced writer for cosmetic UI preferences only (blocks all records & sessions).
+ * Debounced writer for cosmetic UI preferences only (blocks all business records).
  */
 const _pendingStorageTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -129,8 +214,9 @@ export function scheduleSafeLocalStorageSet(
 }
 
 /**
- * Purges ALL business records, user sessions, passcodes, and cached settings
- * from Chrome localStorage AND sessionStorage on startup.
+ * Purges ALL business records, citizen caches, passcodes, and cached settings
+ * from Chrome localStorage AND sessionStorage on startup, while preserving ONLY
+ * cosmetic UI preferences and the active employee login session key.
  */
 export function purgeLegacyBrowserBusinessData(): number {
   if (typeof window === 'undefined') return 0;
@@ -142,7 +228,7 @@ export function purgeLegacyBrowserBusinessData(): number {
       const keysToRemove: string[] = [];
       for (let i = 0; i < storage.length; i++) {
         const k = storage.key(i);
-        if (k && !isAllowedCosmeticUiKey(k)) {
+        if (k && !isAllowedCosmeticUiKey(k) && !isAuthSessionStorageKey(k)) {
           keysToRemove.push(k);
         }
       }

@@ -109,7 +109,16 @@ import {
   deleteRecordFromSheetsRealtime,
   ensureSheetTabExists
 } from '../services/googleSheetsService';
-import { safeLocalStorageSet, scheduleSafeLocalStorageSet, sanitizeRequestsForStorage, cleanBloatedLocalStorage, purgeLegacyBrowserBusinessData } from '../utils/safeStorage';
+import {
+  safeLocalStorageSet,
+  scheduleSafeLocalStorageSet,
+  sanitizeRequestsForStorage,
+  cleanBloatedLocalStorage,
+  purgeLegacyBrowserBusinessData,
+  savePersistedAuthSession,
+  loadPersistedAuthSession,
+  clearPersistedAuthSession
+} from '../utils/safeStorage';
 import { clearBusinessRecordsFromIDB, idbSetJSON } from '../utils/persistentStorage';
 import {
   mergeCitizens,
@@ -663,18 +672,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [departmentGreeting, setDepartmentGreeting] = useState<{ title: string; message: string; date: string } | null>(null);
 
+  // Restore active employee login session on F5 / Refresh / tab reopen (session metadata only, zero citizen records)
+  const [initialPersistedSession] = useState(() => loadPersistedAuthSession());
+
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    // Default to developer or director for smooth initial experience
+    if (initialPersistedSession?.user) {
+      return initialPersistedSession.user as User;
+    }
+    // Default placeholder while SplashLanding is open (isAuthenticated requires !isSplashOpen)
     return INITIAL_USERS[0];
   });
 
-  // Strictly in-memory workstation assignment (zero Chrome localStorage persistence for sessions)
+  // Strictly in-memory workstation assignment (zero Chrome localStorage persistence for business data)
   const [assignedWorkstationUser, setAssignedWorkstationUserState] = useState<User | null>(null);
 
-  const [isSplashOpen, setIsSplashOpen] = useState<boolean>(true);
+  const [isSplashOpen, setIsSplashOpen] = useState<boolean>(() => !initialPersistedSession?.user);
   const [lastLoginError, setLastLoginError] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<string>('dashboard');
-  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(false);
+  const [activeSection, setActiveSection] = useState<string>(
+    () => initialPersistedSession?.activeSection || 'dashboard'
+  );
+  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(
+    () => Boolean(initialPersistedSession?.user && (typeof navigator === 'undefined' || navigator.onLine))
+  );
   const [sessionLoadingMessage, setSessionLoadingMessage] = useState<string>('جاري تحميل البيانات، يرجى الانتظار...');
   const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(false);
   const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
@@ -771,11 +790,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setRuntimeCustomSections(customSections);
   }, [customSections]);
 
-  // Strict Zero-Chrome-Storage Policy: purge ALL legacy records, settings & sessions from Chrome localStorage, sessionStorage & IndexedDB on mount
+  // Strict Zero-Chrome-Storage Policy for Business Records: purge legacy citizen/record caches while preserving active login session
   useEffect(() => {
     purgeLegacyBrowserBusinessData();
     clearBusinessRecordsFromIDB().catch(() => {});
   }, []);
+
+  // Keep the signed-in employee's session (user, permissions & current section — never Password) persisted across F5 / tab reopen
+  useEffect(() => {
+    if (!isSplashOpen && currentUser && currentUser.User_ID) {
+      savePersistedAuthSession(currentUser, activeSection);
+    }
+  }, [currentUser, isSplashOpen, activeSection]);
+
+  // Silently keep currentUser's permissions & profile in sync when cloud users hydrate (never forces logout)
+  useEffect(() => {
+    if (isSplashOpen || !currentUser?.User_ID || users.length === 0) return;
+    const liveMatch = users.find((u) => u.User_ID === currentUser.User_ID);
+    if (!liveMatch) return;
+    const hasMetaChanges =
+      JSON.stringify(liveMatch.Permissions || []) !== JSON.stringify(currentUser.Permissions || []) ||
+      JSON.stringify(liveMatch.AllowedSections || []) !== JSON.stringify(currentUser.AllowedSections || []) ||
+      liveMatch.Role !== currentUser.Role ||
+      liveMatch.RoleArabic !== currentUser.RoleArabic ||
+      liveMatch.FullName !== currentUser.FullName ||
+      liveMatch.Department !== currentUser.Department ||
+      (liveMatch.Avatar || '') !== (currentUser.Avatar || '');
+    if (hasMetaChanges) {
+      setCurrentUser((prev) =>
+        prev && prev.User_ID === liveMatch.User_ID ? { ...prev, ...liveMatch } : prev
+      );
+    }
+  }, [users, isSplashOpen, currentUser]);
 
   const getCloudCtx = () => ({
     appsScriptUrl: systemSettingsRef.current.appsScriptUrl || systemSettingsRef.current.googleAppsScriptUrl,
@@ -1531,9 +1577,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let active = true;
     fsSyncSettingsStructure().catch(() => {});
 
+    const safetyCeiling = window.setTimeout(() => {
+      if (active) {
+        setIsSessionLoading(false);
+      }
+    }, 6500);
+
     refreshAllDataFromAllSources()
       .catch(() => {})
       .finally(() => {
+        window.clearTimeout(safetyCeiling);
         if (active) {
           initialHydrationCompleteRef.current = true;
           setIsSessionLoading(false);
@@ -1542,6 +1595,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return () => {
       active = false;
+      window.clearTimeout(safetyCeiling);
     };
   }, []);
 
@@ -1567,12 +1621,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const activateUserSession = (user: User, sourceMessage: string) => {
+    // Strict Auto-route by RBAC role AND explicit AllowedSections matrix
+    const targetHome = getHomeSectionForRole(user.Role, user);
+    savePersistedAuthSession(user, targetHome);
+
     setCurrentUser(user);
     setIsSplashOpen(false);
     setLastLoginError(null);
-
-    // Strict Auto-route by RBAC role AND explicit AllowedSections matrix
-    const targetHome = getHomeSectionForRole(user.Role, user);
     setActiveSection(targetHome);
 
     addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `${sourceMessage} - ${user.FullName} (${user.RoleArabic})`);
@@ -1834,7 +1889,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addAuditLog('تسجيل خروج', 'نظام المصادقة', `تسجيل خروج المستخدم ${currentUser.FullName}`);
     }
 
-    // Safely clear current session only - DO NOT erase or wipe database records
+    // Clear persisted login session ONLY on manual logout - DO NOT erase or wipe database records
+    clearPersistedAuthSession();
+    hasShownLoadingOnceRef.current = false;
     setCurrentUser(null);
     setIsSplashOpen(true);
   };
@@ -1845,17 +1902,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       alert('لا يمكن التبديل لحساب موظف آخر بدون إدخال رمزه السري الشخصي. يرجى تسجيل الخروج والدخول بالحساب المطلوب.');
       return;
     }
+    let nextSection = 'dashboard';
+    if (user.Role === 'reception' || user.Role === 'reception_officer') {
+      nextSection = 'reception';
+    } else if (user.Role === 'social_care' || user.Role === 'social_care_officer') {
+      nextSection = 'social_care';
+    } else if (user.Role === 'admin' || user.Role === 'admin_officer') {
+      nextSection = 'admin';
+    }
+    savePersistedAuthSession(user, nextSection);
     setCurrentUser(user);
     setIsSplashOpen(false);
-    if (user.Role === 'reception' || user.Role === 'reception_officer') {
-      setActiveSection('reception');
-    } else if (user.Role === 'social_care' || user.Role === 'social_care_officer') {
-      setActiveSection('social_care');
-    } else if (user.Role === 'admin' || user.Role === 'admin_officer') {
-      setActiveSection('admin');
-    } else {
-      setActiveSection('dashboard');
-    }
+    setActiveSection(nextSection);
     triggerDepartmentGreeting(user);
     triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
     addAuditLog('تبديل مستخدم سريع', 'إدارة الجلسة', `تم التبديل إلى حساب ${user.FullName}`);
@@ -4196,6 +4254,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const currentCode = normalizeDigits(developerPasscode || systemSettings.developerPasscode || devAccount?.Password || '2026');
     if (cleanInput && cleanInput === currentCode) {
       const devUser = devAccount || INITIAL_USERS[0];
+      savePersistedAuthSession(devUser, 'master_admin');
       setCurrentUser(devUser);
       setIsSplashOpen(false);
       setActiveSection('master_admin');
@@ -4616,6 +4675,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
+      savePersistedAuthSession(devUser, 'master_admin');
       setCurrentUser(devUser);
       setIsSplashOpen(false);
       setActiveSection('master_admin');
