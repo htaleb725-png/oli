@@ -16,8 +16,10 @@ import {
   toCleanCustomSectionRecordPayload,
   buildCustomSectionSheetName,
   buildCustomSectionHeaders,
-  cleanSheetCell
+  cleanSheetCell,
+  mapSheetRowByHeaders
 } from './googleSheetsSchema';
+import { normalizeUserRole, normalizeUserRecord } from '../utils/permissions';
 import {
   Citizen,
   OfficeRequest,
@@ -1420,22 +1422,27 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     };
 
     const users: User[] = (sourceData.users || [])
-      .map((u: any) => ({
-        User_ID: String(u.User_ID || u['معرف المستخدم'] || u.id || '').trim(),
-        Username: String(u.Username || u['اسم الدخول'] || '').trim(),
-        Password: String(u.Password || u['رمز الدخول / كلمة المرور'] || '').trim(),
-        Phone: String(u.Phone || u['رقم الهاتف'] || '').trim(),
-        Role: (u.Role || 'reception') as any,
-        RoleArabic: String(u.RoleArabic || u['الصفة الوظيفية'] || u.Department || 'موظف').trim(),
-        Status: (u.Status === 'frozen' || u['حالة الحساب'] === 'مجمد') ? 'frozen' : 'active',
-        FullName: String(u.FullName || u['الاسم الكامل للموظف'] || u.Username || '').trim(),
-        Department: String(u.Department || u['القسم'] || '').trim(),
-        JobTitle: String(u.JobTitle || '').trim(),
-        Permissions: parseStringArray(u.Permissions),
-        AllowedSections: parseStringArray(u.AllowedSections),
-        CreatedAt: String(u.CreatedAt || '').trim(),
-        UpdatedAt: String(u.UpdatedAt || u['تاريخ التحديث'] || '').trim()
-      }))
+      .map((u: any) => {
+        const rawRole = String(u.Role || u.role || u['الدور'] || u['الصلاحية'] || '').trim();
+        const roleArabic = String(u.RoleArabic || u['الصفة الوظيفية'] || u.Department || u['القسم'] || 'موظف').trim();
+        const department = String(u.Department || u['القسم'] || '').trim();
+        return normalizeUserRecord({
+          User_ID: String(u.User_ID || u['معرف المستخدم'] || u.id || '').trim(),
+          Username: String(u.Username || u['اسم الدخول'] || '').trim(),
+          Password: String(u.Password || u['رمز الدخول / كلمة المرور'] || '').trim(),
+          Phone: String(u.Phone || u['رقم الهاتف'] || '').trim(),
+          Role: normalizeUserRole(rawRole, roleArabic, department),
+          RoleArabic: roleArabic,
+          Status: (u.Status === 'frozen' || u['حالة الحساب'] === 'مجمد') ? 'frozen' : 'active',
+          FullName: String(u.FullName || u['الاسم الكامل للموظف'] || u.Username || '').trim(),
+          Department: department,
+          JobTitle: String(u.JobTitle || '').trim(),
+          Permissions: parseStringArray(u.Permissions),
+          AllowedSections: parseStringArray(u.AllowedSections),
+          CreatedAt: String(u.CreatedAt || '').trim(),
+          UpdatedAt: String(u.UpdatedAt || u['تاريخ التحديث'] || '').trim()
+        });
+      })
       .filter((u: User) => Boolean(u.User_ID && u.Username));
 
     return {
@@ -1518,10 +1525,11 @@ export async function verifyLoginWithGoogleSheets(
           const json = await res.json();
           if (json && (json.success === true || json.matched === true)) {
             if (json.user?.Status === 'frozen') return { success: false, frozen: true };
+            const normalizedJsonUser = json.user ? normalizeUserRecord(json.user) : undefined;
             return {
               success: true,
-              user: json.user,
-              isDeveloper: json.isDeveloper ?? (json.user?.Role === 'developer')
+              user: normalizedJsonUser,
+              isDeveloper: json.isDeveloper ?? (normalizedJsonUser?.Role === 'developer')
             };
           }
         }
@@ -1544,22 +1552,37 @@ export async function verifyLoginWithGoogleSheets(
     if (token && sheetId) {
       try {
         const usersRes = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(USERS_SHEET_NAME)}!A2:I200`,
+          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(USERS_SHEET_NAME)}!A1:M200`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         if (usersRes.ok) {
           const data = await usersRes.json();
-          const rows: string[][] = data.values || [];
-          const sheetUsers: User[] = rows.map(row => ({
-            User_ID: (row[0] || '').trim() || `USR-${Date.now()}`,
-            Username: (row[1] || '').trim(),
-            Password: (row[2] || '').trim(),
-            Role: ((row[3] || 'reception').trim() as any),
-            FullName: (row[4] || row[1] || '').trim(),
-            RoleArabic: (row[5] || row[3] || 'موظف معتمد').trim(),
-            Department: (row[6] || 'إدارة المكتب').trim(),
-            Status: ((row[7] || '').trim() === 'frozen' ? 'frozen' : 'active') as 'active' | 'frozen'
-          })).filter(u => Boolean(u.Username));
+          const allRows: string[][] = data.values || [];
+          const headerRow = allRows[0] || [];
+          const dataRows = allRows.slice(1);
+          const sheetUsers: User[] = dataRows.map((row, idx) => {
+            const mapped = mapSheetRowByHeaders(headerRow, row);
+            const userId = String(mapped['معرف المستخدم'] || mapped['User_ID'] || row[0] || '').trim() || `USR-SH-${idx + 1}`;
+            const fullName = String(mapped['الاسم الكامل للموظف'] || mapped['FullName'] || row[1] || '').trim();
+            const username = String(mapped['اسم الدخول'] || mapped['Username'] || row[2] || '').trim();
+            const password = String(mapped['رمز الدخول / كلمة المرور'] || mapped['Password'] || row[3] || '').trim();
+            const roleArabic = String(mapped['الصفة الوظيفية'] || mapped['RoleArabic'] || row[4] || '').trim();
+            const department = String(mapped['القسم'] || mapped['Department'] || row[5] || '').trim();
+            const rawRole = String(mapped['Role'] || mapped['الدور'] || mapped['الصلاحية'] || '').trim();
+            const phone = String(mapped['رقم الهاتف'] || mapped['Phone'] || row[6] || '').trim();
+            const statusRaw = String(mapped['حالة الحساب'] || mapped['Status'] || row[7] || '').trim();
+            return normalizeUserRecord({
+              User_ID: userId,
+              Username: username,
+              Password: password,
+              Phone: phone,
+              Role: normalizeUserRole(rawRole, roleArabic, department),
+              FullName: fullName || username,
+              RoleArabic: roleArabic || department || 'موظف معتمد',
+              Department: department || 'إدارة المكتب',
+              Status: (statusRaw === 'frozen' || statusRaw === 'مجمد' ? 'frozen' : 'active') as 'active' | 'frozen'
+            });
+          }).filter(u => Boolean(u.Username || u.Password));
           const matched = matchUserFromList(sheetUsers);
           if (matched.success || matched.frozen) return matched;
         }

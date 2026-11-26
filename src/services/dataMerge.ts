@@ -19,6 +19,7 @@ import {
   CustomSectionRecord,
   User
 } from '../types';
+import { normalizeUserRecord } from '../utils/permissions';
 
 const PLACEHOLDER_STRINGS = new Set([
   '',
@@ -615,70 +616,79 @@ export function mergeUsers(
   const deleted = deletedIds || new Set<string>();
   const incomingAuthoritative = Boolean(options?.incomingAuthoritative);
   const byId = new Map<string, User>();
-  const usernameToId = new Map<string, string>();
-
-  const normUsername = (u?: string) => String(u || '').trim().toLowerCase();
 
   for (const raw of currentList || []) {
     if (!raw || !raw.User_ID) continue;
     const id = String(raw.User_ID).trim();
     if (!id || deleted.has(id)) continue;
-    byId.set(id, { ...raw });
-    const un = normUsername(raw.Username);
-    if (un) usernameToId.set(un, id);
+    byId.set(id, normalizeUserRecord({ ...raw, User_ID: id }));
   }
 
-  for (const raw of incomingList || []) {
-    if (!raw || !raw.User_ID) continue;
-    const rawId = String(raw.User_ID).trim();
+  for (const rawItem of incomingList || []) {
+    if (!rawItem || !rawItem.User_ID) continue;
+    const rawId = String(rawItem.User_ID).trim();
     if (!rawId || deleted.has(rawId)) continue;
 
-    const un = normUsername(raw.Username);
-    const matchedId = byId.has(rawId) ? rawId : (un && usernameToId.has(un) ? usernameToId.get(un)! : rawId);
-    const existing = byId.get(matchedId);
+    // Strictly bind by exact User_ID so different staff accounts can NEVER cross-merge or swap roles/codes
+    const raw = normalizeUserRecord({ ...rawItem, User_ID: rawId });
+    const existing = byId.get(rawId);
 
     if (!existing) {
-      byId.set(matchedId, { ...raw, User_ID: matchedId });
-      if (un) usernameToId.set(un, matchedId);
+      byId.set(rawId, raw);
       continue;
     }
 
     const existingTs = getRecordTimestamp(existing);
     const incomingTs = getRecordTimestamp(raw);
 
-    // Determine which record's security/password fields win
+    // Non-authoritative sources (e.g., Google Sheets rows lacking Permissions/AllowedSections/Role)
+    // must NEVER overwrite an authoritative Firestore user's Role, Password, Permissions, or AllowedSections.
     const incomingWins =
-      (incomingTs > existingTs && incomingTs > 0) ||
-      (incomingAuthoritative && incomingTs >= existingTs);
+      incomingAuthoritative
+        ? (incomingTs >= existingTs || existingTs === 0)
+        : (incomingTs > existingTs && incomingTs > 0 && Boolean(raw.Role) && !isMissingOrPlaceholder(raw.Password));
 
     if (incomingWins) {
+      const resolvedRole = raw.Role || existing.Role;
+      const roleChanged = Boolean(raw.Role && existing.Role && raw.Role !== existing.Role);
+
       const merged: User = {
         ...existing,
         ...raw,
-        User_ID: existing.User_ID,
-        // Never allow an empty/placeholder incoming password to erase a valid existing password
+        User_ID: rawId,
         Password: !isMissingOrPlaceholder(raw.Password) ? raw.Password : existing.Password,
         Username: !isMissingOrPlaceholder(raw.Username) ? raw.Username : existing.Username,
         FullName: !isMissingOrPlaceholder(raw.FullName) ? raw.FullName : existing.FullName,
-        Role: raw.Role || existing.Role,
+        Role: resolvedRole,
         RoleArabic: !isMissingOrPlaceholder(raw.RoleArabic) ? raw.RoleArabic : existing.RoleArabic,
-        Permissions: Array.isArray(raw.Permissions) && raw.Permissions.length > 0 ? raw.Permissions : existing.Permissions,
-        AllowedSections: Array.isArray(raw.AllowedSections) && raw.AllowedSections.length > 0 ? raw.AllowedSections : existing.AllowedSections,
+        Department: !isMissingOrPlaceholder(raw.Department) ? raw.Department : existing.Department,
+        // If Role changed, never inherit stale AllowedSections from the previous role
+        Permissions: Array.isArray(raw.Permissions) && raw.Permissions.length > 0
+          ? raw.Permissions
+          : (roleChanged ? [] : existing.Permissions),
+        AllowedSections: Array.isArray(raw.AllowedSections) && raw.AllowedSections.length > 0
+          ? raw.AllowedSections
+          : (roleChanged ? [] : existing.AllowedSections),
         Status: raw.Status || existing.Status
       };
-      byId.set(matchedId, merged);
+      byId.set(rawId, normalizeUserRecord(merged));
     } else {
-      // Existing is newer or locked: only gap-fill missing non-security fields, NEVER overwrite Password/Role/AllowedSections/Permissions
+      // Existing is authoritative or newer: only gap-fill missing non-security fields,
+      // NEVER overwrite Password, Role, RoleArabic, Department, Permissions, or AllowedSections
       const gapFilled = fillMissingFieldsOnly(existing, raw);
-      byId.set(matchedId, {
+      byId.set(rawId, normalizeUserRecord({
         ...gapFilled,
         User_ID: existing.User_ID,
+        Username: existing.Username,
+        FullName: existing.FullName,
         Password: existing.Password,
         Role: existing.Role,
+        RoleArabic: existing.RoleArabic,
+        Department: existing.Department,
         Permissions: existing.Permissions,
         AllowedSections: existing.AllowedSections,
         Status: existing.Status
-      });
+      }));
     }
   }
 

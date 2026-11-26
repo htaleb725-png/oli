@@ -293,7 +293,7 @@ const MainAppLayout: React.FC = () => {
   const renderActiveModule = () => {
     // Strict centralized RBAC guard (including standalone Social Care & custom sections)
     if (!canUserAccessSection(currentUser, activeSection, customSections)) {
-      const homeSec = getHomeSectionForRole(currentUser?.Role);
+      const homeSec = getHomeSectionForRole(currentUser?.Role, currentUser);
       return (
         <div className="p-8 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-center space-y-4 max-w-lg mx-auto shadow-xs">
           <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto text-xl font-bold">
@@ -473,9 +473,6 @@ const MainAppLayout: React.FC = () => {
         }}
       />
 
-      {/* Network Disconnection Apology Overlay */}
-      <NetworkStatusModal />
-
       {/* Live System Update Notification */}
       <AppUpdateNotification />
 
@@ -502,6 +499,7 @@ export default function App() {
   return (
     <AppProvider>
       <MainAppLayout />
+      <NetworkStatusModal />
     </AppProvider>
   );
 }

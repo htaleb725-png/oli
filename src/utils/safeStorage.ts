@@ -26,6 +26,7 @@ const ALLOWED_COSMETIC_UI_KEYS = [
 ];
 
 export interface PersistedAuthSession {
+  userId: string;
   user: Omit<User, 'Password'>;
   activeSection: string;
   savedAt: number;
@@ -67,36 +68,76 @@ export function isBusinessRecordStorageKey(key: string): boolean {
 
 /**
  * Safely persists ONLY the signed-in employee's session identity, role/permissions,
- * and active section in localStorage (explicitly strips Password/secrets).
+ * and active section in browser storage (explicitly strips Password/secrets and oversized base64 avatars).
+ * Strictly bound to `user.User_ID` so sections never bleed across different accounts.
  * Zero citizen or request records are ever stored.
  */
 export function savePersistedAuthSession(user: User, activeSection: string): boolean {
-  if (typeof window === 'undefined' || !window.localStorage) return false;
+  if (typeof window === 'undefined') return false;
   if (!user || !user.User_ID || !user.Role) return false;
 
+  const cleanUserId = String(user.User_ID).trim();
+  if (!cleanUserId) return false;
+
+  const { Password: _omittedPassword, ...restUser } = user;
+  const safeUser: Omit<User, 'Password'> = { ...restUser, User_ID: cleanUserId };
+  // Never let a large base64 profile image blow localStorage quota
+  if (safeUser.Avatar && safeUser.Avatar.startsWith('data:') && safeUser.Avatar.length > 8000) {
+    delete safeUser.Avatar;
+  }
+
+  const payload: PersistedAuthSession = {
+    userId: cleanUserId,
+    user: safeUser,
+    activeSection: activeSection || 'dashboard',
+    savedAt: Date.now()
+  };
+
+  let serialized = '';
   try {
-    const { Password: _omittedPassword, ...safeUser } = user;
-    const payload: PersistedAuthSession = {
-      user: safeUser,
-      activeSection: activeSection || 'dashboard',
-      savedAt: Date.now()
-    };
-    window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(payload));
-    return true;
+    serialized = JSON.stringify(payload);
   } catch {
     return false;
   }
+
+  let saved = false;
+  try {
+    if (window.localStorage) {
+      window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, serialized);
+      saved = true;
+    }
+  } catch {
+    // Fallback below if localStorage is restricted or full
+  }
+
+  try {
+    if (window.sessionStorage) {
+      window.sessionStorage.setItem(AUTH_SESSION_STORAGE_KEY, serialized);
+      saved = true;
+    }
+  } catch {}
+
+  return saved;
 }
 
 /**
  * Loads the persisted employee login session on page load / F5 / tab reopen.
- * Returns null if no valid session exists (forcing login screen).
+ * Strictly validates that `userId` matches `user.User_ID`; discards corrupted/mismatched sessions.
  */
 export function loadPersistedAuthSession(): PersistedAuthSession | null {
-  if (typeof window === 'undefined' || !window.localStorage) return null;
+  if (typeof window === 'undefined') return null;
+  let raw: string | null = null;
   try {
-    const raw = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
-    if (!raw) return null;
+    raw = window.localStorage?.getItem(AUTH_SESSION_STORAGE_KEY) || null;
+  } catch {}
+  if (!raw) {
+    try {
+      raw = window.sessionStorage?.getItem(AUTH_SESSION_STORAGE_KEY) || null;
+    } catch {}
+  }
+  if (!raw) return null;
+
+  try {
     const parsed = JSON.parse(raw);
     if (
       !parsed ||
@@ -106,23 +147,31 @@ export function loadPersistedAuthSession(): PersistedAuthSession | null {
       !parsed.user.User_ID ||
       !parsed.user.Role
     ) {
+      clearPersistedAuthSession();
+      return null;
+    }
+    const cleanUserId = String(parsed.user.User_ID).trim();
+    if (parsed.userId && String(parsed.userId).trim() !== cleanUserId) {
+      clearPersistedAuthSession();
       return null;
     }
     const { Password: _omittedPassword, ...safeUser } = parsed.user as User;
     return {
-      user: safeUser,
+      userId: cleanUserId,
+      user: { ...safeUser, User_ID: cleanUserId },
       activeSection: typeof parsed.activeSection === 'string' && parsed.activeSection.trim()
         ? parsed.activeSection.trim()
         : 'dashboard',
       savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now()
     };
   } catch {
+    clearPersistedAuthSession();
     return null;
   }
 }
 
 /**
- * Clears the persisted employee login session ONLY when the user manually logs out.
+ * Clears the persisted employee login session when logging out or switching accounts.
  */
 export function clearPersistedAuthSession(): void {
   if (typeof window === 'undefined') return;

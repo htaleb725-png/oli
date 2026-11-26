@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { updateFirebaseHealth } from './cloudSyncAlerts';
+import { resolveCanonicalUserRole, normalizeUserRecord } from '../utils/permissions';
 import { 
   Citizen, 
   OfficeRequest, 
@@ -556,13 +557,14 @@ function sanitizeUserPayload(user: User): User {
   const safeId = /^[a-zA-Z0-9_.-]+$/.test(String(user.User_ID || '').trim())
     ? String(user.User_ID).trim()
     : `USR-${Date.now().toString(36).toUpperCase()}`;
+  const canonicalRole = resolveCanonicalUserRole(user);
   return {
     ...user,
     User_ID: safeId,
     Username: String(user.Username || safeId).trim(),
     Password: user.Password !== undefined ? String(user.Password).trim() : '',
     FullName: String(user.FullName || user.Username || 'موظف').trim(),
-    Role: (user.Role || 'reception') as User['Role'],
+    Role: canonicalRole,
     RoleArabic: String(user.RoleArabic || user.Department || 'موظف').trim(),
     Department: String(user.Department || '').trim(),
     JobTitle: String(user.JobTitle || '').trim(),
@@ -846,8 +848,9 @@ export async function fsVerifyLogin(
     };
 
     const matchInUserList = (list: User[]): { success: boolean; user?: User; isDeveloper?: boolean; frozen?: boolean; matchedSource?: 'firebase_user' } => {
-      for (const u of list) {
-        if (!u) continue;
+      for (const rawUser of list) {
+        if (!rawUser) continue;
+        const u = normalizeUserRecord(rawUser);
         const uName = normalizeName(u.Username || '');
         const uId = normalizeName(u.User_ID || '');
         const uFull = normalizeName(u.FullName || '');
@@ -856,17 +859,21 @@ export async function fsVerifyLogin(
 
         if (isDualMode) {
           const userMatched =
-            cleanUser === uName ||
-            cleanUser === uId ||
-            cleanUser === uFull ||
+            (uName && cleanUser === uName) ||
+            (uId && cleanUser === uId) ||
+            (uFull && cleanUser === uFull) ||
             (uPhone && cleanUser === uPhone);
-          const passMatched = Boolean(cleanPass && uPass && cleanPass === uPass);
+          const passMatched = Boolean(cleanPass && uPass && (cleanPass === uPass || cleanPass.toLowerCase() === uPass.toLowerCase()));
           if (userMatched && passMatched) {
             if (u.Status === 'frozen') return { success: false, frozen: true };
             return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
           }
         } else {
-          if (rawCode && ((uPass && rawCode === uPass) || (uId && rawCode.toLowerCase() === uId))) {
+          if (
+            rawCode &&
+            ((uPass && (rawCode === uPass || rawCode.toLowerCase() === uPass.toLowerCase())) ||
+              (uId && rawCode.toLowerCase() === uId))
+          ) {
             if (u.Status === 'frozen') return { success: false, frozen: true };
             return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
           }
@@ -1371,7 +1378,9 @@ export async function fsBulkPullAll(): Promise<{
     const officialLetters = rawOfficialLetters.filter(l => l && l.Letter_ID && !deletedIdsSet.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIdsSet.has(l.Citizen_ID)));
     const cheques = rawCheques.filter(ch => ch && ch.id && !deletedIdsSet.has(ch.id) && !deletedIdsSet.has(ch.Citizen_ID));
     const organizationRecords = rawOrganizationRecords.filter(o => o && (o.Org_ID || o.Citizen_ID) && !deletedIdsSet.has(o.Org_ID || '') && !deletedIdsSet.has(o.Citizen_ID));
-    const users = rawUsers.filter(u => u && u.User_ID && !deletedIdsSet.has(u.User_ID));
+    const users = rawUsers
+      .filter(u => u && u.User_ID && !deletedIdsSet.has(u.User_ID))
+      .map(u => normalizeUserRecord(u));
     const customSections = rawCustomSections.filter(s => s && s.id && !deletedIdsSet.has(s.id));
     const customRecords = rawCustomRecords.filter(cr => cr && cr.id && !deletedIdsSet.has(cr.id) && !deletedIdsSet.has(cr.sectionId));
     const notifications = rawNotifications

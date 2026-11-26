@@ -26,12 +26,26 @@ export const NetworkStatusModal: React.FC = () => {
   const wasOfflineRef = useRef<boolean>(
     typeof navigator !== 'undefined' ? !navigator.onLine : false
   );
+  const consecutiveFailuresRef = useRef<number>(0);
+  const probeInFlightRef = useRef<boolean>(false);
   const modalCardRef = useRef<HTMLDivElement | null>(null);
   const syncRef = useRef(syncAllToFirestoreNow);
   syncRef.current = syncAllToFirestoreNow;
 
+  const enterOfflineLock = useCallback(() => {
+    wasOfflineRef.current = true;
+    setShowReconnectedToast(false);
+    setIsOffline(true);
+  }, []);
+
   const triggerReconnectedSuccess = useCallback(() => {
+    // Strictly fire once per offline -> online recovery so the 8000ms timer is never restarted
+    if (!wasOfflineRef.current) {
+      setIsOffline(false);
+      return;
+    }
     wasOfflineRef.current = false;
+    consecutiveFailuresRef.current = 0;
     setIsOffline(false);
     setShowReconnectedToast(true);
     setReconnectedToastNonce((n) => n + 1);
@@ -56,24 +70,48 @@ export const NetworkStatusModal: React.FC = () => {
     };
   }, [showReconnectedToast, reconnectedToastNonce]);
 
-  // Lightweight connectivity check (triggered on manual retry or when recovering from offline)
+  // Real connectivity probe with same-origin sw-bypass fallback (immune to adblockers & SW cache)
   const checkConnectionOnce = useCallback(async (): Promise<boolean> => {
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       return false;
     }
+    if (probeInFlightRef.current) {
+      return !wasOfflineRef.current;
+    }
+    probeInFlightRef.current = true;
     try {
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), 4500);
-      await fetch(`https://www.gstatic.com/generate_204?_t=${Date.now()}`, {
-        method: 'HEAD',
-        mode: 'no-cors',
-        cache: 'no-store',
-        signal: controller.signal
-      });
-      window.clearTimeout(timeoutId);
-      return true;
-    } catch {
-      return false;
+      try {
+        await fetch(`https://www.gstatic.com/generate_204?_t=${Date.now()}`, {
+          method: 'HEAD',
+          mode: 'no-cors',
+          cache: 'no-store',
+          signal: controller.signal
+        });
+        window.clearTimeout(timeoutId);
+        return true;
+      } catch {
+        window.clearTimeout(timeoutId);
+      }
+
+      // Fallback probe to same-origin asset bypassing Service Worker cache
+      const fallbackController = new AbortController();
+      const fallbackTimer = window.setTimeout(() => fallbackController.abort(), 4000);
+      try {
+        const res = await fetch(`./icon.svg?sw-bypass=1&_t=${Date.now()}`, {
+          method: 'HEAD',
+          cache: 'no-store',
+          signal: fallbackController.signal
+        });
+        window.clearTimeout(fallbackTimer);
+        return res.ok || res.status < 500;
+      } catch {
+        window.clearTimeout(fallbackTimer);
+        return false;
+      }
+    } finally {
+      probeInFlightRef.current = false;
     }
   }, []);
 
@@ -84,25 +122,25 @@ export const NetworkStatusModal: React.FC = () => {
     if (hasNet) {
       triggerReconnectedSuccess();
     } else {
-      wasOfflineRef.current = true;
-      setIsOffline(true);
+      enterOfflineLock();
     }
   };
 
   // Register browser online/offline listeners once without tearing down on isOffline flips
   useEffect(() => {
-    const handleBrowserOnline = () => {
-      if (wasOfflineRef.current) {
-        triggerReconnectedSuccess();
-      } else {
+    const handleBrowserOnline = async () => {
+      if (!wasOfflineRef.current) {
         setIsOffline(false);
+        return;
+      }
+      const verified = await checkConnectionOnce();
+      if (verified) {
+        triggerReconnectedSuccess();
       }
     };
 
     const handleBrowserOffline = () => {
-      wasOfflineRef.current = true;
-      setShowReconnectedToast(false);
-      setIsOffline(true);
+      enterOfflineLock();
     };
 
     window.addEventListener('online', handleBrowserOnline);
@@ -112,10 +150,37 @@ export const NetworkStatusModal: React.FC = () => {
       window.removeEventListener('online', handleBrowserOnline);
       window.removeEventListener('offline', handleBrowserOffline);
     };
-  }, [triggerReconnectedSuccess]);
+  }, [checkConnectionOnce, enterOfflineLock, triggerReconnectedSuccess]);
+
+  // Gentle real-connectivity watchdog while online (detects router/ISP outages even if navigator.onLine stays true;
+  // requires 2 consecutive failed probes so weak/slow internet never causes false lockouts)
+  useEffect(() => {
+    if (isOffline) return;
+
+    const watchdog = window.setInterval(async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        enterOfflineLock();
+        return;
+      }
+      const ok = await checkConnectionOnce();
+      if (ok) {
+        consecutiveFailuresRef.current = 0;
+      } else {
+        consecutiveFailuresRef.current += 1;
+        if (consecutiveFailuresRef.current >= 2) {
+          enterOfflineLock();
+        }
+      }
+    }, 10000);
+
+    return () => {
+      window.clearInterval(watchdog);
+    };
+  }, [isOffline, checkConnectionOnce, enterOfflineLock]);
 
   // While strictly offline: lock background scrolling, blur active underlying inputs,
-  // block keyboard actions outside the modal card, and watch for network return.
+  // block keyboard actions outside the modal card, and watch for verified network return.
   useEffect(() => {
     if (!isOffline) return;
 
@@ -141,19 +206,21 @@ export const NetworkStatusModal: React.FC = () => {
 
     window.addEventListener('keydown', blockUnderlyingKeys, { capture: true });
 
-    // Passive recovery check ONLY while locked offline (zero activity when online)
-    const recoveryInterval = window.setInterval(() => {
-      if (typeof navigator !== 'undefined' && navigator.onLine) {
+    // Recovery check ONLY while locked offline — verifies real internet before unlocking
+    const recoveryInterval = window.setInterval(async () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      const ok = await checkConnectionOnce();
+      if (ok) {
         triggerReconnectedSuccess();
       }
-    }, 2500);
+    }, 3000);
 
     return () => {
       document.body.style.overflow = prevOverflow;
       window.removeEventListener('keydown', blockUnderlyingKeys, { capture: true });
       window.clearInterval(recoveryInterval);
     };
-  }, [isOffline, triggerReconnectedSuccess]);
+  }, [isOffline, checkConnectionOnce, triggerReconnectedSuccess]);
 
   return (
     <>

@@ -1,7 +1,7 @@
-import { User, CustomSection } from '../types';
+import { User, UserRole, CustomSection } from '../types';
 
 /**
- * Single Source of Truth for Strict RBAC & Section Access Control
+ * Single Source of Truth for Strict RBAC, Canonical Role Resolution & Section Access Control
  * - قسم الرعاية الاجتماعية ('social_care' / 'custom_section_sec_social_welfare') قسم مستقل تماماً
  *   ولا يظهر لأي قسم آخر إلا إذا قام المطور أو المدير التنفيذي بمنح الصلاحية صراحةً.
  */
@@ -19,9 +19,136 @@ export function isSocialCareSectionKey(sectionKey: string): boolean {
   );
 }
 
+const VALID_ENGLISH_ROLES = new Set<string>([
+  'developer',
+  'director',
+  'deputy',
+  'admin',
+  'admin_officer',
+  'reception',
+  'reception_officer',
+  'social_care',
+  'social_care_officer',
+  'interviews_officer',
+  'organization',
+  'organization_officer',
+  'machine',
+  'machine_officer',
+  'audit',
+  'archive'
+]);
+
+function normalizeArabicTextForRole(val?: string): string {
+  return String(val || '')
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function inferRoleFromText(rawText?: string): UserRole | '' {
+  const norm = normalizeArabicTextForRole(rawText);
+  if (!norm) return '';
+
+  // Exact English aliases first
+  if (VALID_ENGLISH_ROLES.has(norm)) return norm as UserRole;
+  if (norm === 'dev' || norm === 'superadmin' || norm === 'master_admin') return 'developer';
+  if (norm === 'office_director' || norm === 'office_manager' || norm === 'executive_director' || norm === 'manager') return 'director';
+  if (norm === 'mp' || norm === 'representative') return 'deputy';
+  if (norm === 'administration') return 'admin';
+  if (norm === 'interviews') return 'interviews_officer';
+  if (norm === 'social_welfare') return 'social_care';
+  if (norm === 'auditor') return 'audit';
+  if (norm === 'archivist' || norm === 'search_archive') return 'archive';
+
+  // Arabic role / title / department matching (strict priority order)
+  if (norm.includes('مطور') || norm.includes('برمج') || norm.includes('تكنولوجيا المعلومات')) return 'developer';
+  if (norm.includes('مدير المكتب') || norm.includes('مدير مكتب') || norm.includes('المدير التنفيذي') || norm.includes('مكتب المدير')) return 'director';
+  if (norm.includes('النائب')) return 'deputy';
+  if (norm.includes('الرعايه الاجتماعيه') || norm.includes('رعايه اجتماعيه')) {
+    return norm.includes('موظف') ? 'social_care_officer' : 'social_care';
+  }
+  if (norm.includes('المقابلات') || norm.includes('مقابلات')) return 'interviews_officer';
+  if (norm.includes('التنظيم') || norm.includes('تنظيم') || norm.includes('الجماهير')) {
+    return norm.includes('موظف') ? 'organization_officer' : 'organization';
+  }
+  if (norm.includes('الرقابه') || norm.includes('التدقيق') || norm.includes('التشريع')) return 'audit';
+  if (norm.includes('الارشيف') || norm.includes('الارشفه') || norm.includes('الوثائق')) return 'archive';
+  if (norm.includes('المكنه') || norm.includes('طباعه الكتب')) {
+    return norm.includes('موظف') ? 'machine_officer' : 'machine';
+  }
+  if (norm.includes('الاستعلامات') || norm.includes('استعلامات')) {
+    return norm.includes('موظف') ? 'reception_officer' : 'reception';
+  }
+  if (norm.includes('الاداره') || norm.includes('اداره') || norm.includes('المعاملات')) {
+    return norm.includes('موظف') ? 'admin_officer' : 'admin';
+  }
+
+  return '';
+}
+
+/**
+ * Resolves the authoritative canonical UserRole from Role, RoleArabic, and Department.
+ * - Never blindly defaults unknown roles to 'reception'.
+ * - Self-heals records whose Role was accidentally set to 'reception' by legacy Sheet pulls
+ *   while their RoleArabic explicitly identifies another role (e.g. "مدير المكتب التنفيذي").
+ */
+export function normalizeUserRole(
+  rawRole?: string,
+  roleArabic?: string,
+  department?: string
+): UserRole {
+  const cleanRole = normalizeArabicTextForRole(rawRole);
+  const fromRawRole = inferRoleFromText(rawRole);
+  const fromRoleArabic = inferRoleFromText(roleArabic);
+  const fromDepartment = inferRoleFromText(department);
+
+  // Self-heal legacy Sheet corruption where Role defaulted to 'reception' while RoleArabic clearly specifies another role
+  if (
+    (cleanRole === 'reception' || cleanRole === '') &&
+    fromRoleArabic &&
+    fromRoleArabic !== 'reception' &&
+    fromRoleArabic !== 'reception_officer'
+  ) {
+    return fromRoleArabic;
+  }
+
+  if (fromRawRole) return fromRawRole;
+  if (fromRoleArabic) return fromRoleArabic;
+  if (fromDepartment) return fromDepartment;
+
+  // Safe neutral fallback — NEVER coerce an unknown user into 'reception'
+  return (cleanRole as UserRole) || ('admin' as UserRole);
+}
+
+export function resolveCanonicalUserRole(user?: Partial<User> | null): UserRole {
+  if (!user) return 'admin';
+  return normalizeUserRole(user.Role, user.RoleArabic, user.Department);
+}
+
+/**
+ * Returns a clean User object with its canonical Role accurately bound to its own record.
+ */
+export function normalizeUserRecord(user: User): User {
+  if (!user) return user;
+  const resolvedRole = resolveCanonicalUserRole(user);
+  if (resolvedRole === user.Role) return user;
+  return {
+    ...user,
+    Role: resolvedRole
+  };
+}
+
 export function getHomeSectionForRole(role?: string, user?: User | null): string {
+  const effectiveRole: string = user
+    ? resolveCanonicalUserRole({ ...user, Role: (user.Role || role) as UserRole })
+    : normalizeUserRole(role);
+
   const defaultByRole = ((): string => {
-    switch (role) {
+    switch (effectiveRole) {
       case 'reception':
       case 'reception_officer':
         return 'reception';
@@ -56,16 +183,17 @@ export function getHomeSectionForRole(role?: string, user?: User | null): string
 
   if (
     user &&
-    role !== 'developer' &&
-    role !== 'director' &&
-    role !== 'deputy' &&
+    effectiveRole !== 'developer' &&
+    effectiveRole !== 'director' &&
+    effectiveRole !== 'deputy' &&
     Array.isArray(user.AllowedSections) &&
     user.AllowedSections.length > 0
   ) {
     if (user.AllowedSections.includes(defaultByRole)) {
       return defaultByRole;
     }
-    return user.AllowedSections[0];
+    const firstNonDashboard = user.AllowedSections.find((s) => s && s !== 'dashboard');
+    return firstNonDashboard || user.AllowedSections[0];
   }
 
   return defaultByRole;

@@ -522,13 +522,52 @@ function normalizePassString(val: string): string {
     .trim();
 }
 
+function resolveServerCanonicalRole(rawRole?: string, roleArabic?: string, department?: string): string {
+  const valid = new Set([
+    'developer', 'director', 'deputy', 'admin', 'admin_officer',
+    'reception', 'reception_officer', 'social_care', 'social_care_officer',
+    'interviews_officer', 'organization', 'organization_officer',
+    'machine', 'machine_officer', 'audit', 'archive'
+  ]);
+  const infer = (text?: string): string => {
+    const n = normalizeCredString(String(text || '')).toLowerCase();
+    if (!n) return '';
+    if (valid.has(n)) return n;
+    if (n.includes('مطور') || n.includes('برمج') || n.includes('تكنولوجيا المعلومات')) return 'developer';
+    if (n.includes('مدير المكتب') || n.includes('مدير مكتب') || n.includes('المدير التنفيذي') || n.includes('مكتب المدير')) return 'director';
+    if (n.includes('النائب')) return 'deputy';
+    if (n.includes('الرعايه الاجتماعيه') || n.includes('رعايه اجتماعيه')) return n.includes('موظف') ? 'social_care_officer' : 'social_care';
+    if (n.includes('المقابلات') || n.includes('مقابلات')) return 'interviews_officer';
+    if (n.includes('التنظيم') || n.includes('تنظيم') || n.includes('الجماهير')) return n.includes('موظف') ? 'organization_officer' : 'organization';
+    if (n.includes('الرقابه') || n.includes('التدقيق') || n.includes('التشريع')) return 'audit';
+    if (n.includes('الارشيف') || n.includes('الارشفه') || n.includes('الوثائق')) return 'archive';
+    if (n.includes('المكنه') || n.includes('طباعه الكتب')) return n.includes('موظف') ? 'machine_officer' : 'machine';
+    if (n.includes('الاستعلامات') || n.includes('استعلامات')) return n.includes('موظف') ? 'reception_officer' : 'reception';
+    if (n.includes('الاداره') || n.includes('اداره') || n.includes('المعاملات')) return n.includes('موظف') ? 'admin_officer' : 'admin';
+    return '';
+  };
+  const cleanRaw = normalizeCredString(String(rawRole || '')).toLowerCase();
+  const fromRole = infer(rawRole);
+  const fromArabic = infer(roleArabic);
+  const fromDept = infer(department);
+  if ((cleanRaw === 'reception' || cleanRaw === '') && fromArabic && fromArabic !== 'reception' && fromArabic !== 'reception_officer') {
+    return fromArabic;
+  }
+  return fromRole || fromArabic || fromDept || (cleanRaw || 'admin');
+}
+
 function mergeUserIntoList(list: StoredUser[], incoming: StoredUser): StoredUser[] {
   const idx = list.findIndex((u) => u.User_ID === incoming.User_ID);
-  if (idx === -1) return [...list, incoming];
+  const normalizedIncoming: StoredUser = {
+    ...incoming,
+    Role: resolveServerCanonicalRole(incoming.Role, incoming.RoleArabic, incoming.Department)
+  };
+  if (idx === -1) return [...list, normalizedIncoming];
   const existing = list[idx];
   const existingTs = Date.parse(existing.UpdatedAt || existing.CreatedAt || '') || 0;
-  const incomingTs = Date.parse(incoming.UpdatedAt || incoming.CreatedAt || '') || 0;
-  const winner = incomingTs >= existingTs ? { ...existing, ...incoming } : { ...incoming, ...existing };
+  const incomingTs = Date.parse(normalizedIncoming.UpdatedAt || normalizedIncoming.CreatedAt || '') || 0;
+  const winner = incomingTs >= existingTs ? { ...existing, ...normalizedIncoming } : { ...normalizedIncoming, ...existing };
+  winner.Role = resolveServerCanonicalRole(winner.Role, winner.RoleArabic, winner.Department);
   const next = [...list];
   next[idx] = winner;
   return next;
@@ -679,7 +718,7 @@ async function startServer() {
       Username: String(incoming.Username).trim(),
       Password: incoming.Password !== undefined ? String(incoming.Password).trim() : '',
       FullName: String(incoming.FullName).trim(),
-      Role: String(incoming.Role || 'reception').trim(),
+      Role: resolveServerCanonicalRole(incoming.Role, incoming.RoleArabic, incoming.Department),
       RoleArabic: String(incoming.RoleArabic || incoming.Department || 'موظف').trim(),
       Department: String(incoming.Department || '').trim(),
       Status: incoming.Status === 'frozen' ? 'frozen' : 'active',
@@ -830,8 +869,12 @@ async function startServer() {
       res.json({ success: true, user: devAccount, isDeveloper: true, matchedSource: 'server_passcode' });
       return;
     }
-    for (const u of store.users) {
-      if (!u) continue;
+    for (const rawU of store.users) {
+      if (!rawU) continue;
+      const u: StoredUser = {
+        ...rawU,
+        Role: resolveServerCanonicalRole(rawU.Role, rawU.RoleArabic, rawU.Department)
+      };
       const uPass = normalizePassString(u.Password || '');
       const uId = normalizePassString(u.User_ID || '').toLowerCase();
       if (

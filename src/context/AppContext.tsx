@@ -77,7 +77,7 @@ import {
   isFirestoreTemporarilyBlocked,
   FS_COLLECTIONS
 } from '../services/firebaseFirestoreService';
-import { getHomeSectionForRole } from '../utils/permissions';
+import { getHomeSectionForRole, normalizeUserRecord, canUserAccessSection } from '../utils/permissions';
 import {
   INITIAL_SETTINGS,
   INITIAL_USERS,
@@ -673,7 +673,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [departmentGreeting, setDepartmentGreeting] = useState<{ title: string; message: string; date: string } | null>(null);
 
   // Restore active employee login session on F5 / Refresh / tab reopen (session metadata only, zero citizen records)
-  const [initialPersistedSession] = useState(() => loadPersistedAuthSession());
+  const [initialPersistedSession] = useState(() => {
+    const raw = loadPersistedAuthSession();
+    if (!raw?.user) return null;
+    const rawRole = raw.user.Role;
+    const canonicalUser = normalizeUserRecord(raw.user as User);
+    const homeSec = getHomeSectionForRole(canonicalUser.Role, canonicalUser);
+    const roleWasRepaired = rawRole !== canonicalUser.Role;
+    const savedSec = raw.activeSection;
+    const isSavedSecValid =
+      !roleWasRepaired &&
+      Boolean(savedSec) &&
+      canUserAccessSection(canonicalUser, savedSec);
+    return {
+      ...raw,
+      user: canonicalUser,
+      activeSection: isSavedSecValid ? savedSec : homeSec
+    };
+  });
 
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     if (initialPersistedSession?.user) {
@@ -803,25 +820,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [currentUser, isSplashOpen, activeSection]);
 
-  // Silently keep currentUser's permissions & profile in sync when cloud users hydrate (never forces logout)
+  // Silently keep currentUser's role, department & permissions strictly synced with their exact User_ID record (never forces logout)
   useEffect(() => {
     if (isSplashOpen || !currentUser?.User_ID || users.length === 0) return;
-    const liveMatch = users.find((u) => u.User_ID === currentUser.User_ID);
-    if (!liveMatch) return;
+    const rawLiveMatch = users.find((u) => u.User_ID === currentUser.User_ID);
+    if (!rawLiveMatch) return;
+    const liveMatch = normalizeUserRecord(rawLiveMatch);
+    const roleChanged = liveMatch.Role !== currentUser.Role;
     const hasMetaChanges =
+      roleChanged ||
       JSON.stringify(liveMatch.Permissions || []) !== JSON.stringify(currentUser.Permissions || []) ||
       JSON.stringify(liveMatch.AllowedSections || []) !== JSON.stringify(currentUser.AllowedSections || []) ||
-      liveMatch.Role !== currentUser.Role ||
       liveMatch.RoleArabic !== currentUser.RoleArabic ||
       liveMatch.FullName !== currentUser.FullName ||
       liveMatch.Department !== currentUser.Department ||
       (liveMatch.Avatar || '') !== (currentUser.Avatar || '');
+
     if (hasMetaChanges) {
       setCurrentUser((prev) =>
         prev && prev.User_ID === liveMatch.User_ID ? { ...prev, ...liveMatch } : prev
       );
+      if (roleChanged || !canUserAccessSection(liveMatch, activeSection, customSections)) {
+        const trueHome = getHomeSectionForRole(liveMatch.Role, liveMatch);
+        setActiveSection(trueHome);
+        savePersistedAuthSession(liveMatch, trueHome);
+      }
     }
-  }, [users, isSplashOpen, currentUser]);
+  }, [users, isSplashOpen, currentUser, activeSection, customSections]);
 
   const getCloudCtx = () => ({
     appsScriptUrl: systemSettingsRef.current.appsScriptUrl || systemSettingsRef.current.googleAppsScriptUrl,
@@ -992,10 +1017,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         purgeDeletedIdsEverywhere(removedIds);
       }
       if (Array.isArray(items) && items.length > 0) {
+        const normalizedIncoming = items.map(normalizeUserRecord);
         setUsers(prev =>
           reconcileLiveFirestoreSnapshot(
             prev,
-            items,
+            normalizedIncoming,
             'User_ID',
             meta,
             (cur, inc, del) => mergeUsers(cur, inc, del, { incomingAuthoritative: true })
@@ -1621,26 +1647,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const activateUserSession = (user: User, sourceMessage: string) => {
-    // Strict Auto-route by RBAC role AND explicit AllowedSections matrix
-    const targetHome = getHomeSectionForRole(user.Role, user);
-    savePersistedAuthSession(user, targetHome);
+    // Clear any stale previous session/section FIRST so no prior user's section ever bleeds into this login
+    clearPersistedAuthSession();
 
-    setCurrentUser(user);
+    // Normalize canonical role strictly from THIS user's own record (never defaulting to 'reception')
+    const canonicalUser = normalizeUserRecord(user);
+
+    // Strict Auto-route by THIS user's canonical Role, Department, and AllowedSections matrix
+    const targetHome = getHomeSectionForRole(canonicalUser.Role, canonicalUser);
+    savePersistedAuthSession(canonicalUser, targetHome);
+
+    setCurrentUser(canonicalUser);
     setIsSplashOpen(false);
     setLastLoginError(null);
     setActiveSection(targetHome);
 
-    addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `${sourceMessage} - ${user.FullName} (${user.RoleArabic})`);
-    triggerDepartmentGreeting(user);
+    addAuditLog('تسجيل دخول ناجح', 'نظام المصادقة', `${sourceMessage} - ${canonicalUser.FullName} (${canonicalUser.RoleArabic})`);
+    triggerDepartmentGreeting(canonicalUser);
     triggerSessionDataLoad('جاري تحميل البيانات، يرجى الانتظار...');
   };
 
   const upsertMatchedUserLocally = (matched: User) => {
+    const cleanMatched = normalizeUserRecord(matched);
     setUsers(prev => {
-      const idx = prev.findIndex(u => u.User_ID === matched.User_ID);
+      const idx = prev.findIndex(u => u.User_ID === cleanMatched.User_ID);
       const next = idx >= 0
-        ? prev.map((u, i) => (i === idx ? { ...u, ...matched } : u))
-        : [...prev, matched];
+        ? prev.map((u, i) => (i === idx ? normalizeUserRecord({ ...u, ...cleanMatched }) : u))
+        : [...prev, cleanMatched];
       safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(next));
       return next;
     });
@@ -1688,7 +1721,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         fetch('/api/users', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(matchedUser)
+          body: JSON.stringify(normalizeUserRecord(matchedUser))
         }).catch(() => {});
       } catch {
         // ignore background mirror errors
@@ -1697,8 +1730,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const matchLocalUser = (): { user?: User; frozen?: boolean; wrongPassword?: boolean } => {
       let matchedNameOnly = false;
-      for (const u of users) {
-        if (!u) continue;
+      for (const rawU of usersRef.current) {
+        if (!rawU) continue;
+        const u = normalizeUserRecord(rawU);
         const uName = normalizeName(u.Username || '');
         const uId = normalizeName(u.User_ID || '');
         const uFull = normalizeName(u.FullName || '');
@@ -1737,10 +1771,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     let sawWrongPassword = false;
 
-    // 1. LIVE SERVER DATABASE CHECK FIRST (/api/auth/login — authoritative, fast 4s timeout)
+    // 1. AUTHORITATIVE FIREBASE FIRESTORE CHECK FIRST (ensures real staff roles/codes/departments win over any stale local seed!)
+    const fsResult = await withTimeout(fsVerifyLogin(usernameOrCode, pass), 4500);
+    if (fsResult) {
+      if (fsResult.frozen) {
+        setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
+        return false;
+      }
+      if (fsResult.success) {
+        if (fsResult.user) {
+          const cleanFsUser = normalizeUserRecord(fsResult.user);
+          upsertMatchedUserLocally(cleanFsUser);
+          mirrorMatchedUserToServer(cleanFsUser);
+          activateUserSession(cleanFsUser, 'تمت مطابقة الحساب والصلاحيات من Firebase Firestore بنجاح');
+          return true;
+        }
+        if (fsResult.isDeveloper) {
+          const devUser = normalizeUserRecord(usersRef.current.find((u) => u.Role === 'developer') || INITIAL_USERS[0]);
+          activateUserSession(devUser, 'تمت مطابقة رمز المطور السحابي بنجاح');
+          return true;
+        }
+      }
+    }
+
+    // 2. LIVE SERVER DATABASE CHECK (/api/auth/login — fallback when Firestore did not match or timed out)
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
       const serverRes = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1760,14 +1817,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return false;
         }
         if (serverData?.success) {
-          if (serverData.isDeveloper && !serverData.user) {
-            const devUser = users.find((u) => u.Role === 'developer') || INITIAL_USERS[0];
-            activateUserSession(devUser, 'تمت مطابقة رمز المطور المعتمد');
+          if (serverData.user) {
+            const cleanServerUser = normalizeUserRecord(serverData.user);
+            upsertMatchedUserLocally(cleanServerUser);
+            activateUserSession(cleanServerUser, 'تمت مطابقة الحساب والصلاحيات من قاعدة بيانات الخادم');
             return true;
           }
-          if (serverData.user) {
-            upsertMatchedUserLocally(serverData.user);
-            activateUserSession(serverData.user, 'تمت مطابقة الحساب والصلاحيات من قاعدة بيانات الخادم');
+          if (serverData.isDeveloper) {
+            const devUser = normalizeUserRecord(usersRef.current.find((u) => u.Role === 'developer') || INITIAL_USERS[0]);
+            activateUserSession(devUser, 'تمت مطابقة رمز المطور المعتمد');
             return true;
           }
         } else if (serverData?.reason === 'wrong_password') {
@@ -1775,27 +1833,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
     } catch {
-      // Server endpoint unavailable or timed out — continue seamlessly to local & cloud checks
+      // Server endpoint unavailable or timed out — continue seamlessly to local & Sheets checks
     }
 
-    // 2. DEVELOPER PASSCODE CHECK (strictly honors active custom developerPasscode)
-    const devAccount = users.find((u) => u.Role === 'developer');
-    const devAccountPass = normalizeDigits(devAccount?.Password || '');
-    const activeDevPass = currentDevCode || devAccountPass || '2026';
-    if (
-      (!isDualMode && rawCode && (rawCode === activeDevPass || (devAccountPass && rawCode === devAccountPass))) ||
-      (isDualMode &&
-        (cleanUser === 'developer' ||
-          cleanUser === 'المطور' ||
-          (devAccount && cleanUser === normalizeName(devAccount.Username))) &&
-        (cleanPass === activeDevPass || (devAccountPass && cleanPass === devAccountPass)))
-    ) {
-      const devUser = devAccount || INITIAL_USERS[0];
-      activateUserSession(devUser, 'تم الدخول برمز المطور المعتمد');
-      return true;
-    }
-
-    // 3. LOCAL USERS FAST CHECK (immediate success if user exists locally and isn't frozen)
+    // 3. LOCAL LIVE USERS CHECK (already synced with Firestore on mount)
     const localMatch = matchLocalUser();
     if (localMatch.frozen) {
       setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
@@ -1810,42 +1851,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       sawWrongPassword = true;
     }
 
-    // 4. PARALLEL CLOUD CHECK (Firebase Firestore + Google Sheets in parallel with 5s cap so login never hangs!)
-    const [fsResult, gsResult] = await Promise.all([
-      withTimeout(fsVerifyLogin(usernameOrCode, pass), 5000),
-      withTimeout(
-        verifyLoginWithGoogleSheets(
-          usernameOrCode,
-          pass,
-          systemSettings.appsScriptUrl,
-          systemSettings.googleSheetId
-        ),
-        5000
-      )
-    ]);
+    // 4. DEVELOPER PASSCODE CHECK (strictly honors active custom developerPasscode)
+    const devAccount = usersRef.current.find((u) => u.Role === 'developer');
+    const devAccountPass = normalizeDigits(devAccount?.Password || '');
+    const activeDevPass = currentDevCode || devAccountPass || '2026';
+    if (
+      (!isDualMode && rawCode && (rawCode === activeDevPass || (devAccountPass && rawCode === devAccountPass))) ||
+      (isDualMode &&
+        (cleanUser === 'developer' ||
+          cleanUser === 'المطور' ||
+          (devAccount && cleanUser === normalizeName(devAccount.Username))) &&
+        (cleanPass === activeDevPass || (devAccountPass && cleanPass === devAccountPass)))
+    ) {
+      const devUser = normalizeUserRecord(devAccount || INITIAL_USERS[0]);
+      activateUserSession(devUser, 'تم الدخول برمز المطور المعتمد');
+      return true;
+    }
 
-    for (const cloudRes of [fsResult, gsResult]) {
-      if (!cloudRes) continue;
-      if (cloudRes.frozen) {
+    // 5. GOOGLE SHEETS FALLBACK CHECK (header-aligned & canonical role resolved)
+    const gsResult = await withTimeout(
+      verifyLoginWithGoogleSheets(
+        usernameOrCode,
+        pass,
+        systemSettings.appsScriptUrl,
+        systemSettings.googleSheetId
+      ),
+      5000
+    );
+
+    if (gsResult) {
+      if (gsResult.frozen) {
         setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
         return false;
       }
-      if (cloudRes.success) {
-        if (cloudRes.isDeveloper && !cloudRes.user) {
-          const devUser = users.find((u) => u.Role === 'developer') || INITIAL_USERS[0];
-          activateUserSession(devUser, 'تمت مطابقة رمز المطور السحابي بنجاح');
+      if (gsResult.success) {
+        if (gsResult.user) {
+          const cleanGsUser = normalizeUserRecord(gsResult.user);
+          upsertMatchedUserLocally(cleanGsUser);
+          mirrorMatchedUserToServer(cleanGsUser);
+          activateUserSession(cleanGsUser, 'تمت مطابقة الحساب من القاعدة السحابية بنجاح');
           return true;
         }
-        if (cloudRes.user) {
-          upsertMatchedUserLocally(cloudRes.user);
-          mirrorMatchedUserToServer(cloudRes.user);
-          activateUserSession(cloudRes.user, 'تمت مطابقة الحساب من القاعدة السحابية بنجاح');
+        if (gsResult.isDeveloper) {
+          const devUser = normalizeUserRecord(usersRef.current.find((u) => u.Role === 'developer') || INITIAL_USERS[0]);
+          activateUserSession(devUser, 'تمت مطابقة رمز المطور السحابي بنجاح');
           return true;
         }
       }
     }
 
-    // 5. Clear contextual error message
+    // 6. Clear contextual error message
     setLastLoginError(
       sawWrongPassword
         ? 'كلمة المرور أو الرمز السري غير صحيح لهذا الحساب. يرجى التأكد من الرمز والمحاولة مجدداً.'
@@ -1902,21 +1957,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       alert('لا يمكن التبديل لحساب موظف آخر بدون إدخال رمزه السري الشخصي. يرجى تسجيل الخروج والدخول بالحساب المطلوب.');
       return;
     }
-    let nextSection = 'dashboard';
-    if (user.Role === 'reception' || user.Role === 'reception_officer') {
-      nextSection = 'reception';
-    } else if (user.Role === 'social_care' || user.Role === 'social_care_officer') {
-      nextSection = 'social_care';
-    } else if (user.Role === 'admin' || user.Role === 'admin_officer') {
-      nextSection = 'admin';
-    }
-    savePersistedAuthSession(user, nextSection);
-    setCurrentUser(user);
+    clearPersistedAuthSession();
+    const canonicalUser = normalizeUserRecord(user);
+    const nextSection = getHomeSectionForRole(canonicalUser.Role, canonicalUser);
+    savePersistedAuthSession(canonicalUser, nextSection);
+    setCurrentUser(canonicalUser);
     setIsSplashOpen(false);
     setActiveSection(nextSection);
-    triggerDepartmentGreeting(user);
+    triggerDepartmentGreeting(canonicalUser);
     triggerSessionDataLoad('يرجى الانتظار لتحميل بياناتك...');
-    addAuditLog('تبديل مستخدم سريع', 'إدارة الجلسة', `تم التبديل إلى حساب ${user.FullName}`);
+    addAuditLog('تبديل مستخدم سريع', 'إدارة الجلسة', `تم التبديل إلى حساب ${canonicalUser.FullName}`);
   };
 
   const assignWorkstationUser = (user: User | null) => {
