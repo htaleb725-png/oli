@@ -68,7 +68,9 @@ export const AppsScriptSyncModule: React.FC = () => {
     customSections,
     customRecords,
     users,
-    addAuditLog 
+    addAuditLog,
+    isImportingFromGoogleSheet,
+    importFromGoogleSheetToSupabase
   } = useApp();
 
   const envSheetId = '1deoTjgvDflnJBh4B4EGuHN2h_1UiD1VEhssiSS7pDfM';
@@ -342,6 +344,36 @@ export const AppsScriptSyncModule: React.FC = () => {
 
   return (
     <div className="space-y-4 text-right">
+      {/* One-Click Import Previous Data from Google Sheet -> Supabase */}
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+        <div className="space-y-0.5">
+          <h3 className="text-sm font-black text-emerald-900 flex items-center gap-2">
+            <Database className="w-4 h-4 text-emerald-600" />
+            <span>جلب البيانات السابقة من Google Sheet إلى Supabase</span>
+          </h3>
+          <p className="text-xs text-emerald-800/80">
+            يسحب كافة السجلات والمعاملات السابقة من جدول Google Sheet المربوط ويحفظها في جداول Supabase (citizens و requests) دون تكرار.
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={isImportingFromGoogleSheet}
+          onClick={async () => {
+            const res = await importFromGoogleSheetToSupabase();
+            setSaveSuccessMsg(res.message);
+            setTimeout(() => setSaveSuccessMsg(''), 6000);
+          }}
+          className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-60 shrink-0"
+        >
+          <Download className="w-4 h-4" />
+          <span>
+            {isImportingFromGoogleSheet
+              ? 'جاري جلب البيانات السابقة...'
+              : 'جلب البيانات السابقة من Google Sheet إلى Supabase'}
+          </span>
+        </button>
+      </div>
+
       {/* Header Banner */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="space-y-1">

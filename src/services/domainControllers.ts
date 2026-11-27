@@ -1,10 +1,8 @@
 /**
  * Modular Department Domain Controllers (عزل منطق وحفظ كل قسم بشكل مستقل)
  * ----------------------------------------------------------------------
- * Single Source of Truth: Firebase Firestore (alaa-office-2026 / (default)).
- * All live CRUD operations execute directly against Firestore and surface
- * real persistence errors clearly with instant retry support.
- * Google Sheets is reserved strictly for explicit manual backup/import/export.
+ * Primary Real-Time Database: Supabase (6 tables + Realtime).
+ * Dual-Sync Partner: Google Sheets (Apps Script Code.gs 2026-DYNAMIC-V3).
  */
 
 import {
@@ -40,7 +38,7 @@ import {
   fsDeleteCustomRecord,
   fsSaveUser,
   fsDeleteUser
-} from './firebaseFirestoreService';
+} from './supabaseService';
 import {
   RealtimeActionType,
   pushToGoogleSheetsRealtime,
@@ -69,16 +67,16 @@ function extractReadableError(err: unknown): string {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed.error === 'string') {
       const code = parsed.error;
-      if (code.includes('permission-denied') || code.includes('PERMISSION_DENIED')) {
-        return `رفض صلاحيات Firestore للمسار (${parsed.path || 'غير محدد'}).`;
+      if (code.includes('permission') || code.includes('row-level security')) {
+        return `رفض صلاحيات Supabase للمسار (${parsed.path || 'غير محدد'}).`;
       }
       return `${code} (${parsed.path || ''})`.trim();
     }
   } catch {
     // Plain string message
   }
-  if (raw.includes('permission-denied') || raw.includes('PERMISSION_DENIED')) {
-    return 'رفض صلاحيات الكتابة في Firestore.';
+  if (raw.includes('permission') || raw.includes('row-level security')) {
+    return 'رفض صلاحيات الكتابة في Supabase.';
   }
   return raw;
 }
@@ -103,12 +101,12 @@ async function executeFirestoreOperation(params: {
     firebaseError = extractReadableError(err);
   }
 
-  // Fire non-blocking background backup to Google Apps Script (Code.gs 2026-DYNAMIC-V3) ONLY after Firestore succeeds
+  // Dual-Sync: push to Google Apps Script (Code.gs 2026-DYNAMIC-V3) right after Supabase succeeds
   if (firebaseOk && backgroundSheetsOp) {
     void Promise.resolve()
       .then(() => backgroundSheetsOp())
       .catch(() => {
-        // Silent background backup failure never blocks or slows down live Firestore UI
+        // Silent background backup failure never blocks or slows down live Supabase UI
       });
   }
 

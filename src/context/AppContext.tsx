@@ -88,7 +88,9 @@ import {
   fsSyncReferrer,
   fsSyncDepartmentsRegistry,
   fsSaveBackupStatus,
-  FS_COLLECTIONS
+  FS_COLLECTIONS,
+  importPreviousDataFromGoogleSheetToSupabase,
+  GoogleSheetToSupabaseImportResult
 } from '../services/firebaseFirestoreService';
 import { getHomeSectionForRole, normalizeUserRecord, canUserAccessSection } from '../utils/permissions';
 import {
@@ -470,6 +472,11 @@ interface AppContextType {
     }
   ) => Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }>;
 
+  // Supabase <-> Google Sheet Historical Importer & Empty-Table Detection
+  isImportingFromGoogleSheet: boolean;
+  isSupabaseRequestsEmpty: boolean;
+  importFromGoogleSheetToSupabase: () => Promise<GoogleSheetToSupabaseImportResult>;
+
   // Compatibility alias
   triggerDeveloper3WaySync?: () => Promise<{ success: boolean; sheetsSynced?: boolean; message: string }>;
 }
@@ -753,6 +760,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const locallyPendingDeletesRef = useRef<Map<string, number>>(new Map());
   const [firestoreRequestsSyncError, setFirestoreRequestsSyncError] = useState<string | null>(null);
   const [firestoreLastSaveError, setFirestoreLastSaveError] = useState<string | null>(null);
+  const [isImportingFromGoogleSheet, setIsImportingFromGoogleSheet] = useState<boolean>(false);
+  const [isSupabaseRequestsEmpty, setIsSupabaseRequestsEmpty] = useState<boolean>(false);
 
   const clearFirestoreDiagnostics = () => {
     setFirestoreRequestsSyncError(null);
@@ -1038,15 +1047,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (items, removedIds, meta) => {
         if (meta && !meta.fromCache) {
           setFirestoreRequestsSyncError(null);
+          setIsSupabaseRequestsEmpty(Array.isArray(items) && items.length === 0);
         }
         if (removedIds && removedIds.length > 0) {
           purgeDeletedIdsEverywhere(removedIds);
         }
-        setRequests(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Request_ID', meta, mergeRequests));
+        setRequests(prev => {
+          const next = reconcileLiveFirestoreSnapshot(prev, items, 'Request_ID', meta, mergeRequests);
+          if (next.length > 0) {
+            setIsSupabaseRequestsEmpty(false);
+          }
+          return next;
+        });
       },
       (err) => {
         const msg = err?.message || String(err || 'خطأ غير معروف');
-        setFirestoreRequestsSyncError(`تعذر جلب المعاملات الواردة من Firebase Firestore (requests): ${msg}`);
+        setFirestoreRequestsSyncError(`تعذر جلب المعاملات الواردة من Supabase (requests): ${msg}`);
       }
     );
     unsubs.push(unsubRequests);
@@ -5622,6 +5638,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const importFromGoogleSheetToSupabase = async (): Promise<GoogleSheetToSupabaseImportResult> => {
+    setIsImportingFromGoogleSheet(true);
+    try {
+      const targetScriptUrl =
+        systemSettingsRef.current.appsScriptUrl ||
+        systemSettingsRef.current.googleAppsScriptUrl ||
+        PINNED_APPS_SCRIPT_URL;
+      const targetSheetId =
+        systemSettingsRef.current.googleSheetId ||
+        systemSettingsRef.current.activeGoogleSheetId ||
+        PINNED_GOOGLE_SHEET_ID;
+
+      const res = await importPreviousDataFromGoogleSheetToSupabase({
+        appsScriptUrl: targetScriptUrl,
+        sheetId: targetSheetId,
+        gid: PINNED_GOOGLE_SHEET_GID,
+        actor: currentUser?.FullName || 'الإدارة'
+      });
+
+      if (res.success) {
+        if (res.requestsImported > 0) {
+          setIsSupabaseRequestsEmpty(false);
+        }
+        await fetchAllFromFirestoreNow().catch(() => {});
+        addAuditLog(
+          'جلب البيانات السابقة من Google Sheet إلى Supabase',
+          'إدارة البيانات',
+          res.message
+        );
+        pushCloudSyncAlert({
+          severity: 'success',
+          target: 'both',
+          title: 'تم جلب البيانات السابقة من Google Sheet إلى Supabase بنجاح',
+          message: res.message
+        });
+      } else {
+        pushCloudSyncAlert({
+          severity: 'error',
+          target: 'google_sheets',
+          title: 'تعذر جلب البيانات السابقة من Google Sheet',
+          message: res.message,
+          details: res.error
+        });
+      }
+
+      return res;
+    } finally {
+      setIsImportingFromGoogleSheet(false);
+    }
+  };
+
   const triggerDeveloper3WaySync = async () => {
     return await syncAllToGoogleSheetsNow();
   };
@@ -5775,6 +5842,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         syncAllToFirestoreNow,
         fetchAllFromFirestoreNow,
         batchImportRecords,
+        // Supabase <-> Google Sheet Historical Importer
+        isImportingFromGoogleSheet,
+        isSupabaseRequestsEmpty,
+        importFromGoogleSheetToSupabase,
         // Compatibility alias
         triggerDeveloper3WaySync
       }}

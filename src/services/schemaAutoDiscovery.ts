@@ -1,5 +1,4 @@
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { supabase, SUPABASE_TABLES } from '../lib/supabase';
 import { CustomSection } from '../types';
 import {
   CITIZENS_SHEET_NAME,
@@ -142,21 +141,31 @@ export async function autoSyncAllSchemas(
     ];
 
     try {
-      await setDoc(
-        doc(db, 'settings', 'schema_manifest'),
-        {
-          sections: allSections,
-          totalSections: allSections.length,
-          customSectionsCount: customDefs.length,
-          syncedAt: new Date().toISOString(),
-          version: '2026.5.2-dynamic-sheets',
-          platform: 'dual_sync_firebase_sheets'
-        },
-        { merge: true }
-      );
-      firestoreOk = true;
+      const nowIso = new Date().toISOString();
+      const { error } = await supabase
+        .from(SUPABASE_TABLES.SYSTEM_SETTINGS)
+        .upsert(
+          {
+            key: 'schema_manifest',
+            value: {
+              sections: allSections,
+              totalSections: allSections.length,
+              customSectionsCount: customDefs.length,
+              syncedAt: nowIso,
+              version: '2026.6.0-supabase-sheets-dual',
+              platform: 'dual_sync_supabase_sheets'
+            },
+            updated_at: nowIso
+          },
+          { onConflict: 'key' }
+        );
+      if (!error) {
+        firestoreOk = true;
+      } else {
+        console.warn('[Schema Auto-Discovery] Supabase manifest write warning:', error.message);
+      }
     } catch (err) {
-      console.warn('[Schema Auto-Discovery] Firestore manifest write warning:', err);
+      console.warn('[Schema Auto-Discovery] Supabase manifest write warning:', err);
     }
 
     if (customDefs.length > 0) {

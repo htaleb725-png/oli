@@ -210,8 +210,8 @@ export function reportDualCloudWriteResult(params: {
         ? `تم الحذف النهائي من قاعدة البيانات (${entityLabel})`
         : `تم الحفظ في قاعدة البيانات (${entityLabel})`,
       message: isDelete
-        ? 'تم حذف السجل نهائياً من Firebase Firestore (alaa-office-2026) وتحديث العرض فوراً.'
-        : 'تم حفظ البيانات مباشرة في Firebase Firestore (alaa-office-2026).'
+        ? 'تم حذف السجل نهائياً من Supabase ومزامنة الحذف مع Google Sheet فوراً.'
+        : 'تم حفظ البيانات مباشرة في Supabase ومزامنتها مع Google Sheet.'
     });
     return;
   }
@@ -219,8 +219,8 @@ export function reportDualCloudWriteResult(params: {
   const cleanErr =
     firebaseError ||
     (isDelete
-      ? 'تعذر حذف السجل من Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.'
-      : 'تعذر حفظ البيانات في Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.');
+      ? 'تعذر حذف السجل من Supabase. يرجى التحقق من الاتصال وإعادة المحاولة.'
+      : 'تعذر حفظ البيانات في Supabase. يرجى التحقق من الاتصال وإعادة المحاولة.');
   updateFirebaseHealth('error', cleanErr);
   pushCloudSyncAlert({
     severity: 'error',
@@ -230,8 +230,8 @@ export function reportDualCloudWriteResult(params: {
       ? `فشل الحذف من قاعدة البيانات (${entityLabel})`
       : `فشل الحفظ في قاعدة البيانات (${entityLabel})`,
     message: isDelete
-      ? 'تعذر إتمام عملية الحذف في Firebase Firestore. يرجى التحقق من الاتصال أو الصلاحيات والمحاولة مجدداً.'
-      : 'تعذر حفظ التعديلات مباشرة في Firebase Firestore. يرجى التحقق من الاتصال أو الصلاحيات والمحاولة مجدداً.',
+      ? 'تعذر إتمام عملية الحذف في Supabase. يرجى التحقق من الاتصال والمحاولة مجدداً.'
+      : 'تعذر حفظ التعديلات مباشرة في Supabase. يرجى التحقق من الاتصال والمحاولة مجدداً.',
     details: cleanErr,
     retry
   });

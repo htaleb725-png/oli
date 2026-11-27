@@ -87,7 +87,9 @@ export const AdminModule: React.FC = () => {
     forwardRequestWorkflow,
     exportToExcel,
     canDownloadDatabase,
-    checkIfCitizenBlocked
+    checkIfCitizenBlocked,
+    isImportingFromGoogleSheet,
+    importFromGoogleSheetToSupabase
   } = useApp();
 
   const handleExportComprehensiveExcel = () => {
@@ -749,6 +751,21 @@ export const AdminModule: React.FC = () => {
               >
                 <Download className="w-4 h-4" />
                 <span>تصدير Excel الشامل</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isImportingFromGoogleSheet}
+                onClick={() => void importFromGoogleSheetToSupabase()}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs active:scale-95 disabled:opacity-60"
+                title="جلب السجلات والمعاملات السابقة من Google Sheet إلى Supabase دون تكرار"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>
+                  {isImportingFromGoogleSheet
+                    ? 'جاري جلب البيانات...'
+                    : 'جلب البيانات السابقة من Google Sheet إلى Supabase'}
+                </span>
               </button>
 
               <button

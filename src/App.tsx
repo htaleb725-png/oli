@@ -53,6 +53,9 @@ const MainAppLayout: React.FC = () => {
     departmentGreeting,
     setDepartmentGreeting,
     syncAllToFirestoreNow,
+    isImportingFromGoogleSheet,
+    isSupabaseRequestsEmpty,
+    importFromGoogleSheetToSupabase,
     isSessionLoading,
     sessionLoadingMessage,
     systemSettings,
@@ -63,6 +66,22 @@ const MainAppLayout: React.FC = () => {
   const [isCloudSyncing, setIsCloudSyncing] = React.useState(false);
   const [cloudSyncMsg, setCloudSyncMsg] = React.useState<string | null>(null);
   const [showAdminLogoutModal, setShowAdminLogoutModal] = React.useState(false);
+  const [dismissedEmptySupabaseBanner, setDismissedEmptySupabaseBanner] = React.useState(false);
+  const [sheetImportBannerMsg, setSheetImportBannerMsg] = React.useState<string | null>(null);
+
+  const canImportHistoricalFromSheet = Boolean(
+    currentUser &&
+      ['developer', 'director', 'deputy', 'admin', 'admin_officer', 'reception'].includes(currentUser.Role)
+  );
+
+  const handleQuickImportFromGoogleSheet = async () => {
+    setSheetImportBannerMsg(null);
+    const res = await importFromGoogleSheetToSupabase();
+    setSheetImportBannerMsg(res.message);
+    if (res.success) {
+      setTimeout(() => setSheetImportBannerMsg(null), 6000);
+    }
+  };
 
   const handleRequestLogout = () => {
     if (currentUser?.Role === 'admin' || currentUser?.Role === 'director' || currentUser?.Role === 'developer') {
@@ -169,7 +188,7 @@ const MainAppLayout: React.FC = () => {
     setIsCloudSyncing(true);
     try {
       const res = await syncAllToFirestoreNow();
-      setCloudSyncMsg(`تمت المزامنة مع Firebase (${res.successCount} عنصر) ☁️`);
+      setCloudSyncMsg(`تمت المزامنة مع Supabase (${res.successCount} عنصر) ☁️`);
       setTimeout(() => setCloudSyncMsg(null), 4000);
     } catch {
       setCloudSyncMsg('فشلت المزامنة');
@@ -389,6 +408,43 @@ const MainAppLayout: React.FC = () => {
       {/* Live Cloud Sync Health & Transparent Error Alerts */}
       <CloudSyncStatusBanner />
 
+      {/* One-Click Import Banner when Supabase `requests` table is empty on initial load */}
+      {isSupabaseRequestsEmpty && canImportHistoricalFromSheet && !dismissedEmptySupabaseBanner && !isSessionLoading && (
+        <div className="no-print bg-emerald-50 dark:bg-emerald-950/50 border-b border-emerald-200 dark:border-emerald-800 px-4 py-2.5">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+            <div className="text-right">
+              <p className="text-xs font-extrabold text-emerald-900 dark:text-emerald-200">
+                قاعدة بيانات Supabase جاهزة للعمل (جدول المعاملات فارغ حالياً)
+              </p>
+              <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                {sheetImportBannerMsg ||
+                  'يمكنك جلب جميع السجلات والمعاملات السابقة من Google Sheet إلى Supabase بضغطة واحدة دون تكرار لتفعيل البحث وكشف التكرار مباشرة.'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleQuickImportFromGoogleSheet}
+                disabled={isImportingFromGoogleSheet}
+                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-xs transition-all cursor-pointer disabled:opacity-60"
+              >
+                {isImportingFromGoogleSheet
+                  ? 'جاري جلب البيانات السابقة...'
+                  : 'جلب البيانات السابقة من Google Sheet إلى Supabase'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDismissedEmptySupabaseBanner(true)}
+                className="px-2 py-1.5 rounded-lg text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 text-xs font-bold cursor-pointer"
+                title="إخفاء التنبيه"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Department Entry Welcome Greeting Toast / Notification */}
       {departmentGreeting && (
         <div className="fixed top-20 right-4 sm:right-6 z-50 max-w-md animate-in fade-in slide-in-from-top-4 duration-300">
@@ -456,10 +512,10 @@ const MainAppLayout: React.FC = () => {
             onClick={handleManualCloudSync}
             disabled={isCloudSyncing}
             className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300 font-bold bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 px-2.5 py-0.5 rounded-lg border border-emerald-300 dark:border-emerald-700 transition-all cursor-pointer disabled:opacity-50"
-            title="مزامنة شاملة لكافة بيانات النظام مع Firebase Firestore الآن"
+            title="مزامنة شاملة لكافة بيانات النظام مع قاعدة بيانات Supabase الآن"
           >
             <span className={`w-1.5 h-1.5 rounded-full ${isCloudSyncing ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-            <span>{isCloudSyncing ? 'جاري رفع البيانات...' : 'مزامنة Firebase السحابية'}</span>
+            <span>{isCloudSyncing ? 'جاري رفع البيانات...' : 'مزامنة Supabase السحابية'}</span>
           </button>
           {cloudSyncMsg && (
             <span className="text-emerald-600 dark:text-emerald-400 font-bold animate-in fade-in">

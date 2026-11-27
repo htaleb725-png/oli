@@ -615,8 +615,8 @@ export const MasterAdminModule: React.FC = () => {
 
     setSuccessMessage(
       ok
-        ? '✓ تم حفظ وتطبيق كافة إعدادات المنظومة والنصوص في Firebase Firestore بنجاح!'
-        : 'تعذر تأكيد الحفظ في Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.'
+        ? '✓ تم حفظ وتطبيق كافة إعدادات المنظومة والنصوص في Supabase بنجاح!'
+        : 'تعذر تأكيد الحفظ في Supabase. يرجى التحقق من الاتصال وإعادة المحاولة.'
     );
   };
 
@@ -715,13 +715,13 @@ export const MasterAdminModule: React.FC = () => {
             },
             {
               id: 'dev_firebase',
-              title: 'قاعدة بيانات Firebase Firestore',
-              subtitle: 'المزامنة السحابية اللحظية الحية',
+              title: 'قاعدة بيانات Supabase + Google Sheet',
+              subtitle: 'المزامنة السحابية اللحظية وجلب البيانات السابقة',
               icon: Cloud,
-              iconColor: 'text-amber-600 dark:text-amber-400',
-              iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800',
+              iconColor: 'text-emerald-600 dark:text-emerald-400',
+              iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
               badge: 'لحظي ☁️',
-              badgeColor: 'bg-amber-600 text-white',
+              badgeColor: 'bg-emerald-600 text-white',
               onClick: () => setActiveTab('firebase')
             },
             {
@@ -916,7 +916,7 @@ export const MasterAdminModule: React.FC = () => {
                 </div>
                 <h3 className="text-sm sm:text-base font-black text-white mt-0.5">
                   {activeTab === 'sections' && 'باني الأقسام المخصصة والحقول الديناميكية'}
-                  {activeTab === 'firebase' && 'قاعدة بيانات Firebase Firestore اللحظية الحية'}
+                  {activeTab === 'firebase' && 'قاعدة بيانات Supabase اللحظية + شريك Google Sheet'}
                   {activeTab === 'drive_folder' && 'ربط وتثبيت Google Drive عبر معرف المجلد (Folder ID)'}
                   {activeTab === 'multi_office' && 'تهيئة وتغيير المكتب وقواعد البيانات (للنائب الجديد)'}
                   {activeTab === 'icons_studio' && 'استوديو الأيقونات وصورة البرنامج والشعار'}
@@ -976,7 +976,7 @@ export const MasterAdminModule: React.FC = () => {
                 activeTab === 'firebase' ? 'bg-amber-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
-              <span>Firebase السحابي ☁️</span>
+              <span>Supabase السحابي ☁️</span>
             </button>
             <button
               onClick={() => setActiveTab('multi_office')}
