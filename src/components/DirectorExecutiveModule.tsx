@@ -82,7 +82,12 @@ export const DirectorExecutiveModule: React.FC = () => {
     archiveDailyWorkItems,
     restoreDailyWorkItem,
     restoreDailyWorkItems,
-    setActiveSection
+    setActiveSection,
+    firestoreRequestsSyncError,
+    firestoreLastSaveError,
+    clearFirestoreDiagnostics,
+    fetchAllFromFirestoreNow,
+    isFirestoreSyncing
   } = useApp();
 
   const [directorViewMode, setDirectorViewMode] = useState<'daily' | 'section_archive'>('daily');
@@ -237,13 +242,21 @@ export const DirectorExecutiveModule: React.FC = () => {
     return isNaN(t) ? 0 : t;
   };
 
+  const isDirectorRequestArchived = (r: OfficeRequest): boolean => {
+    if (isRequestArchivedInSection(r, 'director')) return true;
+    // Explicitly active live requests (e.g. newly registered in Reception) MUST NEVER be hidden
+    // by a stale/historical archive flag on the parent citizen record.
+    if (r.IsArchived === false && !r.IsHistoricalImported) return false;
+    const cit = citizenMap.get(r.Citizen_ID);
+    return isCitizenArchivedInSection(cit, 'director');
+  };
+
   // Independent per-section archived requests for Director ('director')
   const archivedDirectorRequests = useMemo(() => {
     return (requests || [])
       .filter(r => {
         if (!r || r.IsDirectInstantRequest) return false;
-        const cit = citizenMap.get(r.Citizen_ID);
-        return isRequestArchivedInSection(r, 'director') || isCitizenArchivedInSection(cit, 'director');
+        return isDirectorRequestArchived(r);
       })
       .slice()
       .sort((a, b) => parseReqTs(b) - parseReqTs(a));
@@ -251,13 +264,12 @@ export const DirectorExecutiveModule: React.FC = () => {
 
   const archivedDirectorCount = archivedDirectorRequests.length;
 
-  // Strictly show ONLY active (unarchived in 'director') records in Director Daily Work.
+  // Strictly show ALL active (unarchived in 'director') requests immediately without requiring extra optional fields
   const activeDirectorRequests = useMemo(() => {
     return (requests || [])
       .filter(r => {
         if (!r || r.IsDirectInstantRequest) return false;
-        const cit = citizenMap.get(r.Citizen_ID);
-        return !(isRequestArchivedInSection(r, 'director') || isCitizenArchivedInSection(cit, 'director'));
+        return !isDirectorRequestArchived(r);
       })
       .slice()
       .sort((a, b) => parseReqTs(b) - parseReqTs(a));
@@ -285,10 +297,12 @@ export const DirectorExecutiveModule: React.FC = () => {
   };
 
   const resolveNormalizedDecision = (r: OfficeRequest): 'خاص' | 'عام' | 'رفض' | 'حظر' | '' => {
-    if (r.DirectorDecision === 'حظر' || r.pathType === 'blocked' || r.route === 'blocked') return 'حظر';
-    if (r.DirectorDecision === 'خاص' || r.pathType === 'private' || r.route === 'private') return 'خاص';
-    if (r.DirectorDecision === 'عام' || r.pathType === 'public' || r.route === 'public') return 'عام';
-    if (r.DirectorDecision === 'رفض' || r.pathType === 'rejected' || r.route === 'rejected') return 'رفض';
+    const dec = String(r.DirectorDecision || '').trim();
+    const pType = String(r.pathType || r.route || '').trim().toLowerCase();
+    if (dec === 'حظر' || pType === 'blocked') return 'حظر';
+    if (dec === 'خاص' || pType === 'private') return 'خاص';
+    if (dec === 'عام' || pType === 'public') return 'عام';
+    if (dec === 'رفض' || pType === 'rejected') return 'رفض';
     return '';
   };
 
@@ -679,7 +693,43 @@ export const DirectorExecutiveModule: React.FC = () => {
       {/* ---------------- VIEW 1: DIRECTOR INBOX (وارد الاستعلامات بشريط واحد) ---------------- */}
       {directorMainTab === 'inbox' && (
         <div className="space-y-4">
-          
+          {/* Explicit Firestore Sync / Save Diagnostic Alert (only shown if a real failure occurs) */}
+          {(firestoreRequestsSyncError || firestoreLastSaveError) && (
+            <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-700 text-rose-950 dark:text-rose-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-start gap-2.5 text-xs">
+                <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <div className="font-black text-rose-800 dark:text-rose-200">
+                    ⚠️ تنبيه تشخيصي: تعذر جلب أو حفظ المعاملات مع Firebase Firestore (alaa-office-2026)
+                  </div>
+                  <div className="font-semibold leading-relaxed break-words">
+                    {firestoreRequestsSyncError || firestoreLastSaveError}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                <button
+                  type="button"
+                  disabled={isFirestoreSyncing}
+                  onClick={() => {
+                    fetchAllFromFirestoreNow();
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-black cursor-pointer disabled:opacity-50"
+                >
+                  {isFirestoreSyncing ? 'جاري التحديث...' : 'إعادة الجلب الآن'}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearFirestoreDiagnostics}
+                  className="w-7 h-7 rounded-lg bg-rose-200/70 dark:bg-rose-900/70 hover:bg-rose-300 text-rose-800 dark:text-rose-200 text-xs font-black flex items-center justify-center cursor-pointer"
+                  title="إغلاق التنبيه"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Quick Statistics Overview: أقسام وتصنيفات قرارات المدير */}
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             {/* 1. إجمالي الوارد وبانتظار قرار المدير */}

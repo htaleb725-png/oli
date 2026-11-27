@@ -383,6 +383,13 @@ export function mergeRequests(
     r => !r.Citizen_ID || !deletedIds.has(r.Citizen_ID)
   );
 
+  const isHistoricalOrImportedReq = (r: OfficeRequest): boolean =>
+    Boolean(
+      r.IsHistoricalImported ||
+      String(r.Request_ID || '').includes('-IMP-') ||
+      !String(r.Request_ID || '').trim()
+    );
+
   const deduped: OfficeRequest[] = [];
   const outgoingKeyToIndex = new Map<string, number>();
   const semanticKeyToIndex = new Map<string, number>();
@@ -405,9 +412,19 @@ export function mergeRequests(
 
     let matchedIdx: number | undefined;
     if (outComposite && outgoingKeyToIndex.has(outComposite)) {
-      matchedIdx = outgoingKeyToIndex.get(outComposite);
+      const candidateIdx = outgoingKeyToIndex.get(outComposite)!;
+      const existing = deduped[candidateIdx];
+      // Only collapse by outgoing number when same Request_ID or at least one is historical/imported
+      if (existing.Request_ID === req.Request_ID || isHistoricalOrImportedReq(existing) || isHistoricalOrImportedReq(req)) {
+        matchedIdx = candidateIdx;
+      }
     } else if (semComposite && semanticKeyToIndex.has(semComposite)) {
-      matchedIdx = semanticKeyToIndex.get(semComposite);
+      const candidateIdx = semanticKeyToIndex.get(semComposite)!;
+      const existing = deduped[candidateIdx];
+      // NEVER collapse two distinct live Firestore requests (e.g., repeat visit from Reception) into an older decided/archived request!
+      if (existing.Request_ID === req.Request_ID || isHistoricalOrImportedReq(existing) || isHistoricalOrImportedReq(req)) {
+        matchedIdx = candidateIdx;
+      }
     }
 
     if (matchedIdx !== undefined) {

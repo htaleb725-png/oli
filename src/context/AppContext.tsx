@@ -240,6 +240,13 @@ export const recordDeletedId = (id: string) => {
   _inMemoryDeletedIds.add(clean);
 };
 
+export const unrecordDeletedId = (id: string) => {
+  if (!id || typeof id !== 'string') return;
+  const clean = id.trim();
+  if (!clean) return;
+  _inMemoryDeletedIds.delete(clean);
+};
+
 const syncInMemoryDeletedIdsFromCloud = (ids: string[]) => {
   _inMemoryDeletedIds.clear();
   for (const rawId of ids) {
@@ -280,7 +287,10 @@ interface AppContextType {
   isAuthenticated: boolean;
 
   citizens: Citizen[];
-  addCitizen: (citizen: Omit<Citizen, 'Citizen_ID' | 'CreatedAt'>) => Citizen;
+  addCitizen: (
+    citizen: Omit<Citizen, 'Citizen_ID' | 'CreatedAt'>,
+    options?: { onPersistResult?: (res: { ok: boolean; error?: string; citizenId: string }) => void }
+  ) => Citizen;
   updateCitizen: (citizen: Citizen) => void;
   deleteCitizen: (citizenId: string) => void;
   findCitizenByIdOrName: (query: string) => Citizen[];
@@ -291,7 +301,12 @@ interface AppContextType {
   requests: OfficeRequest[];
   addRequest: (
     req: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string },
-    options?: { skipAuditLog?: boolean; skipNotification?: boolean }
+    options?: {
+      skipAuditLog?: boolean;
+      skipNotification?: boolean;
+      slotKey?: string;
+      onPersistResult?: (res: { ok: boolean; error?: string; requestId: string }) => void;
+    }
   ) => OfficeRequest;
   updateRequest: (req: OfficeRequest) => void;
   deleteRequest: (requestId: string) => void;
@@ -429,8 +444,11 @@ interface AppContextType {
   canDownloadDatabase: (role?: string) => boolean;
   refreshAllDataFromAllSources: () => Promise<void>;
 
-  // Firestore Direct Sync
+  // Firestore Direct Sync & Transparent Diagnostics
   isFirestoreSyncing: boolean;
+  firestoreRequestsSyncError: string | null;
+  firestoreLastSaveError: string | null;
+  clearFirestoreDiagnostics: () => void;
   syncAllToFirestoreNow: () => Promise<{ successCount: number; total: number; error?: string }>;
   fetchAllFromFirestoreNow: () => Promise<{ success: boolean; error?: string }>;
 
@@ -725,6 +743,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const hasSeededInitialUsersRef = useRef<boolean>(false);
   const hasShownLoadingOnceRef = useRef<boolean>(false);
   const initialHydrationCompleteRef = useRef<boolean>(false);
+  const locallyPendingDeletesRef = useRef<Map<string, number>>(new Map());
+  const [firestoreRequestsSyncError, setFirestoreRequestsSyncError] = useState<string | null>(null);
+  const [firestoreLastSaveError, setFirestoreLastSaveError] = useState<string | null>(null);
+
+  const clearFirestoreDiagnostics = () => {
+    setFirestoreRequestsSyncError(null);
+    setFirestoreLastSaveError(null);
+  };
+
+  const markLocallyPendingDelete = (id: string) => {
+    const clean = String(id || '').trim();
+    if (!clean) return;
+    locallyPendingDeletesRef.current.set(clean, Date.now());
+  };
+
+  const getActiveLocallyPendingDeletes = (): Set<string> => {
+    const now = Date.now();
+    const active = new Set<string>();
+    locallyPendingDeletesRef.current.forEach((ts, id) => {
+      if (now - ts < 20000) active.add(id);
+      else locallyPendingDeletesRef.current.delete(id);
+    });
+    return active;
+  };
 
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(false);
   const [isGoogleSyncing, setIsGoogleSyncing] = useState<boolean>(false);
@@ -946,6 +988,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!Array.isArray(incoming)) return prev;
 
       if (meta && !meta.fromCache) {
+        // Live server snapshot from Firestore (alaa-office-2026):
+        // Every document present in `incoming` ACTUALLY exists on the server right now.
+        // Only suppress IDs with an active in-flight local delete (20s TTL), NEVER hide live server docs behind stale tombstones!
+        const activeLocalDeletes = getActiveLocallyPendingDeletes();
         const nowMs = Date.now();
         const incomingIdSet = new Set(
           incoming
@@ -954,31 +1000,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
         const recentOptimistic = prev.filter(item => {
           const id = String(item?.[idKey] || '').trim();
-          if (!id || incomingIdSet.has(id) || deletedIds.has(id)) return false;
+          if (!id || incomingIdSet.has(id) || activeLocalDeletes.has(id)) return false;
           const ts = getRecordTimestamp(item);
-          return ts > 0 && nowMs - ts < 8000;
+          return ts > 0 && nowMs - ts < 10000;
         });
-        return merger(recentOptimistic, incoming, deletedIds);
+        return merger(recentOptimistic, incoming, activeLocalDeletes);
       }
 
       if (incoming.length === 0) return prev;
       return merger(prev, incoming, deletedIds);
     };
 
-    const unsubCitizens = fsWatchCollection<Citizen>(FS_COLLECTIONS.CITIZENS, (items, removedIds, meta) => {
-      if (removedIds && removedIds.length > 0) {
-        purgeDeletedIdsEverywhere(removedIds);
+    const unsubCitizens = fsWatchCollection<Citizen>(
+      FS_COLLECTIONS.CITIZENS,
+      (items, removedIds, meta) => {
+        if (removedIds && removedIds.length > 0) {
+          purgeDeletedIdsEverywhere(removedIds);
+        }
+        setCitizens(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Citizen_ID', meta, mergeCitizens));
+      },
+      (err) => {
+        const msg = err?.message || String(err || 'خطأ غير معروف');
+        setFirestoreRequestsSyncError(`تعذر جلب سجل المراجعين من Firebase Firestore (visitors): ${msg}`);
       }
-      setCitizens(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Citizen_ID', meta, mergeCitizens));
-    });
+    );
     unsubs.push(unsubCitizens);
 
-    const unsubRequests = fsWatchCollection<OfficeRequest>(FS_COLLECTIONS.REQUESTS, (items, removedIds, meta) => {
-      if (removedIds && removedIds.length > 0) {
-        purgeDeletedIdsEverywhere(removedIds);
+    const unsubRequests = fsWatchCollection<OfficeRequest>(
+      FS_COLLECTIONS.REQUESTS,
+      (items, removedIds, meta) => {
+        if (meta && !meta.fromCache) {
+          setFirestoreRequestsSyncError(null);
+        }
+        if (removedIds && removedIds.length > 0) {
+          purgeDeletedIdsEverywhere(removedIds);
+        }
+        setRequests(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Request_ID', meta, mergeRequests));
+      },
+      (err) => {
+        const msg = err?.message || String(err || 'خطأ غير معروف');
+        setFirestoreRequestsSyncError(`تعذر جلب المعاملات الواردة من Firebase Firestore (requests): ${msg}`);
       }
-      setRequests(prev => reconcileLiveFirestoreSnapshot(prev, items, 'Request_ID', meta, mergeRequests));
-    });
+    );
     unsubs.push(unsubRequests);
 
     const unsubInterviews = fsWatchCollection<Interview>(FS_COLLECTIONS.INTERVIEWS, (items, removedIds, meta) => {
@@ -2033,7 +2096,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return Array.from(new Set(items));
   };
 
-  const addCitizen = (citizenData: Omit<Citizen, 'Citizen_ID' | 'CreatedAt'>): Citizen => {
+  const addCitizen = (
+    citizenData: Omit<Citizen, 'Citizen_ID' | 'CreatedAt'>,
+    options?: { onPersistResult?: (res: { ok: boolean; error?: string; citizenId: string }) => void }
+  ): Citizen => {
     // Save Lock / Debounce Guard: prevent duplicate citizen creation on rapid double-clicks or weak internet
     const rawNameKey = String(
       citizenData.FullName ||
@@ -2049,14 +2115,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return saveLock.lastResult;
     }
 
-    // Generate guaranteed unique sequential ID
+    // Generate guaranteed unique ID avoiding both live citizens AND deleted_records tombstones
     const existingIds = new Set((citizensRef.current || citizens).map(c => c.Citizen_ID));
+    const deletedIds = getStoredDeletedIds();
     let randomSuffix = Math.floor(10000 + Math.random() * 90000);
     let newCitizenId = `ONA-${randomSuffix}`;
-    while (existingIds.has(newCitizenId)) {
+    while (existingIds.has(newCitizenId) || deletedIds.has(newCitizenId)) {
       randomSuffix = Math.floor(10000 + Math.random() * 90000);
       newCitizenId = `ONA-${randomSuffix}`;
     }
+    unrecordDeletedId(newCitizenId);
+    locallyPendingDeletesRef.current.delete(newCitizenId);
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
@@ -2145,14 +2214,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Serialized Primary Save directly to Firebase Firestore (visitors + unified referrers)
     enqueueSerializedSave(`citizen::${newCitizenId}`, async () => {
       try {
-        await receptionDomain.saveCitizen(newCitizen, 'insert', getCloudCtx());
-        if (newCitizen.ReferralSource) {
-          fsSyncReferrer(newCitizen.ReferralSource).catch(() => {});
+        const outcome = await receptionDomain.saveCitizen(newCitizen, 'insert', getCloudCtx());
+        if (!outcome.firebaseOk) {
+          const reason = outcome.firebaseError || 'تعذر حفظ بيانات المراجع في Firebase Firestore.';
+          setFirestoreLastSaveError(`فشل حفظ المراجع (${fullName}): ${reason}`);
+          options?.onPersistResult?.({ ok: false, error: reason, citizenId: newCitizenId });
+        } else {
+          setFirestoreLastSaveError(null);
+          options?.onPersistResult?.({ ok: true, citizenId: newCitizenId });
+          if (newCitizen.ReferralSource) {
+            fsSyncReferrer(newCitizen.ReferralSource).catch(() => {});
+          }
         }
+      } catch (err: any) {
+        const reason = err?.message || String(err || 'خطأ غير متوقع أثناء الحفظ');
+        setFirestoreLastSaveError(`فشل حفظ المراجع (${fullName}): ${reason}`);
+        pushCloudSyncAlert({
+          severity: 'error',
+          target: 'firebase',
+          title: `فشل حفظ المراجع (${fullName})`,
+          message: 'تعذر حفظ بيانات المراجع في Firebase Firestore (alaa-office-2026).',
+          details: reason
+        });
+        options?.onPersistResult?.({ ok: false, error: reason, citizenId: newCitizenId });
       } finally {
         saveLock.release();
       }
-    }).catch(() => {
+    }).catch((err: any) => {
+      const reason = err?.message || String(err || 'خطأ في قائمة الحفظ');
+      setFirestoreLastSaveError(`فشل حفظ المراجع (${fullName}): ${reason}`);
+      options?.onPersistResult?.({ ok: false, error: reason, citizenId: newCitizenId });
       saveLock.release();
     });
 
@@ -2238,7 +2329,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...matchingOrgIds,
         ...matchingDocIds
       ].forEach(id => {
-        if (id) recordDeletedId(id);
+        if (id) {
+          recordDeletedId(id);
+          markLocallyPendingDelete(id);
+        }
       });
 
       // 2. Cascade delete in local state
@@ -2682,60 +2776,88 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addRequest = (
     reqData: Omit<OfficeRequest, 'Request_ID' | 'CreatedAt'> & { Request_ID?: string },
-    options?: { skipAuditLog?: boolean; skipNotification?: boolean }
+    options?: {
+      skipAuditLog?: boolean;
+      skipNotification?: boolean;
+      slotKey?: string;
+      onPersistResult?: (res: { ok: boolean; error?: string; requestId: string }) => void;
+    }
   ): OfficeRequest => {
-    // Save Lock / Debounce Guard: prevent duplicate request creation on rapid clicks or weak internet
-    const reqLockKey = `addRequest::${String(reqData.Citizen_ID || reqData.CitizenName || '').trim().toLowerCase()}::${String(reqData.Entity || '').trim().toLowerCase()}::${String(reqData.Details || '').trim().slice(0, 60).toLowerCase()}`;
-    const saveLock = acquireSaveLock<OfficeRequest>(reqLockKey, 1800, 2500);
+    // Save Lock / Debounce Guard: prevent duplicate request creation on rapid double-clicks
+    // Include slotKey so multi-request submissions for the same citizen in Reception are NEVER dropped.
+    const reqLockKey = `addRequest::${String(reqData.Citizen_ID || reqData.CitizenName || '').trim().toLowerCase()}::${String(reqData.Entity || '').trim().toLowerCase()}::${String(reqData.Details || '').trim().slice(0, 60).toLowerCase()}::${options?.slotKey || ''}`;
+    const saveLock = acquireSaveLock<OfficeRequest>(reqLockKey, 1500, 2500);
     if (!saveLock.allowed && saveLock.lastResult) {
       return saveLock.lastResult;
     }
 
     const year = new Date().getFullYear();
     const liveReqs = requestsRef.current || requests;
+    const deletedIds = getStoredDeletedIds();
     const existingIds = new Set(liveReqs.map(r => r.Request_ID));
 
+    // Scan BOTH live requests AND historical deleted_records so sequence numbers NEVER collide with deleted IDs
     let maxFound = Math.max(liveReqs.length + 100, requestSeqCounterRef.current);
+    const scanSeq = (rawId?: string) => {
+      if (!rawId) return;
+      const m = String(rawId).match(/REQ-\d+-(\d+)/);
+      if (m) {
+        const num = parseInt(m[1], 10);
+        if (!isNaN(num) && num > maxFound) {
+          maxFound = num;
+        }
+      }
+    };
     for (const r of liveReqs) {
       if (r && r.Request_ID) {
         existingIds.add(r.Request_ID);
-        const m = String(r.Request_ID).match(/REQ-\d+-(\d+)/);
-        if (m) {
-          const num = parseInt(m[1], 10);
-          if (!isNaN(num) && num > maxFound) {
-            maxFound = num;
-          }
-        }
+        scanSeq(r.Request_ID);
       }
     }
+    deletedIds.forEach(id => scanSeq(id));
 
     let next = maxFound + 1;
-    let candidate = reqData.Request_ID && !existingIds.has(reqData.Request_ID)
-      ? reqData.Request_ID
-      : `REQ-${year}-${String(next).padStart(3, '0')}`;
+    const randomTag = () => Math.random().toString(36).slice(2, 5).toUpperCase();
+    let candidate =
+      reqData.Request_ID && !existingIds.has(reqData.Request_ID) && !deletedIds.has(reqData.Request_ID)
+        ? reqData.Request_ID
+        : `REQ-${year}-${String(next).padStart(3, '0')}-${randomTag()}`;
 
-    while (existingIds.has(candidate)) {
+    while (existingIds.has(candidate) || deletedIds.has(candidate)) {
       next++;
-      candidate = `REQ-${year}-${String(next).padStart(3, '0')}`;
+      candidate = `REQ-${year}-${String(next).padStart(3, '0')}-${randomTag()}`;
     }
 
     requestSeqCounterRef.current = next;
+    unrecordDeletedId(candidate);
+    locallyPendingDeletesRef.current.delete(candidate);
 
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-    const isFromReception = reqData.RegisteredVia === 'استعلامات';
+    const isFromReception = reqData.RegisteredVia === 'استعلامات' || reqData.CurrentStage === 'مدير المكتب';
+    const resolvedStage = reqData.CurrentStage || (isFromReception ? 'مدير المكتب' : 'مدير الإدارة');
+    const resolvedDelivery =
+      reqData.DeliveryStatus ||
+      (reqData.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم');
     const newRequest: OfficeRequest = {
       ...reqData,
       Request_ID: candidate,
-      CurrentStage: reqData.CurrentStage || (isFromReception ? 'مدير المكتب' : 'مدير الإدارة'),
+      CurrentStage: resolvedStage,
+      RegisteredVia: reqData.RegisteredVia || (isFromReception ? 'استعلامات' : 'الإدارة'),
+      DirectorDecision: reqData.DirectorDecision || '',
+      department: reqData.department || (isFromReception && !reqData.DirectorDecision ? 'مدير المكتب' : undefined),
+      TargetDepartment: reqData.TargetDepartment || (isFromReception && !reqData.DirectorDecision ? 'مدير المكتب' : undefined),
+      RequestStatus: reqData.RequestStatus || (isFromReception ? 'غير مستلم' : 'مستلم'),
+      DeliveryStatus: resolvedDelivery,
+      ProcessingStatus: reqData.ProcessingStatus || (isFromReception ? 'قيد الإجراء' : 'قيد التدقيق'),
       referredToOrganization: reqData.referredToOrganization ?? false,
       IsHistoricalImported: reqData.IsHistoricalImported ?? false,
       IsArchived: reqData.IsArchived ?? false,
       IsDirectInstantRequest: reqData.IsDirectInstantRequest ?? false,
       CreatedAt: formattedDate,
       UpdatedAt: now.toISOString(),
-      CreatedBy: currentUser ? currentUser.FullName : (isFromReception ? 'الاستعلامات' : 'قسم الإدارة')
+      CreatedBy: reqData.CreatedBy || (currentUser ? currentUser.FullName : (isFromReception ? 'الاستعلامات' : 'قسم الإدارة'))
     };
 
     saveLock.setResult(newRequest);
@@ -2745,11 +2867,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return nextList;
     });
 
-    // Ensure linked citizen advances to 'مدير المكتب' stage when a new Reception request is registered
+    // Ensure linked citizen advances to 'مدير المكتب' stage and is not archived in 'director' when a new Reception request arrives
     if (isFromReception && reqData.Citizen_ID) {
       const linkedCit = citizensRef.current.find(c => c.Citizen_ID === reqData.Citizen_ID);
-      if (linkedCit && linkedCit.CurrentStage !== 'مدير المكتب') {
-        updateCitizen({ ...linkedCit, CurrentStage: 'مدير المكتب' });
+      if (linkedCit) {
+        const unarchivedForDirector = buildSectionUnarchivedFields(linkedCit, 'director');
+        const needsUpdate =
+          linkedCit.CurrentStage !== 'مدير المكتب' ||
+          (Array.isArray(linkedCit.archivedInSections) && linkedCit.archivedInSections.includes('director'));
+        if (needsUpdate) {
+          updateCitizen({
+            ...linkedCit,
+            CurrentStage: 'مدير المكتب',
+            ...unarchivedForDirector
+          });
+        }
       }
     }
 
@@ -2783,17 +2915,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Real-time broadcast to same-browser tabs
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([newRequest])[0] || newRequest });
 
-    // Serialized Primary Save directly to Firebase Firestore (requests + unified referrers)
+    // Serialized Primary Save directly to Firebase Firestore (requests + unified referrers) with transparent diagnostics
     enqueueSerializedSave(`request::${candidate}`, async () => {
       try {
-        await adminRequestsDomain.saveRequest(newRequest, 'insert', getCloudCtx());
-        if (newRequest.ReferralSource) {
-          fsSyncReferrer(newRequest.ReferralSource).catch(() => {});
+        const outcome = await adminRequestsDomain.saveRequest(newRequest, 'insert', getCloudCtx());
+        if (!outcome.firebaseOk) {
+          const reason = outcome.firebaseError || 'تعذر حفظ المعاملة في Firebase Firestore.';
+          setFirestoreLastSaveError(`فشل حفظ المعاملة (${candidate}) للمراجع (${newRequest.CitizenName}): ${reason}`);
+          options?.onPersistResult?.({ ok: false, error: reason, requestId: candidate });
+        } else {
+          setFirestoreLastSaveError(null);
+          options?.onPersistResult?.({ ok: true, requestId: candidate });
+          if (newRequest.ReferralSource) {
+            fsSyncReferrer(newRequest.ReferralSource).catch(() => {});
+          }
         }
+      } catch (err: any) {
+        const reason = err?.message || String(err || 'خطأ غير متوقع أثناء حفظ المعاملة');
+        setFirestoreLastSaveError(`فشل حفظ المعاملة (${candidate}): ${reason}`);
+        pushCloudSyncAlert({
+          severity: 'error',
+          target: 'firebase',
+          title: `فشل إرسال المعاملة (${candidate}) إلى Firebase Firestore`,
+          message: 'تعذر حفظ المعاملة الجديدة وإيصالها إلى شاشة مدير المكتب.',
+          details: reason
+        });
+        options?.onPersistResult?.({ ok: false, error: reason, requestId: candidate });
       } finally {
         saveLock.release();
       }
-    }).catch(() => {
+    }).catch((err: any) => {
+      const reason = err?.message || String(err || 'خطأ في قائمة حفظ المعاملات');
+      setFirestoreLastSaveError(`فشل حفظ المعاملة (${candidate}): ${reason}`);
+      options?.onPersistResult?.({ ok: false, error: reason, requestId: candidate });
       saveLock.release();
     });
 
@@ -2862,6 +3016,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteRequest = (requestId: string) => {
     recordDeletedId(requestId);
+    markLocallyPendingDelete(requestId);
     setRequests(prev => prev.filter(r => r.Request_ID !== requestId));
     emitServerMutation('requests', 'delete', { id: requestId });
     addAuditLog('حذف نهائي لطلب إداري', 'قسم الإدارة', `تم حذف الطلب ${requestId} نهائياً من قاعدة البيانات`);
@@ -4615,17 +4770,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const res = await fsBulkPullAll();
       if (res.success) {
+        setFirestoreRequestsSyncError(null);
         const deletedIds = getStoredDeletedIds();
+        const activeLocalDeletes = getActiveLocallyPendingDeletes();
         if (Array.isArray(res.deletedIds)) {
           res.deletedIds.forEach(id => {
             if (id) deletedIds.add(id);
           });
         }
         if (res.citizens && res.citizens.length > 0) {
-          setCitizens(prev => mergeCitizens(prev, res.citizens, deletedIds));
+          setCitizens(prev => mergeCitizens(prev, res.citizens, activeLocalDeletes));
         }
         if (res.requests && res.requests.length > 0) {
-          setRequests(prev => mergeRequests(prev, res.requests, deletedIds));
+          setRequests(prev => mergeRequests(prev, res.requests, activeLocalDeletes));
         }
         if (res.interviews && res.interviews.length > 0) {
           setInterviews(prev => mergeInterviews(prev, res.interviews, deletedIds));
@@ -4699,9 +4856,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return { success: true, systemSettings: res.systemSettings };
       }
+      if (res.error) {
+        setFirestoreRequestsSyncError(res.error);
+      }
       return { success: false, error: res.error };
     } catch (e: any) {
-      return { success: false, error: e.message };
+      const msg = e?.message || String(e || 'تعذر جلب البيانات من Firebase Firestore');
+      setFirestoreRequestsSyncError(msg);
+      return { success: false, error: msg };
     } finally {
       setIsFirestoreSyncing(false);
     }
@@ -5391,8 +5553,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         refreshAllDataFromAllSources,
         // UI Customizations
         updateUiCustomizations,
-        // Firestore Direct Live Sync
+        // Firestore Direct Live Sync & Diagnostics
         isFirestoreSyncing,
+        firestoreRequestsSyncError,
+        firestoreLastSaveError,
+        clearFirestoreDiagnostics,
         syncAllToFirestoreNow,
         fetchAllFromFirestoreNow,
         batchImportRecords,

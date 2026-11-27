@@ -202,33 +202,54 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
   const safeReqId = sanitizeFirestoreDocId(req.Request_ID, 'REQ');
   const safeCitId = sanitizeFirestoreDocId(req.Citizen_ID, 'ONA');
   const nowIso = new Date().toISOString();
-  const resolvedFullName = clipStr(req.CitizenName, 250) || 'مراجع';
-  const resolvedPhone = clipStr(req.CitizenPhone, 50) ?? '';
-  const resolvedEntity = clipStr(req.Entity, 200) || 'غير محدد';
-  const resolvedDetails = clipStr(req.Details, 10000) ?? '';
+  const resolvedFullName = clipStr(req.CitizenName || (req as any).fullName, 250) || 'مراجع';
+  const resolvedPhone = clipStr(req.CitizenPhone || (req as any).phone, 50) ?? '';
+  const resolvedEntity = clipStr(req.Entity || (req as any).entity, 200) || 'غير محدد';
+  const resolvedDetails = clipStr(req.Details || (req as any).subject, 10000) ?? '';
+  const rawDecision = clipStr(req.DirectorDecision, 40) || '';
   const resolvedPathType =
     clipStr(req.pathType || req.route, 40) ||
-    (req.DirectorDecision === 'خاص'
+    (rawDecision === 'حظر'
+      ? 'blocked'
+      : rawDecision === 'خاص'
       ? 'private'
-      : req.DirectorDecision === 'عام'
+      : rawDecision === 'عام'
       ? 'public'
-      : req.DirectorDecision === 'رفض'
+      : rawDecision === 'رفض'
       ? 'rejected'
       : '');
+  const isPendingForDirector =
+    !resolvedPathType &&
+    !rawDecision &&
+    (req.CurrentStage === 'مدير المكتب' || req.RegisteredVia === 'استعلامات' || !req.CurrentStage);
+  const resolvedStage =
+    clipStr(req.CurrentStage || (req as any).stage, 80) ||
+    (isPendingForDirector ? 'مدير المكتب' : 'مدير الإدارة');
+  const resolvedRegisteredVia =
+    clipStr(req.RegisteredVia || (req as any).source, 60) ||
+    (resolvedStage === 'مدير المكتب' ? 'استعلامات' : 'الإدارة');
   const resolvedDepartment =
     clipStr(req.department || req.TargetDepartment, 120) ||
     (resolvedPathType === 'private'
       ? 'قسم المعتمد الخاص'
       : resolvedPathType === 'public'
       ? 'قسم المعتمد العام'
+      : resolvedStage === 'مدير المكتب' && !resolvedPathType
+      ? 'مدير المكتب'
       : 'قسم الإدارة');
-  const resolvedStatus = clipStr(req.ProcessingStatus, 50) || 'قيد التدقيق';
+  const resolvedStatus = clipStr(req.ProcessingStatus, 50) || (isPendingForDirector ? 'قيد الإجراء' : 'قيد التدقيق');
+  const resolvedRequestStatus =
+    clipStr(req.RequestStatus, 50) || (isPendingForDirector ? 'غير مستلم' : 'مستلم');
+  const resolvedDeliveryStatus =
+    clipStr(req.DeliveryStatus, 50) || (resolvedRequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم');
+  const resolvedReceptionNotes = clipStr(req.ReceptionNotes, 2000) || '';
   const resolvedNotes =
-    clipStr(req.DirectorNotes || req.DeputyNotes || req.ReceptionNotes || req.OtherNotes, 2000) || '';
+    clipStr(req.DirectorNotes || req.DeputyNotes || resolvedReceptionNotes || req.OtherNotes, 2000) || '';
   const resolvedCreatedAt = clipStr(req.CreatedAt, 100) || nowIso.split('T')[0];
-  const resolvedCreatedBy = clipStr(req.CreatedBy, 120) || 'موظف النظام';
+  const resolvedCreatedBy = clipStr(req.CreatedBy, 120) || (resolvedRegisteredVia === 'استعلامات' ? 'موظف الاستعلامات' : 'موظف النظام');
   const resolvedArchivedAt = clipStr(req.ArchivedAt || req.archivedAt, 100) || '';
   const resolvedArchivedBy = clipStr(req.ArchivedBy || req.archivedBy, 150) || '';
+  const resolvedIsArchived = req.IsArchived === true;
 
   const copy: any = {
     ...req,
@@ -241,15 +262,27 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
     Entity: resolvedEntity,
     entity: resolvedEntity,
     referrer: clipStr(req.ReferralSource, 200) || '',
-    RequestStatus: clipStr(req.RequestStatus, 50) || 'مستلم',
+    RequestStatus: resolvedRequestStatus,
+    DeliveryStatus: resolvedDeliveryStatus,
     ProcessingStatus: resolvedStatus,
     status: resolvedStatus,
+    CurrentStage: resolvedStage,
+    stage: resolvedStage,
+    RegisteredVia: resolvedRegisteredVia,
+    DirectorDecision: rawDecision,
     Priority: clipStr(req.Priority, 50) || 'عام',
     Details: resolvedDetails,
     subject: resolvedDetails,
+    ReceptionNotes: resolvedReceptionNotes,
     department: resolvedDepartment,
     TargetDepartment: clipStr(req.TargetDepartment, 120) || resolvedDepartment,
     notes: resolvedNotes,
+    IsArchived: resolvedIsArchived,
+    archived: resolvedIsArchived,
+    'الأرشفة': resolvedIsArchived ? 'نعم' : 'لا',
+    IsHistoricalImported: Boolean(req.IsHistoricalImported),
+    IsDirectInstantRequest: Boolean(req.IsDirectInstantRequest),
+    referredToOrganization: Boolean(req.referredToOrganization),
     CreatedAt: resolvedCreatedAt,
     createdAt: resolvedCreatedAt,
     CreatedBy: resolvedCreatedBy,
@@ -268,15 +301,6 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
   if (resolvedArchivedBy) {
     copy.ArchivedBy = resolvedArchivedBy;
     copy.archivedBy = resolvedArchivedBy;
-  }
-  if (typeof req.referredToOrganization === 'boolean') {
-    copy.referredToOrganization = req.referredToOrganization;
-  }
-  // Keep IsArchived, archived, and الأرشفة flags synchronized without wiping audit or routing metadata
-  if (typeof req.IsArchived === 'boolean') {
-    copy.IsArchived = req.IsArchived;
-    copy.archived = req.IsArchived;
-    copy['الأرشفة'] = req.IsArchived ? 'نعم' : 'لا';
   }
   // Persist independent per-section archive arrays faithfully (including empty [] after unarchiving)
   if (Array.isArray(req.archivedInSections)) {
@@ -450,6 +474,8 @@ export async function fsSaveCitizen(citizen: Citizen): Promise<void> {
   const path = `${col}/${clean.Citizen_ID}`;
   try {
     await setDoc(doc(db, col, clean.Citizen_ID), clean, { merge: true });
+    // Clear any stale tombstone for this exact ID so freshly saved records are never shadowed
+    deleteDoc(doc(db, getFSCol(FS_COLLECTIONS.DELETED_RECORDS), clean.Citizen_ID)).catch(() => {});
     updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -498,6 +524,8 @@ export async function fsSaveRequest(req: OfficeRequest): Promise<void> {
   const path = `${col}/${clean.Request_ID}`;
   try {
     await setDoc(doc(db, col, clean.Request_ID), clean, { merge: true });
+    // Clear any stale tombstone for this exact ID so freshly saved requests are never shadowed
+    deleteDoc(doc(db, getFSCol(FS_COLLECTIONS.DELETED_RECORDS), clean.Request_ID)).catch(() => {});
     updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -1498,16 +1526,53 @@ export async function fsBulkPullAll(): Promise<{
   error?: string;
 }> {
   try {
-    const fetchCol = async <T>(colName: string): Promise<T[]> => {
+    const criticalErrors: string[] = [];
+    const normalizePulledDoc = <T>(baseCol: string, docId: string, raw: any): T => {
+      if (!raw || typeof raw !== 'object') return raw as T;
+      if (baseCol === FS_COLLECTIONS.REQUESTS) {
+        return {
+          ...raw,
+          Request_ID: String(raw.Request_ID || raw.id || docId).trim(),
+          Citizen_ID: String(raw.Citizen_ID || raw.citizenId || '').trim(),
+          CitizenName: String(raw.CitizenName || raw.fullName || raw.FullName || 'مراجع').trim(),
+          CitizenPhone: String(raw.CitizenPhone || raw.phone || raw.Phone1 || '').trim(),
+          Entity: String(raw.Entity || raw.entity || 'غير محدد').trim(),
+          Details: String(raw.Details || raw.subject || '').trim(),
+          CurrentStage: raw.CurrentStage || raw.stage || (!raw.DirectorDecision && !raw.pathType ? 'مدير المكتب' : 'مدير الإدارة')
+        } as T;
+      }
+      if (baseCol === FS_COLLECTIONS.CITIZENS) {
+        return {
+          ...raw,
+          Citizen_ID: String(raw.Citizen_ID || raw.id || docId).trim(),
+          FullName: String(raw.FullName || raw.fullName || 'مراجع').trim(),
+          Phone1: String(raw.Phone1 || raw.phone || '').trim()
+        } as T;
+      }
+      return raw as T;
+    };
+
+    const fetchCol = async <T>(colName: string, baseCol: string, isCritical = false): Promise<T[]> => {
       try {
         try {
           const snap = await withTimeout(getDocsFromServer(collection(db, colName)), 12000, `serverPull(${colName})`);
-          return snap.docs.map(d => d.data() as T);
-        } catch {
-          const snap = await withTimeout(getDocs(collection(db, colName)), 8000, `cachePull(${colName})`);
-          return snap.docs.map(d => d.data() as T);
+          return snap.docs.map(d => normalizePulledDoc<T>(baseCol, d.id, d.data()));
+        } catch (serverErr: any) {
+          try {
+            const snap = await withTimeout(getDocs(collection(db, colName)), 8000, `cachePull(${colName})`);
+            return snap.docs.map(d => normalizePulledDoc<T>(baseCol, d.id, d.data()));
+          } catch (cacheErr: any) {
+            if (isCritical) {
+              const reason = serverErr?.message || cacheErr?.message || 'تعذر الجلب من Firestore';
+              criticalErrors.push(`${colName}: ${reason}`);
+            }
+            return [];
+          }
         }
-      } catch {
+      } catch (err: any) {
+        if (isCritical) {
+          criticalErrors.push(`${colName}: ${err?.message || String(err)}`);
+        }
         return [];
       }
     };
@@ -1558,31 +1623,62 @@ export async function fsBulkPullAll(): Promise<{
       settingsSnap,
       passcodeSnap
     ] = await Promise.all([
-      fetchCol<Citizen>(colCitizens),
-      fetchCol<OfficeRequest>(colRequests),
-      fetchCol<Interview>(colInterviews),
-      fetchCol<OfficialLetter>(colLetters),
-      fetchCol<ChequeRecord>(colCheques),
-      fetchCol<OrganizationRecord>(colOrgs),
-      fetchCol<User>(colUsers),
-      fetchCol<CustomSection>(colSections),
-      fetchCol<CustomSectionRecord>(colRecords),
-      fetchCol<DocumentArchiveItem>(colDocuments),
-      fetchCol<DropdownItem>(colDropdowns),
-      fetchCol<UrgentNotification>(colNotifications),
-      fetchCol<AuditLog>(colAuditLogs),
-      fetchCol<any>(colDeleted),
+      fetchCol<Citizen>(colCitizens, FS_COLLECTIONS.CITIZENS, true),
+      fetchCol<OfficeRequest>(colRequests, FS_COLLECTIONS.REQUESTS, true),
+      fetchCol<Interview>(colInterviews, FS_COLLECTIONS.INTERVIEWS),
+      fetchCol<OfficialLetter>(colLetters, FS_COLLECTIONS.LETTERS),
+      fetchCol<ChequeRecord>(colCheques, FS_COLLECTIONS.CHEQUES),
+      fetchCol<OrganizationRecord>(colOrgs, FS_COLLECTIONS.ORGANIZATIONS),
+      fetchCol<User>(colUsers, FS_COLLECTIONS.USERS),
+      fetchCol<CustomSection>(colSections, FS_COLLECTIONS.CUSTOM_SECTIONS),
+      fetchCol<CustomSectionRecord>(colRecords, FS_COLLECTIONS.CUSTOM_RECORDS),
+      fetchCol<DocumentArchiveItem>(colDocuments, FS_COLLECTIONS.DOCUMENTS),
+      fetchCol<DropdownItem>(colDropdowns, FS_COLLECTIONS.DROPDOWNS),
+      fetchCol<UrgentNotification>(colNotifications, FS_COLLECTIONS.NOTIFICATIONS),
+      fetchCol<AuditLog>(colAuditLogs, FS_COLLECTIONS.AUDIT_LOGS),
+      fetchCol<any>(colDeleted, FS_COLLECTIONS.DELETED_RECORDS),
       fetchDocSafe(colSettings, 'general'),
       fetchDocSafe(colSettings, 'developer_auth')
     ]);
+
+    if (criticalErrors.length > 0) {
+      const errMsg = `فشل جلب البيانات من Firebase Firestore (${criticalErrors.join(' | ')})`;
+      updateFirebaseHealth('error', errMsg);
+      pushCloudSyncAlert({
+        severity: 'error',
+        target: 'firebase',
+        title: 'تعذر جلب المعاملات من Firebase Firestore',
+        message: 'حدث خطأ أثناء تحميل المراجعين والمعاملات من قاعدة البيانات (alaa-office-2026).',
+        details: errMsg
+      });
+      return {
+        success: false,
+        citizens: [],
+        requests: [],
+        interviews: [],
+        officialLetters: [],
+        cheques: [],
+        organizationRecords: [],
+        users: [],
+        customSections: [],
+        customRecords: [],
+        documents: [],
+        dropdowns: [],
+        notifications: [],
+        auditLogs: [],
+        deletedIds: [],
+        error: errMsg
+      };
+    }
 
     const deletedIdsSet = new Set<string>();
     rawDeletedDocs.forEach(d => {
       if (d?.id) deletedIdsSet.add(String(d.id));
     });
 
-    const citizens = rawCitizens.filter(c => c && c.Citizen_ID && !deletedIdsSet.has(c.Citizen_ID));
-    const requests = rawRequests.filter(r => r && r.Request_ID && !deletedIdsSet.has(r.Request_ID) && !deletedIdsSet.has(r.Citizen_ID));
+    // Live documents actually present on Firestore server in `visitors` and `requests` MUST NEVER be hidden by stale tombstones
+    const citizens = rawCitizens.filter(c => c && c.Citizen_ID);
+    const requests = rawRequests.filter(r => r && r.Request_ID);
     const interviews = rawInterviews.filter(i => i && i.Interview_ID && !deletedIdsSet.has(i.Interview_ID) && !deletedIdsSet.has(i.Citizen_ID));
     const officialLetters = rawOfficialLetters.filter(l => l && l.Letter_ID && !deletedIdsSet.has(l.Letter_ID) && (!l.Citizen_ID || !deletedIdsSet.has(l.Citizen_ID)));
     const cheques = rawCheques.filter(ch => ch && ch.id && !deletedIdsSet.has(ch.id) && !deletedIdsSet.has(ch.Citizen_ID));
@@ -1836,6 +1932,31 @@ export function fsWatchCollection<T>(
   onError?: (err: Error) => void
 ): Unsubscribe {
   const dynamicCol = getFSCol(colName);
+  const normalizeWatchedDoc = (docId: string, raw: any): T => {
+    if (!raw || typeof raw !== 'object') return raw as T;
+    if (colName === FS_COLLECTIONS.REQUESTS) {
+      return {
+        ...raw,
+        Request_ID: String(raw.Request_ID || raw.id || docId).trim(),
+        Citizen_ID: String(raw.Citizen_ID || raw.citizenId || '').trim(),
+        CitizenName: String(raw.CitizenName || raw.fullName || raw.FullName || 'مراجع').trim(),
+        CitizenPhone: String(raw.CitizenPhone || raw.phone || raw.Phone1 || '').trim(),
+        Entity: String(raw.Entity || raw.entity || 'غير محدد').trim(),
+        Details: String(raw.Details || raw.subject || '').trim(),
+        CurrentStage: raw.CurrentStage || raw.stage || (!raw.DirectorDecision && !raw.pathType ? 'مدير المكتب' : 'مدير الإدارة')
+      } as T;
+    }
+    if (colName === FS_COLLECTIONS.CITIZENS) {
+      return {
+        ...raw,
+        Citizen_ID: String(raw.Citizen_ID || raw.id || docId).trim(),
+        FullName: String(raw.FullName || raw.fullName || 'مراجع').trim(),
+        Phone1: String(raw.Phone1 || raw.phone || '').trim()
+      } as T;
+    }
+    return raw as T;
+  };
+
   try {
     return onSnapshot(
       collection(db, dynamicCol),
@@ -1845,7 +1966,7 @@ export function fsWatchCollection<T>(
         if (!fromCache) {
           updateFirebaseHealth('connected', null);
         }
-        const list = snapshot.docs.map(d => d.data() as T);
+        const list = snapshot.docs.map(d => normalizeWatchedDoc(d.id, d.data()));
         const removedIds = snapshot
           .docChanges()
           .filter(change => change.type === 'removed')
@@ -1854,16 +1975,26 @@ export function fsWatchCollection<T>(
         onData(list, removedIds, { fromCache, hasPendingWrites });
       },
       (err) => {
-        const msg = err?.message || String(err || '');
-        console.warn(`Firestore watcher notice (${dynamicCol}):`, msg);
+        noteFirestoreFailure(err);
+        const msg = err?.message || String(err || 'خطأ غير معروف');
+        console.error(`Firestore watcher error (${dynamicCol}):`, err);
         const lower = msg.toLowerCase();
+        let arMsg = `تعذر جلب البيانات اللحظية للمجموعة (${dynamicCol}) من Firebase Firestore (alaa-office-2026): ${msg}`;
         if (lower.includes('permission-denied') || lower.includes('permission_denied')) {
-          const arMsg = `رفض صلاحيات القراءة الحية للمجموعة (${dynamicCol}) في Firebase Firestore.`;
-          updateFirebaseHealth('error', arMsg);
+          arMsg = `رفض صلاحيات القراءة الحية للمجموعة (${dynamicCol}) في Firebase Firestore (alaa-office-2026).`;
+        } else if (lower.includes('resource-exhausted') || lower.includes('quota')) {
+          arMsg = `تم تجاوز الحصة اليومية لقراءة البيانات في Firebase Firestore للمجموعة (${dynamicCol}).`;
+        } else if (lower.includes('unavailable') || lower.includes('offline')) {
+          arMsg = `تعذر الاتصال بخادم Firebase Firestore لقراءة المجموعة (${dynamicCol}) — تحقق من الشبكة أو إعدادات قاعدة البيانات.`;
+        } else if (lower.includes('failed-precondition') || lower.includes('index')) {
+          arMsg = `خطأ في فهرسة أو تهيئة الاستعلام في Firebase Firestore للمجموعة (${dynamicCol}): ${msg}`;
+        }
+        updateFirebaseHealth('error', arMsg);
+        if (colName === FS_COLLECTIONS.REQUESTS || colName === FS_COLLECTIONS.CITIZENS || lower.includes('permission')) {
           pushCloudSyncAlert({
             severity: 'error',
             target: 'firebase',
-            title: 'تعذر القراءة من Firebase Firestore',
+            title: `تعذر جلب بيانات (${dynamicCol}) من Firebase Firestore`,
             message: arMsg,
             details: msg
           });
@@ -1872,6 +2003,8 @@ export function fsWatchCollection<T>(
       }
     );
   } catch (setupErr: any) {
+    const msg = setupErr?.message || String(setupErr || 'خطأ في تشغيل المستمع اللحظي');
+    updateFirebaseHealth('error', `تعذر تشغيل المستمع اللحظي (${dynamicCol}): ${msg}`);
     if (onError) onError(setupErr);
     return () => {};
   }

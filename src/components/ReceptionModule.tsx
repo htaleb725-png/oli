@@ -203,7 +203,9 @@ export const ReceptionModule: React.FC = () => {
     archiveDailyWorkItems,
     restoreDailyWorkItem,
     restoreDailyWorkItems,
-    updateSystemSettings
+    updateSystemSettings,
+    firestoreLastSaveError,
+    clearFirestoreDiagnostics
   } = useApp();
 
   // Independent Reception Section Archive toggle + feedback toast
@@ -351,26 +353,47 @@ export const ReceptionModule: React.FC = () => {
       return;
     }
 
-    addRequest({
-      Citizen_ID: citizenForNewRequest.Citizen_ID,
-      CitizenName: citizenForNewRequest.FullName,
-      CitizenPhone: citizenForNewRequest.Phone1,
-      Entity: newReqEntity,
-      Details: newReqSubject.trim() + (newReqNotes ? ` [ملاحظات: ${newReqNotes.trim()}]` : ''),
-      Priority: newReqPriority,
-      RequestStatus: 'غير مستلم',
-      DeliveryStatus: 'غير مستلم',
-      ProcessingStatus: 'قيد الإجراء',
-      CurrentStage: 'مدير المكتب',
-      RegisteredVia: 'استعلامات',
-      CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
-      AttendanceType: citizenForNewRequest.AttendanceType,
-      ProxyName: citizenForNewRequest.ProxyName,
-      ProxyPhone: citizenForNewRequest.ProxyPhone,
-      ProxyAddress: citizenForNewRequest.ProxyAddress,
-      ReceptionNotes: newReqNotes.trim() || undefined,
-      referredToOrganization: false
-    });
+    clearFirestoreDiagnostics();
+    setErrorMessage(null);
+    addRequest(
+      {
+        Citizen_ID: citizenForNewRequest.Citizen_ID,
+        CitizenName: citizenForNewRequest.FullName,
+        CitizenPhone: citizenForNewRequest.Phone1,
+        Entity: newReqEntity,
+        Details: newReqSubject.trim() + (newReqNotes ? ` [ملاحظات: ${newReqNotes.trim()}]` : ''),
+        Priority: newReqPriority,
+        RequestStatus: 'غير مستلم',
+        DeliveryStatus: 'غير مستلم',
+        ProcessingStatus: 'قيد الإجراء',
+        CurrentStage: 'مدير المكتب',
+        department: 'مدير المكتب',
+        TargetDepartment: 'مدير المكتب',
+        DirectorDecision: '',
+        RegisteredVia: 'استعلامات',
+        CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
+        AttendanceType: citizenForNewRequest.AttendanceType,
+        ProxyName: citizenForNewRequest.ProxyName,
+        ProxyPhone: citizenForNewRequest.ProxyPhone,
+        ProxyAddress: citizenForNewRequest.ProxyAddress,
+        ReceptionNotes: newReqNotes.trim() || undefined,
+        IsArchived: false,
+        IsHistoricalImported: false,
+        IsDirectInstantRequest: false,
+        referredToOrganization: false
+      },
+      {
+        slotKey: `existing_${citizenForNewRequest.Citizen_ID}_${Date.now()}`,
+        onPersistResult: (res) => {
+          if (!res.ok) {
+            setErrorMessage(
+              `⚠️ فشل حفظ المعاملة (${res.requestId}) في قاعدة بيانات Firebase Firestore (alaa-office-2026) ولم تصل لشاشة المدير — السبب: ${res.error || 'خطأ غير معروف'}`
+            );
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+        }
+      }
+    );
     setCitizenForNewRequest(null);
     setNewReqSubject('');
     setNewReqNotes('');
@@ -1049,64 +1072,110 @@ export const ReceptionModule: React.FC = () => {
 
     const finalDistrict = district === 'أخرى' && customDistrict.trim() ? customDistrict.trim() : district;
 
+    clearFirestoreDiagnostics();
+    setErrorMessage(null);
+
     // 1. Add Citizen with all separated and combined fields
-    const newCitizen = addCitizen({
-      FirstName: firstName.trim(),
-      FatherName: fatherName.trim(),
-      GrandFatherName: grandFatherName.trim(),
-      GreatGrandFatherName: greatGrandFatherName.trim(),
-      FullName: finalFullName,
-      Surname: surname.trim() !== 'عام / بدون لقب' ? surname.trim() : undefined,
-      Phone1: phone1.trim(),
-      Phone2: phone2.trim() || undefined,
-      Gender: 'ذكر' as Gender,
-      District: finalDistrict,
-      ResidentialArea: residentialArea.trim() || undefined,
-      NearestLandmark: nearestLandmark.trim() || undefined,
-      SubDistrict: 'المركز',
-      Job: job.trim() || 'كاسب',
-      Education: education,
-      Rating: 'لائق',
-      AttendanceType: attendanceType,
-      ProxyName: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyName.trim() : undefined,
-      ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
-      ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
-      ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
-      ReferralSource: notes.trim() ? `الاستعلامات - ${notes.trim()}` : (attendanceType === 'بيد شخص آخر (معتمد)' ? `بيد المعتمد: ${proxyName.trim()}` : 'مباشر - قسم الاستعلامات'),
-      CustomFields: regCustomFields
-    });
+    let newCitizen: Citizen;
+    try {
+      newCitizen = addCitizen(
+        {
+          FirstName: firstName.trim(),
+          FatherName: fatherName.trim(),
+          GrandFatherName: grandFatherName.trim(),
+          GreatGrandFatherName: greatGrandFatherName.trim(),
+          FullName: finalFullName,
+          Surname: surname.trim() !== 'عام / بدون لقب' ? surname.trim() : undefined,
+          Phone1: phone1.trim(),
+          Phone2: phone2.trim() || undefined,
+          Gender: 'ذكر' as Gender,
+          District: finalDistrict,
+          ResidentialArea: residentialArea.trim() || undefined,
+          NearestLandmark: nearestLandmark.trim() || undefined,
+          SubDistrict: 'المركز',
+          Job: job.trim() || 'كاسب',
+          Education: education,
+          Rating: 'لائق',
+          CurrentStage: 'مدير المكتب',
+          IsArchived: false,
+          IsHistoricalImported: false,
+          AttendanceType: attendanceType,
+          ProxyName: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyName.trim() : undefined,
+          ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
+          ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
+          ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
+          ReferralSource: notes.trim() ? `الاستعلامات - ${notes.trim()}` : (attendanceType === 'بيد شخص آخر (معتمد)' ? `بيد المعتمد: ${proxyName.trim()}` : 'مباشر - قسم الاستعلامات'),
+          CustomFields: regCustomFields
+        },
+        {
+          onPersistResult: (res) => {
+            if (!res.ok) {
+              setSavedSuccessCitizen(null);
+              setErrorMessage(
+                `⚠️ فشل حفظ بيانات المراجع (${finalFullName}) في قاعدة بيانات Firebase Firestore (alaa-office-2026) — السبب: ${res.error || 'خطأ غير معروف'}`
+              );
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }
+        }
+      );
+    } catch (err: any) {
+      setErrorMessage(`⚠️ تعذر حفظ المراجع: ${err?.message || String(err)}`);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
 
     // 2. Add Multi-Requests under the SAME permanent Citizen Code
     const addedMinistries: string[] = [];
     let addedRequestsCount = 0;
 
-    requestsList.forEach(req => {
+    requestsList.forEach((req, idx) => {
       const entityName = req.entity === 'أخرى (تحديد يدوي)' && req.customEntity ? req.customEntity.trim() : req.entity;
       const details = req.subject.trim() 
         ? (req.subject.trim() + (req.notes?.trim() ? ` [ملاحظات: ${req.notes.trim()}]` : ''))
         : (req.notes?.trim() || `طلب مراجعة ومتابعة رسمية لدى ${entityName}`);
 
-      addRequest({
-        Citizen_ID: newCitizen.Citizen_ID,
-        CitizenName: newCitizen.FullName,
-        CitizenPhone: newCitizen.Phone1,
-        Entity: entityName,
-        Details: details,
-        Priority: req.priority,
-        RequestStatus: 'غير مستلم',
-        DeliveryStatus: 'غير مستلم',
-        ProcessingStatus: 'قيد الإجراء',
-        CurrentStage: 'مدير المكتب',
-        RegisteredVia: 'استعلامات',
-        CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
-        AttendanceType: attendanceType,
-        ProxyName: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyName.trim() : undefined,
-        ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
-        ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
-        ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
-        ReceptionNotes: req.notes?.trim() || notes.trim() || undefined,
-        referredToOrganization: false
-      });
+      addRequest(
+        {
+          Citizen_ID: newCitizen.Citizen_ID,
+          CitizenName: newCitizen.FullName,
+          CitizenPhone: newCitizen.Phone1,
+          Entity: entityName,
+          Details: details,
+          Priority: req.priority,
+          RequestStatus: 'غير مستلم',
+          DeliveryStatus: 'غير مستلم',
+          ProcessingStatus: 'قيد الإجراء',
+          CurrentStage: 'مدير المكتب',
+          department: 'مدير المكتب',
+          TargetDepartment: 'مدير المكتب',
+          DirectorDecision: '',
+          RegisteredVia: 'استعلامات',
+          CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
+          AttendanceType: attendanceType,
+          ProxyName: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyName.trim() : undefined,
+          ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
+          ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
+          ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
+          ReceptionNotes: req.notes?.trim() || notes.trim() || undefined,
+          IsArchived: false,
+          IsHistoricalImported: false,
+          IsDirectInstantRequest: false,
+          referredToOrganization: false
+        },
+        {
+          slotKey: `${req.id}_${idx}`,
+          onPersistResult: (res) => {
+            if (!res.ok) {
+              setSavedSuccessCitizen(null);
+              setErrorMessage(
+                `⚠️ فشل إرسال المعاملة (${res.requestId}) إلى Firebase Firestore (alaa-office-2026) ولم تصل لشاشة مدير المكتب — السبب: ${res.error || 'خطأ غير معروف'}`
+              );
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }
+        }
+      );
       addedMinistries.push(entityName);
       addedRequestsCount++;
     });
@@ -1115,27 +1184,47 @@ export const ReceptionModule: React.FC = () => {
     if (addedRequestsCount === 0) {
       const defaultEntity = IRAQI_MINISTRIES[0];
       const details = notes.trim() || 'تسجيل مراجعة أولية وتثبيت طلب في الاستعلامات';
-      addRequest({
-        Citizen_ID: newCitizen.Citizen_ID,
-        CitizenName: newCitizen.FullName,
-        CitizenPhone: newCitizen.Phone1,
-        Entity: defaultEntity,
-        Details: details,
-        Priority: 'عام',
-        RequestStatus: 'غير مستلم',
-        DeliveryStatus: 'غير مستلم',
-        ProcessingStatus: 'قيد الإجراء',
-        CurrentStage: 'مدير المكتب',
-        RegisteredVia: 'استعلامات',
-        CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
-        AttendanceType: attendanceType,
-        ProxyName: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyName.trim() : undefined,
-        ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
-        ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
-        ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
-        ReceptionNotes: notes.trim() || undefined,
-        referredToOrganization: false
-      });
+      addRequest(
+        {
+          Citizen_ID: newCitizen.Citizen_ID,
+          CitizenName: newCitizen.FullName,
+          CitizenPhone: newCitizen.Phone1,
+          Entity: defaultEntity,
+          Details: details,
+          Priority: 'عام',
+          RequestStatus: 'غير مستلم',
+          DeliveryStatus: 'غير مستلم',
+          ProcessingStatus: 'قيد الإجراء',
+          CurrentStage: 'مدير المكتب',
+          department: 'مدير المكتب',
+          TargetDepartment: 'مدير المكتب',
+          DirectorDecision: '',
+          RegisteredVia: 'استعلامات',
+          CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
+          AttendanceType: attendanceType,
+          ProxyName: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyName.trim() : undefined,
+          ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
+          ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
+          ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
+          ReceptionNotes: notes.trim() || undefined,
+          IsArchived: false,
+          IsHistoricalImported: false,
+          IsDirectInstantRequest: false,
+          referredToOrganization: false
+        },
+        {
+          slotKey: `default_${newCitizen.Citizen_ID}`,
+          onPersistResult: (res) => {
+            if (!res.ok) {
+              setSavedSuccessCitizen(null);
+              setErrorMessage(
+                `⚠️ فشل إرسال المعاملة (${res.requestId}) إلى Firebase Firestore (alaa-office-2026) ولم تصل لشاشة مدير المكتب — السبب: ${res.error || 'خطأ غير معروف'}`
+              );
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }
+        }
+      );
       addedMinistries.push(defaultEntity);
       addedRequestsCount = 1;
     }
@@ -1347,15 +1436,18 @@ export const ReceptionModule: React.FC = () => {
 
   return (
     <div className="space-y-4 text-right font-['Tajawal',sans-serif] select-none" dir="rtl">
-      {errorMessage && (
+      {(errorMessage || firestoreLastSaveError) && (
         <div className="p-4 rounded-2xl bg-red-50 border-2 border-red-500 text-red-950 text-xs font-black flex items-center justify-between gap-3 shadow-md animate-in fade-in">
           <div className="flex items-center gap-2">
             <span className="text-base">⛔</span>
-            <span>{errorMessage}</span>
+            <span>{errorMessage || firestoreLastSaveError}</span>
           </div>
           <button
             type="button"
-            onClick={() => setErrorMessage(null)}
+            onClick={() => {
+              setErrorMessage(null);
+              clearFirestoreDiagnostics();
+            }}
             className="px-2.5 py-1 rounded-lg bg-red-100 hover:bg-red-200 text-red-800 font-bold cursor-pointer shrink-0"
           >
             إغلاق ✕
