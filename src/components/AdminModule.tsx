@@ -56,6 +56,7 @@ import { SearchableSelect } from './SearchableSelect';
 import { PlusCircle, FileSpreadsheet, UploadCloud } from 'lucide-react';
 import { printImageIsolated, printSingleOutgoingReceipt } from '../utils/printReceiptHelper';
 import { computeNextOutgoingNumber, extractOutgoingSequence, MAX_VALID_OUTGOING_SEQ } from '../utils/outgoingNumberHelper';
+import { getLocalTodayIsoDate } from '../utils/archiveHelper';
 
 export const AdminModule: React.FC = () => {
   const { 
@@ -167,7 +168,7 @@ export const AdminModule: React.FC = () => {
 
   // Outgoing number & Official Outgoing Popup Card for "إنشاء طلب إداري فوري" (same experience as إكمال الطلب)
   const [formOutgoingNumber, setFormOutgoingNumber] = useState('');
-  const [formOutgoingDate, setFormOutgoingDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [formOutgoingDate, setFormOutgoingDate] = useState(() => getLocalTodayIsoDate());
   const [copiedInstantOutgoing, setCopiedInstantOutgoing] = useState(false);
   const [savedInstantCard, setSavedInstantCard] = useState<{
     outgoingNumber: string;
@@ -200,9 +201,9 @@ export const AdminModule: React.FC = () => {
     setProcessingStatus('منجز');
     setRequestStatus('مستلم');
     setSelectedCitizenId(citizens[0]?.Citizen_ID || '');
-    const computed = computeNextOutgoingNumber(requests, systemSettings, officialLetters);
+    const computed = computeNextOutgoingNumber(requests, systemSettings, officialLetters, customRecords);
     setFormOutgoingNumber(computed.nextNumber);
-    setFormOutgoingDate(new Date().toISOString().split('T')[0]);
+    setFormOutgoingDate((systemSettings?.defaultOutgoingDate || '').trim() || getLocalTodayIsoDate());
     setShowAddModal(true);
   };
 
@@ -416,12 +417,16 @@ export const AdminModule: React.FC = () => {
     if (editingRequest) {
       const finalName = editableCitizenName.trim() || editingRequest.CitizenName;
       const finalPhone = editableCitizenPhone.trim() || editingRequest.CitizenPhone;
+      const editedOutgoingNum = formOutgoingNumber.trim();
+      const editedOutgoingDate = formOutgoingDate.trim() || getLocalTodayIsoDate();
 
       updateRequest({
         ...editingRequest,
         CitizenName: finalName,
         CitizenPhone: finalPhone,
         Entity: finalEntity,
+        OutgoingNumber: editedOutgoingNum || editingRequest.OutgoingNumber,
+        OutgoingDate: editedOutgoingNum || formOutgoingDate.trim() ? editedOutgoingDate : (editingRequest.OutgoingDate || getLocalTodayIsoDate()),
         RequestStatus: requestStatus,
         ProcessingStatus: processingStatus,
         Priority: priority,
@@ -445,6 +450,34 @@ export const AdminModule: React.FC = () => {
           }
         ] : editingRequest.ScanAttachments
       });
+
+      if (editedOutgoingNum) {
+        const editedSeq = extractOutgoingSequence(editedOutgoingNum).seq;
+        if (editedSeq > 0 && editedSeq <= MAX_VALID_OUTGOING_SEQ) {
+          const preserveMode = systemSettings?.outgoingBaselineMode || 'auto';
+          if (systemSettings?.officeBranch === 'suq_al_shuyoukh') {
+            const cur = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
+            if (cur > MAX_VALID_OUTGOING_SEQ || editedSeq >= cur) {
+              updateSystemSettings({
+                lastOutgoingNumberSuq: editedSeq,
+                outgoingBaselineMode: preserveMode,
+                lastRegisteredName: finalName,
+                lastOutgoingRaw: editedOutgoingNum
+              });
+            }
+          } else {
+            const cur = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
+            if (cur > MAX_VALID_OUTGOING_SEQ || editedSeq >= cur) {
+              updateSystemSettings({
+                lastOutgoingNumberNasiriyah: editedSeq,
+                outgoingBaselineMode: preserveMode,
+                lastRegisteredName: finalName,
+                lastOutgoingRaw: editedOutgoingNum
+              });
+            }
+          }
+        }
+      }
 
       // Also sync citizen master record if name or phone changed
       const targetCit = citizens.find(c => c.Citizen_ID === editingRequest.Citizen_ID);
@@ -485,8 +518,8 @@ export const AdminModule: React.FC = () => {
 
       const nowStamp = new Date().toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' });
       const currentUploader = currentUser?.FullName || 'موظف الإدارة';
-      const computedNext = computeNextOutgoingNumber(requests, systemSettings, officialLetters);
-      const todayIso = new Date().toISOString().split('T')[0];
+      const computedNext = computeNextOutgoingNumber(requests, systemSettings, officialLetters, customRecords);
+      const todayIso = getLocalTodayIsoDate();
       const finalOutgoingNumber = formOutgoingNumber.trim() || computedNext.nextNumber;
       const finalOutgoingDate = formOutgoingDate.trim() || todayIso;
       const deliveryVal: 'مستلم' | 'غير مستلم' = requestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم';
@@ -542,15 +575,26 @@ export const AdminModule: React.FC = () => {
 
       const nextSeq = extractOutgoingSequence(finalOutgoingNumber).seq;
       if (nextSeq > 0 && nextSeq <= MAX_VALID_OUTGOING_SEQ) {
+        const preserveMode = systemSettings?.outgoingBaselineMode || 'auto';
         if (systemSettings?.officeBranch === 'suq_al_shuyoukh') {
           const cur = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
-          if (cur > MAX_VALID_OUTGOING_SEQ || nextSeq > cur) {
-            updateSystemSettings({ lastOutgoingNumberSuq: nextSeq });
+          if (cur > MAX_VALID_OUTGOING_SEQ || nextSeq >= cur) {
+            updateSystemSettings({
+              lastOutgoingNumberSuq: nextSeq,
+              outgoingBaselineMode: preserveMode,
+              lastRegisteredName: cleanName,
+              lastOutgoingRaw: finalOutgoingNumber
+            });
           }
         } else {
           const cur = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
-          if (cur > MAX_VALID_OUTGOING_SEQ || nextSeq > cur) {
-            updateSystemSettings({ lastOutgoingNumberNasiriyah: nextSeq });
+          if (cur > MAX_VALID_OUTGOING_SEQ || nextSeq >= cur) {
+            updateSystemSettings({
+              lastOutgoingNumberNasiriyah: nextSeq,
+              outgoingBaselineMode: preserveMode,
+              lastRegisteredName: cleanName,
+              lastOutgoingRaw: finalOutgoingNumber
+            });
           }
         }
       }
@@ -629,6 +673,8 @@ export const AdminModule: React.FC = () => {
     setEditableCitizenName(req.CitizenName || '');
     setEditableCitizenPhone(req.CitizenPhone || '');
     setEntity(req.Entity);
+    setFormOutgoingNumber(req.OutgoingNumber || '');
+    setFormOutgoingDate((req.OutgoingDate && req.OutgoingDate.trim()) || (systemSettings?.defaultOutgoingDate || '').trim() || getLocalTodayIsoDate());
     setRequestStatus(req.RequestStatus);
     setProcessingStatus(req.ProcessingStatus);
     setPriority(req.Priority);
@@ -2255,34 +2301,43 @@ export const AdminModule: React.FC = () => {
                 />
               </div>
 
-              {/* Official Outgoing Number & Date (when creating a direct instant administrative request) */}
-              {!editingRequest && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-amber-50/80 border border-amber-300">
-                  <div>
-                    <label className="block text-xs font-black text-amber-900 mb-1">
-                      رقم الصادر / العدد الرسمي (تلقائي وقابل للتعديل)
-                    </label>
-                    <input
-                      type="text"
-                      value={formOutgoingNumber}
-                      onChange={(e) => setFormOutgoingNumber(e.target.value)}
-                      placeholder="ن / 12 / 1344"
-                      className="w-full px-3 py-2 rounded-lg bg-white border border-amber-400 text-amber-950 text-xs font-mono font-black text-center focus:ring-2 focus:ring-amber-500 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-black text-amber-900 mb-1">
-                      تاريخ الصادر الرسمي
-                    </label>
-                    <input
-                      type="date"
-                      value={formOutgoingDate}
-                      onChange={(e) => setFormOutgoingDate(e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg bg-white border border-amber-400 text-slate-900 text-xs font-mono font-bold focus:ring-2 focus:ring-amber-500 outline-none"
-                    />
-                  </div>
+              {/* Official Outgoing Number & Date (Editable for both creating and editing requests; empty date defaults to today) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-amber-50/80 border border-amber-300">
+                <div>
+                  <label className="block text-xs font-black text-amber-900 mb-1">
+                    رقم الصادر / العدد الرسمي (تلقائي وقابل للتعديل)
+                  </label>
+                  <input
+                    type="text"
+                    value={formOutgoingNumber}
+                    onChange={(e) => setFormOutgoingNumber(e.target.value)}
+                    placeholder="ن / 12 / 3345"
+                    className="w-full px-3 py-2 rounded-lg bg-white border border-amber-400 text-amber-950 text-xs font-mono font-black text-center focus:ring-2 focus:ring-amber-500 outline-none"
+                  />
                 </div>
-              )}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-black text-amber-900">
+                      تاريخ الصادر (تلقائياً اليوم وقابل للتعديل)
+                    </label>
+                    {formOutgoingDate !== getLocalTodayIsoDate() && (
+                      <button
+                        type="button"
+                        onClick={() => setFormOutgoingDate(getLocalTodayIsoDate())}
+                        className="text-[10px] font-bold text-amber-700 hover:underline cursor-pointer"
+                      >
+                        تاريخ اليوم
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="date"
+                    value={formOutgoingDate}
+                    onChange={(e) => setFormOutgoingDate(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg bg-white border border-amber-400 text-slate-900 text-xs font-mono font-bold focus:ring-2 focus:ring-amber-500 outline-none"
+                  />
+                </div>
+              </div>
 
               {/* Statuses & Priority (ALL Searchable + Instant Add & Persist) */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

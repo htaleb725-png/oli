@@ -620,7 +620,7 @@ export const DriveRequestsArchiveModule: React.FC = () => {
                     </span>
                   </h3>
                   <p className="text-xs text-slate-400">
-                    مكتب النائب المهندسة علا الناشي • مجلس النواب العراقي
+                    {systemSettings.officeName || systemSettings.appName || 'مكتب مجلس النواب العراقي'} • {systemSettings.loginHeaderBadgeText || 'مجلس النواب العراقي'}
                   </p>
                 </div>
               </div>
@@ -775,13 +775,13 @@ export const DriveRequestsArchiveModule: React.FC = () => {
                     {/* Official Stamp & Signature Block */}
                     <div className="text-center space-y-1.5 pl-6">
                       <div className="text-sm font-black text-slate-950">
-                        المهندسة علا عودة الناشي
+                        {systemSettings.deputyName || systemSettings.officeName || 'النائب'}
                       </div>
                       <div className="text-xs font-bold text-slate-700">
-                        عضو مجلس النواب العراقي
+                        {systemSettings.deputyTitle || 'عضو مجلس النواب العراقي'}
                       </div>
                       <div className="text-[10px] text-slate-500 font-mono">
-                        مكتب محافظة ذي قار
+                        مكتب محافظة {systemSettings.province || 'ذي قار'}
                       </div>
                       <div className="pt-2 text-[10px] text-blue-900 font-bold italic">
                         [الختم والتوقيع الرسمي المعتمد]

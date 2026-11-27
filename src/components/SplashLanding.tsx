@@ -166,14 +166,14 @@ export const SplashLanding: React.FC = () => {
             <div className="flex items-center gap-1.5">
               <span className="inline-flex items-center gap-1 px-2 py-0.2 rounded-full text-[9px] sm:text-[10px] font-black bg-amber-500/15 text-amber-300 border border-amber-500/30">
                 <Award className="w-2.5 h-2.5 text-amber-400" />
-                مجلس النواب العراقي
+                {systemSettings.loginHeaderBadgeText || 'مجلس النواب العراقي'}
               </span>
               <span className="text-[11px] text-slate-400 font-bold hidden md:inline">
                 محافظة {systemSettings.province}
               </span>
             </div>
             <h1 className="text-xs sm:text-sm font-black text-white mt-0.5 tracking-tight flex items-center gap-2">
-              <span>{systemSettings.appName}</span>
+              <span>{systemSettings.appName || systemSettings.officeName}</span>
               <span className="text-[9px] font-mono text-emerald-400 px-1.5 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/30 hidden sm:inline-flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                 سحابي مؤمن
@@ -261,7 +261,7 @@ export const SplashLanding: React.FC = () => {
             <div className="flex items-center justify-between mb-4">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-black bg-amber-500/15 text-amber-300 border border-amber-400/30">
                 <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
-                <span>بوابة الدخول الرسمية المعتمدة</span>
+                <span>{systemSettings.loginBadgeText || 'بوابة الدخول الرسمية المعتمدة'}</span>
               </div>
 
               {/* Collapse Sidebar Button (Desktop) */}
@@ -281,10 +281,10 @@ export const SplashLanding: React.FC = () => {
               </div>
               <div>
                 <h2 className="text-base sm:text-lg font-black text-white tracking-tight">
-                  منظومة إدارة مكتب النائب
+                  {systemSettings.loginWelcomeTitle || systemSettings.officeName || 'منظومة إدارة مكتب النائب'}
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  مجلس النواب العراقي • نظام إداري مشفر ومؤمن
+                  {systemSettings.loginWelcomeSubtitle || `${systemSettings.loginHeaderBadgeText || 'مجلس النواب العراقي'} • نظام إداري مشفر ومؤمن`}
                 </p>
               </div>
             </div>
@@ -340,7 +340,7 @@ export const SplashLanding: React.FC = () => {
                 }`}
               >
                 <KeyRound className="w-3.5 h-3.5" />
-                <span>الرمز السري المعتمد</span>
+                <span>{systemSettings.loginPasscodeTabText || 'الرمز السري المعتمد'}</span>
               </button>
 
               <button
@@ -356,7 +356,7 @@ export const SplashLanding: React.FC = () => {
                 }`}
               >
                 <UserCheck className="w-3.5 h-3.5" />
-                <span>اسم المستخدم وكلمة السر</span>
+                <span>{systemSettings.loginCredentialsTabText || 'اسم المستخدم وكلمة السر'}</span>
               </button>
             </div>
 
@@ -488,7 +488,7 @@ export const SplashLanding: React.FC = () => {
                 ) : (
                   <>
                     <Fingerprint className="w-5 h-5 text-slate-950" />
-                    <span>تسجيل الدخول وفتح المنظومة</span>
+                    <span>{systemSettings.loginButtonText || 'تسجيل الدخول وفتح المنظومة'}</span>
                     <ChevronLeft className="w-4 h-4" />
                   </>
                 )}
@@ -502,10 +502,10 @@ export const SplashLanding: React.FC = () => {
           <div className="p-4 sm:p-5 border-t border-slate-800/80 bg-slate-950/60 text-[11px] text-slate-400 flex items-center justify-between">
             <span className="flex items-center gap-1.5 text-slate-400">
               <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              <span>نظام إداري إلكتروني مشفر</span>
+              <span>{systemSettings.loginSecurityBadgeText || 'نظام إداري إلكتروني مشفر'}</span>
             </span>
             <span className="font-mono text-slate-500 text-[10px]">
-              مجلس النواب • ذي قار
+              {systemSettings.loginHeaderBadgeText || 'مجلس النواب'} • {systemSettings.province || 'ذي قار'}
             </span>
           </div>
 
@@ -529,15 +529,25 @@ export const SplashLanding: React.FC = () => {
       <footer className="relative z-30 w-full bg-[#080d1a]/95 backdrop-blur-xl border-t border-slate-800/80 py-2.5 px-4 text-xs text-slate-400 shrink-0">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-right">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-300">مكتب النائب المهندسة علا عودة الناشي</span>
-            <span>•</span>
-            <span className="text-slate-400">{systemSettings.officeAddress}</span>
+            <span className="font-bold text-slate-300">
+              {systemSettings.footerText || systemSettings.officeName || systemSettings.appName || 'مكتب مجلس النواب العراقي'}
+            </span>
+            {systemSettings.officeAddress && (
+              <>
+                <span>•</span>
+                <span className="text-slate-400">{systemSettings.officeAddress}</span>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-3 text-[11px]">
-            <span className="font-mono text-slate-300">الخط الساخن: {systemSettings.hotline}</span>
-            <span>•</span>
-            <span className="text-slate-500">الحقوق محفوظة © 2026</span>
+            {systemSettings.hotline && (
+              <>
+                <span className="font-mono text-slate-300">الخط الساخن: {systemSettings.hotline}</span>
+                <span>•</span>
+              </>
+            )}
+            <span className="text-slate-500">{systemSettings.loginFooterCopyrightText || 'الحقوق محفوظة © 2026'}</span>
           </div>
         </div>
       </footer>
@@ -554,6 +564,9 @@ export const SplashLanding: React.FC = () => {
         message={sessionLoadingMessage}
         userName={assignedWorkstationUser?.FullName}
         officeName={systemSettings?.officeName || systemSettings?.appName}
+        emblemUrl={systemSettings?.customImages?.loadingEmblem || systemSettings?.logoUrl}
+        customTitle={systemSettings?.loadingScreenTitle}
+        customSubtitle={systemSettings?.loadingScreenSubtitle}
       />
     </div>
   );

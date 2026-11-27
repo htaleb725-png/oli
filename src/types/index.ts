@@ -544,13 +544,22 @@ export interface SystemSettings {
   loadingScreenSubtitle?: string; // وصف شاشة تحميل البيانات بعد الدخول
   loginWelcomeTitle?: string; // عنوان الترحيب في واجهة الدخول
   loginWelcomeSubtitle?: string; // الوصف الفرعي في واجهة الدخول
+  loginHeaderBadgeText?: string; // شارة الجهة العليا في واجهة الدخول (مثل مجلس النواب العراقي)
+  loginBadgeText?: string; // شارة بوابة الدخول في واجهة الدخول
+  loginButtonText?: string; // نص زر الدخول الرئيسي
+  loginPasscodeTabText?: string; // نص تبويب الرمز السري
+  loginCredentialsTabText?: string; // نص تبويب اسم المستخدم وكلمة السر
+  loginSecurityBadgeText?: string; // نص شارة الأمان أسفل بوابة الدخول
+  loginFooterCopyrightText?: string; // نص حقوق النشر أسفل واجهة الدخول
   officeBranch?: 'nasiriyah' | 'suq_al_shuyoukh' | string; // فرع المكتب (الناصرية / سوق الشيوخ)
   requiredFieldsConfig?: Record<string, boolean>; // للمطور: تحديد أي حقل إلزامي أو اختياري في النظام
   receptionResidentialAreas?: string[]; // قائمة مناطق السكن المنسدلة
   lastOutgoingNumberNasiriyah?: number; // آخر عدد صادر مسجل لمكتب الناصرية
   lastOutgoingNumberSuq?: number; // آخر عدد صادر مسجل لمكتب سوق الشيوخ
-  outgoingBaselineSetAt?: string; // توقيت تثبيت آخر رقم صادر من الملف المرفوع لمنع تداخل السجلات القديمة
-  outgoingBaselineLabel?: string; // وصف مصدر آخر رقم صادر مثبت (مثل اسم ملف الإكسل المرفوع)
+  outgoingBaselineMode?: 'auto' | 'manual'; // يحدد إن كان عداد الصادر مضبوطاً يدوياً كنقطة بداية معتمدة
+  outgoingBaselineSetAt?: string; // توقيت تثبيت آخر رقم صادر من الملف المرفوع أو التعديل اليدوي
+  outgoingBaselineLabel?: string; // وصف مصدر آخر رقم صادر مثبت (مثل تعديل يدوي أو اسم ملف الإكسل)
+  defaultOutgoingDate?: string; // تاريخ صادر مخصص في الإدارة (عند تركه فارغاً يعتمد تاريخ اليوم تلقائياً)
   lastRegisteredName?: string; // آخر اسم مراجع مكتمل مسجل ومرتبط بآخر عدد صادر
   lastOutgoingRaw?: string; // النص الأصلي لآخر عدد/صادر مسجل (مثل 4256 أو ن / 12 / 4256)
   receptionCustomFields?: CustomFieldDefinition[]; // الحقول المخصصة التي يضيفها المطور للاستعلامات

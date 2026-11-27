@@ -95,6 +95,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   const [archiveConfirmMode, setArchiveConfirmMode] = useState<'none' | 'imported' | 'completed' | 'all_visible'>('none');
   const [isEditingManualCounter, setIsEditingManualCounter] = useState(false);
   const [manualCounterInput, setManualCounterInput] = useState('');
+  const [manualDateInput, setManualDateInput] = useState('');
+  const [isSavingManualCounter, setIsSavingManualCounter] = useState(false);
 
   // High-performance pagination state
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -186,11 +188,13 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     const isSuq = systemSettings?.officeBranch === 'suq_al_shuyoukh';
     const cleanName = (citizenNameStr || '').trim();
     const cleanRaw = (outgoingNumberStr || '').trim();
+    const preserveMode = systemSettings?.outgoingBaselineMode || 'auto';
     if (isSuq) {
       const cur = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
       if (cur > MAX_VALID_OUTGOING_SEQ || seq >= cur) {
         updateSystemSettings({
           lastOutgoingNumberSuq: seq,
+          outgoingBaselineMode: preserveMode,
           ...(cleanName ? { lastRegisteredName: cleanName } : {}),
           ...(cleanRaw ? { lastOutgoingRaw: cleanRaw } : {})
         });
@@ -200,6 +204,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       if (cur > MAX_VALID_OUTGOING_SEQ || seq >= cur) {
         updateSystemSettings({
           lastOutgoingNumberNasiriyah: seq,
+          outgoingBaselineMode: preserveMode,
           ...(cleanName ? { lastRegisteredName: cleanName } : {}),
           ...(cleanRaw ? { lastOutgoingRaw: cleanRaw } : {})
         });
@@ -217,8 +222,10 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     systemSettings?.officeBranch,
     systemSettings?.lastOutgoingNumberNasiriyah,
     systemSettings?.lastOutgoingNumberSuq,
+    systemSettings?.outgoingBaselineMode,
     systemSettings?.outgoingBaselineSetAt,
     systemSettings?.outgoingBaselineLabel,
+    systemSettings?.defaultOutgoingDate,
     systemSettings?.lastRegisteredName,
     systemSettings?.lastOutgoingRaw
   ]);
@@ -301,21 +308,51 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return null;
   }, [lastOutgoingRecord, requests, citizens]);
 
-  const handleSaveManualCounter = () => {
+  const getDefaultAdminOutgoingDate = () => {
+    const customDate = (systemSettings?.defaultOutgoingDate || '').trim();
+    return customDate || getLocalTodayIsoDate();
+  };
+
+  const handleSaveManualCounter = async () => {
     const parsed = extractOutgoingSequence(manualCounterInput);
     if (parsed.seq <= 0 || parsed.seq > MAX_VALID_OUTGOING_SEQ) {
-      showBlockBanner('error', 'يرجى إدخال رقم صادر صحيح (مثلاً 4256 أو 4256/1125) لضبط العداد.');
+      showBlockBanner('error', 'يرجى إدخال رقم صادر صحيح (مثلاً 3344 أو ن / 12 / 3344) لضبط العداد.');
       return;
     }
     const isSuq = systemSettings?.officeBranch === 'suq_al_shuyoukh';
-    updateSystemSettings({
-      ...(isSuq ? { lastOutgoingNumberSuq: parsed.seq } : { lastOutgoingNumberNasiriyah: parsed.seq }),
-      outgoingBaselineSetAt: new Date().toISOString(),
-      outgoingBaselineLabel: `تعديل يدوي (${manualCounterInput.trim()})`
-    });
-    setIsEditingManualCounter(false);
-    setManualCounterInput('');
-    showBlockBanner('success', `✓ تم تحديث آخر عدد صادر يدوياً إلى (${parsed.seq}) — العدد القادم المقترح أصبح (${parsed.seq + 1}).`);
+    const branchPrefix = isSuq ? 'س' : 'ن';
+    const branchCode = isSuq ? '14' : '12';
+    const cleanRawInput = manualCounterInput.trim();
+    const formattedOutgoingRaw = cleanRawInput.includes('/')
+      ? cleanRawInput
+      : `${branchPrefix} / ${branchCode} / ${parsed.seq}`;
+    const cleanDate = manualDateInput.trim();
+
+    setIsSavingManualCounter(true);
+    try {
+      const ok = await updateSystemSettings({
+        ...(isSuq ? { lastOutgoingNumberSuq: parsed.seq } : { lastOutgoingNumberNasiriyah: parsed.seq }),
+        outgoingBaselineMode: 'manual',
+        outgoingBaselineSetAt: new Date().toISOString(),
+        outgoingBaselineLabel: `تعديل يدوي (${cleanRawInput})`,
+        lastOutgoingRaw: formattedOutgoingRaw,
+        defaultOutgoingDate: cleanDate
+      });
+      if (ok) {
+        setIsEditingManualCounter(false);
+        setManualCounterInput('');
+        showBlockBanner(
+          'success',
+          `✓ تم حفظ رقم الصادر (${parsed.seq}) في Firebase Firestore بنجاح — التسلسل التلقائي سيبدأ الآن من (${parsed.seq + 1})، ${
+            cleanDate ? `والتاريخ المضبوط (${cleanDate})` : `والتاريخ تلقائي (${getLocalTodayIsoDate()})`
+          }.`
+        );
+      } else {
+        showBlockBanner('error', 'تعذر تأكيد حفظ رقم الصادر في Firebase Firestore. يرجى إعادة المحاولة.');
+      }
+    } finally {
+      setIsSavingManualCounter(false);
+    }
   };
 
   // Collective Outgoing (صادر موحد لمجموعة مراجعين)
@@ -338,9 +375,9 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
   ]);
 
   const handleOpenBulkOutgoingModal = () => {
-    const today = new Date().toISOString().split('T')[0];
+    const defaultDate = getDefaultAdminOutgoingDate();
     setBulkOutgoingNumber(generateOutgoingNumber());
-    setBulkOutgoingDate(today);
+    setBulkOutgoingDate(defaultDate);
     setBulkEntity('مجلس الوزراء / الدوائر ذات العلاقة');
     setBulkSubject('');
     setBulkRawPasteText('');
@@ -403,7 +440,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       return;
     }
     const finalOutgoingNumber = bulkOutgoingNumber.trim() || generateOutgoingNumber();
-    const finalOutgoingDate = bulkOutgoingDate.trim() || new Date().toISOString().split('T')[0];
+    const finalOutgoingDate = bulkOutgoingDate.trim() || getLocalTodayIsoDate();
     const finalEntity = bulkEntity.trim() || 'مجلس الوزراء / الدوائر ذات العلاقة';
     const finalSubject = bulkSubject.trim() || 'كتاب صادر موحد لمجموعة مراجعين';
 
@@ -483,7 +520,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
 
   // Open "إكمال الطلب"
   const handleOpenCompleteRequest = (citizen: Citizen, req?: OfficeRequest, overrideBlocked: boolean = false) => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const defaultDate = getDefaultAdminOutgoingDate();
     const initialOutgoing = req?.OutgoingNumber || generateOutgoingNumber();
 
     setAllowBlockedOverride(overrideBlocked);
@@ -492,7 +529,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     setFormEntity(req?.Entity || 'مجلس الوزراء / الدوائر ذات العلاقة');
     setFormSubject(req?.Details || '');
     setFormOutgoingNumber(initialOutgoing);
-    setFormOutgoingDate(req?.OutgoingDate || todayStr);
+    setFormOutgoingDate((req?.OutgoingDate && req.OutgoingDate.trim()) || defaultDate);
     setFormPhone(citizen.Phone1 || req?.CitizenPhone || '');
     setFormReferrer(citizen.ReferralSource || req?.ReferralSource || 'مباشر - قسم الاستعلامات');
     setFormAddress(citizen.District ? `${citizen.District} ${citizen.SubDistrict || ''}`.trim() : (req?.Address || 'ذي قار'));
@@ -530,7 +567,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       );
     }
     const finalOutgoingNumber = formOutgoingNumber.trim() || generateOutgoingNumber();
-    const finalOutgoingDate = formOutgoingDate.trim() || new Date().toISOString().split('T')[0];
+    const finalOutgoingDate = formOutgoingDate.trim() || getLocalTodayIsoDate();
 
     // 1. Update citizen record
     const updatedCitizen: Citizen = {
@@ -561,7 +598,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         ProcessingStatus: formRequestStatus,
         DeliveryStatus: formDeliveryStatus,
         RequestStatus: formDeliveryStatus,
-        DeliveredAt: formDeliveryStatus === 'مستلم' ? new Date().toISOString().split('T')[0] : undefined,
+        DeliveredAt: formDeliveryStatus === 'مستلم' ? finalOutgoingDate : undefined,
         DeliveredBy: formDeliveryStatus === 'مستلم' ? (currentUser?.FullName || 'موظف الإدارة') : undefined,
         Education: formEducation.trim(),
         Job: formJob.trim(),
@@ -582,7 +619,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         OutgoingDate: finalOutgoingDate,
         RequestStatus: formDeliveryStatus,
         DeliveryStatus: formDeliveryStatus,
-        DeliveredAt: formDeliveryStatus === 'مستلم' ? new Date().toISOString().split('T')[0] : undefined,
+        DeliveredAt: formDeliveryStatus === 'مستلم' ? finalOutgoingDate : undefined,
         DeliveredBy: formDeliveryStatus === 'مستلم' ? (currentUser?.FullName || 'موظف الإدارة') : undefined,
         ProcessingStatus: formRequestStatus,
         Priority: 'عام',
@@ -711,7 +748,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     setEditEntity(req?.Entity || '');
     setEditDetails(req?.Details || '');
     setEditOutgoingNumber(req?.OutgoingNumber || '');
-    setEditOutgoingDate(req?.OutgoingDate || '');
+    setEditOutgoingDate((req?.OutgoingDate && req.OutgoingDate.trim()) || getDefaultAdminOutgoingDate());
     setEditProcessingStatus((req?.ProcessingStatus as ProcessingStatus) || 'منجز');
     setEditPriority((req?.Priority as Priority) || 'عام');
     setEditOtherNotes(req?.OtherNotes || req?.DeputyNotes || '');
@@ -739,18 +776,23 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     });
 
     if (request) {
+      const cleanEditOutgoing = editOutgoingNumber.trim();
+      const resolvedEditDate = editOutgoingDate.trim() || getLocalTodayIsoDate();
       updateRequest({
         ...request,
         CitizenName: editFullName.trim(),
         CitizenPhone: editPhone1.trim(),
         Entity: editEntity.trim(),
         Details: editDetails.trim(),
-        OutgoingNumber: editOutgoingNumber.trim() || undefined,
-        OutgoingDate: editOutgoingDate.trim() || undefined,
+        OutgoingNumber: cleanEditOutgoing || undefined,
+        OutgoingDate: cleanEditOutgoing || editOutgoingDate.trim() ? resolvedEditDate : request.OutgoingDate || getLocalTodayIsoDate(),
         ProcessingStatus: editProcessingStatus,
         Priority: editPriority,
         OtherNotes: editOtherNotes.trim() || undefined
       });
+      if (cleanEditOutgoing) {
+        advanceOutgoingBaseline(cleanEditOutgoing, editFullName.trim());
+      }
     }
 
     setEditingTarget(null);
@@ -1442,32 +1484,55 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
               </div>
             </div>
             {isEditingManualCounter ? (
-              <div className="mt-1 flex items-center gap-1">
-                <input
-                  type="text"
-                  value={manualCounterInput}
-                  onChange={e => setManualCounterInput(e.target.value)}
-                  placeholder="مثلاً: 4256"
-                  className="w-24 h-7 px-2 rounded-md border border-emerald-400 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none"
-                  dir="ltr"
-                />
-                <button
-                  type="button"
-                  onClick={handleSaveManualCounter}
-                  className="px-2 h-7 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black cursor-pointer"
-                >
-                  حفظ
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsEditingManualCounter(false);
-                    setManualCounterInput('');
-                  }}
-                  className="px-1.5 h-7 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold cursor-pointer"
-                >
-                  ✕
-                </button>
+              <div className="mt-1 space-y-1.5">
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={manualCounterInput}
+                    onChange={e => setManualCounterInput(e.target.value)}
+                    placeholder="مثلاً: 3344"
+                    className="w-24 h-7 px-2 rounded-md border border-emerald-400 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none"
+                    dir="ltr"
+                  />
+                  <button
+                    type="button"
+                    disabled={isSavingManualCounter}
+                    onClick={handleSaveManualCounter}
+                    className="px-2.5 h-7 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[10px] font-black cursor-pointer"
+                  >
+                    {isSavingManualCounter ? '...' : 'حفظ'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEditingManualCounter(false);
+                      setManualCounterInput('');
+                      setManualDateInput('');
+                    }}
+                    className="px-1.5 h-7 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={manualDateInput}
+                    onChange={e => setManualDateInput(e.target.value)}
+                    title="تاريخ الصادر المخصص (اتركه فارغاً ليعتمد تاريخ اليوم تلقائياً)"
+                    className="flex-1 h-7 px-1.5 rounded-md border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 text-[10px] font-mono font-bold text-slate-900 dark:text-white focus:outline-none"
+                  />
+                  {manualDateInput && (
+                    <button
+                      type="button"
+                      onClick={() => setManualDateInput('')}
+                      className="px-1.5 h-7 rounded-md bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 text-[9px] font-bold cursor-pointer whitespace-nowrap"
+                      title="إرجاع التاريخ تلقائياً لتاريخ اليوم"
+                    >
+                      اليوم
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
               <>
@@ -1477,16 +1542,20 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     type="button"
                     onClick={() => {
                       setManualCounterInput(String(outgoingComputed.maxFound || ''));
+                      setManualDateInput((systemSettings?.defaultOutgoingDate || '').trim());
                       setIsEditingManualCounter(true);
                     }}
                     className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/60 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 text-[9px] font-bold cursor-pointer"
-                    title="تعديل آخر رقم صادر يدوياً"
+                    title="تعديل رقم الصادر والتاريخ يدوياً"
                   >
-                    تعديل يدوي
+                    تعديل الصادر والتاريخ
                   </button>
                 </div>
                 <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5">
-                  التالي بعد ({outgoingComputed.maxFound || 0}) • تاريخ اليوم: {new Date().toISOString().split('T')[0]}
+                  التالي بعد ({outgoingComputed.maxFound || 0}) • التاريخ:{' '}
+                  {(systemSettings?.defaultOutgoingDate && systemSettings.defaultOutgoingDate.trim())
+                    ? `${systemSettings.defaultOutgoingDate.trim()} (مخصص)`
+                    : `${getLocalTodayIsoDate()} (اليوم)`}
                 </div>
               </>
             )}

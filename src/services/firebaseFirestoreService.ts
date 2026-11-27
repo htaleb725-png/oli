@@ -952,19 +952,48 @@ export async function fsSaveSettings(settings: Partial<SystemSettings>): Promise
   if (typeof settings.lastOutgoingNumberSuq === 'number') {
     cloudPatch.lastOutgoingNumberSuq = settings.lastOutgoingNumberSuq;
   }
-  if (settings.outgoingBaselineSetAt) {
+  if (settings.outgoingBaselineMode !== undefined) {
+    cloudPatch.outgoingBaselineMode = settings.outgoingBaselineMode;
+  }
+  if (settings.outgoingBaselineSetAt !== undefined) {
     cloudPatch.outgoingBaselineSetAt = settings.outgoingBaselineSetAt;
   }
-  if (settings.outgoingBaselineLabel) {
+  if (settings.outgoingBaselineLabel !== undefined) {
     cloudPatch.outgoingBaselineLabel = settings.outgoingBaselineLabel;
   }
-  if (settings.officeName) cloudPatch.officeName = settings.officeName;
-  if (settings.deputyName) cloudPatch.deputyName = settings.deputyName;
+  if (settings.defaultOutgoingDate !== undefined) {
+    cloudPatch.defaultOutgoingDate = settings.defaultOutgoingDate;
+  }
+  if (settings.lastRegisteredName !== undefined) {
+    cloudPatch.lastRegisteredName = settings.lastRegisteredName;
+  }
+  if (settings.lastOutgoingRaw !== undefined) {
+    cloudPatch.lastOutgoingRaw = settings.lastOutgoingRaw;
+  }
+  if (settings.appName !== undefined) cloudPatch.appName = settings.appName;
+  if (settings.officeName !== undefined) cloudPatch.officeName = settings.officeName;
+  if (settings.deputyName !== undefined) cloudPatch.deputyName = settings.deputyName;
+  if (settings.deputyTitle !== undefined) cloudPatch.deputyTitle = settings.deputyTitle;
+  if (settings.province !== undefined) cloudPatch.province = settings.province;
+  if (settings.officeAddress !== undefined) cloudPatch.officeAddress = settings.officeAddress;
+  if (settings.hotline !== undefined) cloudPatch.hotline = settings.hotline;
+  if (settings.footerText !== undefined) cloudPatch.footerText = settings.footerText;
+  if (settings.loadingScreenTitle !== undefined) cloudPatch.loadingScreenTitle = settings.loadingScreenTitle;
+  if (settings.loadingScreenSubtitle !== undefined) cloudPatch.loadingScreenSubtitle = settings.loadingScreenSubtitle;
+  if (settings.loginWelcomeTitle !== undefined) cloudPatch.loginWelcomeTitle = settings.loginWelcomeTitle;
+  if (settings.loginWelcomeSubtitle !== undefined) cloudPatch.loginWelcomeSubtitle = settings.loginWelcomeSubtitle;
+  if (settings.loginHeaderBadgeText !== undefined) cloudPatch.loginHeaderBadgeText = settings.loginHeaderBadgeText;
+  if (settings.loginBadgeText !== undefined) cloudPatch.loginBadgeText = settings.loginBadgeText;
+  if (settings.loginButtonText !== undefined) cloudPatch.loginButtonText = settings.loginButtonText;
+  if (settings.loginPasscodeTabText !== undefined) cloudPatch.loginPasscodeTabText = settings.loginPasscodeTabText;
+  if (settings.loginCredentialsTabText !== undefined) cloudPatch.loginCredentialsTabText = settings.loginCredentialsTabText;
+  if (settings.loginSecurityBadgeText !== undefined) cloudPatch.loginSecurityBadgeText = settings.loginSecurityBadgeText;
+  if (settings.loginFooterCopyrightText !== undefined) cloudPatch.loginFooterCopyrightText = settings.loginFooterCopyrightText;
   if (settings.logoUrl && settings.logoUrl.length < 180000) cloudPatch.logoUrl = settings.logoUrl;
 
   if (Object.keys(cloudPatch).length > 2) {
     try {
-      await setDoc(doc(db, col, 'cloud_config'), cloudPatch, { merge: true });
+      await setDoc(doc(db, col, 'cloud_config'), stripUndefinedAndOversizedDeep(cloudPatch), { merge: true });
     } catch (cloudErr) {
       console.warn('Firestore cloud_config save warn:', cloudErr);
     }
@@ -981,25 +1010,34 @@ export async function fsSaveSettings(settings: Partial<SystemSettings>): Promise
     updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
+    throw error;
+  }
+}
+
+export function fsWatchGeneralSettings(
+  callback: (general: Partial<SystemSettings>) => void
+): () => void {
+  if (isFirestoreTemporarilyBlocked()) return () => {};
+  try {
+    const col = getFSCol(FS_COLLECTIONS.SETTINGS);
+    return onSnapshot(
+      doc(db, col, 'general'),
+      (snap) => {
+        if (snap.exists()) {
+          callback(snap.data() as Partial<SystemSettings>);
+        }
+      },
+      (err) => {
+        noteFirestoreFailure(err);
+      }
+    );
+  } catch {
+    return () => {};
   }
 }
 
 export function fsWatchCloudConfig(
-  callback: (cfg: {
-    googleDriveFolderId?: string;
-    googleSheetId?: string;
-    activeGoogleSheetId?: string;
-    appsScriptUrl?: string;
-    googleAppsScriptUrl?: string;
-    allowAdminOpenDriveFolder?: boolean;
-    lastOutgoingNumberNasiriyah?: number;
-    lastOutgoingNumberSuq?: number;
-    outgoingBaselineSetAt?: string;
-    outgoingBaselineLabel?: string;
-    officeName?: string;
-    deputyName?: string;
-    logoUrl?: string;
-  }) => void
+  callback: (cfg: Partial<SystemSettings>) => void
 ): () => void {
   if (isFirestoreTemporarilyBlocked()) return () => {};
   try {
@@ -1008,7 +1046,7 @@ export function fsWatchCloudConfig(
       doc(db, col, 'cloud_config'),
       (snap) => {
         if (snap.exists()) {
-          callback(snap.data() as any);
+          callback(snap.data() as Partial<SystemSettings>);
         }
       },
       (err) => {
@@ -1985,6 +2023,9 @@ export function fsWatchCollection<T>(
         FullName: String(raw.FullName || raw.fullName || 'مراجع').trim(),
         Phone1: String(raw.Phone1 || raw.phone || '').trim()
       } as T;
+    }
+    if (colName === FS_COLLECTIONS.SETTINGS) {
+      return { ...raw, _docId: docId } as T;
     }
     return raw as T;
   };

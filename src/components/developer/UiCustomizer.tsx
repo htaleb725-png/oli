@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { generatePwaPngIcons } from '../../utils/pwaIconHelper';
 import { UiCustomizationSettings } from '../../types';
@@ -24,7 +24,9 @@ import {
   Plus,
   Trash2,
   Upload,
-  Replace
+  Replace,
+  Loader2,
+  AlertCircle
 } from 'lucide-react';
 
 export const UiCustomizer: React.FC = () => {
@@ -32,7 +34,7 @@ export const UiCustomizer: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'system_texts' | 'ui_dimensions'>('system_texts');
 
-  // System Texts State
+  // System Texts State (live-synced with Firestore systemSettings)
   const [appName, setAppName] = useState(systemSettings.appName || '');
   const [officeName, setOfficeName] = useState(systemSettings.officeName || '');
   const [deputyName, setDeputyName] = useState(systemSettings.deputyName || '');
@@ -48,11 +50,66 @@ export const UiCustomizer: React.FC = () => {
   const [loadingScreenSubtitle, setLoadingScreenSubtitle] = useState(systemSettings.loadingScreenSubtitle || '');
   const [loginWelcomeTitle, setLoginWelcomeTitle] = useState(systemSettings.loginWelcomeTitle || '');
   const [loginWelcomeSubtitle, setLoginWelcomeSubtitle] = useState(systemSettings.loginWelcomeSubtitle || '');
+  const [loginHeaderBadgeText, setLoginHeaderBadgeText] = useState(systemSettings.loginHeaderBadgeText || '');
+  const [loginBadgeText, setLoginBadgeText] = useState(systemSettings.loginBadgeText || '');
+  const [loginButtonText, setLoginButtonText] = useState(systemSettings.loginButtonText || '');
+  const [loginPasscodeTabText, setLoginPasscodeTabText] = useState(systemSettings.loginPasscodeTabText || '');
+  const [loginCredentialsTabText, setLoginCredentialsTabText] = useState(systemSettings.loginCredentialsTabText || '');
+  const [loginSecurityBadgeText, setLoginSecurityBadgeText] = useState(systemSettings.loginSecurityBadgeText || '');
+  const [loginFooterCopyrightText, setLoginFooterCopyrightText] = useState(systemSettings.loginFooterCopyrightText || '');
   const [textReplacements, setTextReplacements] = useState<{ from: string; to: string }[]>(
     systemSettings.textReplacements || []
   );
   const [newReplaceFrom, setNewReplaceFrom] = useState('');
   const [newReplaceTo, setNewReplaceTo] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Sync local form fields whenever Firestore onSnapshot updates systemSettings
+  useEffect(() => {
+    setAppName(systemSettings.appName || '');
+    setOfficeName(systemSettings.officeName || '');
+    setDeputyName(systemSettings.deputyName || '');
+    setDeputyTitle(systemSettings.deputyTitle || '');
+    setProvince(systemSettings.province || '');
+    setOfficeAddress(systemSettings.officeAddress || '');
+    setHotline(systemSettings.hotline || '');
+    setTickerNewsText((systemSettings.tickerNews || []).join('\n'));
+    setLogoUrl(systemSettings.logoUrl || '');
+    setParliamentEmblemUrl(systemSettings.parliamentEmblemUrl || '');
+    setFooterText(systemSettings.footerText || '');
+    setLoadingScreenTitle(systemSettings.loadingScreenTitle || '');
+    setLoadingScreenSubtitle(systemSettings.loadingScreenSubtitle || '');
+    setLoginWelcomeTitle(systemSettings.loginWelcomeTitle || '');
+    setLoginWelcomeSubtitle(systemSettings.loginWelcomeSubtitle || '');
+    setLoginHeaderBadgeText(systemSettings.loginHeaderBadgeText || '');
+    setLoginBadgeText(systemSettings.loginBadgeText || '');
+    setLoginButtonText(systemSettings.loginButtonText || '');
+    setLoginPasscodeTabText(systemSettings.loginPasscodeTabText || '');
+    setLoginCredentialsTabText(systemSettings.loginCredentialsTabText || '');
+    setLoginSecurityBadgeText(systemSettings.loginSecurityBadgeText || '');
+    setLoginFooterCopyrightText(systemSettings.loginFooterCopyrightText || '');
+    setTextReplacements(systemSettings.textReplacements || []);
+  }, [
+    systemSettings.settingsVersion,
+    systemSettings.appName,
+    systemSettings.officeName,
+    systemSettings.deputyName,
+    systemSettings.deputyTitle,
+    systemSettings.footerText,
+    systemSettings.loginWelcomeTitle,
+    systemSettings.loginWelcomeSubtitle,
+    systemSettings.loginHeaderBadgeText,
+    systemSettings.loginBadgeText,
+    systemSettings.loginButtonText,
+    systemSettings.loginPasscodeTabText,
+    systemSettings.loginCredentialsTabText,
+    systemSettings.loginSecurityBadgeText,
+    systemSettings.loginFooterCopyrightText,
+    systemSettings.loadingScreenTitle,
+    systemSettings.loadingScreenSubtitle,
+    systemSettings.textReplacements
+  ]);
 
   const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: string) => void) => {
     const file = e.target.files?.[0];
@@ -64,23 +121,46 @@ export const UiCustomizer: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
-  const handleAddTextReplacement = () => {
+  const handleAddTextReplacement = async () => {
     const from = newReplaceFrom.trim();
     const to = newReplaceTo.trim();
-    if (!from || !to || from === to) return;
+    if (!from || from === to) return;
     const updated = [...textReplacements.filter(r => r.from !== from), { from, to }];
     setTextReplacements(updated);
-    updateSettings({ textReplacements: updated });
+    setIsSaving(true);
+    const ok = await updateSettings({ textReplacements: updated });
+    setIsSaving(false);
     setNewReplaceFrom('');
     setNewReplaceTo('');
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2500);
+    setSavedSuccess(ok);
+    setSaveFeedback(
+      ok
+        ? {
+            type: 'success',
+            text: to
+              ? `✓ تم حفظ استبدال «${from}» إلى «${to}» في Firebase Firestore وتطبيقه فوراً على كامل الواجهة!`
+              : `✓ تم حفظ إزالة عبارة «${from}» في Firebase Firestore وتطبيقها فوراً على كامل الواجهة!`
+          }
+        : { type: 'error', text: 'تعذر تأكيد الحفظ في Firebase Firestore. يرجى التحقق من الاتصال والمحاولة مجدداً.' }
+    );
+    setTimeout(() => {
+      setSavedSuccess(false);
+      setSaveFeedback(null);
+    }, 3500);
   };
 
-  const handleRemoveTextReplacement = (from: string) => {
+  const handleRemoveTextReplacement = async (from: string) => {
     const updated = textReplacements.filter(r => r.from !== from);
     setTextReplacements(updated);
-    updateSettings({ textReplacements: updated });
+    setIsSaving(true);
+    const ok = await updateSettings({ textReplacements: updated });
+    setIsSaving(false);
+    setSaveFeedback(
+      ok
+        ? { type: 'success', text: `✓ تم إلغاء قاعدة الاستبدال لـ «${from}» وحفظ التحديث في Firebase Firestore فوراً.` }
+        : { type: 'error', text: 'تعذر تحديث قاعدة الاستبدال في Firebase Firestore.' }
+    );
+    setTimeout(() => setSaveFeedback(null), 3000);
   };
 
   // UI Dimensions & Visual Style State
@@ -120,63 +200,97 @@ export const UiCustomizer: React.FC = () => {
     { id: 'slate', name: 'فحمي صناعي (الهندسي الداكن)', class: 'bg-slate-700 text-white', border: 'border-slate-700' },
   ];
 
-  // Save System Texts
+  // Save System Texts directly to Firebase Firestore and confirm
   const handleSaveSystemTexts = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanTicker = tickerNewsText
-      .split('\n')
-      .map(t => t.trim())
-      .filter(Boolean);
+    setIsSaving(true);
+    setSaveFeedback(null);
+    try {
+      const cleanTicker = tickerNewsText
+        .split('\n')
+        .map(t => t.trim())
+        .filter(Boolean);
 
-    const cleanLogo = logoUrl.trim();
-    const generatedIcons = cleanLogo ? await generatePwaPngIcons(cleanLogo) : null;
+      const cleanLogo = logoUrl.trim();
+      const generatedIcons = cleanLogo ? await generatePwaPngIcons(cleanLogo) : null;
 
-    updateSettings({
-      appName: appName.trim(),
-      officeName: officeName.trim(),
-      deputyName: deputyName.trim(),
-      deputyTitle: deputyTitle.trim(),
-      province: province.trim(),
-      officeAddress: officeAddress.trim(),
-      hotline: hotline.trim(),
-      tickerNews: cleanTicker.length > 0 ? cleanTicker : ['أهلاً بكم في منظومة إدارة العمل والمعاملات الرسمية'],
-      logoUrl: cleanLogo,
-      ...(generatedIcons
-        ? { pwaIcon192: generatedIcons.icon192, pwaIcon512: generatedIcons.icon512 }
-        : !cleanLogo
-        ? { pwaIcon192: '', pwaIcon512: '' }
-        : {}),
-      parliamentEmblemUrl: parliamentEmblemUrl.trim(),
-      footerText: footerText.trim() || undefined,
-      loadingScreenTitle: loadingScreenTitle.trim() || undefined,
-      loadingScreenSubtitle: loadingScreenSubtitle.trim() || undefined,
-      loginWelcomeTitle: loginWelcomeTitle.trim() || undefined,
-      loginWelcomeSubtitle: loginWelcomeSubtitle.trim() || undefined,
-      textReplacements
-    });
+      const ok = await updateSettings({
+        appName: appName.trim(),
+        officeName: officeName.trim(),
+        deputyName: deputyName.trim(),
+        deputyTitle: deputyTitle.trim(),
+        province: province.trim(),
+        officeAddress: officeAddress.trim(),
+        hotline: hotline.trim(),
+        tickerNews: cleanTicker.length > 0 ? cleanTicker : ['أهلاً بكم في منظومة إدارة العمل والمعاملات الرسمية'],
+        logoUrl: cleanLogo,
+        ...(generatedIcons
+          ? { pwaIcon192: generatedIcons.icon192, pwaIcon512: generatedIcons.icon512 }
+          : !cleanLogo
+          ? { pwaIcon192: '', pwaIcon512: '' }
+          : {}),
+        parliamentEmblemUrl: parliamentEmblemUrl.trim(),
+        footerText: footerText.trim(),
+        loadingScreenTitle: loadingScreenTitle.trim(),
+        loadingScreenSubtitle: loadingScreenSubtitle.trim(),
+        loginWelcomeTitle: loginWelcomeTitle.trim(),
+        loginWelcomeSubtitle: loginWelcomeSubtitle.trim(),
+        loginHeaderBadgeText: loginHeaderBadgeText.trim(),
+        loginBadgeText: loginBadgeText.trim(),
+        loginButtonText: loginButtonText.trim(),
+        loginPasscodeTabText: loginPasscodeTabText.trim(),
+        loginCredentialsTabText: loginCredentialsTabText.trim(),
+        loginSecurityBadgeText: loginSecurityBadgeText.trim(),
+        loginFooterCopyrightText: loginFooterCopyrightText.trim(),
+        textReplacements
+      });
 
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 3000);
+      setSavedSuccess(ok);
+      setSaveFeedback(
+        ok
+          ? { type: 'success', text: '✓ تم حفظ كافة النصوص والعناوين وتسميات الأزرار (بما فيها واجهة الدخول) في Firebase Firestore وتطبيقها فوراً!' }
+          : { type: 'error', text: 'تعذر حفظ الإعدادات في Firebase Firestore. يرجى التحقق من الاتصال بالإنترنت وإعادة المحاولة.' }
+      );
+      setTimeout(() => {
+        setSavedSuccess(false);
+        setSaveFeedback(null);
+      }, 4000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // Save UI Dimensions & Styles
-  const handleSaveDimensions = () => {
-    const updated: UiCustomizationSettings = {
-      buttonSize,
-      inputFieldSize,
-      borderRadius,
-      showSecondaryPhone,
-      showClanSurname,
-      showAcademicEducation,
-      showCitizenRating,
-      showDependencyStatus,
-      tableDensity
-    };
+  const handleSaveDimensions = async () => {
+    setIsSaving(true);
+    try {
+      const updated: UiCustomizationSettings = {
+        buttonSize,
+        inputFieldSize,
+        borderRadius,
+        showSecondaryPhone,
+        showClanSurname,
+        showAcademicEducation,
+        showCitizenRating,
+        showDependencyStatus,
+        tableDensity
+      };
 
-    updateUiCustomizations(updated);
-    updateSettings({ primaryThemeColor: primaryColor });
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 3000);
+      updateUiCustomizations(updated);
+      const ok = await updateSettings({ primaryThemeColor: primaryColor, uiCustomizations: updated });
+      setSavedSuccess(ok);
+      setSaveFeedback(
+        ok
+          ? { type: 'success', text: '✓ تم حفظ تخصيصات الواجهة والألوان في Firebase Firestore وتطبيقها فوراً!' }
+          : { type: 'error', text: 'تعذر حفظ التخصيصات في Firebase Firestore.' }
+      );
+      setTimeout(() => {
+        setSavedSuccess(false);
+        setSaveFeedback(null);
+      }, 3500);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -223,11 +337,21 @@ export const UiCustomizer: React.FC = () => {
         </div>
       </div>
 
-      {savedSuccess && (
-        <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs font-bold flex items-center justify-between shadow-xs animate-in fade-in">
+      {(saveFeedback || savedSuccess) && (
+        <div className={`p-4 rounded-2xl text-xs font-bold flex items-center justify-between shadow-xs animate-in fade-in border ${
+          saveFeedback?.type === 'error'
+            ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200'
+            : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+        }`}>
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            <span>تم حفظ وتطبيق كافة التعديلات والتخصيصات بنجاح وتعميمها على كامل المنظومة!</span>
+            {saveFeedback?.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            )}
+            <span>
+              {saveFeedback?.text || 'تم حفظ وتطبيق كافة التعديلات والتخصيصات بنجاح وتعميمها على كامل المنظومة!'}
+            </span>
           </div>
         </div>
       )}
@@ -418,6 +542,108 @@ export const UiCustomizer: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    العنوان الرئيسي في واجهة الدخول:
+                  </label>
+                  <input
+                    type="text"
+                    value={loginWelcomeTitle}
+                    onChange={(e) => setLoginWelcomeTitle(e.target.value)}
+                    placeholder="مثال: منظومة إدارة مكتب النائب"
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    الوصف الفرعي في واجهة الدخول:
+                  </label>
+                  <input
+                    type="text"
+                    value={loginWelcomeSubtitle}
+                    onChange={(e) => setLoginWelcomeSubtitle(e.target.value)}
+                    placeholder="مثال: مجلس النواب العراقي • نظام إداري مشفر ومؤمن"
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    شارة الجهة العليا في واجهة الدخول:
+                  </label>
+                  <input
+                    type="text"
+                    value={loginHeaderBadgeText}
+                    onChange={(e) => setLoginHeaderBadgeText(e.target.value)}
+                    placeholder="مثال: مجلس النواب العراقي"
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    شارة بوابة الدخول:
+                  </label>
+                  <input
+                    type="text"
+                    value={loginBadgeText}
+                    onChange={(e) => setLoginBadgeText(e.target.value)}
+                    placeholder="مثال: بوابة الدخول الرسمية المعتمدة"
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    نص زر الدخول الرئيسي في واجهة الدخول:
+                  </label>
+                  <input
+                    type="text"
+                    value={loginButtonText}
+                    onChange={(e) => setLoginButtonText(e.target.value)}
+                    placeholder="مثال: تسجيل الدخول وفتح المنظومة"
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    نص تبويب الرمز السري / اسم المستخدم (واجهة الدخول):
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      value={loginPasscodeTabText}
+                      onChange={(e) => setLoginPasscodeTabText(e.target.value)}
+                      placeholder="الرمز السري المعتمد"
+                      className="w-full h-10 px-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                    />
+                    <input
+                      type="text"
+                      value={loginCredentialsTabText}
+                      onChange={(e) => setLoginCredentialsTabText(e.target.value)}
+                      placeholder="اسم المستخدم وكلمة السر"
+                      className="w-full h-10 px-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    نص شارة الأمان / حقوق النشر في واجهة الدخول:
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      value={loginSecurityBadgeText}
+                      onChange={(e) => setLoginSecurityBadgeText(e.target.value)}
+                      placeholder="نظام إداري إلكتروني مشفر"
+                      className="w-full h-10 px-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                    />
+                    <input
+                      type="text"
+                      value={loginFooterCopyrightText}
+                      onChange={(e) => setLoginFooterCopyrightText(e.target.value)}
+                      placeholder="الحقوق محفوظة © 2026"
+                      className="w-full h-10 px-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                     عنوان شاشة التحميل بعد الدخول:
                   </label>
                   <input
@@ -436,19 +662,19 @@ export const UiCustomizer: React.FC = () => {
                     type="text"
                     value={loadingScreenSubtitle}
                     onChange={(e) => setLoadingScreenSubtitle(e.target.value)}
-                    placeholder="مثال: مكتب النائب المهندسة علا عودة الناشي — مجلس النواب العراقي"
+                    placeholder="مثال: مكتب النائب — مجلس النواب العراقي"
                     className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    نص تذييل النظام أسفل الشاشة (Footer):
+                    نص تذييل النظام وواجهة الدخول أسفل الشاشة (Footer):
                   </label>
                   <input
                     type="text"
                     value={footerText}
                     onChange={(e) => setFooterText(e.target.value)}
-                    placeholder="مثال: منظومة مكتب النائب علا الناشي — جميع الحقوق محفوظة"
+                    placeholder="مثال: مكتب النائب علا عودة الناشي"
                     className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
                   />
                 </div>
@@ -472,10 +698,10 @@ export const UiCustomizer: React.FC = () => {
               <div>
                 <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
                   <Replace className="w-4 h-4 text-indigo-600" />
-                  <span>محرك تعديل أي كتابة أو عبارة في كامل النظام (استبدال فوري شامل)</span>
+                  <span>محرك تعديل أي كتابة أو عبارة أو زر في كامل النظام (استبدال فوري شامل)</span>
                 </h4>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                  أدخل أي كلمة أو جملة تظهر في أي مكان بالنظام (عناوين، أزرار، قوائم، بطاقات) واكتب البديل الجديد ليتم استبدالها فوراً ودائماً لكل المستخدمين.
+                  أدخل أي كلمة أو جملة تظهر في أي مكان بالنظام (بما فيها واجهة الدخول والأزرار والقوائم، مثل كلمة «المهندسة») واكتب البديل الجديد — أو اترك حقل البديل فارغاً لإزالة الكلمة بالكامل — ليتم الحفظ في Firestore وتطبيقه فوراً.
                 </p>
               </div>
 
@@ -486,17 +712,17 @@ export const UiCustomizer: React.FC = () => {
                     type="text"
                     value={newReplaceFrom}
                     onChange={(e) => setNewReplaceFrom(e.target.value)}
-                    placeholder="مثال: قسم المكنة والطباعة"
+                    placeholder="مثال: المهندسة أو قسم المكنة والطباعة"
                     className="w-full h-9 px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs"
                   />
                 </div>
                 <div className="sm:col-span-5">
-                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">النص الجديد البديل:</label>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">النص الجديد البديل (اتركه فارغاً للحذف):</label>
                   <input
                     type="text"
                     value={newReplaceTo}
                     onChange={(e) => setNewReplaceTo(e.target.value)}
-                    placeholder="مثال: شعبة الطباعة والكتب الرسمية"
+                    placeholder="مثال: النائب (أو اتركه فارغاً لحذف الكلمة)"
                     className="w-full h-9 px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs"
                   />
                 </div>
@@ -504,10 +730,10 @@ export const UiCustomizer: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleAddTextReplacement}
-                    disabled={!newReplaceFrom.trim() || !newReplaceTo.trim()}
+                    disabled={!newReplaceFrom.trim() || isSaving}
                     className="w-full h-9 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-black text-xs flex items-center justify-center gap-1 cursor-pointer"
                   >
-                    <Plus className="w-3.5 h-3.5" />
+                    {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
                     <span>تطبيق</span>
                   </button>
                 </div>
@@ -520,7 +746,9 @@ export const UiCustomizer: React.FC = () => {
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="line-through text-slate-500">{rule.from}</span>
                         <span className="text-indigo-500 font-black">←</span>
-                        <span className="font-black text-emerald-700 dark:text-emerald-400">{rule.to}</span>
+                        <span className="font-black text-emerald-700 dark:text-emerald-400">
+                          {rule.to ? rule.to : '(محذوفة)'}
+                        </span>
                       </div>
                       <button
                         type="button"
@@ -540,10 +768,11 @@ export const UiCustomizer: React.FC = () => {
           <div className="flex items-center justify-end pt-3">
             <button
               type="submit"
-              className="px-8 py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer active:scale-95"
+              disabled={isSaving}
+              className="px-8 py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 disabled:opacity-60 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer active:scale-95"
             >
-              <Save className="w-4 h-4" />
-              <span>اعتماد وتعميم كافة التعديلات على كامل المنظومة فورياً 💾</span>
+              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              <span>{isSaving ? 'جاري الحفظ في Firebase Firestore...' : 'اعتماد وتعميم كافة التعديلات على كامل المنظومة فورياً 💾'}</span>
             </button>
           </div>
         </form>

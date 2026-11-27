@@ -219,22 +219,33 @@ const MainAppLayout: React.FC = () => {
     }
   }, [departmentGreeting, setDepartmentGreeting]);
 
-  // Developer Live Global Text Replacement Engine (applies anywhere in the UI safely)
+  // Sync browser tab title live with Firestore systemSettings
+  React.useEffect(() => {
+    const title = (systemSettings?.appName || systemSettings?.officeName || '').trim();
+    if (title) {
+      document.title = title;
+    }
+  }, [systemSettings?.appName, systemSettings?.officeName]);
+
+  // Persistent map of original DOM text nodes so adding/editing/removing rules applies immediately
+  const originalTextNodesRef = React.useRef<WeakMap<Text, string>>(new WeakMap());
+
+  // Developer Live Global Text Replacement Engine (applies everywhere including Login screen & all buttons)
   React.useEffect(() => {
     const rules = (systemSettings?.textReplacements || []).filter(
-      (r) => r.from && r.to && r.from.trim() !== '' && r.from !== r.to
+      (r) => r && typeof r.from === 'string' && r.from.trim() !== '' && typeof r.to === 'string' && r.from !== r.to
     );
-    if (rules.length === 0) return;
 
     const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'CODE', 'PRE']);
     let isApplying = false;
+    const origMap = originalTextNodesRef.current;
 
     const applyToTree = () => {
       if (isApplying || !document.body) return;
       isApplying = true;
       try {
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        let node = walker.nextNode();
+        let node = walker.nextNode() as Text | null;
         while (node) {
           const parentEl = node.parentElement;
           if (
@@ -242,12 +253,22 @@ const MainAppLayout: React.FC = () => {
             !SKIP_TAGS.has(parentEl.tagName) &&
             !parentEl.closest('[data-no-text-replace="true"]')
           ) {
-            const currentText = node.nodeValue;
-            if (currentText && currentText.trim().length > 0) {
-              let nextText = currentText;
+            const currentText = node.nodeValue || '';
+            let baseText = origMap.get(node);
+            if (baseText === undefined) {
+              if (currentText.trim().length > 0 && rules.length > 0) {
+                origMap.set(node, currentText);
+                baseText = currentText;
+              }
+            }
+            if (baseText !== undefined) {
+              let nextText = baseText;
               for (const rule of rules) {
                 if (nextText.includes(rule.from)) {
                   nextText = nextText.split(rule.from).join(rule.to);
+                  if (rule.to === '') {
+                    nextText = nextText.replace(/\s{2,}/g, ' ');
+                  }
                 }
               }
               if (nextText !== currentText) {
@@ -255,7 +276,7 @@ const MainAppLayout: React.FC = () => {
               }
             }
           }
-          node = walker.nextNode();
+          node = walker.nextNode() as Text | null;
         }
       } finally {
         isApplying = false;
@@ -264,7 +285,7 @@ const MainAppLayout: React.FC = () => {
 
     let debounceTimer: number | null = null;
     const observer = new MutationObserver(() => {
-      if (isApplying) return;
+      if (isApplying || rules.length === 0) return;
       if (debounceTimer !== null) window.clearTimeout(debounceTimer);
       debounceTimer = window.setTimeout(() => {
         observer.disconnect();
@@ -272,11 +293,11 @@ const MainAppLayout: React.FC = () => {
         if (document.body) {
           observer.observe(document.body, { childList: true, subtree: true });
         }
-      }, 180);
+      }, 120);
     });
 
     applyToTree();
-    if (document.body) {
+    if (document.body && rules.length > 0) {
       observer.observe(document.body, { childList: true, subtree: true });
     }
 
@@ -284,7 +305,7 @@ const MainAppLayout: React.FC = () => {
       observer.disconnect();
       if (debounceTimer !== null) window.clearTimeout(debounceTimer);
     };
-  }, [systemSettings?.textReplacements, activeSection, isAuthenticated]);
+  }, [systemSettings?.textReplacements, systemSettings?.settingsVersion, activeSection, isAuthenticated]);
 
   if (!isAuthenticated) {
     return <SplashLanding />;

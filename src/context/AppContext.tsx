@@ -75,6 +75,7 @@ import {
   fsAddAuditLog,
   fsSyncSettingsStructure,
   fsWatchCollection,
+  fsWatchGeneralSettings,
   fsWatchCloudConfig,
   fsWatchDeletedRecords,
   fsWipeAllCollections,
@@ -351,8 +352,8 @@ interface AppContextType {
   updateOfficialLetter: (letter: OfficialLetter) => void;
   deleteOfficialLetter: (letterId: string) => void;
   systemSettings: SystemSettings;
-  updateSettings: (settings: Partial<SystemSettings>) => void;
-  updateSystemSettings: (settings: Partial<SystemSettings>) => void;
+  updateSettings: (settings: Partial<SystemSettings>) => Promise<boolean>;
+  updateSystemSettings: (settings: Partial<SystemSettings>) => Promise<boolean>;
 
   notifications: UrgentNotification[];
   addNotification: (notif: Omit<UrgentNotification, 'id' | 'timestamp' | 'read'> & { id?: string; timestamp?: string; read?: boolean }) => void;
@@ -1268,13 +1269,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     unsubs.push(unsubAuditLogs);
 
     const unsubSettings = fsWatchCollection<any>(FS_COLLECTIONS.SETTINGS, (docs) => {
-      const authDoc = docs.find((d: any) => d && typeof d.passcode === 'string' && d.passcode.trim().length >= 3);
-      const generalDoc = docs.find((d: any) => d && (d.appName || d.officeName || d.customTilesConfig || d.textReplacements || typeof d.lastOutgoingNumberNasiriyah === 'number'));
-      const cloudDoc = docs.find((d: any) => d && (d.googleDriveFolderId || d.appsScriptUrl || typeof d.lastOutgoingNumberNasiriyah === 'number') && !d.appName);
-      const mergedRemote = { ...(generalDoc || {}), ...(cloudDoc || {}) };
+      const authDoc = docs.find((d: any) => d && (d._docId === 'developer_auth' || (typeof d.passcode === 'string' && d.passcode.trim().length >= 3)));
+      const generalDoc = docs.find((d: any) => d && d._docId === 'general')
+        || docs.find((d: any) => d && d._docId !== 'cloud_config' && d._docId !== 'developer_auth' && (d.appName !== undefined || d.textReplacements !== undefined || d.customTilesConfig !== undefined || d.uiCustomizations !== undefined));
+      const cloudDoc = docs.find((d: any) => d && d._docId === 'cloud_config');
+
+      // Strip internal _docId before merging into systemSettings
+      const cleanDoc = (docObj: any) => {
+        if (!docObj || typeof docObj !== 'object') return {};
+        const { _docId, ...rest } = docObj;
+        return rest;
+      };
+      const cleanGeneral = cleanDoc(generalDoc);
+      const cleanCloud = cleanDoc(cloudDoc);
+      // general is the full authoritative settings document; cloud_config provides lightweight fallback fields
+      const mergedRemote: Record<string, any> = { ...cleanCloud, ...cleanGeneral };
+      // If cloud_config has a strictly newer updatedAt timestamp, prefer its live counters/branding fields
+      const generalTs = Date.parse(String(cleanGeneral.updatedAt || cleanGeneral.UpdatedAt || '')) || 0;
+      const cloudTs = Date.parse(String(cleanCloud.updatedAt || cleanCloud.UpdatedAt || '')) || 0;
+      if (cloudTs > generalTs) {
+        Object.assign(mergedRemote, cleanCloud);
+      }
 
       // Authoritative Developer Passcode lock from Firebase Firestore (zero localStorage persistence)
-      const authoritativePasscode = String(authDoc?.passcode || mergedRemote.developerPasscode || '').trim();
+      const authoritativePasscode = String(authDoc?.developerPasscode || authDoc?.passcode || mergedRemote.developerPasscode || '').trim();
       if (authoritativePasscode.length >= 3) {
         firestorePasscodeLoadedRef.current = true;
         setDeveloperPasscodeState(authoritativePasscode);
@@ -1306,7 +1324,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     unsubs.push(unsubSettings);
 
-    // Real-time dedicated watcher for lightweight cloud_config (Drive Folder ID / Sheet ID / Outgoing Counters / Branding)
+    // Direct real-time listener on system_settings/general for instant live UI texts, buttons & outgoing settings
+    const unsubGeneralSettings = fsWatchGeneralSettings((gen) => {
+      if (!gen || Object.keys(gen).length === 0) return;
+      const cleanRemoteDrive = gen.googleDriveFolderId
+        ? extractDriveFolderId(gen.googleDriveFolderId)
+        : undefined;
+      setSystemSettings(prev => {
+        const next = normalizeSystemSettings({
+          ...prev,
+          ...gen,
+          developerPasscode: gen.developerPasscode || prev.developerPasscode,
+          ...(cleanRemoteDrive ? { googleDriveFolderId: cleanRemoteDrive } : {})
+        });
+        systemSettingsRef.current = next;
+        return next;
+      });
+    });
+    unsubs.push(unsubGeneralSettings);
+
+    // Real-time dedicated watcher for lightweight cloud_config (Drive Folder ID / Sheet ID / Outgoing Counters / Login & Branding Texts)
     const unsubCloudConfig = fsWatchCloudConfig((cfg) => {
       if (!cfg) return;
       const cleanRemoteDrive = cfg.googleDriveFolderId
@@ -1329,10 +1366,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...(typeof cfg.allowAdminOpenDriveFolder === 'boolean' ? { allowAdminOpenDriveFolder: cfg.allowAdminOpenDriveFolder } : {}),
           ...(typeof cfg.lastOutgoingNumberNasiriyah === 'number' ? { lastOutgoingNumberNasiriyah: cfg.lastOutgoingNumberNasiriyah } : {}),
           ...(typeof cfg.lastOutgoingNumberSuq === 'number' ? { lastOutgoingNumberSuq: cfg.lastOutgoingNumberSuq } : {}),
-          ...(cfg.outgoingBaselineSetAt ? { outgoingBaselineSetAt: cfg.outgoingBaselineSetAt } : {}),
-          ...(cfg.outgoingBaselineLabel ? { outgoingBaselineLabel: cfg.outgoingBaselineLabel } : {}),
-          ...(cfg.officeName ? { officeName: cfg.officeName } : {}),
-          ...(cfg.deputyName ? { deputyName: cfg.deputyName } : {}),
+          ...(cfg.outgoingBaselineMode !== undefined ? { outgoingBaselineMode: cfg.outgoingBaselineMode } : {}),
+          ...(cfg.outgoingBaselineSetAt !== undefined ? { outgoingBaselineSetAt: cfg.outgoingBaselineSetAt } : {}),
+          ...(cfg.outgoingBaselineLabel !== undefined ? { outgoingBaselineLabel: cfg.outgoingBaselineLabel } : {}),
+          ...(cfg.defaultOutgoingDate !== undefined ? { defaultOutgoingDate: cfg.defaultOutgoingDate } : {}),
+          ...(cfg.lastRegisteredName !== undefined ? { lastRegisteredName: cfg.lastRegisteredName } : {}),
+          ...(cfg.lastOutgoingRaw !== undefined ? { lastOutgoingRaw: cfg.lastOutgoingRaw } : {}),
+          ...(cfg.appName !== undefined ? { appName: cfg.appName } : {}),
+          ...(cfg.officeName !== undefined ? { officeName: cfg.officeName } : {}),
+          ...(cfg.deputyName !== undefined ? { deputyName: cfg.deputyName } : {}),
+          ...(cfg.deputyTitle !== undefined ? { deputyTitle: cfg.deputyTitle } : {}),
+          ...(cfg.province !== undefined ? { province: cfg.province } : {}),
+          ...(cfg.officeAddress !== undefined ? { officeAddress: cfg.officeAddress } : {}),
+          ...(cfg.hotline !== undefined ? { hotline: cfg.hotline } : {}),
+          ...(cfg.footerText !== undefined ? { footerText: cfg.footerText } : {}),
+          ...(cfg.loadingScreenTitle !== undefined ? { loadingScreenTitle: cfg.loadingScreenTitle } : {}),
+          ...(cfg.loadingScreenSubtitle !== undefined ? { loadingScreenSubtitle: cfg.loadingScreenSubtitle } : {}),
+          ...(cfg.loginWelcomeTitle !== undefined ? { loginWelcomeTitle: cfg.loginWelcomeTitle } : {}),
+          ...(cfg.loginWelcomeSubtitle !== undefined ? { loginWelcomeSubtitle: cfg.loginWelcomeSubtitle } : {}),
+          ...(cfg.loginHeaderBadgeText !== undefined ? { loginHeaderBadgeText: cfg.loginHeaderBadgeText } : {}),
+          ...(cfg.loginBadgeText !== undefined ? { loginBadgeText: cfg.loginBadgeText } : {}),
+          ...(cfg.loginButtonText !== undefined ? { loginButtonText: cfg.loginButtonText } : {}),
+          ...(cfg.loginPasscodeTabText !== undefined ? { loginPasscodeTabText: cfg.loginPasscodeTabText } : {}),
+          ...(cfg.loginCredentialsTabText !== undefined ? { loginCredentialsTabText: cfg.loginCredentialsTabText } : {}),
+          ...(cfg.loginSecurityBadgeText !== undefined ? { loginSecurityBadgeText: cfg.loginSecurityBadgeText } : {}),
+          ...(cfg.loginFooterCopyrightText !== undefined ? { loginFooterCopyrightText: cfg.loginFooterCopyrightText } : {}),
           ...(cfg.logoUrl ? { logoUrl: cfg.logoUrl } : {})
         });
         systemSettingsRef.current = next;
@@ -3332,7 +3390,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     lettersDomain.deleteLetter(letterId, getCloudCtx()).catch(() => {});
   };
 
-  const updateSettings = (newSettings: Partial<SystemSettings>) => {
+  const updateSettings = async (newSettings: Partial<SystemSettings>): Promise<boolean> => {
     const currentSettings = systemSettingsRef.current;
     // Normalize Google Drive Folder ID if a full Drive URL or query string was provided
     const normalizedPatch: Partial<SystemSettings> = { ...newSettings };
@@ -3358,8 +3416,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       normalizedPatch.parliamentEmblemUrl !== undefined ||
       normalizedPatch.customImages !== undefined ||
       normalizedPatch.appName !== undefined ||
+      normalizedPatch.officeName !== undefined ||
       normalizedPatch.deputyName !== undefined ||
       normalizedPatch.deputyTitle !== undefined ||
+      normalizedPatch.footerText !== undefined ||
+      normalizedPatch.loginWelcomeTitle !== undefined ||
+      normalizedPatch.loginWelcomeSubtitle !== undefined ||
+      normalizedPatch.loginHeaderBadgeText !== undefined ||
+      normalizedPatch.loginBadgeText !== undefined ||
+      normalizedPatch.loginButtonText !== undefined ||
+      normalizedPatch.loginPasscodeTabText !== undefined ||
+      normalizedPatch.loginCredentialsTabText !== undefined ||
+      normalizedPatch.loginSecurityBadgeText !== undefined ||
+      normalizedPatch.loginFooterCopyrightText !== undefined ||
+      normalizedPatch.loadingScreenTitle !== undefined ||
+      normalizedPatch.loadingScreenSubtitle !== undefined ||
       normalizedPatch.hiddenBuiltInTiles !== undefined ||
       normalizedPatch.uiCustomizations !== undefined ||
       normalizedPatch.customTextOverrides !== undefined ||
@@ -3395,8 +3466,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     // Exclusive Single Source of Truth: Firebase Firestore `system_settings`
-    fsSaveSettings(merged).catch(err => console.warn('Firestore settings update:', err));
+    let savedToFirestore = false;
+    try {
+      await fsSaveSettings(merged);
+      savedToFirestore = true;
+    } catch (err) {
+      console.warn('Firestore settings update:', err);
+      savedToFirestore = false;
+    }
+
+    // Background push-only sync to Google Sheets when outgoing counter or default date changes
+    const isOutgoingCounterChange =
+      normalizedPatch.lastOutgoingNumberNasiriyah !== undefined ||
+      normalizedPatch.lastOutgoingNumberSuq !== undefined ||
+      normalizedPatch.outgoingBaselineMode !== undefined ||
+      normalizedPatch.defaultOutgoingDate !== undefined;
+    if (isOutgoingCounterChange) {
+      pushToGoogleSheetsRealtime(
+        'settings',
+        {
+          id: 'outgoing_counter_settings',
+          officeBranch: merged.officeBranch || 'nasiriyah',
+          lastOutgoingNumberNasiriyah: merged.lastOutgoingNumberNasiriyah || 0,
+          lastOutgoingNumberSuq: merged.lastOutgoingNumberSuq || 0,
+          outgoingBaselineMode: merged.outgoingBaselineMode || 'auto',
+          outgoingBaselineSetAt: merged.outgoingBaselineSetAt || new Date().toISOString(),
+          outgoingBaselineLabel: merged.outgoingBaselineLabel || '',
+          defaultOutgoingDate: merged.defaultOutgoingDate || '',
+          lastOutgoingRaw: merged.lastOutgoingRaw || '',
+          lastRegisteredName: merged.lastRegisteredName || '',
+          updatedBy: currentUser?.FullName || 'قسم الإدارة'
+        },
+        'update',
+        merged.appsScriptUrl || merged.googleAppsScriptUrl,
+        merged.googleSheetId || merged.activeGoogleSheetId,
+        { backgroundBackup: true }
+      ).catch(() => {});
+    }
+
     addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام وحفظها في Firebase Firestore');
+    return savedToFirestore;
   };
 
   const setGoogleDriveFolderId = (rawFolderId: string) => {

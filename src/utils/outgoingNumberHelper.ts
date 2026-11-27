@@ -723,7 +723,50 @@ export function computeNextOutgoingNumber(
       ? Math.floor(rawBaseline)
       : 0;
 
-  const maxFound = Math.max(effectiveBaseline, robustMaxFromRecords);
+  const isManualBaseline =
+    effectiveBaseline > 0 &&
+    (systemSettings?.outgoingBaselineMode === 'manual' ||
+      String(systemSettings?.outgoingBaselineLabel || '').includes('تعديل يدوي'));
+
+  const anchorMs = systemSettings?.outgoingBaselineSetAt
+    ? Date.parse(systemSettings.outgoingBaselineSetAt) || 0
+    : 0;
+
+  const parseCandidateTs = (c: CandidateRecord): number => {
+    const raw =
+      (c.request as any)?.UpdatedAt ||
+      (c.request as any)?.updatedAt ||
+      c.request?.CreatedAt ||
+      c.outgoingDate ||
+      '';
+    if (!raw) return 0;
+    const t = Date.parse(String(raw));
+    return Number.isFinite(t) ? t : 0;
+  };
+
+  let maxFound: number;
+  let candidatePoolForBest = effectiveCandidates;
+
+  if (isManualBaseline) {
+    // Authoritative manual baseline (e.g. 3344): old historical records created BEFORE anchorMs
+    // MUST NOT override the manual starting point. Only records created/updated strictly AFTER
+    // the manual baseline was saved can advance it beyond effectiveBaseline.
+    const postAnchorCandidates =
+      anchorMs > 0
+        ? effectiveCandidates.filter((c) => {
+            const ts = parseCandidateTs(c);
+            return ts > anchorMs + 1000 && c.seq >= effectiveBaseline;
+          })
+        : [];
+    const postAnchorMax =
+      postAnchorCandidates.length > 0
+        ? Math.max(...postAnchorCandidates.map((c) => c.seq))
+        : 0;
+    maxFound = Math.max(effectiveBaseline, postAnchorMax);
+    candidatePoolForBest = postAnchorCandidates;
+  } else {
+    maxFound = Math.max(effectiveBaseline, robustMaxFromRecords);
+  }
 
   // Pick the best real record matching maxFound:
   // Prefer valid real citizen name + latest OutgoingDate / CreatedAt / orderIdx so lastName and lastOutgoing always match
@@ -745,12 +788,12 @@ export function computeNextOutgoingNumber(
   };
 
   if (maxFound > 0) {
-    for (const c of effectiveCandidates) {
+    for (const c of candidatePoolForBest) {
       if (c.seq === maxFound) {
         bestRecord = pickBetterCandidate(bestRecord, c);
       }
     }
-    if (!bestRecord) {
+    if (!bestRecord && !isManualBaseline) {
       for (const c of allCandidates) {
         if (c.seq === maxFound) {
           bestRecord = pickBetterCandidate(bestRecord, c);
@@ -762,9 +805,11 @@ export function computeNextOutgoingNumber(
         outgoingNumber:
           (systemSettings?.lastOutgoingRaw && String(systemSettings.lastOutgoingRaw).trim()) ||
           `${branchPrefix} / ${branchCode} / ${effectiveBaseline}`,
-        outgoingDate: systemSettings?.outgoingBaselineSetAt
-          ? systemSettings.outgoingBaselineSetAt.split('T')[0]
-          : getLocalTodayIsoDate(),
+        outgoingDate:
+          (systemSettings?.defaultOutgoingDate && String(systemSettings.defaultOutgoingDate).trim()) ||
+          (systemSettings?.outgoingBaselineSetAt
+            ? systemSettings.outgoingBaselineSetAt.split('T')[0]
+            : getLocalTodayIsoDate()),
         citizenName:
           (systemSettings?.lastRegisteredName && String(systemSettings.lastRegisteredName).trim()) ||
           systemSettings?.outgoingBaselineLabel ||

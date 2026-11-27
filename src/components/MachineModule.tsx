@@ -496,8 +496,8 @@ export const MachineModule: React.FC = () => {
                 </div>
 
                 <div className="text-center space-y-1">
-                  <div className="text-sm font-extrabold text-slate-950">المهندسة علا عودة الناشي</div>
-                  <div className="text-xs font-bold text-teal-800">عضو مجلس النواب العراقي</div>
+                  <div className="text-sm font-extrabold text-slate-950">{systemSettings.deputyName || systemSettings.officeName || 'النائب'}</div>
+                  <div className="text-xs font-bold text-teal-800">{systemSettings.deputyTitle || 'عضو مجلس النواب العراقي'}</div>
                   <div className="pt-3 text-[10px] font-mono text-slate-400">[التوقيع والختم المعتمد]</div>
                 </div>
               </div>
@@ -683,8 +683,8 @@ export const MachineModule: React.FC = () => {
                 </div>
 
                 <div className="text-center space-y-1">
-                  <div className="text-sm font-extrabold text-slate-950">المهندسة علا عودة الناشي</div>
-                  <div className="text-xs font-bold text-amber-800">عضو مجلس النواب العراقي</div>
+                  <div className="text-sm font-extrabold text-slate-950">{systemSettings.deputyName || systemSettings.officeName || 'النائب'}</div>
+                  <div className="text-xs font-bold text-amber-800">{systemSettings.deputyTitle || 'عضو مجلس النواب العراقي'}</div>
                   <div className="pt-4 text-xs font-mono text-slate-400">التوقيع والختم الرسمي</div>
                 </div>
               </div>

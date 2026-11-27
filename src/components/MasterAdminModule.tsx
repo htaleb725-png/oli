@@ -422,6 +422,34 @@ export const MasterAdminModule: React.FC = () => {
   const [maintenanceMode, setMaintenanceMode] = useState(systemSettings.maintenanceMode);
   const [allowAdminOpenDriveFolder, setAllowAdminOpenDriveFolder] = useState(Boolean(systemSettings.allowAdminOpenDriveFolder));
 
+  useEffect(() => {
+    setAppName(systemSettings.appName || '');
+    setDeputyName(systemSettings.deputyName || '');
+    setDeputyTitle(systemSettings.deputyTitle || '');
+    setProvince(systemSettings.province || '');
+    setOfficeAddress(systemSettings.officeAddress || '');
+    setHotline(systemSettings.hotline || '');
+    setTickerNewsText((systemSettings.tickerNews || []).join('\n'));
+    setGoogleSheetId(systemSettings.googleSheetId || '');
+    setGoogleDriveFolderId(systemSettings.googleDriveFolderId || '');
+    setAppsScriptUrl(systemSettings.appsScriptUrl || '');
+    setMaintenanceMode(Boolean(systemSettings.maintenanceMode));
+    setAllowAdminOpenDriveFolder(Boolean(systemSettings.allowAdminOpenDriveFolder));
+  }, [
+    systemSettings.settingsVersion,
+    systemSettings.appName,
+    systemSettings.deputyName,
+    systemSettings.deputyTitle,
+    systemSettings.province,
+    systemSettings.officeAddress,
+    systemSettings.hotline,
+    systemSettings.googleSheetId,
+    systemSettings.googleDriveFolderId,
+    systemSettings.appsScriptUrl,
+    systemSettings.maintenanceMode,
+    systemSettings.allowAdminOpenDriveFolder
+  ]);
+
   const categoryLabels: { [key in DropdownCategory]: string } = {
     Surname: 'العشائر والألقاب',
     Job: 'المهن والوظائف',
@@ -552,7 +580,7 @@ export const MasterAdminModule: React.FC = () => {
     }
   };
 
-  const handleSaveAllSettings = (e: React.FormEvent) => {
+  const handleSaveAllSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     const newsArray = tickerNewsText.split('\n').map(s => s.trim()).filter(Boolean);
     const cleanDriveId = googleDriveFolderId.trim() ? extractDriveFolderId(googleDriveFolderId) : '';
@@ -560,8 +588,9 @@ export const MasterAdminModule: React.FC = () => {
     const sheetMatch = cleanSheetId.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
     if (sheetMatch && sheetMatch[1]) cleanSheetId = sheetMatch[1];
 
-    updateSystemSettings({
+    const ok = await updateSystemSettings({
       appName: appName.trim(),
+      officeName: appName.trim() || systemSettings.officeName,
       deputyName: deputyName.trim(),
       deputyTitle: deputyTitle.trim(),
       province: province.trim(),
@@ -584,7 +613,11 @@ export const MasterAdminModule: React.FC = () => {
       applyGlobalDriveFolderId(cleanDriveId);
     }
 
-    setSuccessMessage('تم حفظ وتطبيق كافة إعدادات المنظومة ومعرفات Google Drive و Google Sheets بنجاح.');
+    setSuccessMessage(
+      ok
+        ? '✓ تم حفظ وتطبيق كافة إعدادات المنظومة والنصوص في Firebase Firestore بنجاح!'
+        : 'تعذر تأكيد الحفظ في Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.'
+    );
   };
 
   const handleResetData = () => {
