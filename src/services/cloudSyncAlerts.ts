@@ -142,10 +142,31 @@ export function clearSheetsHealthError(): void {
   }
 }
 
+export function sanitizePublicDbText(text?: string | null): string {
+  if (!text) return '';
+  return String(text)
+    .replace(/\s*\(alaa-office-2026\)/gi, '')
+    .replace(/Firebase\s+Firestore/gi, 'قاعدة البيانات')
+    .replace(/Supabase\s+PostgreSQL/gi, 'قاعدة البيانات الرئيسية')
+    .replace(/Supabase\s+Realtime/gi, 'المزامنة اللحظية')
+    .replace(/\bSupabase\b/gi, 'قاعدة البيانات')
+    .replace(/\bFirestore\b/gi, 'قاعدة البيانات')
+    .replace(/\bFirebase\b/gi, 'قاعدة البيانات')
+    .replace(/Google\s+Sheets?/gi, 'الأرشيف الاحتياطي')
+    .replace(/سوبابيس/gi, 'قاعدة البيانات')
+    .replace(/فايربيس|فايرستور/gi, 'قاعدة البيانات')
+    .replace(/جوجل\s*شيت|شيت\s*Google|الشيت/gi, 'الأرشيف الاحتياطي')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 export function pushCloudSyncAlert(alert: Omit<CloudSyncAlert, 'id' | 'timestamp'>): string {
   const id = `sync_alert_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
   const fullAlert: CloudSyncAlert = {
     ...alert,
+    title: sanitizePublicDbText(alert.title),
+    message: sanitizePublicDbText(alert.message),
+    ...(alert.details ? { details: sanitizePublicDbText(alert.details) } : {}),
     id,
     timestamp: new Date().toLocaleTimeString('ar-IQ')
   };
@@ -194,44 +215,55 @@ export function reportDualCloudWriteResult(params: {
   firebaseError?: string;
   sheetsOk?: boolean;
   sheetsError?: string;
-  actionType?: 'save' | 'delete';
+  actionType?: 'save' | 'update' | 'delete' | 'sync';
   retry?: () => Promise<void>;
 }): void {
   const { entityLabel, firebaseOk, firebaseError, actionType = 'save', retry } = params;
   const isDelete = actionType === 'delete';
+  const isUpdate = actionType === 'update';
+  const isSync = actionType === 'sync';
 
   if (firebaseOk) {
     updateFirebaseHealth('connected', null);
+    const successText = isDelete
+      ? 'تم الحذف من قاعدة البيانات بنجاح'
+      : isUpdate
+      ? 'تم تحديث البيانات في قاعدة البيانات بنجاح'
+      : isSync
+      ? 'تمت مزامنة البيانات بنجاح'
+      : 'تم الحفظ في قاعدة البيانات بنجاح';
+
     pushCloudSyncAlert({
       severity: 'success',
       target: 'firebase',
       entityLabel,
-      title: isDelete
-        ? `تم الحذف النهائي من قاعدة البيانات (${entityLabel})`
-        : `تم الحفظ في قاعدة البيانات (${entityLabel})`,
-      message: isDelete
-        ? 'تم حذف السجل نهائياً من Supabase ومزامنة الحذف مع Google Sheet فوراً.'
-        : 'تم حفظ البيانات مباشرة في Supabase ومزامنتها مع Google Sheet.'
+      title: successText,
+      message: entityLabel ? `${successText} (${entityLabel}).` : successText
     });
     return;
   }
 
-  const cleanErr =
+  const cleanErr = sanitizePublicDbText(
     firebaseError ||
-    (isDelete
-      ? 'تعذر حذف السجل من Supabase. يرجى التحقق من الاتصال وإعادة المحاولة.'
-      : 'تعذر حفظ البيانات في Supabase. يرجى التحقق من الاتصال وإعادة المحاولة.');
+      (isDelete
+        ? 'تعذر حذف السجل من قاعدة البيانات. يرجى التحقق من الاتصال وإعادة المحاولة.'
+        : isUpdate
+        ? 'تعذر تحديث البيانات في قاعدة البيانات. يرجى التحقق من الاتصال وإعادة المحاولة.'
+        : 'تعذر حفظ البيانات في قاعدة البيانات. يرجى التحقق من الاتصال وإعادة المحاولة.')
+  );
   updateFirebaseHealth('error', cleanErr);
   pushCloudSyncAlert({
     severity: 'error',
     target: 'firebase',
     entityLabel,
     title: isDelete
-      ? `فشل الحذف من قاعدة البيانات (${entityLabel})`
-      : `فشل الحفظ في قاعدة البيانات (${entityLabel})`,
+      ? `تعذر الحذف من قاعدة البيانات (${entityLabel})`
+      : isUpdate
+      ? `تعذر تحديث البيانات في قاعدة البيانات (${entityLabel})`
+      : `تعذر الحفظ في قاعدة البيانات (${entityLabel})`,
     message: isDelete
-      ? 'تعذر إتمام عملية الحذف في Supabase. يرجى التحقق من الاتصال والمحاولة مجدداً.'
-      : 'تعذر حفظ التعديلات مباشرة في Supabase. يرجى التحقق من الاتصال والمحاولة مجدداً.',
+      ? 'تعذر إتمام عملية الحذف من قاعدة البيانات. يرجى التحقق من الاتصال والمحاولة مجدداً.'
+      : 'تعذر حفظ التعديلات في قاعدة البيانات. يرجى التحقق من الاتصال والمحاولة مجدداً.',
     details: cleanErr,
     retry
   });

@@ -848,7 +848,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({
               <div className="text-2xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-2">
                 {effectiveFields.length}
               </div>
-              <div className="text-[11px] text-slate-500 mt-1">تُزامن تلقائياً مع Sheets و Firestore</div>
+              <div className="text-[11px] text-slate-500 mt-1">تُزامن تلقائياً مع قاعدة البيانات والأرشيف الاحتياطي</div>
             </div>
           </div>
 
@@ -947,7 +947,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({
               </div>
 
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-500">
-                <span>يتم حفظ جميع التغييرات تلقائياً في Firestore و Google Sheets</span>
+                <span>يتم حفظ جميع التغييرات تلقائياً في قاعدة البيانات والأرشيف الاحتياطي</span>
                 <span className="text-amber-500 font-bold">مزامنة فورية</span>
               </div>
             </div>
@@ -1290,7 +1290,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({
                               />
                             </label>
                             <p className="text-[11px] text-slate-500 leading-relaxed">
-                              يدعم صيغ JPG و PNG. يتم الحفظ مشفراً في قاعدة البيانات Firestore.
+                              يدعم صيغ JPG و PNG. يتم الحفظ مشفراً في قاعدة البيانات.
                             </p>
                           </div>
                         </div>
@@ -1386,7 +1386,7 @@ export const DynamicSectionView: React.FC<DynamicSectionViewProps> = ({
                     تخصيص وإدارة حقول {effectiveTitle}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    أضف حقولاً جديدة أو احذف حقولاً موجودة وتُحفظ وتُزامن تلقائياً مع Sheets و Firestore
+                    أضف حقولاً جديدة أو احذف حقولاً موجودة وتُحفظ وتُزامن تلقائياً مع قاعدة البيانات والأرشيف الاحتياطي
                   </p>
                 </div>
               </div>

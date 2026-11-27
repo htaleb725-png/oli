@@ -186,7 +186,7 @@ async function postToAppsScriptWithServerProxy(
 }> {
   const silentBackground = Boolean(opts?.silentBackground);
   if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
-    const errMsg = 'رابط Google Apps Script غير مضبوط. يرجى تعيين VITE_GOOGLE_APPS_SCRIPT_URL في إعدادات Vercel.';
+    const errMsg = 'رابط خدمة الأرشيف الاحتياطي غير مضبوط في الإعدادات.';
     if (!silentBackground) updateSheetsHealth('error', errMsg);
     return { success: false, error: errMsg };
   }
@@ -247,7 +247,7 @@ async function postToAppsScriptWithServerProxy(
     const directErr =
       parsed?.error ||
       (rawText.includes('<!DOCTYPE') || rawText.includes('<html')
-        ? 'رابط Google Apps Script أعاد صفحة HTML (تحقق من صلاحية النشر: Anyone - أي شخص لديه الرابط، وأعد النشر كإصدار جديد).'
+        ? 'أعادت خدمة الأرشيف الاحتياطي استجابة غير متوقعة. يرجى التحقق من صلاحيات النشر وإعادة المحاولة.'
         : `استجابة غير متوقعة من Apps Script (HTTP ${directRes.status})`);
 
     if (!silentBackground) updateSheetsHealth('error', directErr);
@@ -261,8 +261,8 @@ async function postToAppsScriptWithServerProxy(
       errText.includes('Load failed');
 
     const fullErr = isCors
-      ? `حظر CORS أو انقطاع الشبكة أثناء الاتصال بـ Google Apps Script. (${proxyFailureReason || 'تأكد من نشر السكربت بصلاحية Anyone وتحديث vercel.json'})`
-      : `فشل الترحيل إلى Google Sheets: ${errText} (${proxyFailureReason})`;
+      ? `انقطاع الاتصال أو تعذر الوصول إلى خدمة الأرشيف الاحتياطي. (${proxyFailureReason || 'يرجى التحقق من إعدادات الاتصال وإعادة المحاولة'})`
+      : `تعذر الترحيل إلى الأرشيف الاحتياطي: ${errText} (${proxyFailureReason})`;
 
     if (!silentBackground) updateSheetsHealth('error', fullErr);
     return { success: false, corsBlocked: isCors, error: fullErr };
@@ -274,7 +274,7 @@ async function getFromAppsScriptWithServerProxy(
   queryAction: string = 'getAllData'
 ): Promise<{ ok: boolean; via: 'proxy' | 'direct' | 'none'; data?: any; error?: string; corsError?: boolean }> {
   if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
-    return { ok: false, via: 'none', error: 'رابط Google Apps Script غير مضبوط.' };
+    return { ok: false, via: 'none', error: 'رابط خدمة الأرشيف الاحتياطي غير مضبوط.' };
   }
 
   let proxyErr = '';
@@ -344,7 +344,7 @@ async function getFromAppsScriptWithServerProxy(
 export async function testAppsScriptConnection(customUrl?: string): Promise<AppsScriptPingResult> {
   const url = resolveAppsScriptUrl(customUrl);
   if (!url || !url.startsWith('http')) {
-    const err = 'لم يتم تعيين رابط Google Apps Script (VITE_GOOGLE_APPS_SCRIPT_URL).';
+    const err = 'لم يتم تعيين رابط خدمة الأرشيف الاحتياطي في الإعدادات.';
     updateSheetsHealth('error', err);
     return { ok: false, via: 'none', error: err };
   }
@@ -355,7 +355,7 @@ export async function testAppsScriptConnection(customUrl?: string): Promise<Apps
       ok: false,
       via: res.via,
       corsError: res.corsError,
-      error: res.error || 'تعذر الاتصال بخادم Google Apps Script.'
+      error: res.error || 'تعذر الاتصال بخدمة الأرشيف الاحتياطي.'
     };
   }
 
@@ -385,7 +385,7 @@ export async function registerCustomSectionInGoogleSheets(
   const url = resolveAppsScriptUrl(customUrl);
   const resolvedSheetId = resolveTargetSheetId(customSheetId);
   if (!url || !url.startsWith('http')) {
-    return { success: false, error: 'رابط Google Apps Script غير مضبوط لإنشاء ورقة القسم الجديد.' };
+    return { success: false, error: 'رابط خدمة الأرشيف الاحتياطي غير مضبوط لإنشاء جدول القسم الجديد.' };
   }
 
   const sheetName = buildCustomSectionSheetName(section.title);
@@ -432,7 +432,7 @@ export async function registerCustomSectionInGoogleSheets(
   );
 
   if (!res.success) {
-    return { success: false, error: res.error || 'تعذر إنشاء ورقة القسم الجديد في Google Sheets.' };
+    return { success: false, error: res.error || 'تعذر إنشاء ورقة القسم الجديد في الأرشيف الاحتياطي.' };
   }
 
   return {
@@ -453,7 +453,7 @@ export async function syncSchemaToGoogleAppsScript(
   const url = resolveAppsScriptUrl(customUrl);
   const resolvedSheetId = resolveTargetSheetId(customSheetId);
   if (!url || !url.startsWith('http')) {
-    return { success: false, error: 'رابط Google Apps Script غير مضبوط.' };
+    return { success: false, error: 'رابط خدمة الأرشيف الاحتياطي غير مضبوط.' };
   }
 
   const normalizedSections = (sections || [])
@@ -595,7 +595,7 @@ export async function pushToGoogleSheetsRealtime(
       updateSheetsHealth('connected', null);
       return { success: true, via: 'oauth_rest' };
     }
-    const errMsg = 'رابط Google Apps Script غير مضبوط (VITE_GOOGLE_APPS_SCRIPT_URL).';
+    const errMsg = 'رابط خدمة الأرشيف الاحتياطي غير مضبوط في الإعدادات.';
     if (!silentBackground) updateSheetsHealth('error', errMsg);
     return { success: false, error: errMsg };
   }
@@ -695,7 +695,7 @@ export async function pushToGoogleSheetsRealtime(
   return {
     success: false,
     corsBlocked: res.corsBlocked,
-    error: res.error || 'فشل إرسال السجل إلى Google Sheets عبر Apps Script.'
+    error: res.error || 'تعذر إرسال السجل إلى الأرشيف الاحتياطي.'
   };
 }
 
@@ -829,8 +829,8 @@ export async function pushBulkDataToGoogleSheets(
       pushCloudSyncAlert({
         severity: 'error',
         target: 'google_sheets',
-        title: 'فشل إرسال البيانات إلى Google Sheets',
-        message: 'تعذر ترحيل الدفعة إلى رابط Google Apps Script (/exec).',
+        title: 'تعذر إرسال البيانات إلى الأرشيف الاحتياطي',
+        message: 'تعذر ترحيل الدفعة إلى الأرشيف الاحتياطي.',
         details: lastError
       });
     }
@@ -927,7 +927,7 @@ export async function reorganizeGoogleSheetsNow(params: {
         if (res.success) directDone = true;
       }
     } catch (err: any) {
-      lastErr = err?.message || 'فشل الترتيب عبر واجهة Google Sheets المباشرة';
+      lastErr = err?.message || 'تعذر الترتيب عبر واجهة الأرشيف الاحتياطي المباشرة';
     }
   }
 
@@ -1010,20 +1010,20 @@ export async function reorganizeGoogleSheetsNow(params: {
     return {
       success: true,
       needsScriptUpdate: true,
-      message: 'تم إرسال السجلات إلى Google Sheets، لكن نسخة كود Apps Script قديمة. يرجى نسخ الكود المحدث أدناه ولصقه في Apps Script ثم النشر كإصدار جديد (New Version).'
+      message: 'تمت مزامنة البيانات، لكن نسخة الخدمة التكميلية قديمة وتحتاج إلى تحديث من لوحة المطور.'
     };
   }
 
   if (directDone || scriptDone) {
     return {
       success: true,
-      message: 'تم ترتيب وتوحيد قاعدة بيانات Google Sheets غير تدميرياً بنجاح (أوراق الأقسام الرئيسية + أوراق الأقسام المخصصة بأعمدة عربية مرتبة) دون حذف أو مسح أي سجل!'
+      message: 'تمت مزامنة البيانات بنجاح — تم ترتيب وتوحيد جداول الأرشيف الاحتياطي دون حذف أو مسح أي سجل.'
     };
   }
 
   return {
     success: false,
-    message: lastErr || 'تعذر الاتصال بـ Google Sheets لتنفيذ الترتيب. يرجى فحص رابط Apps Script ومتغيرات البيئة في Vercel.'
+    message: lastErr || 'تعذر الاتصال بالأرشيف الاحتياطي لتنفيذ الترتيب. يرجى التحقق من إعدادات الاتصال والمحاولة مجدداً.'
   };
 }
 
@@ -1040,7 +1040,7 @@ export async function wipeGoogleSheetsViaAppsScript(
   if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
     return {
       success: false,
-      message: 'رابط Google Apps Script غير مضبوط (VITE_GOOGLE_APPS_SCRIPT_URL).',
+      message: 'رابط مزامنة الأرشيف الاحتياطي غير مضبوط في الإعدادات.',
       error: 'missing_apps_script_url'
     };
   }
@@ -1088,14 +1088,14 @@ export async function wipeGoogleSheetsViaAppsScript(
       message:
         res.data?.message ||
         (mode === 'all'
-          ? 'تم تصفير أوراق Google Sheets بالكامل مع الإبقاء على صف العناوين.'
-          : `تم تصفير (${uniqueTargets.length}) قسم محدد في Google Sheets مع الإبقاء على صف العناوين.`)
+          ? 'تم تصفير أوراق الأرشيف الاحتياطي بالكامل مع الإبقاء على صف العناوين.'
+          : `تم تصفير (${uniqueTargets.length}) قسم محدد في الأرشيف الاحتياطي مع الإبقاء على صف العناوين.`)
     };
   }
 
   return {
     success: false,
-    message: res.error || 'تعذر تنفيذ التصفير التلقائي في Google Sheets.',
+    message: res.error || 'تعذر تنفيذ التصفير التلقائي في الأرشيف الاحتياطي.',
     error: res.error
   };
 }
@@ -1125,12 +1125,12 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
   try {
     const fetchResult = await getFromAppsScriptWithServerProxy(cleanUrl, 'getAllData');
     if (!fetchResult.ok || !fetchResult.data) {
-      const errMsg = fetchResult.error || 'تعذر جلب البيانات من Google Apps Script.';
+      const errMsg = fetchResult.error || 'تعذر جلب البيانات من الأرشيف الاحتياطي.';
       pushCloudSyncAlert({
         severity: 'error',
         target: 'google_sheets',
-        title: 'فشل جلب البيانات من Google Sheets',
-        message: 'حدث خطأ أثناء الاتصال برابط Google Apps Script (/exec).',
+        title: 'تعذر جلب البيانات من الأرشيف الاحتياطي',
+        message: 'حدث خطأ أثناء الاتصال بالأرشيف الاحتياطي.',
         details: errMsg
       });
       return {
@@ -1146,7 +1146,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       return {
         success: false,
         needsScriptUpdate: true,
-        message: `الجدول المتصل (${json.spreadsheetName || 'Google Sheets'}) يحتوي حالياً على (${json.sheetsCount || 0}) ورقة ويعمل بنسخة سكربت قديمة. انسخ كود السكربت المحدث لتفعيل المزامنة الكاملة.`
+        message: `الأرشيف الاحتياطي المتصل (${json.spreadsheetName || 'الأرشيف الاحتياطي'}) يحتوي حالياً على (${json.sheetsCount || 0}) جدول ويحتاج إلى تحديث الخدمة لتفعيل المزامنة الكاملة.`
       };
     }
 
@@ -1203,7 +1203,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
         ...(c.ArchivedAt ? { ArchivedAt: String(c.ArchivedAt).trim() } : {}),
         ...(c.ArchiveCode ? { ArchiveCode: String(c.ArchiveCode).trim() } : {}),
         CreatedAt: String(c.CreatedAt || c['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
-        CreatedBy: String(c.CreatedBy || c['الموظف المسؤول'] || 'Google Sheets').trim(),
+        CreatedBy: String(c.CreatedBy || c['الموظف المسؤول'] || 'الأرشيف الاحتياطي').trim(),
         PhotoUrl: c.PhotoUrl ? String(c.PhotoUrl).trim() : undefined
       };
     });
@@ -1281,7 +1281,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
         ...(r.ProxyAddress ? { ProxyAddress: String(r.ProxyAddress).trim() } : {}),
         IsHistoricalImported: isTruthyArchive(r.IsHistoricalImported),
         CreatedAt: String(r.CreatedAt || r['تاريخ التسجيل'] || new Date().toISOString().split('T')[0]).trim(),
-        CreatedBy: String(r.CreatedBy || r['الموظف المسؤول'] || 'Google Sheets').trim(),
+        CreatedBy: String(r.CreatedBy || r['الموظف المسؤول'] || 'الأرشيف الاحتياطي').trim(),
         UpdatedAt: r.UpdatedAt ? String(r.UpdatedAt).trim() : undefined
       };
     });
@@ -1336,7 +1336,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
       DependencyStatus: 'مستقل',
       AttendanceType: 'شخصياً',
       CreatedAt: String(ch.CreatedAt || ch['تاريخ التحرير'] || new Date().toISOString().split('T')[0]).trim(),
-      CreatedBy: String(ch.CreatedBy || 'Google Sheets').trim()
+      CreatedBy: String(ch.CreatedBy || 'الأرشيف الاحتياطي').trim()
     }));
 
     const organizationRecords: OrganizationRecord[] = (sourceData.organizationRecords || sourceData.organizations || []).map((o: any) => ({
@@ -1397,7 +1397,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
           id: String(cr.id || cr['معرف القيد'] || '').trim(),
           sectionId: secId,
           createdAt: String(cr.createdAt || cr['تاريخ الإنشاء'] || new Date().toISOString().split('T')[0]).trim(),
-          createdBy: String(cr.createdBy || cr['الموظف المسؤول'] || 'Google Sheets').trim(),
+          createdBy: String(cr.createdBy || cr['الموظف المسؤول'] || 'الأرشيف الاحتياطي').trim(),
           data: preservedData
         };
       })
@@ -1441,7 +1441,7 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
 
     return {
       success: true,
-      message: `تم بنجاح جلب (${citizens.length}) مراجع و (${requests.length}) معاملة و (${customRecords.length}) سجل مخصص من Google Sheets.`,
+      message: `تمت مزامنة البيانات بنجاح — تم جلب (${citizens.length}) مراجع و (${requests.length}) معاملة و (${customRecords.length}) سجل مخصص من الأرشيف الاحتياطي.`,
       data: {
         citizens,
         requests,
@@ -1455,8 +1455,8 @@ export async function pullDataFromGoogleAppsScript(appsScriptUrl: string): Promi
     };
   } catch (err: any) {
     console.warn('pullDataFromGoogleAppsScript error:', err);
-    updateSheetsHealth('error', err?.message || 'فشل سحب البيانات من Google Sheets');
-    return { success: false, error: err?.message || 'فشل سحب البيانات من Google Sheets' };
+    updateSheetsHealth('error', err?.message || 'تعذر سحب البيانات من الأرشيف الاحتياطي');
+    return { success: false, error: err?.message || 'تعذر سحب البيانات من الأرشيف الاحتياطي' };
   }
 }
 

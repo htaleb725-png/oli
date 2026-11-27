@@ -134,9 +134,9 @@ export const loginAndSetupDeveloperCloud = async (
       addDeveloperSyncLog(`⚠️ تنبيه في مجلد Drive: ${e.message || 'تم المتابعة بالمعرف الحالي'}`);
     }
 
-    // Step 3: Establish / Create Google Sheets Central Database
-    if (onProgress) onProgress(3, 4, 'جاري إنشاء وربط قاعدة بيانات Google Sheets المركزية...');
-    addDeveloperSyncLog('إنشاء وتكوين جداول قاعدة البيانات المركزية على Google Sheets...');
+    // Step 3: Establish / Create Central Archive Database
+    if (onProgress) onProgress(3, 4, 'جاري إنشاء وربط الأرشيف الاحتياطي المركزي...');
+    addDeveloperSyncLog('إنشاء وتكوين جداول الأرشيف الاحتياطي المركزي...');
 
     let sheetId = !isDifferentAccount && typeof window !== 'undefined' ? (localStorage.getItem('al_nashi_sheet_id') || '') : '';
     let sheetUrl = sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit` : '';
@@ -150,17 +150,17 @@ export const loginAndSetupDeveloperCloud = async (
           localStorage.setItem('al_nashi_sheet_id', sheetId);
           localStorage.setItem('al_nashi_google_user_email', userEmail);
         }
-        addDeveloperSyncLog(`✓ تم بنجاح إنشاء قاعدة بيانات Google Sheets جديدة لحساب (${userEmail}): (${sheetId})`);
+        addDeveloperSyncLog(`✓ تم بنجاح إنشاء أرشيف احتياطي جديد لحساب (${userEmail}): (${sheetId})`);
       } else {
-        addDeveloperSyncLog(`✓ تم استخدام قاعدة بيانات Google Sheets الحالية للحساب: (${sheetId})`);
+        addDeveloperSyncLog(`✓ تم استخدام الأرشيف الاحتياطي الحالي للحساب: (${sheetId})`);
       }
     } catch (e: any) {
-      addDeveloperSyncLog(`⚠️ تنبيه في جدول Google Sheets: ${e.message}`);
+      addDeveloperSyncLog(`⚠️ تنبيه في الأرشيف الاحتياطي: ${e.message}`);
     }
 
-    // Step 4: Instant Data Synchronization to Google Sheets
-    if (onProgress) onProgress(4, 4, 'جاري مزامنة السجلات والمواطنين والمعاملات لحظياً إلى Google Sheets...');
-    addDeveloperSyncLog('مزامنة فورية وحفظ لكافة السجلات في قاعدة بيانات Google Sheets...');
+    // Step 4: Instant Data Synchronization
+    if (onProgress) onProgress(4, 4, 'جاري مزامنة السجلات والمواطنين والمعاملات لحظياً إلى الأرشيف الاحتياطي...');
+    addDeveloperSyncLog('مزامنة فورية وحفظ لكافة السجلات في الأرشيف الاحتياطي...');
 
     if (sheetId) {
       try {
@@ -180,7 +180,7 @@ export const loginAndSetupDeveloperCloud = async (
           imageRecords: storedImages,
           dropdowns: systemData.dropdowns
         });
-        addDeveloperSyncLog(`✓ تم بنجاح تحديث وتنسيق (${syncSheetsRes.updatedSheets}) جداول على Google Sheets.`);
+        addDeveloperSyncLog(`✓ تم بنجاح تحديث وتنسيق (${syncSheetsRes.updatedSheets}) جداول في الأرشيف الاحتياطي.`);
       } catch (e: any) {
         addDeveloperSyncLog(`⚠️ خطأ مزامنة الجداول: ${e.message}`);
       }
@@ -194,7 +194,7 @@ export const loginAndSetupDeveloperCloud = async (
       localStorage.setItem('al_nashi_google_user_photo', user.photoURL || '');
     }
 
-    addDeveloperSyncLog('⚡ اكتملت بنجاح منظومة الربط مع Google Sheets (قاعدة البيانات) و Google Drive (مجلد الصور)!');
+    addDeveloperSyncLog('⚡ اكتملت بنجاح منظومة الربط مع الأرشيف الاحتياطي ومجلد المرفقات!');
 
     return {
       success: true,
@@ -238,7 +238,7 @@ export const triggerDeveloperGoogleSync = async (
   sheetsSynced: boolean;
   message: string;
 }> => {
-  addDeveloperSyncLog('بدء تنفيذ المزامنة الفورية مع قاعدة بيانات Google Sheets و Google Drive...');
+  addDeveloperSyncLog('بدء تنفيذ المزامنة الفورية مع الأرشيف الاحتياطي ومجلد المرفقات...');
   let sheetsSynced = false;
 
   try {
@@ -263,14 +263,14 @@ export const triggerDeveloperGoogleSync = async (
         dropdowns: systemData.dropdowns
       });
       sheetsSynced = sheetsRes.success;
-      addDeveloperSyncLog(`✓ Google Sheets: تم تحديث وحفظ (${sheetsRes.updatedSheets}) جداول بنجاح.`);
+      addDeveloperSyncLog(`✓ الأرشيف الاحتياطي: تم تحديث وحفظ (${sheetsRes.updatedSheets}) جداول بنجاح.`);
     } else {
-      addDeveloperSyncLog('ℹ️ Google Sheets: يرجى تسجيل الدخول بحساب Google أولاً.');
+      addDeveloperSyncLog('ℹ️ الأرشيف الاحتياطي: يرجى تسجيل الدخول بحساب التخزين السحابي أولاً.');
     }
 
     const folderId = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_drive_folder_id') || '' : '';
     if (folderId) {
-      addDeveloperSyncLog(`✓ Google Drive: مجلد الصور والمستندات نشط ومربوط.`);
+      addDeveloperSyncLog(`✓ مجلد المرفقات السحابي نشط ومربوط.`);
     }
 
     const now = new Date().toLocaleString('ar-IQ');
@@ -278,19 +278,19 @@ export const triggerDeveloperGoogleSync = async (
       localStorage.setItem('al_nashi_last_sync_time', now);
     }
 
-    addDeveloperSyncLog('⚡ تمت المزامنة مع Google Sheets و Google Drive بنجاح!');
+    addDeveloperSyncLog('⚡ تمت مزامنة البيانات بنجاح!');
 
     return {
       success: true,
       sheetsSynced,
-      message: 'تم حفظ ومزامنة كافة السجلات في Google Sheets و Google Drive بنجاح'
+      message: 'تمت مزامنة البيانات بنجاح'
     };
   } catch (error: any) {
-    addDeveloperSyncLog(`❌ خطأ أثناء مزامنة Google Sheets: ${error.message || error}`);
+    addDeveloperSyncLog(`❌ خطأ أثناء مزامنة الأرشيف الاحتياطي: ${error.message || error}`);
     return {
       success: false,
       sheetsSynced,
-      message: error.message || 'حدث خطأ أثناء المزامنة مع Google Sheets'
+      message: error.message || 'تعذر إكمال مزامنة الأرشيف الاحتياطي'
     };
   }
 };
@@ -309,7 +309,7 @@ export const pullAllDataFromGoogleSheets = async () => {
     };
   }
 
-  addDeveloperSyncLog('جاري استيراد وقراءة كافة البيانات مباشرة من Google Sheets...');
+  addDeveloperSyncLog('جاري استيراد وقراءة كافة البيانات مباشرة من الأرشيف الاحتياطي...');
   const res = await fetchAllDataFromGoogleSheets(token, sheetId);
   if (res.success) {
     addDeveloperSyncLog(`✓ ${res.message}`);
@@ -328,44 +328,44 @@ export const wipeDeveloperCloudData = async (): Promise<{
   driveFilesDeleted: number;
   message: string;
 }> => {
-  addDeveloperSyncLog('⚠️ بدء تصفير البيانات من جداول Google Sheets ومجلد Google Drive...');
+  addDeveloperSyncLog('⚠️ بدء تصفير البيانات من الأرشيف الاحتياطي ومجلد المرفقات...');
   let sheetsWiped = false;
   let driveFilesDeleted = 0;
 
   try {
     const token = await getAccessToken();
 
-    // 1. Clear Google Sheets data rows
+    // 1. Clear Archive data rows
     const sheetId = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') || '' : '';
     if (token && sheetId) {
       try {
         const sRes = await clearAllGoogleSheetsData(token, sheetId);
         sheetsWiped = sRes.success;
-        addDeveloperSyncLog(`✓ تم تفريغ وتصفير بيانات جداول Google Sheets (${sRes.clearedRanges} جداول).`);
+        addDeveloperSyncLog(`✓ تم تفريغ وتصفير بيانات الأرشيف الاحتياطي (${sRes.clearedRanges} جداول).`);
       } catch (e: any) {
-        addDeveloperSyncLog(`⚠️ خطأ تفريغ Google Sheets: ${e.message}`);
+        addDeveloperSyncLog(`⚠️ خطأ تفريغ الأرشيف الاحتياطي: ${e.message}`);
       }
     }
 
-    // 2. Delete files from Google Drive
+    // 2. Delete files from Drive
     const folderId = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_drive_folder_id') || '' : '';
     if (token && folderId) {
       try {
         const dRes = await clearAllDriveFolderFiles(token, folderId);
         driveFilesDeleted = dRes.deletedCount;
-        addDeveloperSyncLog(`✓ تم حذف كافة الصور والمرفقات من مجلد Google Drive (${driveFilesDeleted} ملف).`);
+        addDeveloperSyncLog(`✓ تم حذف كافة الصور والمرفقات من مجلد المرفقات السحابي (${driveFilesDeleted} ملف).`);
       } catch (e: any) {
-        addDeveloperSyncLog(`⚠️ خطأ حذف ملفات Drive: ${e.message}`);
+        addDeveloperSyncLog(`⚠️ خطأ حذف ملفات المرفقات: ${e.message}`);
       }
     }
 
-    addDeveloperSyncLog('⚡ اكتملت عملية التصفير في Google Sheets و Google Drive بنجاح.');
+    addDeveloperSyncLog('⚡ اكتملت عملية التصفير في الأرشيف الاحتياطي ومجلد المرفقات بنجاح.');
 
     return {
       success: true,
       sheetsWiped,
       driveFilesDeleted,
-      message: 'تم تصفير وحذف البيانات بالكامل من Google Sheets و Google Drive'
+      message: 'تم الحذف من قاعدة البيانات بنجاح'
     };
   } catch (err: any) {
     addDeveloperSyncLog(`❌ خطأ أثناء التصفير: ${err.message || err}`);

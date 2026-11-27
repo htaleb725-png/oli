@@ -191,7 +191,7 @@ export const GoogleDriveFolderManager: React.FC<GoogleDriveFolderManagerProps> =
 
     const token = typeof window !== 'undefined' ? (localStorage.getItem('al_nashi_google_token') || sessionStorage.getItem('al_nashi_google_token')) : null;
     if (!token) {
-      setTestUploadResult({ success: false, error: 'يرجى تسجيل دخول المطور بحساب Google في تبويب Google Sheets & Drive أولاً لتتمكن من تجربة الرفع الفعلي.' });
+      setTestUploadResult({ success: false, error: 'يرجى تسجيل دخول المطور بحساب Google في تبويب الأرشيف السحابي ومجلد Drive أولاً لتتمكن من تجربة الرفع الفعلي.' });
       return;
     }
 
@@ -326,7 +326,7 @@ export const GoogleDriveFolderManager: React.FC<GoogleDriveFolderManagerProps> =
 
           <div className="text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-200 dark:border-slate-700 flex flex-wrap gap-4">
             <span>🔹 كافة عمليات مسح الاسكنر للمواطنين تتوجه إلى هذا المجلد تلقائياً.</span>
-            <span>🔹 الروابط المولدة عامة ودائمة ومحفوظة بجدول Google Sheets.</span>
+            <span>🔹 الروابط المولدة عامة ودائمة ومحفوظة بقاعدة البيانات والأرشيف الاحتياطي.</span>
           </div>
         </div>
       </div>

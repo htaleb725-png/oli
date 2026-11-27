@@ -30,7 +30,7 @@ export const INITIAL_SETTINGS: SystemSettings = {
   maintenanceMode: false,
   tickerNews: [
     'المكتب يستقبل المراجعين يومياً من الساعة 9 صباحاً وحتى 2 ظهراً',
-    'تم تفعيل الربط السحابي المباشر وقاعدة بيانات Firebase بنجاح',
+    'تم تفعيل قاعدة البيانات المركزية والمزامنة اللحظية بنجاح',
     'نظام الأرشفة الإلكتروني والمزامنة اللحظية قيد التشغيل المباشر لخدمة أهالي ذي قار'
   ],
   googleSheetId: '1deoTjgvDflnJBh4B4EGuHN2h_1UiD1VEhssiSS7pDfM',

@@ -68,7 +68,7 @@ function extractReadableError(err: unknown): string {
     if (parsed && typeof parsed.error === 'string') {
       const code = parsed.error;
       if (code.includes('permission') || code.includes('row-level security')) {
-        return `رفض صلاحيات Supabase للمسار (${parsed.path || 'غير محدد'}).`;
+        return `رفض صلاحيات قاعدة البيانات للمسار (${parsed.path || 'غير محدد'}).`;
       }
       return `${code} (${parsed.path || ''})`.trim();
     }
@@ -76,7 +76,7 @@ function extractReadableError(err: unknown): string {
     // Plain string message
   }
   if (raw.includes('permission') || raw.includes('row-level security')) {
-    return 'رفض صلاحيات الكتابة في Supabase.';
+    return 'رفض صلاحيات الكتابة في قاعدة البيانات.';
   }
   return raw;
 }
@@ -86,7 +86,7 @@ async function executeFirestoreOperation(params: {
   firestoreOp: () => Promise<void>;
   backgroundSheetsOp?: () => Promise<any>;
   silentSuccess?: boolean;
-  actionType?: 'save' | 'delete';
+  actionType?: 'save' | 'update' | 'delete' | 'sync';
 }): Promise<DualWriteOutcome> {
   const { entityLabel, firestoreOp, backgroundSheetsOp, silentSuccess = true, actionType = 'save' } = params;
 

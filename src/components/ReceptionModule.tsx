@@ -387,7 +387,7 @@ export const ReceptionModule: React.FC = () => {
         onPersistResult: (res) => {
           if (!res.ok) {
             setErrorMessage(
-              `⚠️ فشل حفظ المعاملة (${res.requestId}) في قاعدة بيانات Firebase Firestore (alaa-office-2026) ولم تصل لشاشة المدير — السبب: ${res.error || 'خطأ غير معروف'}`
+              `⚠️ تعذر حفظ المعاملة (${res.requestId}) في قاعدة البيانات ولم تصل لشاشة المدير — السبب: ${res.error || 'خطأ غير معروف'}`
             );
             window.scrollTo({ top: 0, behavior: 'smooth' });
           }
@@ -1112,7 +1112,7 @@ export const ReceptionModule: React.FC = () => {
             if (!res.ok) {
               setSavedSuccessCitizen(null);
               setErrorMessage(
-                `⚠️ فشل حفظ بيانات المراجع (${finalFullName}) في قاعدة بيانات Firebase Firestore (alaa-office-2026) — السبب: ${res.error || 'خطأ غير معروف'}`
+                `⚠️ تعذر حفظ بيانات المراجع (${finalFullName}) في قاعدة البيانات — السبب: ${res.error || 'خطأ غير معروف'}`
               );
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }
@@ -1169,7 +1169,7 @@ export const ReceptionModule: React.FC = () => {
             if (!res.ok) {
               setSavedSuccessCitizen(null);
               setErrorMessage(
-                `⚠️ فشل إرسال المعاملة (${res.requestId}) إلى Firebase Firestore (alaa-office-2026) ولم تصل لشاشة مدير المكتب — السبب: ${res.error || 'خطأ غير معروف'}`
+                `⚠️ تعذر إرسال المعاملة (${res.requestId}) إلى قاعدة البيانات ولم تصل لشاشة مدير المكتب — السبب: ${res.error || 'خطأ غير معروف'}`
               );
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }
@@ -1218,7 +1218,7 @@ export const ReceptionModule: React.FC = () => {
             if (!res.ok) {
               setSavedSuccessCitizen(null);
               setErrorMessage(
-                `⚠️ فشل إرسال المعاملة (${res.requestId}) إلى Firebase Firestore (alaa-office-2026) ولم تصل لشاشة مدير المكتب — السبب: ${res.error || 'خطأ غير معروف'}`
+                `⚠️ تعذر إرسال المعاملة (${res.requestId}) إلى قاعدة البيانات ولم تصل لشاشة مدير المكتب — السبب: ${res.error || 'خطأ غير معروف'}`
               );
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }
@@ -4788,7 +4788,7 @@ export const ReceptionModule: React.FC = () => {
 
               <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
                 <span className="text-[11px] text-slate-500">
-                  الحفظ يتم مباشرة في Firebase Firestore
+                  الحفظ يتم مباشرة في قاعدة البيانات
                 </span>
                 <div className="flex items-center gap-2">
                   <button

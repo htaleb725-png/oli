@@ -343,12 +343,12 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
         setManualCounterInput('');
         showBlockBanner(
           'success',
-          `✓ تم حفظ رقم الصادر (${parsed.seq}) في Firebase Firestore بنجاح — التسلسل التلقائي سيبدأ الآن من (${parsed.seq + 1})، ${
+          `تم الحفظ في قاعدة البيانات بنجاح — رقم الصادر (${parsed.seq}) والتسلسل التلقائي سيبدأ الآن من (${parsed.seq + 1})، ${
             cleanDate ? `والتاريخ المضبوط (${cleanDate})` : `والتاريخ تلقائي (${getLocalTodayIsoDate()})`
           }.`
         );
       } else {
-        showBlockBanner('error', 'تعذر تأكيد حفظ رقم الصادر في Firebase Firestore. يرجى إعادة المحاولة.');
+        showBlockBanner('error', 'تعذر تأكيد حفظ رقم الصادر في قاعدة البيانات. يرجى إعادة المحاولة.');
       }
     } finally {
       setIsSavingManualCounter(false);
@@ -955,7 +955,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           ? 'أرشفة مستقلة في قسم الإدارة للسجلات المستردة/المصفاة دون التأثير على بقية الأقسام'
           : mode === 'completed'
           ? 'أرشفة مستقلة في قسم الإدارة للمعاملات المكتملة دون التأثير على بقية الأقسام'
-          : 'أرشفة مستقلة في قسم الإدارة للسجلات المعروضة مع بقائها محفوظة بالكامل في Firestore'
+          : 'أرشفة مستقلة في قسم الإدارة للسجلات المعروضة مع بقائها محفوظة بالكامل في قاعدة البيانات'
     });
     setArchiveConfirmMode('none');
     setCurrentPage(1);
@@ -1361,7 +1361,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                 <span>أرشفة وإخراج من العمل اليومي (يبقى كل شيء محفوظاً في القاعدة والأرشيف)</span>
               </div>
               <p className="text-[11px] text-slate-200/90">
-                سيتم تعيين حالة السجلات إلى «مؤرشف» في Firebase Firestore و Google Sheet وإخراجها فوراً من عرض العمل اليومي مع بقائك في شاشتك الحالية دون أي حذف.
+                سيتم تعيين حالة السجلات إلى «مؤرشف» في قاعدة البيانات والأرشيف الاحتياطي وإخراجها فوراً من عرض العمل اليومي مع بقائك في شاشتك الحالية دون أي حذف.
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0 flex-wrap">

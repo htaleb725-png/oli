@@ -932,7 +932,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
     const selectedSheets = availableSheets.filter((s) => s.selected);
     if (selectedSheets.length === 0) {
-      setErrorBanner('يرجى تحديد ورقة عمل (شيت) واحدة على الأقل للاستيراد.');
+      setErrorBanner('يرجى تحديد ورقة عمل واحدة على الأقل للاستيراد.');
       return;
     }
 
@@ -1295,7 +1295,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
       if (currentIndex < rowsToImport.length) {
         setTimeout(processChunk, 0);
       } else {
-        setCurrentStepText('جاري تثبيت البيانات المفلترة في Firebase و Google Sheets وتحديث عداد الصادر...');
+        setCurrentStepText('جاري تثبيت البيانات المفلترة في قاعدة البيانات والأرشيف الاحتياطي وتحديث عداد الصادر...');
 
         const finalNewCitizensList = Array.from(workingNewCitizensByName.values());
         const allCitizensToCommit = [
@@ -1590,7 +1590,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 font-black text-slate-900 dark:text-white">
                   <Layers className="w-4 h-4 text-teal-600" />
-                  <span>2. أوراق العمل في الملف ({availableSheets.length} شيت — إجمالي ~{totalRows.toLocaleString()} صف):</span>
+                  <span>2. أوراق العمل في الملف ({availableSheets.length} ورقة عمل — إجمالي ~{totalRows.toLocaleString()} صف):</span>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1752,7 +1752,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
                     onChange={(e) => setFilterSheet(e.target.value)}
                     className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-blue-200 dark:border-slate-700 text-slate-900 dark:text-white text-[11px] font-bold outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="ALL">ورقة العمل (الشيت): الكل</option>
+                    <option value="ALL">ورقة العمل: الكل</option>
                     {availableSheets
                       .filter((s) => s.selected)
                       .map((s) => (
@@ -2141,12 +2141,12 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-emerald-800 dark:text-emerald-300">
               <p>
                 {importSummary.firestoreSaved
-                  ? '✓ تم تثبيت السجلات سحابياً في Firebase Firestore بنجاح.'
-                  : '✓ تم إرسال السجلات وتجري المزامنة السحابية مع Firebase في الخلفية.'}
+                  ? 'تم الحفظ في قاعدة البيانات بنجاح.'
+                  : 'تم إرسال السجلات وتجري المزامنة مع قاعدة البيانات في الخلفية.'}
                 {' · '}
                 {importSummary.sheetsDispatched
-                  ? 'تمت المزامنة الذكية مع Google Sheets (إضافة الجديد وإكمال النواقص فقط دون تكرار).'
-                  : 'يمكنك ترحيلها إلى Google Sheets في أي وقت من لوحة المزامنة.'}
+                  ? 'تمت مزامنة البيانات بنجاح مع الأرشيف الاحتياطي (إضافة الجديد وإكمال النواقص فقط دون تكرار).'
+                  : 'يمكنك ترحيلها إلى الأرشيف الاحتياطي في أي وقت من لوحة المزامنة.'}
               </p>
               {filteredParsedRows.length > 0 && (
                 <button

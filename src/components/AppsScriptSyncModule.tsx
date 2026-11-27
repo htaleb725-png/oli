@@ -68,9 +68,7 @@ export const AppsScriptSyncModule: React.FC = () => {
     customSections,
     customRecords,
     users,
-    addAuditLog,
-    isImportingFromGoogleSheet,
-    importFromGoogleSheetToSupabase
+    addAuditLog
   } = useApp();
 
   const envSheetId = '1deoTjgvDflnJBh4B4EGuHN2h_1UiD1VEhssiSS7pDfM';
@@ -167,7 +165,7 @@ export const AppsScriptSyncModule: React.FC = () => {
 
     setSelectedSheetId(cleanSheetId);
     setSelectedSheetUrl(calculatedUrl);
-    setSaveSuccessMsg('تم حفظ وتحديث إعدادات ربط الإكسل و Google Sheets و Google Drive بنجاح!');
+    setSaveSuccessMsg('تم تحديث البيانات في قاعدة البيانات بنجاح!');
     addAuditLog('تحديث إعدادات الربط', 'إعدادات الإكسل', `تحديث معرّف جدول الإكسل: ${cleanSheetId}`);
     setTimeout(() => setSaveSuccessMsg(''), 4000);
   };
@@ -192,7 +190,7 @@ export const AppsScriptSyncModule: React.FC = () => {
       });
       setReorganizeResult(res);
       if (res.success) {
-        addAuditLog('توحيد وتنظيم أوراق Google Sheets (8 أقسام)', 'إعدادات الإكسل', res.message);
+        addAuditLog('توحيد وتنظيم أوراق الأرشيف الاحتياطي (8 أقسام)', 'إعدادات الإكسل', res.message);
       }
     } catch (err: any) {
       setReorganizeResult({ success: false, message: err?.message || 'تعذر إعادة ترتيب الأوراق والأعمدة حالياً.' });
@@ -344,36 +342,6 @@ export const AppsScriptSyncModule: React.FC = () => {
 
   return (
     <div className="space-y-4 text-right">
-      {/* One-Click Import Previous Data from Google Sheet -> Supabase */}
-      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-        <div className="space-y-0.5">
-          <h3 className="text-sm font-black text-emerald-900 flex items-center gap-2">
-            <Database className="w-4 h-4 text-emerald-600" />
-            <span>جلب البيانات السابقة من Google Sheet إلى Supabase</span>
-          </h3>
-          <p className="text-xs text-emerald-800/80">
-            يسحب كافة السجلات والمعاملات السابقة من جدول Google Sheet المربوط ويحفظها في جداول Supabase (citizens و requests) دون تكرار.
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={isImportingFromGoogleSheet}
-          onClick={async () => {
-            const res = await importFromGoogleSheetToSupabase();
-            setSaveSuccessMsg(res.message);
-            setTimeout(() => setSaveSuccessMsg(''), 6000);
-          }}
-          className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-60 shrink-0"
-        >
-          <Download className="w-4 h-4" />
-          <span>
-            {isImportingFromGoogleSheet
-              ? 'جاري جلب البيانات السابقة...'
-              : 'جلب البيانات السابقة من Google Sheet إلى Supabase'}
-          </span>
-        </button>
-      </div>
-
       {/* Header Banner */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="space-y-1">
@@ -382,7 +350,7 @@ export const AppsScriptSyncModule: React.FC = () => {
               <FileSpreadsheet className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-900">إدارة وتعديل ارتباط الإكسل و Google Sheets</h2>
+              <h2 className="text-base font-bold text-slate-900">إدارة وتعديل ارتباط الإكسل والأرشيف الاحتياطي</h2>
               <p className="text-xs text-slate-500">
                 تعديل معرفات الجداول، استيراد وتصدير ملفات Excel المباشرة، والمزامنة السحابية اللحظية مع Google Workspace.
               </p>
@@ -436,7 +404,7 @@ export const AppsScriptSyncModule: React.FC = () => {
           <div className="flex items-center gap-2">
             <Database className="w-4 h-4 text-blue-600" />
             <h3 className="text-xs font-extrabold text-slate-900">
-              تشخيص الاتصال السحابي الفعلي (Firebase Firestore + Google Apps Script + متغيرات Vercel)
+              تشخيص الاتصال السحابي الفعلي (قاعدة البيانات الرئيسية + الأرشيف الاحتياطي)
             </h3>
           </div>
           <button
@@ -446,7 +414,7 @@ export const AppsScriptSyncModule: React.FC = () => {
             className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isTestingConnection ? 'animate-spin' : ''}`} />
-            <span>{isTestingConnection ? 'جاري فحص الاتصال و CORS...' : 'فحص الاتصال الفعلي مع Apps Script'}</span>
+            <span>{isTestingConnection ? 'جاري فحص الاتصال...' : 'فحص الاتصال الفعلي بالأرشيف السحابي'}</span>
           </button>
         </div>
 
@@ -454,19 +422,19 @@ export const AppsScriptSyncModule: React.FC = () => {
           <div className={`p-3 rounded-lg border ${cloudHealth?.firebaseStatus === 'error' ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-emerald-50 border-emerald-200 text-emerald-900'}`}>
             <div className="font-bold flex items-center gap-1.5">
               {cloudHealth?.firebaseStatus === 'error' ? <XCircle className="w-4 h-4 text-rose-600" /> : <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
-              <span>قاعدة بيانات Firebase Firestore</span>
+              <span>قاعدة البيانات الرئيسية</span>
             </div>
             <p className="text-[11px] mt-1 opacity-90">
               {cloudHealth?.firebaseStatus === 'error'
-                ? (cloudHealth.firebaseError || 'فشل الاتصال بـ Firestore')
-                : 'متصل فعلياً — الحفظ المباشر مفعّل (بدون تخزين سجلات في Chrome).'}
+                ? (cloudHealth.firebaseError || 'فشل الاتصال بقاعدة البيانات')
+                : 'متصل فعلياً — الحفظ المباشر مفعّل.'}
             </p>
           </div>
 
           <div className={`p-3 rounded-lg border ${cloudHealth?.sheetsStatus === 'error' ? 'bg-amber-50 border-amber-200 text-amber-950' : 'bg-sky-50 border-sky-200 text-sky-950'}`}>
             <div className="font-bold flex items-center gap-1.5">
               {cloudHealth?.sheetsStatus === 'error' ? <AlertTriangle className="w-4 h-4 text-amber-600" /> : <FileSpreadsheet className="w-4 h-4 text-sky-600" />}
-              <span>الربط المزدوج مع Google Sheets</span>
+              <span>الربط المزدوج مع الأرشيف الاحتياطي</span>
             </div>
             <p className="text-[11px] mt-1 opacity-90">
               {cloudHealth?.sheetsStatus === 'error'
@@ -494,7 +462,7 @@ export const AppsScriptSyncModule: React.FC = () => {
               <div className="space-y-1">
                 <div className="font-extrabold flex items-center gap-1.5">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <span>نجح الاتصال الفعلي بـ Google Apps Script عبر ({pingResult.via === 'proxy' ? 'وكيل الخادم الآمن /api/sync/state بدون CORS' : 'الاتصال المباشر'})!</span>
+                  <span>نجح الاتصال الفعلي بخدمة الأرشيف الاحتياطي عبر ({pingResult.via === 'proxy' ? 'الخادم الآمن' : 'الاتصال المباشر'})!</span>
                 </div>
                 <p className="text-[11px]">
                   الجدول المتصل: <strong>{pingResult.spreadsheetName || selectedSheetId}</strong> | عدد الأوراق: <strong>{pingResult.sheetsCount ?? '—'}</strong> | إصدار السكربت: <span className="font-mono">{pingResult.version || 'إصدار قديم'}</span>
@@ -509,7 +477,7 @@ export const AppsScriptSyncModule: React.FC = () => {
               <div className="space-y-1">
                 <div className="font-extrabold flex items-center gap-1.5">
                   <XCircle className="w-4 h-4 text-rose-600" />
-                  <span>فشل الاتصال بـ Google Apps Script {pingResult.corsError ? '(حظر CORS أو صلاحية النشر)' : ''}</span>
+                  <span>تعذر الاتصال بخدمة الأرشيف الاحتياطي {pingResult.corsError ? '(يرجى مراجعة صلاحية النشر)' : ''}</span>
                 </div>
                 <p className="text-[11px]">{pingResult.error}</p>
               </div>
@@ -526,8 +494,8 @@ export const AppsScriptSyncModule: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Link className="w-5 h-5 text-emerald-600" />
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900">تعديل رابط ومعرف جدول Google Sheets</h3>
-                  <p className="text-[11px] text-slate-500">يمكنك لصق رابط الجدول أو الـ Spreadsheet ID الخاص بك مباشرة للحفظ والربط</p>
+                  <h3 className="text-sm font-bold text-slate-900">تعديل رابط ومعرف جدول الأرشيف الاحتياطي</h3>
+                  <p className="text-[11px] text-slate-500">يمكنك لصق رابط الجدول أو المعرّف الخاص بك مباشرة للحفظ والربط</p>
                 </div>
               </div>
               {selectedSheetUrl && (
@@ -553,7 +521,7 @@ export const AppsScriptSyncModule: React.FC = () => {
             <form onSubmit={handleSaveConnectionSettings} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  معرّف أو رابط جدول Google Sheets (Spreadsheet ID or Full URL) *
+                  معرّف أو رابط جدول الأرشيف الاحتياطي (Archive ID or Full URL) *
                 </label>
                 <input
                   type="text"
@@ -743,14 +711,14 @@ export const AppsScriptSyncModule: React.FC = () => {
               </button>
 
               <div className="pt-2 text-xs text-slate-500 space-y-1">
-                <p>الملف المصدر متوافق 100% مع كافة برامج Microsoft Excel و Google Sheets و LibreOffice ويحتوي على 8 أوراق رسمية (ورقة واحدة لكل قسم).</p>
+                <p>الملف المصدر متوافق 100% مع كافة برامج Microsoft Excel والجداول السحابية و LibreOffice ويحتوي على 8 أوراق رسمية (ورقة واحدة لكل قسم).</p>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 3: Apps Script & One-Click Google Sheets 8-Department Reorganization */}
+      {/* TAB 3: Apps Script & One-Click Backup Archive 8-Department Reorganization */}
       {activeSubTab === 'apps_script' && (
         <div className="space-y-4 text-right">
           {/* One-Click Column Cleanup Banner */}
@@ -759,7 +727,7 @@ export const AppsScriptSyncModule: React.FC = () => {
               <div className="space-y-1">
                 <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
                   <TableProperties className="w-4 h-4 text-emerald-600" />
-                  <span>توحيد وترتيب أوراق وأعمدة Google Sheets (ورقة واحدة لكل قسم - 8 أقسام فقط)</span>
+                  <span>توحيد وترتيب أوراق وأعمدة الأرشيف الاحتياطي (ورقة واحدة لكل قسم - 8 أقسام فقط)</span>
                 </h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
                   يدمج هذا الإجراء كافة الأوراق القديمة والمكررة في <strong>8 أوراق رسمية فقط (ورقة واحدة مستقلة لكل قسم)</strong> بأعمدة عربية مرتبة ومرقمة، ويحذف الأوراق الزائدة دون فقدان أي سجل.
@@ -772,7 +740,7 @@ export const AppsScriptSyncModule: React.FC = () => {
                 className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-2 cursor-pointer shadow-xs transition-all shrink-0 disabled:opacity-60"
               >
                 <RefreshCw className={`w-4 h-4 ${isReorganizingSheets ? 'animate-spin' : ''}`} />
-                <span>{isReorganizingSheets ? 'جاري توحيد وترتيب الأوراق الـ 8...' : 'توحيد وترتيب أوراق Google Sheets الـ 8 الآن'}</span>
+                <span>{isReorganizingSheets ? 'جاري توحيد وترتيب الأوراق الـ 8...' : 'توحيد وترتيب أوراق الأرشيف الـ 8 الآن'}</span>
               </button>
             </div>
 
@@ -800,7 +768,7 @@ export const AppsScriptSyncModule: React.FC = () => {
               <div>
                 <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
                   <Database className="w-4 h-4 text-emerald-600" />
-                  <span>هيكلة قاعدة البيانات المعتمدة في Google Sheets (8 أوراق - ورقة واحدة لكل قسم)</span>
+                  <span>هيكلة جداول الأرشيف الاحتياطي المعتمدة (8 أوراق - ورقة واحدة لكل قسم)</span>
                 </h3>
                 <p className="text-[11px] text-slate-500 mt-0.5">
                   كل قسم في المنظومة مرتبط بورقة عمل واحدة فقط تحمل اسمه الرسمي وأعمدته العربية المرتبة:
@@ -846,10 +814,10 @@ export const AppsScriptSyncModule: React.FC = () => {
               <div>
                 <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
                   <FileCode className="w-4 h-4 text-sky-600" />
-                  <span>كود Google Apps Script الموحد (إصدار 8 أوراق رسمية - ورقة واحدة لكل قسم)</span>
+                  <span>كود السكربت الموحد للأرشيف الاحتياطي (إصدار 8 أوراق رسمية - ورقة واحدة لكل قسم)</span>
                 </h3>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  في Google Sheets: الإضافات (Extensions) ← Apps Script ← الصق الكود أدناه ← اختر الدالة <strong>reorganizeAllSheetsCleanly</strong> واضغط <strong>Run (تشغيل)</strong> لدمج الأوراق القديمة فوراً، ثم <strong>Deploy ← Manage deployments ← Edit ← New version</strong>.
+                  في جدول الأرشيف: الإضافات (Extensions) ← Apps Script ← الصق الكود أدناه ← اختر الدالة <strong>reorganizeAllSheetsCleanly</strong> واضغط <strong>Run (تشغيل)</strong> لدمج الأوراق القديمة فوراً، ثم <strong>Deploy ← Manage deployments ← Edit ← New version</strong>.
                 </p>
               </div>
               <button

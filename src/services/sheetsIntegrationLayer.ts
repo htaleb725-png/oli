@@ -165,7 +165,7 @@ class SheetsIntegrationLayer {
   private getSpreadsheetId(): string {
     const sheetId = this.status.spreadsheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : null);
     if (!sheetId) {
-      throw new Error('لم يتم تحديد معرف جدول Google Sheets (Spreadsheet ID). يرجى ربط أو إنشاء جدول أولاً من لوحة المطور.');
+      throw new Error('لم يتم تحديد معرف الأرشيف الاحتياطي. يرجى ربط أو إنشاء الأرشيف أولاً من لوحة المطور.');
     }
     return sheetId;
   }
@@ -192,7 +192,7 @@ class SheetsIntegrationLayer {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `فشل قراءة نطاق ${range} من Google Sheets`);
+      throw new Error(err.error?.message || `تعذر قراءة نطاق ${range} من الأرشيف الاحتياطي`);
     }
 
     const data = await res.json();
@@ -221,7 +221,7 @@ class SheetsIntegrationLayer {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `فشل إضافة صف جديد إلى Google Sheets`);
+      throw new Error(err.error?.message || `تعذر إضافة صف جديد إلى الأرشيف الاحتياطي`);
     }
 
     return true;
@@ -249,7 +249,7 @@ class SheetsIntegrationLayer {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `فشل تحديث البيانات في Google Sheets`);
+      throw new Error(err.error?.message || `تعذر تحديث البيانات في الأرشيف الاحتياطي`);
     }
 
     return true;
@@ -305,10 +305,10 @@ class SheetsIntegrationLayer {
       const colIndex = existingHeaders.length;
       const colLetter = this.getColumnLetter(colIndex);
       await this.updateRangeValues(`${tabName}!${colLetter}1`, [[fieldLabel.trim()]]);
-      this.log(`✓ تم إضافة عمود الحقل الجديد [${fieldLabel}] مباشرة في جدول Google Sheets (${tabName}) في العمود ${colLetter}.`);
+      this.log(`✓ تم إضافة عمود الحقل الجديد [${fieldLabel}] مباشرة في الأرشيف الاحتياطي (${tabName}) في العمود ${colLetter}.`);
       return true;
     } catch (e: any) {
-      this.log(`⚠️ تعذر إضافة عمود الحقل الجديد في Sheets: ${e.message}`);
+      this.log(`⚠️ تعذر إضافة عمود الحقل الجديد في الأرشيف الاحتياطي: ${e.message}`);
       return false;
     }
   }
@@ -358,12 +358,12 @@ class SheetsIntegrationLayer {
       if (addRes.ok) {
         const headerList = headers || ['الرقم التعريفي', 'الاسم', 'التفاصيل', 'تاريخ الإنشاء', 'الملاحظات'];
         await this.appendRow(`${cleanTitle}!1:1`, headerList);
-        this.log(`✓ تم إنشاء تبويب القسم الجديد [${cleanTitle}] مباشرة في Google Sheets.`);
+        this.log(`✓ تم إنشاء تبويب القسم الجديد [${cleanTitle}] مباشرة في الأرشيف الاحتياطي.`);
         return true;
       }
       return false;
     } catch (e: any) {
-      this.log(`⚠️ تعذر إضافة تبويب القسم في Sheets: ${e.message}`);
+      this.log(`⚠️ تعذر إضافة تبويب القسم في الأرشيف الاحتياطي: ${e.message}`);
       return false;
     }
   }
@@ -381,7 +381,7 @@ class SheetsIntegrationLayer {
     folderId: string;
     folderUrl: string;
   }> {
-    this.log(`جاري إنشاء وتهيئة قاعدة بيانات Google Sheets ومجلد Drive لحساب (${userEmail})...`);
+    this.log(`جاري إنشاء وتهيئة الأرشيف الاحتياطي ومجلد المرفقات لحساب (${userEmail})...`);
     
     // 1. Create Google Drive folder for this user
     const folderRes = await createOrGetOfficeDriveFolder(token, 'مرفقات وصور مكتب النائب علا الناشي - 2026');
@@ -416,9 +416,9 @@ class SheetsIntegrationLayer {
     // 4. Seed with initial system data directly
     try {
       await syncAllDataToGoogleSheets(token, spreadsheetId, initialData);
-      this.log(`✓ تم بنجاح إنشاء وتجهيز قاعدة بيانات Google Sheets ومجلد Drive لحساب (${userEmail}).`);
+      this.log(`✓ تم بنجاح إنشاء وتجهيز الأرشيف الاحتياطي ومجلد المرفقات لحساب (${userEmail}).`);
     } catch (e: any) {
-      this.log(`⚠️ تنبيه تعبئة البيانات في Sheets: ${e.message}`);
+      this.log(`⚠️ تنبيه تعبئة البيانات في الأرشيف الاحتياطي: ${e.message}`);
     }
 
     return { spreadsheetId, spreadsheetUrl, folderId, folderUrl };
@@ -505,7 +505,7 @@ class SheetsIntegrationLayer {
     readAll: async (): Promise<Citizen[]> => {
       this.status.syncState = 'reading';
       this.notifyStatus();
-      this.log('جاري قراءة سجلات المراجعين مباشرة من Google Sheets...');
+      this.log('جاري قراءة سجلات المراجعين مباشرة من الأرشيف الاحتياطي...');
 
       try {
         const rawRows = await this.getRangeValues(`${this.TABS.CITIZENS}!A2:S`);
@@ -522,7 +522,7 @@ class SheetsIntegrationLayer {
         this.status.lastSyncTime = new Date().toLocaleTimeString('ar-IQ');
         this.status.syncState = 'idle';
         this.notifyStatus();
-        this.log(`✓ تم بنجاح قراءة (${citizens.length}) مراجع مباشرة من Google Sheets.`);
+        this.log(`✓ تم بنجاح قراءة (${citizens.length}) مراجع مباشرة من الأرشيف الاحتياطي.`);
         return citizens;
       } catch (err: any) {
         this.status.syncState = 'error';
@@ -547,7 +547,7 @@ class SheetsIntegrationLayer {
     insert: async (citizen: Citizen): Promise<Citizen> => {
       this.status.syncState = 'writing';
       this.notifyStatus();
-      this.log(`جاري حفظ بيانات المراجع [${citizen.FullName}] مباشرة في Google Sheets...`);
+      this.log(`جاري حفظ بيانات المراجع [${citizen.FullName}] مباشرة في الأرشيف الاحتياطي...`);
 
       try {
         const row = this.citizenToRow(citizen);
@@ -555,13 +555,13 @@ class SheetsIntegrationLayer {
         this.status.lastSyncTime = new Date().toLocaleTimeString('ar-IQ');
         this.status.syncState = 'idle';
         this.notifyStatus();
-        this.log(`✓ تم حفظ المراجع [${citizen.FullName}] (${citizen.Citizen_ID}) في Google Sheets بنجاح.`);
+        this.log(`✓ تم حفظ المراجع [${citizen.FullName}] (${citizen.Citizen_ID}) في الأرشيف الاحتياطي بنجاح.`);
         return citizen;
       } catch (err: any) {
         this.status.syncState = 'error';
         this.status.errorMessage = err.message;
         this.notifyStatus();
-        this.log(`⚠️ خطأ كتابة مراجع في Google Sheets: ${err.message}`);
+        this.log(`⚠️ خطأ كتابة مراجع في الأرشيف الاحتياطي: ${err.message}`);
         throw err;
       }
     },
@@ -572,7 +572,7 @@ class SheetsIntegrationLayer {
     update: async (citizen: Citizen): Promise<Citizen> => {
       this.status.syncState = 'writing';
       this.notifyStatus();
-      this.log(`جاري تحديث بيانات المراجع [${citizen.FullName}] في Google Sheets...`);
+      this.log(`جاري تحديث بيانات المراجع [${citizen.FullName}] في الأرشيف الاحتياطي...`);
 
       try {
         const rowIndex = await this.findRowIndexById(this.TABS.CITIZENS, citizen.Citizen_ID);
@@ -581,7 +581,7 @@ class SheetsIntegrationLayer {
         if (rowIndex !== null) {
           // Update the exact row
           await this.updateRangeValues(`${this.TABS.CITIZENS}!A${rowIndex}:S${rowIndex}`, [rowValues]);
-          this.log(`✓ تم تحديث الصف (${rowIndex}) للمراجع [${citizen.FullName}] في Google Sheets.`);
+          this.log(`✓ تم تحديث الصف (${rowIndex}) للمراجع [${citizen.FullName}] في الأرشيف الاحتياطي.`);
         } else {
           // Fallback: If not found, append as new row
           await this.appendRow(`${this.TABS.CITIZENS}!A:S`, rowValues);
@@ -596,7 +596,7 @@ class SheetsIntegrationLayer {
         this.status.syncState = 'error';
         this.status.errorMessage = err.message;
         this.notifyStatus();
-        this.log(`⚠️ خطأ تحديث مراجع في Google Sheets: ${err.message}`);
+        this.log(`⚠️ خطأ تحديث مراجع في الأرشيف الاحتياطي: ${err.message}`);
         throw err;
       }
     },
@@ -605,7 +605,7 @@ class SheetsIntegrationLayer {
      * Delete / mark citizen as deleted in Google Sheets
      */
     delete: async (citizenId: string): Promise<boolean> => {
-      this.log(`جاري حذف / شطب المراجع (${citizenId}) من Google Sheets...`);
+      this.log(`جاري حذف / شطب المراجع (${citizenId}) من الأرشيف الاحتياطي...`);
       try {
         const rowIndex = await this.findRowIndexById(this.TABS.CITIZENS, citizenId);
         if (rowIndex !== null) {
@@ -619,7 +619,7 @@ class SheetsIntegrationLayer {
         }
         return false;
       } catch (e: any) {
-        this.log(`⚠️ تعذر شطب المراجع من Sheets: ${e.message}`);
+        this.log(`⚠️ تعذر شطب المراجع من الأرشيف الاحتياطي: ${e.message}`);
         return false;
       }
     }
@@ -680,7 +680,7 @@ class SheetsIntegrationLayer {
     readAll: async (): Promise<OfficeRequest[]> => {
       this.status.syncState = 'reading';
       this.notifyStatus();
-      this.log('جاري قراءة سجلات الطلبات والمعاملات مباشرة من Google Sheets...');
+      this.log('جاري قراءة سجلات الطلبات والمعاملات مباشرة من الأرشيف الاحتياطي...');
 
       try {
         const rawRows = await this.getRangeValues(`${this.TABS.REQUESTS}!A2:N`);
@@ -697,7 +697,7 @@ class SheetsIntegrationLayer {
         this.status.lastSyncTime = new Date().toLocaleTimeString('ar-IQ');
         this.status.syncState = 'idle';
         this.notifyStatus();
-        this.log(`✓ تم بنجاح قراءة (${requests.length}) طلب ومعاملة مباشرة من Google Sheets.`);
+        this.log(`✓ تم بنجاح قراءة (${requests.length}) طلب ومعاملة مباشرة من الأرشيف الاحتياطي.`);
         return requests;
       } catch (err: any) {
         this.status.syncState = 'error';
@@ -730,7 +730,7 @@ class SheetsIntegrationLayer {
     insert: async (request: OfficeRequest): Promise<OfficeRequest> => {
       this.status.syncState = 'writing';
       this.notifyStatus();
-      this.log(`جاري حفظ الطلب [${request.Request_ID}] للمواطن [${request.CitizenName}] في Google Sheets...`);
+      this.log(`جاري حفظ الطلب [${request.Request_ID}] للمواطن [${request.CitizenName}] في الأرشيف الاحتياطي...`);
 
       try {
         const row = this.requestToRow(request);
@@ -738,13 +738,13 @@ class SheetsIntegrationLayer {
         this.status.lastSyncTime = new Date().toLocaleTimeString('ar-IQ');
         this.status.syncState = 'idle';
         this.notifyStatus();
-        this.log(`✓ تم حفظ الطلب [${request.Request_ID}] في Google Sheets بنجاح.`);
+        this.log(`✓ تم حفظ الطلب [${request.Request_ID}] في الأرشيف الاحتياطي بنجاح.`);
         return request;
       } catch (err: any) {
         this.status.syncState = 'error';
         this.status.errorMessage = err.message;
         this.notifyStatus();
-        this.log(`⚠️ خطأ كتابة طلب في Google Sheets: ${err.message}`);
+        this.log(`⚠️ خطأ كتابة طلب في الأرشيف الاحتياطي: ${err.message}`);
         throw err;
       }
     },
@@ -755,7 +755,7 @@ class SheetsIntegrationLayer {
     update: async (request: OfficeRequest): Promise<OfficeRequest> => {
       this.status.syncState = 'writing';
       this.notifyStatus();
-      this.log(`جاري تحديث بيانات الطلب [${request.Request_ID}] في Google Sheets...`);
+      this.log(`جاري تحديث بيانات الطلب [${request.Request_ID}] في الأرشيف الاحتياطي...`);
 
       try {
         const rowIndex = await this.findRowIndexById(this.TABS.REQUESTS, request.Request_ID);
@@ -763,10 +763,10 @@ class SheetsIntegrationLayer {
 
         if (rowIndex !== null) {
           await this.updateRangeValues(`${this.TABS.REQUESTS}!A${rowIndex}:N${rowIndex}`, [rowValues]);
-          this.log(`✓ تم تحديث الصف (${rowIndex}) للطلب [${request.Request_ID}] في Google Sheets.`);
+          this.log(`✓ تم تحديث الصف (${rowIndex}) للطلب [${request.Request_ID}] في الأرشيف الاحتياطي.`);
         } else {
           await this.appendRow(`${this.TABS.REQUESTS}!A:N`, rowValues);
-          this.log(`✓ تم حفظ الطلب [${request.Request_ID}] كصف جديد في Google Sheets.`);
+          this.log(`✓ تم حفظ الطلب [${request.Request_ID}] كصف جديد في الأرشيف الاحتياطي.`);
         }
 
         this.status.lastSyncTime = new Date().toLocaleTimeString('ar-IQ');
@@ -777,7 +777,7 @@ class SheetsIntegrationLayer {
         this.status.syncState = 'error';
         this.status.errorMessage = err.message;
         this.notifyStatus();
-        this.log(`⚠️ خطأ تحديث طلب في Google Sheets: ${err.message}`);
+        this.log(`⚠️ خطأ تحديث طلب في الأرشيف الاحتياطي: ${err.message}`);
         throw err;
       }
     },
@@ -786,7 +786,7 @@ class SheetsIntegrationLayer {
      * Delete / mark request as deleted in Google Sheets
      */
     delete: async (requestId: string): Promise<boolean> => {
-      this.log(`جاري حذف الطلب (${requestId}) من Google Sheets...`);
+      this.log(`جاري حذف الطلب (${requestId}) من الأرشيف الاحتياطي...`);
       try {
         const rowIndex = await this.findRowIndexById(this.TABS.REQUESTS, requestId);
         if (rowIndex !== null) {
@@ -794,12 +794,12 @@ class SheetsIntegrationLayer {
           blankRow[0] = `[محذوف-${requestId}]`;
           blankRow[2] = 'تم حذف الطلب من المنظومة';
           await this.updateRangeValues(`${this.TABS.REQUESTS}!A${rowIndex}:N${rowIndex}`, [blankRow]);
-          this.log(`✓ تم شطب الطلب (${requestId}) من Google Sheets.`);
+          this.log(`✓ تم شطب الطلب (${requestId}) من الأرشيف الاحتياطي.`);
           return true;
         }
         return false;
       } catch (e: any) {
-        this.log(`⚠️ تعذر شطب الطلب من Sheets: ${e.message}`);
+        this.log(`⚠️ تعذر شطب الطلب من الأرشيف الاحتياطي: ${e.message}`);
         return false;
       }
     }
@@ -934,7 +934,7 @@ class SheetsIntegrationLayer {
   }> {
     this.status.syncState = 'syncing';
     this.notifyStatus();
-    this.log('بدء قراءة وجلب كافة البيانات المركزية من جداول Google Sheets...');
+    this.log('بدء قراءة وجلب كافة البيانات المركزية من الأرشيف الاحتياطي...');
 
     const [citizens, requests] = await Promise.all([
       this.citizens.readAll(),
@@ -1025,7 +1025,7 @@ class SheetsIntegrationLayer {
     this.status.lastSyncTime = new Date().toLocaleTimeString('ar-IQ');
     this.status.syncState = 'idle';
     this.notifyStatus();
-    this.log(`✓ اكتملت قراءة كافة الجداول من Google Sheets (${citizens.length} مراجع، ${requests.length} طلب).`);
+    this.log(`✓ اكتملت قراءة كافة الجداول من الأرشيف الاحتياطي (${citizens.length} مراجع، ${requests.length} طلب).`);
 
     return {
       citizens,

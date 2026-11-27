@@ -570,7 +570,7 @@ const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ on
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
                     <UserCheck className="w-4 h-4 text-teal-600" />
-                    <span>التوزيع حسب المعرّفين والتزكيات (مباشر من Firestore)</span>
+                    <span>التوزيع حسب المعرّفين والتزكيات (تحديث لحظي مباشر)</span>
                   </h4>
                   <span className="text-[10px] text-slate-400 font-bold">مستلم: {deliveredRequests.length} | غير مستلم: {undeliveredRequestsCount}</span>
                 </div>
@@ -699,7 +699,7 @@ const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ on
         {/* Modal Footer */}
         <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/80 flex items-center justify-between shrink-0">
           <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-            تحديث لحظي ومستمر مع قواعد بيانات Firebase و Google Sheets ⚡
+            تحديث لحظي ومستمر مع قاعدة البيانات والأرشيف الاحتياطي ⚡
           </div>
           <button
             onClick={onClose}

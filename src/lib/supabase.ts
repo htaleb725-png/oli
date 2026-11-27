@@ -48,12 +48,12 @@ export async function testSupabaseConnection(): Promise<{ ok: boolean; error?: s
       .limit(1);
 
     if (error) {
-      const msg = `تعذر الاتصال بقاعدة بيانات Supabase: ${error.message}`;
+      const msg = `تعذر الاتصال بقاعدة البيانات: ${error.message}`;
       updateFirebaseHealth('error', msg);
       pushCloudSyncAlert({
         severity: 'error',
         target: 'firebase',
-        title: 'خطأ في الاتصال بقاعدة البيانات (Supabase)',
+        title: 'خطأ في الاتصال بقاعدة البيانات',
         message: msg,
         details: error.message
       });
@@ -64,7 +64,7 @@ export async function testSupabaseConnection(): Promise<{ ok: boolean; error?: s
     return { ok: true };
   } catch (err) {
     const rawMsg = err instanceof Error ? err.message : String(err);
-    const msg = `تعذر الاتصال بخادم Supabase: ${rawMsg}`;
+    const msg = `تعذر الاتصال بخادم قاعدة البيانات: ${rawMsg}`;
     updateFirebaseHealth('error', msg);
     return { ok: false, error: msg };
   }

@@ -114,7 +114,10 @@ export const MasterAdminModule: React.FC = () => {
     logout,
     syncAllToGoogleSheetsNow,
     fetchAllFromGoogleSheetsNow,
-    setGoogleDriveFolderId: applyGlobalDriveFolderId
+    setGoogleDriveFolderId: applyGlobalDriveFolderId,
+    isImportingFromGoogleSheet,
+    sheetImportProgress,
+    importFromGoogleSheetToSupabase
   } = useApp();
 
   // Navigation: 'grid' (لوحة الأيقونات المركزية للمطور) or individual tool workspace
@@ -245,15 +248,15 @@ export const MasterAdminModule: React.FC = () => {
       let sId = activeGoogleSheetId;
       let sUrl = activeGoogleSheetUrl;
       try {
-        logs.push(`[${now}] جاري إنشاء وتهيئة جداول Google Sheets المركزية (10 جداول مقسمة)...`);
+        logs.push(`[${now}] جاري إنشاء وتهيئة جداول الأرشيف الاحتياطي المركزية...`);
         const sResult = await createOfficeGoogleSpreadsheet(token, 'قاعدة بيانات مكتب النائب علا الناشي - المركزية');
         sId = sResult.spreadsheetId;
         sUrl = sResult.spreadsheetUrl;
         setActiveGoogleSheetId(sId);
         setActiveGoogleSheetUrl(sUrl);
-        logs.push(`✓ تم ربط قاعدة بيانات Google Sheets: ${sId}`);
+        logs.push(`✓ تم ربط الأرشيف الاحتياطي بنجاح: ${sId}`);
       } catch (sErr: any) {
-        logs.push(`⚠️ Google Sheets: ${sErr.message}`);
+        logs.push(`⚠️ الأرشيف الاحتياطي: ${sErr.message}`);
       }
 
       // 4. Save Settings
@@ -272,7 +275,7 @@ export const MasterAdminModule: React.FC = () => {
 
       // 5. Initial Sync to Sheets
       if (sId) {
-        logs.push(`[${now}] جاري مزامنة السجلات الحالية إلى أوراق Google Sheets الـ 8 (ورقة واحدة لكل قسم)...`);
+        logs.push(`[${now}] جاري مزامنة السجلات الحالية إلى أوراق الأرشيف الاحتياطي الـ 8 (ورقة واحدة لكل قسم)...`);
         const syncRes = await syncAllDataToGoogleSheets(token, sId, {
           citizens,
           requests,
@@ -284,12 +287,12 @@ export const MasterAdminModule: React.FC = () => {
           customRecords,
           users
         });
-        logs.push(`✓ تم بنجاح تحديث وتنسيق (${syncRes.updatedSheets}) أوراق أقسام في Google Sheets.`);
+        logs.push(`✓ تم بنجاح تحديث وتنسيق (${syncRes.updatedSheets}) أوراق أقسام في الأرشيف الاحتياطي.`);
       }
 
-      logs.push(`⚡ اكتملت منظومة الربط مع Google Sheets (8 أوراق رسمية للأقسام) و Google Drive (مجلد الصور) بنجاح!`);
+      logs.push(`⚡ تمت مزامنة البيانات بنجاح مع الأرشيف الاحتياطي ومجلد Google Drive!`);
       setSyncLogs(logs);
-      addAuditLog('تهيئة المزامنة السحابية للمطور', 'لوحة تحكم المطور', 'تم تفعيل ربط Google Sheets و Google Drive بنجاح');
+      addAuditLog('تهيئة المزامنة السحابية للمطور', 'لوحة تحكم المطور', 'تم تفعيل ربط الأرشيف الاحتياطي و Google Drive بنجاح');
     } catch (err: any) {
       logs.push(`❌ تنبيه أثناء التهيئة: ${err.message || 'خطأ غير متوقع'}`);
       setSyncLogs(logs);
@@ -305,7 +308,7 @@ export const MasterAdminModule: React.FC = () => {
       const res = await syncAllToGoogleSheetsNow();
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ${res.success ? '✓' : '⚠️'} ${res.message}`, ...prev]);
       if (res.success) {
-        addAuditLog('مزامنة فورية مع Google Sheets', 'لوحة تحكم المطور', 'تم حفظ ومزامنة كافة السجلات مع Google Sheets و Google Drive بنجاح');
+        addAuditLog('مزامنة فورية مع الأرشيف الاحتياطي', 'لوحة تحكم المطور', 'تمت مزامنة البيانات بنجاح مع الأرشيف الاحتياطي و Google Drive');
       }
     } catch (err: any) {
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ❌ حدث خطأ أثناء المزامنة: ${err.message || 'خطأ غير متوقع'}`, ...prev]);
@@ -314,7 +317,7 @@ export const MasterAdminModule: React.FC = () => {
     }
   };
 
-  // One-click Google Sheets column cleanup & reorganization (without deleting records)
+  // One-click backup archive column cleanup & reorganization (without deleting records)
   const [isReorganizingSheets, setIsReorganizingSheets] = useState(false);
   const handleReorganizeSheetsColumns = async () => {
     setIsReorganizingSheets(true);
@@ -334,7 +337,7 @@ export const MasterAdminModule: React.FC = () => {
       });
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ${res.message}`, ...prev]);
       if (res.success) {
-        addAuditLog('توحيد وتنظيم أوراق Google Sheets (8 أقسام)', 'لوحة تحكم المطور', res.message);
+        addAuditLog('توحيد وتنظيم أوراق الأرشيف الاحتياطي (8 أقسام)', 'لوحة تحكم المطور', res.message);
       }
     } catch (err: any) {
       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ❌ خطأ أثناء ترتيب الأعمدة: ${err?.message || 'غير معروف'}`, ...prev]);
@@ -421,6 +424,9 @@ export const MasterAdminModule: React.FC = () => {
   const [appsScriptUrl, setAppsScriptUrl] = useState(systemSettings.appsScriptUrl);
   const [maintenanceMode, setMaintenanceMode] = useState(systemSettings.maintenanceMode);
   const [allowAdminOpenDriveFolder, setAllowAdminOpenDriveFolder] = useState(Boolean(systemSettings.allowAdminOpenDriveFolder));
+  const [tickerEnabled, setTickerEnabled] = useState<boolean>(systemSettings.tickerEnabled !== false);
+  const [tickerSpeed, setTickerSpeed] = useState<'slow' | 'normal' | 'fast'>(systemSettings.tickerSpeed || 'normal');
+  const [tickerColor, setTickerColor] = useState<'navy' | 'emerald' | 'amber' | 'rose' | 'indigo'>(systemSettings.tickerColor || 'navy');
 
   useEffect(() => {
     setAppName(systemSettings.appName || '');
@@ -430,6 +436,9 @@ export const MasterAdminModule: React.FC = () => {
     setOfficeAddress(systemSettings.officeAddress || '');
     setHotline(systemSettings.hotline || '');
     setTickerNewsText((systemSettings.tickerNews || []).join('\n'));
+    setTickerEnabled(systemSettings.tickerEnabled !== false);
+    setTickerSpeed(systemSettings.tickerSpeed || 'normal');
+    setTickerColor(systemSettings.tickerColor || 'navy');
     setGoogleSheetId(systemSettings.googleSheetId || '');
     setGoogleDriveFolderId(systemSettings.googleDriveFolderId || '');
     setAppsScriptUrl(systemSettings.appsScriptUrl || '');
@@ -443,6 +452,10 @@ export const MasterAdminModule: React.FC = () => {
     systemSettings.province,
     systemSettings.officeAddress,
     systemSettings.hotline,
+    systemSettings.tickerNews,
+    systemSettings.tickerEnabled,
+    systemSettings.tickerSpeed,
+    systemSettings.tickerColor,
     systemSettings.googleSheetId,
     systemSettings.googleDriveFolderId,
     systemSettings.appsScriptUrl,
@@ -597,6 +610,9 @@ export const MasterAdminModule: React.FC = () => {
       officeAddress: officeAddress.trim(),
       hotline: hotline.trim(),
       tickerNews: newsArray,
+      tickerEnabled,
+      tickerSpeed,
+      tickerColor,
       googleSheetId: cleanSheetId,
       activeGoogleSheetId: cleanSheetId,
       ...(cleanDriveId ? { googleDriveFolderId: cleanDriveId } : {}),
@@ -615,8 +631,8 @@ export const MasterAdminModule: React.FC = () => {
 
     setSuccessMessage(
       ok
-        ? '✓ تم حفظ وتطبيق كافة إعدادات المنظومة والنصوص في Supabase بنجاح!'
-        : 'تعذر تأكيد الحفظ في Supabase. يرجى التحقق من الاتصال وإعادة المحاولة.'
+        ? 'تم تحديث البيانات في قاعدة البيانات بنجاح'
+        : 'تعذر تأكيد الحفظ في قاعدة البيانات. يرجى التحقق من الاتصال وإعادة المحاولة.'
     );
   };
 
@@ -695,6 +711,87 @@ export const MasterAdminModule: React.FC = () => {
         </div>
       )}
 
+      {/* Exclusive Developer Panel Tool: One-Click Import from Google Sheet -> Supabase with Live Progress Counter */}
+      {currentUser?.Role === 'developer' && activeTab === 'grid' && (
+        <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 dark:from-emerald-950/40 dark:via-teal-950/30 dark:to-emerald-950/40 border border-emerald-300 dark:border-emerald-800 shadow-xs space-y-3">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-600 text-white">
+                  حصري للوحة المطور فقط
+                </span>
+                <h3 className="text-sm font-black text-emerald-950 dark:text-emerald-100 flex items-center gap-1.5">
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                  <span>استيراد ومزامنة الأرشيف الاحتياطي إلى قاعدة البيانات</span>
+                </h3>
+              </div>
+              <p className="text-xs text-emerald-800/90 dark:text-emerald-200/80">
+                يسحب كافة السجلات والمعاملات السابقة من الأرشيف الاحتياطي ويحفظها في قاعدة البيانات الرئيسية دون أي تكرار، مع بقاء النسخ الاحتياطي التلقائي المستمر فعالاً.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isImportingFromGoogleSheet}
+              onClick={async () => {
+                const res = await importFromGoogleSheetToSupabase();
+                setSuccessMessage(res.success ? 'تمت مزامنة البيانات بنجاح' : res.message);
+                setTimeout(() => setSuccessMessage(''), 7000);
+              }}
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-60 shrink-0"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>
+                {isImportingFromGoogleSheet
+                  ? `جاري الاستيراد... (${sheetImportProgress?.percent ?? 0}%)`
+                  : 'استيراد ومزامنة الأرشيف الاحتياطي إلى قاعدة البيانات'}
+              </span>
+            </button>
+          </div>
+
+          {sheetImportProgress && (isImportingFromGoogleSheet || sheetImportProgress.phase === 'done' || sheetImportProgress.phase === 'error') && (
+            <div className="p-3.5 rounded-xl bg-white/90 dark:bg-slate-900/90 border border-emerald-200 dark:border-emerald-800/80 space-y-2">
+              <div className="flex items-center justify-between gap-2 text-xs font-black">
+                <span className={sheetImportProgress.phase === 'error' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-800 dark:text-slate-100'}>
+                  {sheetImportProgress.label}
+                </span>
+                <span className="font-mono text-emerald-700 dark:text-emerald-400 shrink-0">
+                  {sheetImportProgress.percent}%
+                </span>
+              </div>
+              <div className="w-full h-2.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-300 ${
+                    sheetImportProgress.phase === 'error'
+                      ? 'bg-rose-500'
+                      : sheetImportProgress.phase === 'done'
+                      ? 'bg-emerald-600'
+                      : 'bg-blue-600'
+                  }`}
+                  style={{ width: `${Math.max(3, Math.min(100, sheetImportProgress.percent))}%` }}
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-3 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                <span>
+                  المراجعون: <strong className="font-mono text-slate-900 dark:text-white">{sheetImportProgress.citizensDone} / {sheetImportProgress.citizensTotal}</strong>
+                </span>
+                <span>•</span>
+                <span>
+                  المعاملات: <strong className="font-mono text-slate-900 dark:text-white">{sheetImportProgress.requestsDone} / {sheetImportProgress.requestsTotal}</strong>
+                </span>
+                {sheetImportProgress.otherTotal > 0 && (
+                  <>
+                    <span>•</span>
+                    <span>
+                      الأقسام المساندة: <strong className="font-mono text-slate-900 dark:text-white">{sheetImportProgress.otherDone} / {sheetImportProgress.otherTotal}</strong>
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ---------------- VIEW 1: CENTRAL ICONS GRID (لوحة الأيقونات المركزية للمطور) ---------------- */}
       {activeTab === 'grid' && (
         <OfficeIconTilesGrid
@@ -715,8 +812,8 @@ export const MasterAdminModule: React.FC = () => {
             },
             {
               id: 'dev_firebase',
-              title: 'قاعدة بيانات Supabase + Google Sheet',
-              subtitle: 'المزامنة السحابية اللحظية وجلب البيانات السابقة',
+              title: 'قاعدة البيانات والأرشيف الاحتياطي',
+              subtitle: 'المزامنة السحابية اللحظية واستيراد الأرشيف الاحتياطي',
               icon: Cloud,
               iconColor: 'text-emerald-600 dark:text-emerald-400',
               iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
@@ -727,7 +824,7 @@ export const MasterAdminModule: React.FC = () => {
             {
               id: 'dev_multi_office',
               title: 'تهيئة وتغيير المكتب وقواعد البيانات (للنائب الجديد)',
-              subtitle: 'تغيير اسم النائب، جداول Google Sheets، وعزل البيانات بدون كود',
+              subtitle: 'تغيير اسم النائب، جداول الأرشيف، وعزل البيانات بدون كود',
               icon: Building2,
               iconColor: 'text-blue-600 dark:text-blue-400',
               iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
@@ -801,8 +898,8 @@ export const MasterAdminModule: React.FC = () => {
             },
             {
               id: 'dev_script',
-              title: 'سكربت Google Sheets السحابي',
-              subtitle: 'كود Apps Script والربط المباشر بدون توكن',
+              title: 'سكربت المزامنة السحابية والأرشيف',
+              subtitle: 'كود السكربت والربط المباشر للأرشيف الاحتياطي',
               icon: FileSpreadsheet,
               iconColor: 'text-emerald-600 dark:text-emerald-400',
               iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
@@ -812,8 +909,8 @@ export const MasterAdminModule: React.FC = () => {
             },
             {
               id: 'dev_sync',
-              title: 'جداول Google Sheets و Google Drive',
-              subtitle: 'الجداول المركزية الرسمية ومجلد الأرشيف المباشر',
+              title: 'الأرشيف الاحتياطي و Google Drive',
+              subtitle: 'الجداول المركزية الاحتياطية ومجلد الأرشيف المباشر',
               icon: Database,
               iconColor: 'text-emerald-600 dark:text-emerald-400',
               iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800',
@@ -916,7 +1013,7 @@ export const MasterAdminModule: React.FC = () => {
                 </div>
                 <h3 className="text-sm sm:text-base font-black text-white mt-0.5">
                   {activeTab === 'sections' && 'باني الأقسام المخصصة والحقول الديناميكية'}
-                  {activeTab === 'firebase' && 'قاعدة بيانات Supabase اللحظية + شريك Google Sheet'}
+                  {activeTab === 'firebase' && 'قاعدة البيانات اللحظية والأرشيف الاحتياطي'}
                   {activeTab === 'drive_folder' && 'ربط وتثبيت Google Drive عبر معرف المجلد (Folder ID)'}
                   {activeTab === 'multi_office' && 'تهيئة وتغيير المكتب وقواعد البيانات (للنائب الجديد)'}
                   {activeTab === 'icons_studio' && 'استوديو الأيقونات وصورة البرنامج والشعار'}
@@ -925,8 +1022,8 @@ export const MasterAdminModule: React.FC = () => {
                   {activeTab === 'users' && `إدارة المستخدمين وصلاحيات الكادر (${users.length})`}
                   {activeTab === 'system' && 'إعدادات وهوية المنظومة والنائب'}
                   {activeTab === 'dropdowns' && `القوائم المنسدلة والعشائر (${dropdowns.length})`}
-                  {activeTab === 'script' && 'سكربت Google Sheets السحابي (Apps Script)'}
-                  {activeTab === 'sync' && 'قاعدة بيانات Google Sheets و Google Drive'}
+                  {activeTab === 'script' && 'سكربت المزامنة السحابية للأرشيف الاحتياطي'}
+                  {activeTab === 'sync' && 'إدارة الأرشيف الاحتياطي و Google Drive'}
                   {activeTab === 'desktop' && 'تطبيق سطح المكتب والتشغيل (PWA)'}
                   {activeTab === 'data_wipe' && 'مركز تصفير وحذف بيانات المنظومة'}
                 </h3>
@@ -976,7 +1073,7 @@ export const MasterAdminModule: React.FC = () => {
                 activeTab === 'firebase' ? 'bg-amber-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
-              <span>Supabase السحابي ☁️</span>
+              <span>قاعدة البيانات السحابية ☁️</span>
             </button>
             <button
               onClick={() => setActiveTab('multi_office')}
@@ -1048,7 +1145,7 @@ export const MasterAdminModule: React.FC = () => {
                 activeTab === 'sync' ? 'bg-teal-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
-              <span>Google Sheets & Drive 📊</span>
+              <span>الأرشيف و Drive 📊</span>
             </button>
             <button
               onClick={() => setActiveTab('drive_folder')}
@@ -1175,17 +1272,58 @@ export const MasterAdminModule: React.FC = () => {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  شريط الأخبار والتعميمات الإدارية المباشرة (كل تعميم في سطر مستقل):
-                </label>
+              <div className="space-y-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-xs font-black text-slate-800">
+                    شريط الأخبار والتعميمات الإدارية المباشرة (محفوظ في قاعدة البيانات لجميع الحاسبات):
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tickerEnabled}
+                      onChange={(e) => setTickerEnabled(e.target.checked)}
+                      className="w-4 h-4 rounded accent-emerald-600 cursor-pointer"
+                    />
+                    <span>{tickerEnabled ? 'الشريط مفعّل وظاهر' : 'الشريط مخفي / متوقف'}</span>
+                  </label>
+                </div>
+
                 <textarea
                   value={tickerNewsText}
                   onChange={(e) => setTickerNewsText(e.target.value)}
                   rows={4}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs outline-none focus:bg-white focus:ring-2 focus:ring-orange-500 leading-relaxed font-medium"
-                  placeholder="أدخل الأخبار والتعميمات..."
+                  className="w-full px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-800 text-xs outline-none focus:ring-2 focus:ring-orange-500 leading-relaxed font-medium"
+                  placeholder="أدخل الأخبار والتعميمات (كل تعميم في سطر مستقل)..."
                 />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">لون شريط التعميمات:</label>
+                    <select
+                      value={tickerColor}
+                      onChange={(e) => setTickerColor(e.target.value as any)}
+                      className="w-full px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-800 text-xs font-bold outline-none focus:ring-2 focus:ring-orange-500"
+                    >
+                      <option value="navy">كحلي رسمي (الافتراضي)</option>
+                      <option value="emerald">زمردي أخضر</option>
+                      <option value="amber">عنبري ذهبي</option>
+                      <option value="rose">عنابي تنبيهي</option>
+                      <option value="indigo">نيلي برلماني</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">سرعة حركة الشريط:</label>
+                    <select
+                      value={tickerSpeed}
+                      onChange={(e) => setTickerSpeed(e.target.value as any)}
+                      className="w-full px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-800 text-xs font-bold outline-none focus:ring-2 focus:ring-orange-500"
+                    >
+                      <option value="slow">بطيء ومريح للقراءة</option>
+                      <option value="normal">متوسط (قياسي)</option>
+                      <option value="fast">سريع</option>
+                    </select>
+                  </div>
+                </div>
               </div>
 
               <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
@@ -1343,20 +1481,20 @@ export const MasterAdminModule: React.FC = () => {
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="font-black text-sm text-white">
-                      قاعدة بيانات Google Sheets ومجلد Google Drive (الرئيسية الحصرية)
+                      الأرشيف الاحتياطي السحابي ومجلد Google Drive
                     </h3>
                     <span className="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                      قاعدة البيانات الحصرية للمنظومة
+                      مزامنة تلقائية مستمرة
                     </span>
                   </div>
                   <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                    تم استبعاد وحذف الاعتماد على أي قواعد بيانات وسيطة، والاعتماد حصرياً على جداول <strong>Google Sheets</strong> كقاعدة بيانات مركزية لكافة السجلات (المواطنين، الطلبات، المقابلات، الصكوك، الكتب، السجل التنظيمي)، و <strong>Google Drive</strong> لحفظ وأرشفة الصور والوثائق والمرفقات بشكل مباشر.
+                    الاعتماد على جداول <strong>الأرشيف الاحتياطي</strong> لحفظ نسخة متزامنة لكافة السجلات (المراجعين، المعاملات، المقابلات، الصكوك، الكتب، السجل التنظيمي)، و <strong>Google Drive</strong> لحفظ وأرشفة الصور والوثائق والمرفقات بشكل مباشر.
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-[11px] font-mono font-bold text-emerald-300">Google Sheets & Drive نشط</span>
+                <span className="text-[11px] font-mono font-bold text-emerald-300">الأرشيف السحابي نشط</span>
               </div>
             </div>
           </div>
@@ -1419,13 +1557,13 @@ export const MasterAdminModule: React.FC = () => {
                   </div>
                   <div className="flex-1 space-y-1">
                     <h5 className="font-black text-sm text-amber-950 dark:text-amber-100 flex items-center gap-2 flex-wrap">
-                      <span>تنبيه أمان Firebase: النطاق غير مصرح به (auth/unauthorized-domain)</span>
+                      <span>تنبيه أمان المصادقة: النطاق غير مصرح به (auth/unauthorized-domain)</span>
                       <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-300 text-[10px] font-mono font-bold">Domain Security Restriction</span>
                     </h5>
                     <p className="text-xs text-amber-800/90 dark:text-amber-200/90 leading-relaxed">
-                      يرفض محرك مصادقة Firebase فتح نافذة Google لأن هذا النطاق غير مضاف في قائمة 
+                      يرفض محرك المصادقة فتح نافذة Google لأن هذا النطاق غير مضاف في قائمة 
                       <strong> النطاقات المصرح بها (Authorized Domains) </strong> 
-                      في إعدادات مشروع Firebase.
+                      في إعدادات المشروع السحابي.
                     </p>
                   </div>
                 </div>
@@ -1459,20 +1597,20 @@ export const MasterAdminModule: React.FC = () => {
                   <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 space-y-1">
                     <div className="font-bold text-amber-950 dark:text-amber-200 flex items-center gap-1.5">
                       <span className="w-5 h-5 rounded-full bg-amber-500 text-slate-950 font-black text-[11px] flex items-center justify-center shrink-0">1</span>
-                      <span>إضافة النطاق في Firebase Console (حل دائم):</span>
+                      <span>إضافة النطاق في إعدادات المصادقة (حل دائم):</span>
                     </div>
                     <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-relaxed pr-6">
-                      ادخل إلى <strong>Firebase Console</strong> لمشروع <code>{firebaseConfig.projectId}</code> &gt; <strong>Authentication</strong> &gt; <strong>Settings</strong> &gt; <strong>Authorized domains</strong> &gt; انقر <strong>Add domain</strong> والصق النطاق المنسوخ أعلاه.
+                      ادخل إلى <strong>لوحة المصادقة السحابية</strong> &gt; <strong>Authentication</strong> &gt; <strong>Settings</strong> &gt; <strong>Authorized domains</strong> &gt; انقر <strong>Add domain</strong> والصق النطاق المنسوخ أعلاه.
                     </p>
                   </div>
 
                   <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 space-y-1">
                     <div className="font-bold text-blue-950 dark:text-blue-200 flex items-center gap-1.5">
                       <span className="w-5 h-5 rounded-full bg-blue-500 text-white font-black text-[11px] flex items-center justify-center shrink-0">2</span>
-                      <span>تجاوز القيود فوراً (بدون انتظار Firebase):</span>
+                      <span>تجاوز القيود فوراً:</span>
                     </div>
                     <p className="text-[11px] text-blue-800 dark:text-blue-300 leading-relaxed pr-6">
-                      قاعدة بيانات <strong>Firestore تعمل بنجاح وبدون قيود</strong>! يمكنك النقر على الزر الأخضر بالأسفل لتفعيل جلسة المطور ومزامنة Firestore فوراً، أو إدخال مفتاح Token مباشر.
+                      <strong>قاعدة البيانات الرئيسية تعمل بنجاح وبدون قيود</strong>! يمكنك النقر على الزر الأخضر بالأسفل لتفعيل جلسة المطور والمزامنة فوراً، أو إدخال مفتاح Token مباشر.
                     </p>
                   </div>
                 </div>
@@ -1493,11 +1631,11 @@ export const MasterAdminModule: React.FC = () => {
                           const sheetsRes = await syncAllToGoogleSheetsNow();
                           setSyncLogs([
                             `[${new Date().toLocaleTimeString('ar-IQ')}] تم ربط وتفعيل حساب Google بنجاح (${res.user?.email || 'المطور'})`,
-                            `✓ تم تأكيد اتصال ومزامنة قاعدة بيانات Google Sheets (${sheetsRes.success ? 'متصل بنجاح' : 'جاري المزامنة'})`,
+                            `✓ تم تأكيد اتصال ومزامنة الأرشيف الاحتياطي (${sheetsRes.success ? 'متصل بنجاح' : 'جاري المزامنة'})`,
                             `✓ تخزين المرفقات والصور سحابياً في Google Drive`,
                             `⚡ ${sheetsRes.message}`
                           ]);
-                          addAuditLog('تفعيل ومزامنة Google', 'لوحة تحكم المطور', 'تم تفعيل ومزامنة Google Sheets و Google Drive');
+                          addAuditLog('تفعيل ومزامنة الأرشيف السحابي', 'لوحة تحكم المطور', 'تم تفعيل ومزامنة الأرشيف الاحتياطي و Google Drive');
                         } else if (res.error) {
                           setGoogleAuthError(res.error);
                         }
@@ -1510,7 +1648,7 @@ export const MasterAdminModule: React.FC = () => {
                     className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-sm active:scale-95"
                   >
                     <Zap className="w-4 h-4 text-amber-300" />
-                    <span>تسجيل الدخول ومزامنة Google Sheets فوراً ⚡</span>
+                    <span>تسجيل الدخول ومزامنة الأرشيف الاحتياطي فوراً ⚡</span>
                   </button>
 
                   <button
@@ -1560,7 +1698,7 @@ export const MasterAdminModule: React.FC = () => {
                     انقر على الزر أدناه لتسجيل الدخول بحساب Google المعتمد للمطور:
                   </span>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
-                    سيتم طلب الإذن للوصول إلى Google Drive و Google Sheets لإنشاء قواعد البيانات وتخزين المرفقات تلقائياً.
+                    سيتم طلب الإذن للوصول إلى Google Drive والأرشيف الاحتياطي لتهيئة الجداول وتخزين المرفقات تلقائياً.
                   </span>
                 </div>
 
@@ -1606,7 +1744,7 @@ export const MasterAdminModule: React.FC = () => {
                       <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
                       <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
                     </svg>
-                    <span>{isGoogleSigningIn ? 'جاري تفعيل السحابة الثلاثية...' : 'ربط وتفعيل السحابة الثلاثية (Firebase + Google Sheets + Drive)'}</span>
+                    <span>{isGoogleSigningIn ? 'جاري تفعيل الربط السحابي...' : 'ربط وتفعيل المزامنة السحابية والأرشيف و Drive'}</span>
                   </button>
 
                   {/* Direct Manual Token Option */}
@@ -1749,8 +1887,8 @@ export const MasterAdminModule: React.FC = () => {
                     <FileSpreadsheet className="w-5 h-5" />
                   </div>
                   <div>
-                    <h5 className="font-black text-sm text-slate-900 dark:text-white">قاعدة بيانات Google Sheets</h5>
-                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">قاعدة البيانات المركزية الوحيدة والرسمية</span>
+                    <h5 className="font-black text-sm text-slate-900 dark:text-white">جدول الأرشيف الاحتياطي</h5>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">نسخة احتياطية متزامنة ومباشرة</span>
                   </div>
                 </div>
                 <span className={`px-2.5 py-1 rounded-full text-[10px] font-black ${
@@ -1769,7 +1907,7 @@ export const MasterAdminModule: React.FC = () => {
 
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 text-xs font-mono space-y-1.5 border border-slate-200 dark:border-slate-700">
                 <div className="flex items-center justify-between text-slate-500">
-                  <span>Spreadsheet ID:</span>
+                  <span>Archive ID:</span>
                   <span className="font-bold text-slate-800 dark:text-slate-200 truncate max-w-[200px]">
                     {activeGoogleSheetId || 'لم يتم الربط بعد'}
                   </span>
@@ -1798,7 +1936,7 @@ export const MasterAdminModule: React.FC = () => {
                     className="flex-1 h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
-                    <span>فتح جدول Google Sheets ↗</span>
+                    <span>فتح جدول الأرشيف الاحتياطي ↗</span>
                   </a>
                 ) : null}
 
@@ -1825,7 +1963,7 @@ export const MasterAdminModule: React.FC = () => {
                         auditLogs,
                         cheques
                       });
-                      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] تم ربط وحفظ قاعدة بيانات Google Sheets: ${res.spreadsheetId}`, ...prev]);
+                      setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] تم ربط وحفظ الأرشيف الاحتياطي: ${res.spreadsheetId}`, ...prev]);
                     } catch (e: any) {
                       alert('خطأ: ' + e.message);
                     } finally {
@@ -1846,14 +1984,14 @@ export const MasterAdminModule: React.FC = () => {
                     const sheetId = activeGoogleSheetId || localStorage.getItem('al_nashi_sheet_id');
                     const scriptUrl = appsScriptUrl || systemSettings.appsScriptUrl || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
                     if (!token && !scriptUrl) {
-                      alert('يرجى تسجيل الدخول بحساب Google أو إدخال رابط Google Apps Script أولاً لجلب البيانات.');
+                      alert('يرجى تسجيل الدخول بحساب Google أو إدخال رابط السكربت أولاً لجلب البيانات.');
                       return;
                     }
                     setIsSyncingAll(true);
                     try {
                       const res = await fetchAllFromGoogleSheetsNow();
                       setSyncLogs(prev => [`[${new Date().toLocaleTimeString('ar-IQ')}] ${res.success ? '✓' : '⚠️'} ${res.message}`, ...prev]);
-                      alert(res.message);
+                      alert(res.success ? 'تمت مزامنة البيانات بنجاح' : res.message);
                     } catch (err: any) {
                       alert('خطأ الاستيراد: ' + err.message);
                     } finally {
@@ -1863,7 +2001,7 @@ export const MasterAdminModule: React.FC = () => {
                   className="px-3 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-700 dark:text-blue-300 font-bold text-xs flex items-center justify-center gap-1 cursor-pointer transition-all border border-blue-200 dark:border-blue-800"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAll ? 'animate-spin' : ''}`} />
-                  <span>قراءة واستيراد من Sheets</span>
+                  <span>استيراد من الأرشيف الاحتياطي</span>
                 </button>
               </div>
             </div>
@@ -2057,10 +2195,10 @@ export const MasterAdminModule: React.FC = () => {
               <div>
                 <h4 className="font-black text-sm text-slate-900 dark:text-white flex items-center gap-2">
                   <Zap className="w-4 h-4 text-emerald-500" />
-                  <span>محرك المزامنة اللحظية مع Google Sheets و Google Drive</span>
+                  <span>محرك المزامنة اللحظية مع الأرشيف الاحتياطي و Google Drive</span>
                 </h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  تزامن لحظي قوي وفوري مع قاعدة بيانات Google Sheets وأرشيف Google Drive للصور والوثائق.
+                  تزامن لحظي قوي وفوري مع الأرشيف الاحتياطي وأرشيف Google Drive للصور والوثائق.
                 </p>
               </div>
 
@@ -2073,7 +2211,7 @@ export const MasterAdminModule: React.FC = () => {
                   className="h-10 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-60"
                 >
                   <RefreshCw className={`w-4 h-4 ${isReorganizingSheets ? 'animate-spin' : ''}`} />
-                  <span>{isReorganizingSheets ? 'جاري تنظيف الأعمدة...' : 'تنظيف وإعادة ترتيب أعمدة Google Sheets الآن'}</span>
+                  <span>{isReorganizingSheets ? 'جاري تنظيف الأعمدة...' : 'تنظيف وإعادة ترتيب أعمدة الأرشيف الآن'}</span>
                 </button>
 
                 <button
@@ -2083,7 +2221,7 @@ export const MasterAdminModule: React.FC = () => {
                   className="h-10 px-5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-xs flex items-center gap-2 shadow-md shadow-emerald-500/20 transition-all cursor-pointer active:scale-95 shrink-0"
                 >
                   <Zap className={`w-4 h-4 text-amber-300 ${isSyncingAll ? 'animate-bounce' : ''}`} />
-                  <span>{isSyncingAll ? 'جاري حفظ ومزامنة السجلات...' : '⚡ حفظ ومزامنة كافة السجلات إلى Google Sheets الآن'}</span>
+                  <span>{isSyncingAll ? 'جاري حفظ ومزامنة السجلات...' : '⚡ حفظ ومزامنة كافة السجلات مع الأرشيف الآن'}</span>
                 </button>
               </div>
             </div>
@@ -2133,7 +2271,7 @@ export const MasterAdminModule: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    معرّف جدول Google Sheets (Spreadsheet ID)
+                    معرّف جدول الأرشيف الاحتياطي (Archive ID)
                   </label>
                   <input
                     type="text"
@@ -2317,7 +2455,7 @@ export const MasterAdminModule: React.FC = () => {
                 <p className="leading-relaxed text-rose-800">
                   التصفير يقوم بتفريغ سجلات (المراجعين، الطلبات، المقابلات، معاملات الصكوك والتنظيم، الكتب والوثائق، وصور الأرشيف والـ OCR) بالكامل ليصبح عدد السجلات صفر (0).
                   <br />
-                  <strong>سيتم الحذف والتفريغ الفعلي والشامل من Google Drive (كافة المرفقات والصور)، و Google Sheets (تفريغ كافة صفوف الجداول)، و Firebase Firestore (حذف كافة المجموعات السحابية)، وقاعدة البيانات المحلية.</strong>
+                  <strong>سيتم الحذف والتفريغ الفعلي والشامل من Google Drive (كافة المرفقات والصور)، والأرشيف الاحتياطي (تفريغ كافة صفوف الجداول)، وقاعدة البيانات الرئيسية بالكامل.</strong>
                 </p>
               </div>
             </div>

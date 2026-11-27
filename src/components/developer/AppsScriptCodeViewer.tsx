@@ -60,7 +60,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
       } catch (e) {
         console.warn('Sheets sync note:', e);
       }
-      setBulkSyncResult(`✓ تمت المزامنة الشاملة بنجاح! تم تحديث ${fsRes.successCount} سجل في السحابة${sheetSuccess ? ' وإرسال الحزمة إلى أوراق Google Sheets الـ 8 (ورقة واحدة لكل قسم)' : ''}.`);
+      setBulkSyncResult(`تمت مزامنة البيانات بنجاح (${fsRes.successCount} سجل في قاعدة البيانات${sheetSuccess ? ' والأرشيف الاحتياطي' : ''}).`);
     } catch (err: any) {
       setBulkSyncResult(`تنبيه المزامنة: ${err.message || 'حدث خطأ أثناء المزامنة'}`);
     } finally {
@@ -118,7 +118,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
         Priority: 'عاجل',
         Details: 'طلب شمول رسمي براتب الحماية الاجتماعية - فحص سحابي تجريبي'
       });
-      setBulkSyncResult(`✓ تم بنجاح إنشاء سجل مواطن وطلب رسمي وحفظهما فورياً في السحابة وجدول Google Sheets! تفقد Google Sheets الآن لرؤية البيانات.`);
+      setBulkSyncResult(`تم الحفظ في قاعدة البيانات بنجاح — تم إنشاء سجل مراجع ومعاملة تجريبية ومزامنتها مع الأرشيف الاحتياطي.`);
     } catch (err: any) {
       setBulkSyncResult(`تعذر حقن البيانات: ${err.message}`);
     } finally {
@@ -194,13 +194,13 @@ export const AppsScriptCodeViewer: React.FC = () => {
           </div>
           <div>
             <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
-              <span>سكربت المطور ومحرك الربط السحابي مع Google Sheets</span>
+              <span>سكربت المطور ومحرك الربط السحابي مع الأرشيف الاحتياطي</span>
               <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
                 جاهز للنسخ والنشر المباشر ⚡
               </span>
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
-              هذا السكربت البرمجي المكتوب خصيصاً للمنظومة يتم وضعه في جدول Google Sheets ليتولى معالجة وتخزين البيانات لحظياً بدون وسيط خارجي.
+              هذا السكربت البرمجي المكتوب خصيصاً للمنظومة يتم وضعه في جدول الأرشيف الاحتياطي ليتولى معالجة وتخزين النسخ الاحتياطية لحظياً بدون وسيط خارجي.
             </p>
           </div>
         </div>
@@ -236,7 +236,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
               dir="ltr"
             />
             <span className="text-[10px] text-slate-400 block">
-              تحصل على هذا الرابط بعد ضغط 'Deploy' ← 'New deployment' ← نوع 'Web App' في Google Sheets
+              تحصل على هذا الرابط بعد ضغط 'Deploy' ← 'New deployment' ← نوع 'Web App' في جدول الأرشيف
             </span>
           </div>
 
@@ -300,7 +300,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
       <div className="p-5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-amber-600/5 to-slate-900/40 border border-amber-500/30 space-y-3">
         <div className="flex items-center justify-between">
           <h4 className="text-xs font-black text-amber-300 flex items-center gap-2">
-            <span>🚀 التحكم المباشر بالمزامنة المزدوجة (Firebase Firestore + Google Sheets):</span>
+            <span>🚀 التحكم المباشر بالمزامنة المزدوجة (قاعدة البيانات الرئيسية + الأرشيف الاحتياطي):</span>
           </h4>
           <span className="text-[11px] font-mono text-slate-400">
             عدد السجلات الحالية في المنظومة: {citizens.length} مواطن
@@ -315,7 +315,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
             className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center gap-2 shadow-md shadow-emerald-600/20 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isBulkSyncing ? 'animate-spin' : ''}`} />
-            <span>{isBulkSyncing ? 'جاري التوحيد...' : 'توحيد وترتيب أوراق Google Sheets الـ 8 (ورقة واحدة لكل قسم)'}</span>
+            <span>{isBulkSyncing ? 'جاري التوحيد...' : 'توحيد وترتيب أوراق الأرشيف الاحتياطي الـ 8 (ورقة واحدة لكل قسم)'}</span>
           </button>
 
           <button
@@ -324,7 +324,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
             onClick={handleFullCloudSync}
             className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center gap-2 shadow-md shadow-amber-500/20 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
           >
-            <span>{isBulkSyncing ? 'جاري المزامنة السحابية...' : 'إرسال ومزامنة كافة البيانات السابقة إلى السحابة و Sheets الآن'}</span>
+            <span>{isBulkSyncing ? 'جاري المزامنة السحابية...' : 'إرسال ومزامنة كافة البيانات إلى قاعدة البيانات والأرشيف الآن'}</span>
           </button>
 
           <button
@@ -332,9 +332,9 @@ export const AppsScriptCodeViewer: React.FC = () => {
             disabled={isBulkSyncing}
             onClick={handleSeedOfficialTestData}
             className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 font-black text-xs flex items-center gap-2 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
-            title="إضافة مواطن ومعاملة تجريبية فورية للتأكد من نزول البيانات في Google Sheets"
+            title="إضافة مراجع ومعاملة تجريبية فورية للتأكد من وصول البيانات إلى الأرشيف الاحتياطي"
           >
-            <span>إضافة سجلات تجريبية فورية للتأكد من وصولها للشيت</span>
+            <span>إضافة سجلات تجريبية فورية للتأكد من وصولها للأرشيف</span>
           </button>
         </div>
 
@@ -351,7 +351,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
         <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
           <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
             <Database className="w-4 h-4 text-emerald-500" />
-            <span>هيكلة قاعدة البيانات المعتمدة في Google Sheets (8 أوراق رسمية - ورقة واحدة لكل قسم):</span>
+            <span>هيكلة جداول الأرشيف الاحتياطي المعتمدة (8 أوراق رسمية - ورقة واحدة لكل قسم):</span>
           </h4>
           <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 text-[10px] font-black">
             8 أوراق فقط بدون تكرار
@@ -392,7 +392,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
         <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
           <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
             <Code2 className="w-4 h-4 text-indigo-500" />
-            <span>كود السكربت البرمجي الكامل (Google Apps Script Code.gs):</span>
+            <span>الكود البرمجي الكامل لخدمة الأرشيف الاحتياطي:</span>
           </h4>
           <button
             type="button"
@@ -435,7 +435,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
             <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 flex items-start gap-2.5">
               <span className="w-5 h-5 rounded-full bg-emerald-600 text-white font-bold text-[10px] flex items-center justify-center shrink-0 mt-0.5">1</span>
               <div>
-                <strong>افتح جدول Google Sheets</strong> المخصص لبيانات مكتب النائب في متصفحك.
+                <strong>افتح جدول الأرشيف الاحتياطي</strong> المخصص لبيانات مكتب النائب في متصفحك.
               </div>
             </div>
 
@@ -472,7 +472,7 @@ export const AppsScriptCodeViewer: React.FC = () => {
             {/* Note on Apps Script 'Run' */}
             <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 space-y-1.5 mt-3">
               <div className="font-black text-xs flex items-center gap-2">
-                <span>⚠️ ملاحظة مهمة جداً عن زر "تنفيذ" (Run) داخل Google Apps Script:</span>
+                <span>⚠️ ملاحظة مهمة جداً عن زر "تنفيذ" (Run) داخل محرر السكربت:</span>
               </div>
               <p className="text-[11px] leading-relaxed text-amber-200">
                 زر "تنفيذ" (Run) داخل محرر جوجل مخصص فقط لتهيئة الجداول الفارغة وتنسيق الألوان (<code className="bg-slate-900 px-1.5 py-0.5 rounded text-amber-300">setupSpreadsheet</code>).

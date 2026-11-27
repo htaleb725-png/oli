@@ -1579,7 +1579,7 @@ export const OrgFinalEvaluationModal: React.FC<OrgFinalEvaluationModalProps> = (
                     3. تثبيت النتيجة النهائية للطلب واستبيان قسم التنظيم
                   </h4>
                   <p className="text-xs text-slate-500">
-                    يتم الحفظ والمزامنة الفورية في قاعدة البيانات السحابية و Google Sheet مباشرة عند الاعتماد
+                    يتم الحفظ والمزامنة الفورية في قاعدة البيانات والأرشيف الاحتياطي مباشرة عند الاعتماد
                   </p>
                 </div>
               </div>

@@ -369,7 +369,7 @@ export async function deleteLiveDriveFile(
 
   return {
     success: false,
-    error: 'يتطلب الحذف المباشر من Google Drive ربط رابط Google Apps Script أو تسجيل الدخول بحساب Google المطور.'
+    error: 'يتطلب الحذف المباشر من مجلد المرفقات السحابي تفعيل إعدادات الربط السحابي أو تسجيل الدخول من لوحة المطور.'
   };
 }
 

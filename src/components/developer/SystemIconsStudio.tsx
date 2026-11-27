@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { generatePwaPngIcons } from '../../utils/pwaIconHelper';
 import {
@@ -14,7 +14,9 @@ import {
   Building2,
   Eye,
   EyeOff,
-  Trash2
+  Trash2,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../../utils/permissions';
 
@@ -40,12 +42,24 @@ const DEFAULT_SYSTEM_TILES: DefaultTileConfig[] = [
   { id: 'tile_blacklist', defaultTitle: 'سجل القائمة السوداء والمحظورين', defaultSubtitle: 'إدارة الأشخاص المحظورين والرقابة الأمنية', defaultIcon: 'ShieldAlert' },
 ];
 
+const TILE_COLOR_OPTIONS = [
+  { id: '', label: 'اللون الافتراضي' },
+  { id: 'blue', label: 'أزرق رسمي' },
+  { id: 'emerald', label: 'زمردي أخضر' },
+  { id: 'amber', label: 'عنبري ذهبي' },
+  { id: 'purple', label: 'بنفسجي ملكي' },
+  { id: 'indigo', label: 'نيلي حديث' },
+  { id: 'rose', label: 'عنابي / وردي' },
+  { id: 'teal', label: 'فيروزي' },
+  { id: 'orange', label: 'برتقالي' }
+];
+
 export const SystemIconsStudio: React.FC = () => {
   const { systemSettings, updateSettings, customSections, updateCustomSection, deleteCustomSection } = useApp();
 
-  const [tilesConfig, setTilesConfig] = useState<Record<string, { title: string; subtitle?: string; iconUrl?: string; hidden?: boolean }>>(
-    systemSettings.customTilesConfig || {}
-  );
+  const [tilesConfig, setTilesConfig] = useState<
+    Record<string, { title: string; subtitle?: string; iconUrl?: string; iconColor?: string; order?: number; hidden?: boolean }>
+  >(systemSettings.customTilesConfig || {});
 
   // App Identity states
   const [appName, setAppName] = useState(systemSettings.appName || 'برنامج مكتب النائب علا الناشي');
@@ -59,8 +73,69 @@ export const SystemIconsStudio: React.FC = () => {
   const [editTileTitle, setEditTileTitle] = useState('');
   const [editTileSubtitle, setEditTileSubtitle] = useState('');
   const [editTileIconUrl, setEditTileIconUrl] = useState('');
+  const [editTileColor, setEditTileColor] = useState('');
 
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  // Hydrate studio state live whenever Supabase system_settings loads or updates from another device
+  useEffect(() => {
+    setTilesConfig(systemSettings.customTilesConfig || {});
+    setAppName(systemSettings.appName || 'برنامج مكتب النائب علا الناشي');
+    setDeputyName(systemSettings.deputyName || 'النائب المهندسة علا عودة الناشي');
+    setDeputyTitle(systemSettings.deputyTitle || 'عضو مجلس النواب العراقي');
+    setLogoUrl(systemSettings.logoUrl || '');
+    setParliamentEmblemUrl(systemSettings.parliamentEmblemUrl || '');
+    setLoadingEmblemUrl(systemSettings.customImages?.loadingEmblem || '');
+  }, [
+    systemSettings.settingsVersion,
+    systemSettings.customTilesConfig,
+    systemSettings.appName,
+    systemSettings.deputyName,
+    systemSettings.deputyTitle,
+    systemSettings.logoUrl,
+    systemSettings.parliamentEmblemUrl,
+    systemSettings.customImages?.loadingEmblem
+  ]);
+
+  const sortedBuiltInTiles = [...DEFAULT_SYSTEM_TILES].sort((a, b) => {
+    const idxA = DEFAULT_SYSTEM_TILES.findIndex(x => x.id === a.id);
+    const idxB = DEFAULT_SYSTEM_TILES.findIndex(x => x.id === b.id);
+    const ordA = tilesConfig[a.id]?.order ?? idxA;
+    const ordB = tilesConfig[b.id]?.order ?? idxB;
+    return ordA - ordB;
+  });
+
+  const handleMoveTileOrder = (tileId: string, direction: -1 | 1) => {
+    const currentList = sortedBuiltInTiles.map(t => t.id);
+    const pos = currentList.indexOf(tileId);
+    const targetPos = pos + direction;
+    if (pos < 0 || targetPos < 0 || targetPos >= currentList.length) return;
+
+    const reordered = [...currentList];
+    const [moved] = reordered.splice(pos, 1);
+    reordered.splice(targetPos, 0, moved);
+
+    const updated: Record<string, { title: string; subtitle?: string; iconUrl?: string; iconColor?: string; order?: number; hidden?: boolean }> = {
+      ...tilesConfig
+    };
+    reordered.forEach((id, idx) => {
+      const def = DEFAULT_SYSTEM_TILES.find(t => t.id === id);
+      const prev = updated[id];
+      updated[id] = {
+        title: prev?.title || def?.defaultTitle || id,
+        subtitle: prev?.subtitle || def?.defaultSubtitle,
+        iconUrl: prev?.iconUrl,
+        iconColor: prev?.iconColor,
+        hidden: prev?.hidden,
+        order: idx
+      };
+    });
+
+    setTilesConfig(updated);
+    void updateSettings({ customTilesConfig: updated });
+    setSavedSuccess(true);
+    setTimeout(() => setSavedSuccess(false), 2000);
+  };
 
   const readFileAsDataUrl = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: string) => void) => {
     const file = e.target.files?.[0];
@@ -80,6 +155,7 @@ export const SystemIconsStudio: React.FC = () => {
     setEditTileTitle(existing?.title || tile.defaultTitle);
     setEditTileSubtitle(existing?.subtitle || tile.defaultSubtitle);
     setEditTileIconUrl(existing?.iconUrl || '');
+    setEditTileColor(existing?.iconColor || '');
   };
 
   const handleSaveTileEdit = () => {
@@ -91,11 +167,12 @@ export const SystemIconsStudio: React.FC = () => {
         ...prev,
         title: editTileTitle.trim(),
         subtitle: editTileSubtitle.trim(),
-        iconUrl: editTileIconUrl.trim() || undefined
+        iconUrl: editTileIconUrl.trim() || undefined,
+        iconColor: editTileColor || undefined
       }
     };
     setTilesConfig(updated);
-    updateSettings({ customTilesConfig: updated });
+    void updateSettings({ customTilesConfig: updated });
     setActiveTileId(null);
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 2500);
@@ -110,18 +187,20 @@ export const SystemIconsStudio: React.FC = () => {
         title: prev?.title || tile.defaultTitle,
         subtitle: prev?.subtitle || tile.defaultSubtitle,
         iconUrl: prev?.iconUrl,
+        iconColor: prev?.iconColor,
+        order: prev?.order,
         hidden: nextHidden
       }
     };
     setTilesConfig(updated);
-    updateSettings({ customTilesConfig: updated });
+    void updateSettings({ customTilesConfig: updated });
   };
 
   const handleResetTile = (tileId: string) => {
     const next = { ...tilesConfig };
     delete next[tileId];
     setTilesConfig(next);
-    updateSettings({ customTilesConfig: next });
+    void updateSettings({ customTilesConfig: next });
   };
 
   const handleSaveAllIdentityAndTiles = async () => {
@@ -287,7 +366,7 @@ export const SystemIconsStudio: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {DEFAULT_SYSTEM_TILES.map((tile) => {
+          {sortedBuiltInTiles.map((tile, tileIdx) => {
             const custom = tilesConfig[tile.id];
             const currentTitle = custom?.title || tile.defaultTitle;
             const currentSubtitle = custom?.subtitle || tile.defaultSubtitle;
@@ -318,6 +397,7 @@ export const SystemIconsStudio: React.FC = () => {
 
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-mono text-slate-400">#{tileIdx + 1}</span>
                       <h5 className="text-xs font-black text-slate-900 dark:text-white truncate">{currentTitle}</h5>
                       {isHidden && (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-bold">مخفية</span>
@@ -327,12 +407,32 @@ export const SystemIconsStudio: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={tileIdx === 0}
+                    onClick={() => handleMoveTileOrder(tile.id, -1)}
+                    className="p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 text-slate-600 cursor-pointer disabled:opacity-30"
+                    title="تقديم ترتيب الأيقونة لأعلى"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={tileIdx === sortedBuiltInTiles.length - 1}
+                    onClick={() => handleMoveTileOrder(tile.id, 1)}
+                    className="p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 text-slate-600 cursor-pointer disabled:opacity-30"
+                    title="تأخير ترتيب الأيقونة لأسفل"
+                  >
+                    <ArrowDown className="w-3.5 h-3.5" />
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => handleOpenEditTile(tile)}
                     className="p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 text-purple-600 cursor-pointer"
-                    title="تعديل الاسم والوصف والصورة"
+                    title="تعديل الاسم واللون والوصف والصورة"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
@@ -463,6 +563,19 @@ export const SystemIconsStudio: React.FC = () => {
                   onChange={(e) => setEditTileSubtitle(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
                 />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">لون الأيقونة (محفوظ في قاعدة البيانات)</label>
+                <select
+                  value={editTileColor}
+                  onChange={(e) => setEditTileColor(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white"
+                >
+                  {TILE_COLOR_OPTIONS.map(opt => (
+                    <option key={opt.id || 'default'} value={opt.id}>{opt.label}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="space-y-1.5 pt-1">

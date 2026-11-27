@@ -90,12 +90,12 @@ export const UsersAndPermissionsManager: React.FC<UsersAndPermissionsManagerProp
   const formatSyncSummary = (res: { serverOk: boolean; firebaseOk: boolean; sheetsOk: boolean }): string => {
     const targets: string[] = [];
     if (res.serverOk) targets.push('قاعدة بيانات الخادم');
-    if (res.firebaseOk) targets.push('Firebase Firestore');
-    if (res.sheetsOk) targets.push('Google Sheets');
+    if (res.firebaseOk) targets.push('قاعدة البيانات الرئيسية');
+    if (res.sheetsOk) targets.push('الأرشيف الاحتياطي');
     if (targets.length === 0) {
-      return 'تم الحفظ والمزامنة السحابية.';
+      return 'تم الحفظ في قاعدة البيانات بنجاح';
     }
-    return `تم الحفظ والمزامنة في: ${targets.join(' + ')}`;
+    return `تم الحفظ في قاعدة البيانات بنجاح (${targets.join(' + ')})`;
   };
 
   const handleSyncAllUsersNow = async () => {

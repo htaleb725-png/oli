@@ -283,7 +283,7 @@ export const googleSignIn = async (forceGIS = false): Promise<GoogleSignInResult
       user: null,
       accessToken: null,
       cancelled: false,
-      error: 'يرجى السماح بالنوافذ المنبثقة (Popups) أو تسجيل الدخول بحساب Google لمنح صلاحيات Google Sheets و Drive.'
+      error: 'يرجى السماح بالنوافذ المنبثقة (Popups) أو تسجيل الدخول بحساب Google لمنح صلاحيات الأرشيف السحابي و Drive.'
     };
   } catch (error: any) {
     return {
@@ -927,7 +927,7 @@ export const syncAllDataToGoogleSheets = async (
 
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}));
-      const errMsg = errBody?.error?.message || `فشل تحديث Google Sheets (HTTP ${response.status})`;
+      const errMsg = errBody?.error?.message || `تعذر تحديث الأرشيف الاحتياطي (HTTP ${response.status})`;
       throw new Error(errMsg);
     }
 
@@ -971,7 +971,7 @@ export const clearAllGoogleSheetsData = async (
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || `فشل في تفريغ بيانات جداول Google Sheets (${response.status})`);
+    throw new Error(err.error?.message || `تعذر تفريغ بيانات جداول الأرشيف الاحتياطي (${response.status})`);
   }
 
   return { success: true, clearedRanges: ranges.length };
@@ -1546,7 +1546,7 @@ export const fetchAllDataFromGoogleSheets = async (
       const errData = await response.json().catch(() => ({}));
       return {
         success: false,
-        message: errData.error?.message || `خطأ استعلام Google Sheets (${response.status})`,
+        message: errData.error?.message || `خطأ استعلام الأرشيف الاحتياطي (${response.status})`,
         data: { citizens: [], requests: [], interviews: [], officialLetters: [], organizationRecords: [], cheques: [] }
       };
     }
@@ -1713,7 +1713,7 @@ export const fetchAllDataFromGoogleSheets = async (
 
     return {
       success: true,
-      message: `تم جلب ${citizens.length} مراجع، ${requests.length} طلب، ${interviews.length} مقابلة، و ${cheques.length} صك بنجاح من Google Sheets`,
+      message: `تمت مزامنة البيانات بنجاح — تم جلب ${citizens.length} مراجع، ${requests.length} طلب، ${interviews.length} مقابلة، و ${cheques.length} صك من الأرشيف الاحتياطي`,
       data: {
         citizens,
         requests,
@@ -1726,7 +1726,7 @@ export const fetchAllDataFromGoogleSheets = async (
   } catch (error: any) {
     return {
       success: false,
-      message: error.message || 'فشل الاتصال بقاعدة بيانات Google Sheets',
+      message: error.message || 'تعذر الاتصال بالأرشيف الاحتياطي',
       data: { citizens: [], requests: [], interviews: [], officialLetters: [], organizationRecords: [], cheques: [] }
     };
   }

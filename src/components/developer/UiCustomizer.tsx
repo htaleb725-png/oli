@@ -43,6 +43,9 @@ export const UiCustomizer: React.FC = () => {
   const [officeAddress, setOfficeAddress] = useState(systemSettings.officeAddress || '');
   const [hotline, setHotline] = useState(systemSettings.hotline || '');
   const [tickerNewsText, setTickerNewsText] = useState((systemSettings.tickerNews || []).join('\n'));
+  const [tickerEnabled, setTickerEnabled] = useState<boolean>(systemSettings.tickerEnabled !== false);
+  const [tickerSpeed, setTickerSpeed] = useState<'slow' | 'normal' | 'fast'>(systemSettings.tickerSpeed || 'normal');
+  const [tickerColor, setTickerColor] = useState<'navy' | 'emerald' | 'amber' | 'rose' | 'indigo'>(systemSettings.tickerColor || 'navy');
   const [logoUrl, setLogoUrl] = useState(systemSettings.logoUrl || '');
   const [parliamentEmblemUrl, setParliamentEmblemUrl] = useState(systemSettings.parliamentEmblemUrl || '');
   const [footerText, setFooterText] = useState(systemSettings.footerText || '');
@@ -75,6 +78,9 @@ export const UiCustomizer: React.FC = () => {
     setOfficeAddress(systemSettings.officeAddress || '');
     setHotline(systemSettings.hotline || '');
     setTickerNewsText((systemSettings.tickerNews || []).join('\n'));
+    setTickerEnabled(systemSettings.tickerEnabled !== false);
+    setTickerSpeed(systemSettings.tickerSpeed || 'normal');
+    setTickerColor(systemSettings.tickerColor || 'navy');
     setLogoUrl(systemSettings.logoUrl || '');
     setParliamentEmblemUrl(systemSettings.parliamentEmblemUrl || '');
     setFooterText(systemSettings.footerText || '');
@@ -96,6 +102,10 @@ export const UiCustomizer: React.FC = () => {
     systemSettings.officeName,
     systemSettings.deputyName,
     systemSettings.deputyTitle,
+    systemSettings.tickerNews,
+    systemSettings.tickerEnabled,
+    systemSettings.tickerSpeed,
+    systemSettings.tickerColor,
     systemSettings.footerText,
     systemSettings.loginWelcomeTitle,
     systemSettings.loginWelcomeSubtitle,
@@ -138,10 +148,10 @@ export const UiCustomizer: React.FC = () => {
         ? {
             type: 'success',
             text: to
-              ? `✓ تم حفظ استبدال «${from}» إلى «${to}» في Firebase Firestore وتطبيقه فوراً على كامل الواجهة!`
-              : `✓ تم حفظ إزالة عبارة «${from}» في Firebase Firestore وتطبيقها فوراً على كامل الواجهة!`
+              ? `تم الحفظ في قاعدة البيانات بنجاح — تم تطبيق استبدال «${from}» إلى «${to}» فوراً!`
+              : `تم الحفظ في قاعدة البيانات بنجاح — تم تطبيق إزالة عبارة «${from}» فوراً!`
           }
-        : { type: 'error', text: 'تعذر تأكيد الحفظ في Firebase Firestore. يرجى التحقق من الاتصال والمحاولة مجدداً.' }
+        : { type: 'error', text: 'تعذر تأكيد الحفظ في قاعدة البيانات. يرجى التحقق من الاتصال والمحاولة مجدداً.' }
     );
     setTimeout(() => {
       setSavedSuccess(false);
@@ -157,8 +167,8 @@ export const UiCustomizer: React.FC = () => {
     setIsSaving(false);
     setSaveFeedback(
       ok
-        ? { type: 'success', text: `✓ تم إلغاء قاعدة الاستبدال لـ «${from}» وحفظ التحديث في Firebase Firestore فوراً.` }
-        : { type: 'error', text: 'تعذر تحديث قاعدة الاستبدال في Firebase Firestore.' }
+        ? { type: 'success', text: `تم تحديث البيانات في قاعدة البيانات بنجاح — تم إلغاء قاعدة الاستبدال لـ «${from}».` }
+        : { type: 'error', text: 'تعذر تحديث قاعدة الاستبدال في قاعدة البيانات.' }
     );
     setTimeout(() => setSaveFeedback(null), 3000);
   };
@@ -222,7 +232,10 @@ export const UiCustomizer: React.FC = () => {
         province: province.trim(),
         officeAddress: officeAddress.trim(),
         hotline: hotline.trim(),
-        tickerNews: cleanTicker.length > 0 ? cleanTicker : ['أهلاً بكم في منظومة إدارة العمل والمعاملات الرسمية'],
+        tickerNews: cleanTicker,
+        tickerEnabled,
+        tickerSpeed,
+        tickerColor,
         logoUrl: cleanLogo,
         ...(generatedIcons
           ? { pwaIcon192: generatedIcons.icon192, pwaIcon512: generatedIcons.icon512 }
@@ -248,8 +261,8 @@ export const UiCustomizer: React.FC = () => {
       setSavedSuccess(ok);
       setSaveFeedback(
         ok
-          ? { type: 'success', text: '✓ تم حفظ كافة النصوص والعناوين وتسميات الأزرار (بما فيها واجهة الدخول) في Firebase Firestore وتطبيقها فوراً!' }
-          : { type: 'error', text: 'تعذر حفظ الإعدادات في Firebase Firestore. يرجى التحقق من الاتصال بالإنترنت وإعادة المحاولة.' }
+          ? { type: 'success', text: 'تم تحديث البيانات في قاعدة البيانات بنجاح — تم تطبيق كافة التعديلات على جميع الحاسبات!' }
+          : { type: 'error', text: 'تعذر حفظ الإعدادات في قاعدة البيانات. يرجى التحقق من الاتصال بالإنترنت وإعادة المحاولة.' }
       );
       setTimeout(() => {
         setSavedSuccess(false);
@@ -281,8 +294,8 @@ export const UiCustomizer: React.FC = () => {
       setSavedSuccess(ok);
       setSaveFeedback(
         ok
-          ? { type: 'success', text: '✓ تم حفظ تخصيصات الواجهة والألوان في Firebase Firestore وتطبيقها فوراً!' }
-          : { type: 'error', text: 'تعذر حفظ التخصيصات في Firebase Firestore.' }
+          ? { type: 'success', text: 'تم تحديث البيانات في قاعدة البيانات بنجاح' }
+          : { type: 'error', text: 'تعذر حفظ التخصيصات في قاعدة البيانات.' }
       );
       setTimeout(() => {
         setSavedSuccess(false);
@@ -517,12 +530,23 @@ export const UiCustomizer: React.FC = () => {
 
             {/* Box 3: شريط الأخبار العاجل والتنبيهات */}
             <div className="md:col-span-2 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
-              <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
-                <Megaphone className="w-4 h-4 text-amber-500" />
-                <span>شريط الأخبار العاجل والتنبيهات المتحركة في أعلى المنظومة:</span>
-              </h4>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+                <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <Megaphone className="w-4 h-4 text-amber-500" />
+                  <span>شريط الأخبار العاجل والتعميمات المتحركة (محفوظ في قاعدة البيانات لجميع الحاسبات):</span>
+                </h4>
+                <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={tickerEnabled}
+                    onChange={(e) => setTickerEnabled(e.target.checked)}
+                    className="w-4 h-4 rounded accent-emerald-600 cursor-pointer"
+                  />
+                  <span>{tickerEnabled ? 'الشريط مفعّل وظاهر' : 'إيقاف وإخفاء الشريط'}</span>
+                </label>
+              </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                اكتب كل خبر أو تنبيه في سطر منفصل. ستظهر هذه الجمل متحركة في الشريط الإخباري أعلى كافة شاشات النظام.
+                اكتب كل خبر أو تعميم في سطر منفصل، واختر اللون والسرعة. تُحفظ التعديلات مباشرة في قاعدة البيانات وتظهر فورياً على كافة الحاسبات.
               </p>
               <textarea
                 rows={4}
@@ -531,6 +555,38 @@ export const UiCustomizer: React.FC = () => {
                 placeholder="أهلاً وسهلاً بكم في منظومة إدارة العمل والمعاملات الرسمية&#10;متابعة مستمرة لطلبات المواطنين وإنجاز المعاملات أولاً بأول"
                 className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none leading-relaxed"
               />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    لون خلفية شريط التعميمات:
+                  </label>
+                  <select
+                    value={tickerColor}
+                    onChange={(e) => setTickerColor(e.target.value as any)}
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  >
+                    <option value="navy">كحلي رسمي (الافتراضي)</option>
+                    <option value="emerald">زمردي أخضر</option>
+                    <option value="amber">عنبري ذهبي</option>
+                    <option value="rose">عنابي تنبيهي</option>
+                    <option value="indigo">نيلي برلماني</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    سرعة حركة شريط التعميمات:
+                  </label>
+                  <select
+                    value={tickerSpeed}
+                    onChange={(e) => setTickerSpeed(e.target.value as any)}
+                    className="w-full h-10 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                  >
+                    <option value="slow">بطيء ومريح للقراءة</option>
+                    <option value="normal">متوسط (قياسي)</option>
+                    <option value="fast">سريع</option>
+                  </select>
+                </div>
+              </div>
             </div>
 
             {/* Box 4: نصوص شاشة الدخول وشاشة التحميل والتذييل */}
@@ -701,7 +757,7 @@ export const UiCustomizer: React.FC = () => {
                   <span>محرك تعديل أي كتابة أو عبارة أو زر في كامل النظام (استبدال فوري شامل)</span>
                 </h4>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                  أدخل أي كلمة أو جملة تظهر في أي مكان بالنظام (بما فيها واجهة الدخول والأزرار والقوائم، مثل كلمة «المهندسة») واكتب البديل الجديد — أو اترك حقل البديل فارغاً لإزالة الكلمة بالكامل — ليتم الحفظ في Firestore وتطبيقه فوراً.
+                  أدخل أي كلمة أو جملة تظهر في أي مكان بالنظام (بما فيها واجهة الدخول والأزرار والقوائم، مثل كلمة «المهندسة») واكتب البديل الجديد — أو اترك حقل البديل فارغاً لإزالة الكلمة بالكامل — ليتم الحفظ في قاعدة البيانات وتطبيقه فوراً.
                 </p>
               </div>
 
@@ -772,7 +828,7 @@ export const UiCustomizer: React.FC = () => {
               className="px-8 py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 disabled:opacity-60 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer active:scale-95"
             >
               {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              <span>{isSaving ? 'جاري الحفظ في Firebase Firestore...' : 'اعتماد وتعميم كافة التعديلات على كامل المنظومة فورياً 💾'}</span>
+              <span>{isSaving ? 'جاري الحفظ في قاعدة البيانات...' : 'اعتماد وتعميم كافة التعديلات على كامل المنظومة فورياً'}</span>
             </button>
           </div>
         </form>

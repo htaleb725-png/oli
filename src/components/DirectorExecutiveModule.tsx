@@ -700,7 +700,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                 <div className="space-y-0.5">
                   <div className="font-black text-rose-800 dark:text-rose-200">
-                    ⚠️ تنبيه تشخيصي: تعذر جلب أو حفظ المعاملات مع Firebase Firestore (alaa-office-2026)
+                    ⚠️ تنبيه تشخيصي: تعذر جلب أو حفظ المعاملات مع قاعدة البيانات
                   </div>
                   <div className="font-semibold leading-relaxed break-words">
                     {firestoreRequestsSyncError || firestoreLastSaveError}
@@ -1955,7 +1955,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 <span>{requestToDelete.Entity}</span>
               </div>
               <p className="text-[11px] text-rose-600 dark:text-rose-400 pt-2 border-t border-slate-200 dark:border-slate-700 font-bold">
-                ⚠️ تنبيه: سيتم حذف هذه المعاملة بشكل نهائي وشامل من شاشة المدير، سجل الاستعلامات، قسم الإدارة، وكافة مجموعات Firebase Firestore والنسخة الاحتياطية في Google Sheets.
+                ⚠️ تنبيه: سيتم حذف هذه المعاملة بشكل نهائي وشامل من شاشة المدير، سجل الاستعلامات، قسم الإدارة، وقاعدة البيانات والأرشيف الاحتياطي.
               </p>
             </div>
 
@@ -1997,7 +1997,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                     targetRoles: ['admin', 'admin_officer', 'developer']
                   });
                   showArchiveToast(
-                    `✓ تم الحذف النهائي الشامل لمعاملة (${deletedInfo.CitizenName}) من المدير والاستعلامات والإدارة وجميع مسارات Firestore.`
+                    `تم الحذف من قاعدة البيانات بنجاح (${deletedInfo.CitizenName})`
                   );
                   setRequestToDelete(null);
                 }}
@@ -2039,7 +2039,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 <span className="font-mono">{citizenToDelete.Phone1}</span>
               </div>
               <p className="text-[11px] text-rose-600 dark:text-rose-400 pt-2 border-t border-slate-200 dark:border-slate-700 font-bold">
-                ⚠️ تنبيه: سيتم حذف سجل المواطن وجميع معاملاته ومقابلاته نهائياً من Firestore و Google Sheets وجميع شاشات النظام.
+                ⚠️ تنبيه: سيتم حذف سجل المراجع وجميع معاملاته ومقابلاته نهائياً من قاعدة البيانات والأرشيف الاحتياطي وجميع شاشات النظام.
               </p>
             </div>
 

@@ -121,25 +121,25 @@ export function inspectCloudEnvironment(runtimeOverrides?: {
   };
 
   const items: EnvVarCheckResult[] = [
-    checkPinnedFirebaseVar('VITE_FIREBASE_API_KEY', 'apiKey', 'مفتاح Firebase API (مثبت)'),
-    checkPinnedFirebaseVar('VITE_FIREBASE_AUTH_DOMAIN', 'authDomain', 'نطاق المصادقة (Auth Domain)', true),
-    checkPinnedFirebaseVar('VITE_FIREBASE_PROJECT_ID', 'projectId', 'معرف مشروع Firebase (المصدر الأساسي)', true),
-    checkPinnedFirebaseVar('VITE_FIREBASE_STORAGE_BUCKET', 'storageBucket', 'حاوية التخزين (Storage Bucket)', true),
-    checkPinnedFirebaseVar('VITE_FIREBASE_MESSAGING_SENDER_ID', 'messagingSenderId', 'معرف المراسلة (Sender ID)', true),
-    checkPinnedFirebaseVar('VITE_FIREBASE_APP_ID', 'appId', 'معرف تطبيق Firebase'),
-    checkPinnedFirebaseVar('VITE_FIREBASE_FIRESTORE_DATABASE_ID', 'firestoreDatabaseId', 'قاعدة بيانات Firestore', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_API_KEY', 'apiKey', 'مفتاح الاتصال الأساسي (مثبت)'),
+    checkPinnedFirebaseVar('VITE_FIREBASE_AUTH_DOMAIN', 'authDomain', 'نطاق المصادقة (مثبت)', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_PROJECT_ID', 'projectId', 'معرف قاعدة البيانات المركزية (المصدر الأساسي)', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_STORAGE_BUCKET', 'storageBucket', 'حاوية التخزين السحابي', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_MESSAGING_SENDER_ID', 'messagingSenderId', 'معرف خدمة الإشعارات', true),
+    checkPinnedFirebaseVar('VITE_FIREBASE_APP_ID', 'appId', 'معرف المنظومة السحابية'),
+    checkPinnedFirebaseVar('VITE_FIREBASE_FIRESTORE_DATABASE_ID', 'firestoreDatabaseId', 'قاعدة البيانات المركزية', true),
     checkGoogleBackupVar(
       'VITE_GOOGLE_APPS_SCRIPT_URL',
       runtimeOverrides?.appsScriptUrl,
       PINNED_BACKUP_APPS_SCRIPT_URL,
-      'رابط النسخ الاحتياطي اليدوي (Google Apps Script)',
+      'رابط خدمة الأرشيف الاحتياطي',
       (v) => v.startsWith('https://script.google.com/macros/s/')
     ),
     checkGoogleBackupVar(
       'VITE_GOOGLE_SHEET_ID',
       runtimeOverrides?.googleSheetId,
       PINNED_BACKUP_SHEET_ID,
-      'معرف ملف Google Sheets للنسخ الاحتياطي اليدوي',
+      'معرف الأرشيف الاحتياطي',
       (v) => /^[a-zA-Z0-9-_]{20,}$/.test(v)
     )
   ];
@@ -151,8 +151,8 @@ export function inspectCloudEnvironment(runtimeOverrides?: {
   const allReady = firebaseReady && googleSheetsReady;
 
   const summaryMessage = allReady
-    ? 'Firebase Firestore (alaa-office-2026 / default) مثبت كمصدر وحيد وأساسي، وGoogle Sheets مهيأ للنسخ الاحتياطي اليدوي فقط.'
-    : 'يرجى التحقق من إعدادات الربط السحابي.';
+    ? 'قاعدة البيانات المركزية متصلة كمصدر أساسي، والأرشيف الاحتياطي مهيأ للمزامنة.'
+    : 'يرجى التحقق من إعدادات الاتصال بقاعدة البيانات.';
 
   return {
     firebaseReady,

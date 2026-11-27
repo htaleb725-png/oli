@@ -650,7 +650,7 @@ if ($browser) {
                   </div>
 
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    البرنامج يعمل بنظام <strong>السحاب المتصل أونلاين (Online Cloud)</strong> لضمان مزامنة بيانات المراجعين والمعاملات في الوقت الفعلي مع السيرفر و Google Sheets و Google Drive بدون فقدان أي بيانات.
+                    البرنامج يعمل بنظام <strong>السحاب المتصل أونلاين (Online Cloud)</strong> لضمان مزامنة بيانات المراجعين والمعاملات في الوقت الفعلي مع قاعدة البيانات والأرشيف الاحتياطي و Google Drive بدون فقدان أي بيانات.
                   </p>
 
                   <div className="pt-3 flex justify-end">

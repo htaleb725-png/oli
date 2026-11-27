@@ -1173,7 +1173,7 @@ export const AuditModule: React.FC = () => {
               <div className="text-2xl font-black text-slate-900 dark:text-white font-mono tabular-nums">
                 {auditLogs.length.toLocaleString()}
               </div>
-              <div className="text-[11px] text-slate-500">محفوظة لحظياً في Firebase</div>
+              <div className="text-[11px] text-slate-500">محفوظة لحظياً في قاعدة البيانات</div>
             </div>
 
             <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-1">
@@ -1423,7 +1423,7 @@ export const AuditModule: React.FC = () => {
               <span className="text-xs font-bold text-slate-800 dark:text-white">
                 سجل النشاطات الإدارية الموثّق ({filteredLogs.length.toLocaleString()} حركة)
               </span>
-              <span className="text-[10px] text-slate-500">توثيق لحظي في Firebase Firestore لكافة الإضافات والتعديلات والحذف</span>
+              <span className="text-[10px] text-slate-500">توثيق لحظي في قاعدة البيانات لكافة الإضافات والتعديلات والحذف</span>
             </div>
 
             <div className="overflow-x-auto">

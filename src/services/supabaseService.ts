@@ -926,19 +926,20 @@ function collectionKeyPrefix(colName: string): string {
 }
 
 async function upsertSettingRow(key: string, value: any): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const cleanVal = stripUndefinedAndOversizedDeep(value);
+  const rowPayload = {
+    key,
+    value: cleanVal,
+    updated_at: nowIso
+  };
   const { error } = await supabase
     .from(SUPABASE_TABLES.SYSTEM_SETTINGS)
-    .upsert(
-      {
-        key,
-        value: stripUndefinedAndOversizedDeep(value),
-        updated_at: new Date().toISOString()
-      },
-      { onConflict: 'key' }
-    );
+    .upsert(rowPayload, { onConflict: 'key' });
   if (error) {
     throw new Error(error.message);
   }
+  patchSharedTableRow(SUPABASE_TABLES.SYSTEM_SETTINGS, key, rowPayload);
 }
 
 async function deleteSettingRow(key: string): Promise<void> {
@@ -949,15 +950,21 @@ async function deleteSettingRow(key: string): Promise<void> {
   if (error) {
     throw new Error(error.message);
   }
+  patchSharedTableRow(SUPABASE_TABLES.SYSTEM_SETTINGS, key, null);
 }
 
 async function getSettingRow<T = any>(key: string): Promise<T | null> {
+  const cached = getCachedTableRow(SUPABASE_TABLES.SYSTEM_SETTINGS, key);
+  if (cached && cached.value !== undefined) {
+    return (cached.value ?? null) as T | null;
+  }
   const { data, error } = await supabase
     .from(SUPABASE_TABLES.SYSTEM_SETTINGS)
     .select('key, value, updated_at')
     .eq('key', key)
     .maybeSingle();
   if (error || !data) return null;
+  patchSharedTableRow(SUPABASE_TABLES.SYSTEM_SETTINGS, key, data);
   return (data.value ?? null) as T | null;
 }
 
@@ -1015,6 +1022,7 @@ export async function fsSaveCitizen(citizen: Citizen): Promise<void> {
 
     // Clear stale tombstone if re-saving same ID
     void deleteSettingRow(makeCollectionKey(FS_COLLECTIONS.DELETED_RECORDS, row.id)).catch(() => {});
+    patchSharedTableRow(SUPABASE_TABLES.CITIZENS, row.id, row);
     updateFirebaseHealth('connected', null);
     notifyLocalTableChange(FS_COLLECTIONS.CITIZENS);
   } catch (error) {
@@ -1087,6 +1095,9 @@ export async function fsDeleteCitizen(citizenId: string): Promise<void> {
       fsRegisterDeletedRecord(safeId, 'citizens')
     ]);
 
+    patchSharedTableRow(SUPABASE_TABLES.CITIZENS, safeId, null);
+    patchSharedTableRow(SUPABASE_TABLES.BLACKLIST, safeId, null);
+    invalidateSharedTableCache(SUPABASE_TABLES.REQUESTS);
     updateFirebaseHealth('connected', null);
     notifyLocalTableChange(FS_COLLECTIONS.CITIZENS);
     notifyLocalTableChange(FS_COLLECTIONS.REQUESTS);
@@ -1136,6 +1147,7 @@ export async function fsSaveRequest(req: OfficeRequest): Promise<void> {
     if (error) throw new Error(error.message);
 
     void deleteSettingRow(makeCollectionKey(FS_COLLECTIONS.DELETED_RECORDS, row.id)).catch(() => {});
+    patchSharedTableRow(SUPABASE_TABLES.REQUESTS, row.id, row);
     updateFirebaseHealth('connected', null);
     notifyLocalTableChange(FS_COLLECTIONS.REQUESTS);
   } catch (error) {
@@ -1159,6 +1171,7 @@ export async function fsDeleteRequest(requestId: string): Promise<void> {
       fsRegisterDeletedRecord(safeId, 'requests')
     ]);
 
+    patchSharedTableRow(SUPABASE_TABLES.REQUESTS, safeId, null);
     updateFirebaseHealth('connected', null);
     notifyLocalTableChange(FS_COLLECTIONS.REQUESTS);
   } catch (error) {
@@ -1166,10 +1179,29 @@ export async function fsDeleteRequest(requestId: string): Promise<void> {
   }
 }
 
+export interface SheetImportProgress {
+  phase: 'fetching' | 'citizens' | 'requests' | 'other' | 'done' | 'error';
+  label: string;
+  percent: number;
+  citizensDone: number;
+  citizensTotal: number;
+  requestsDone: number;
+  requestsTotal: number;
+  otherDone: number;
+  otherTotal: number;
+}
+
 // 2b. High-Speed Chunked Upsert for Excel / Google Sheet Import
 export async function fsBulkSaveCitizensAndRequests(
   citizensList: Citizen[],
-  requestsList: OfficeRequest[]
+  requestsList: OfficeRequest[],
+  onProgress?: (progress: {
+    phase: 'citizens' | 'requests';
+    savedCitizens: number;
+    totalCitizens: number;
+    savedRequests: number;
+    totalRequests: number;
+  }) => void
 ): Promise<{ success: boolean; savedCitizens: number; savedRequests: number; error?: string }> {
   const citMap = new Map<string, Record<string, any>>();
   for (const c of citizensList || []) {
@@ -1210,7 +1242,15 @@ export async function fsBulkSaveCitizensAndRequests(
   let savedCitizens = 0;
   let savedRequests = 0;
   let lastError: string | undefined;
-  const CHUNK = 200;
+  const CHUNK = 100;
+
+  onProgress?.({
+    phase: 'citizens',
+    savedCitizens: 0,
+    totalCitizens: citRows.length,
+    savedRequests: 0,
+    totalRequests: reqRows.length
+  });
 
   // 1. Upsert citizens FIRST
   for (let i = 0; i < citRows.length; i += CHUNK) {
@@ -1220,6 +1260,7 @@ export async function fsBulkSaveCitizensAndRequests(
       .upsert(slice, { onConflict: 'id' });
     if (!error) {
       savedCitizens += slice.length;
+      slice.forEach(row => patchSharedTableRow(SUPABASE_TABLES.CITIZENS, row.id, row));
     } else {
       lastError = error.message;
       // Fallback row-by-row so 1 bad row never drops the chunk
@@ -1227,10 +1268,21 @@ export async function fsBulkSaveCitizensAndRequests(
         const single = await supabase
           .from(SUPABASE_TABLES.CITIZENS)
           .upsert(row, { onConflict: 'id' });
-        if (!single.error) savedCitizens++;
-        else lastError = single.error.message;
+        if (!single.error) {
+          savedCitizens++;
+          patchSharedTableRow(SUPABASE_TABLES.CITIZENS, row.id, row);
+        } else {
+          lastError = single.error.message;
+        }
       }
     }
+    onProgress?.({
+      phase: 'citizens',
+      savedCitizens,
+      totalCitizens: citRows.length,
+      savedRequests,
+      totalRequests: reqRows.length
+    });
   }
 
   // 2. Upsert requests SECOND
@@ -1241,21 +1293,35 @@ export async function fsBulkSaveCitizensAndRequests(
       .upsert(slice, { onConflict: 'id' });
     if (!error) {
       savedRequests += slice.length;
+      slice.forEach(row => patchSharedTableRow(SUPABASE_TABLES.REQUESTS, row.id, row));
     } else {
       lastError = error.message;
       for (const row of slice) {
         const single = await supabase
           .from(SUPABASE_TABLES.REQUESTS)
           .upsert(row, { onConflict: 'id' });
-        if (!single.error) savedRequests++;
-        else lastError = single.error.message;
+        if (!single.error) {
+          savedRequests++;
+          patchSharedTableRow(SUPABASE_TABLES.REQUESTS, row.id, row);
+        } else {
+          lastError = single.error.message;
+        }
       }
     }
+    onProgress?.({
+      phase: 'requests',
+      savedCitizens,
+      totalCitizens: citRows.length,
+      savedRequests,
+      totalRequests: reqRows.length
+    });
   }
 
   const ok = savedCitizens + savedRequests > 0 || (citRows.length === 0 && reqRows.length === 0);
   if (ok && savedCitizens + savedRequests > 0) {
     updateFirebaseHealth('connected', null);
+    emitTableSubscribersFromCache(SUPABASE_TABLES.CITIZENS);
+    emitTableSubscribersFromCache(SUPABASE_TABLES.REQUESTS);
     notifyLocalTableChange(FS_COLLECTIONS.CITIZENS);
     notifyLocalTableChange(FS_COLLECTIONS.REQUESTS);
   }
@@ -1430,6 +1496,7 @@ export async function fsSaveUser(user: User): Promise<void> {
       .from(SUPABASE_TABLES.USERS)
       .upsert(row, { onConflict: 'id' });
     if (error) throw new Error(error.message);
+    patchSharedTableRow(SUPABASE_TABLES.USERS, row.id, row);
     updateFirebaseHealth('connected', null);
     notifyLocalTableChange(FS_COLLECTIONS.USERS);
   } catch (error) {
@@ -1447,6 +1514,7 @@ export async function fsSyncAllUsers(usersList: User[]): Promise<{ success: bool
       .from(SUPABASE_TABLES.USERS)
       .upsert(rows, { onConflict: 'id' });
     if (error) return { success: false, count: 0, error: error.message };
+    rows.forEach(r => patchSharedTableRow(SUPABASE_TABLES.USERS, r.id, r));
     notifyLocalTableChange(FS_COLLECTIONS.USERS);
     return { success: true, count: rows.length };
   } catch (err: any) {
@@ -1468,6 +1536,7 @@ export async function fsDeleteUser(userId: string): Promise<void> {
       .delete()
       .or(`id.eq.${safeId},user_id.eq.${safeId}`);
     if (error) throw new Error(error.message);
+    patchSharedTableRow(SUPABASE_TABLES.USERS, safeId, null);
     await fsRegisterDeletedRecord(safeId, 'users');
     notifyLocalTableChange(FS_COLLECTIONS.USERS);
   } catch (error) {
@@ -1526,7 +1595,11 @@ export async function fsSaveSettings(settings: Partial<SystemSettings>): Promise
     'loginPasscodeTabText',
     'loginCredentialsTabText',
     'loginSecurityBadgeText',
-    'loginFooterCopyrightText'
+    'loginFooterCopyrightText',
+    'tickerNews',
+    'tickerEnabled',
+    'tickerSpeed',
+    'tickerColor'
   ];
 
   let hasCloudPatch = false;
@@ -1674,6 +1747,7 @@ export async function fsSaveCustomSection(section: CustomSection): Promise<void>
       .from(SUPABASE_TABLES.DEPARTMENTS)
       .upsert(row, { onConflict: 'id' });
     if (error) throw new Error(error.message);
+    patchSharedTableRow(SUPABASE_TABLES.DEPARTMENTS, row.id, row);
     updateFirebaseHealth('connected', null);
     notifyLocalTableChange(FS_COLLECTIONS.CUSTOM_SECTIONS);
   } catch (error) {
@@ -1691,6 +1765,7 @@ export async function fsDeleteCustomSection(sectionId: string): Promise<void> {
       .eq('id', safeId);
     if (error) throw new Error(error.message);
 
+    patchSharedTableRow(SUPABASE_TABLES.DEPARTMENTS, safeId, null);
     await fsRegisterDeletedRecord(safeId, 'custom_sections');
     await deleteAuxByField(FS_COLLECTIONS.CUSTOM_RECORDS, 'sectionId', safeId);
     notifyLocalTableChange(FS_COLLECTIONS.CUSTOM_SECTIONS);
@@ -2049,12 +2124,12 @@ export async function fsBulkPullAll(): Promise<{
     if (reqRes.error) criticalErrors.push(`requests: ${reqRes.error}`);
 
     if (criticalErrors.length > 0) {
-      const errMsg = `فشل جلب البيانات من Supabase (${criticalErrors.join(' | ')})`;
+      const errMsg = `فشل جلب البيانات من قاعدة البيانات (${criticalErrors.join(' | ')})`;
       updateFirebaseHealth('error', errMsg);
       pushCloudSyncAlert({
         severity: 'error',
         target: 'firebase',
-        title: 'تعذر جلب المعاملات من Supabase',
+        title: 'تعذر جلب المعاملات من قاعدة البيانات',
         message: 'حدث خطأ أثناء تحميل المراجعين والمعاملات من قاعدة البيانات.',
         details: errMsg
       });
@@ -2261,6 +2336,10 @@ export async function fsWipeAllCollections(): Promise<{ success: boolean; delete
       lastOutgoingNumberSuq: 0
     }).catch(() => {});
 
+    invalidateSharedTableCache(SUPABASE_TABLES.CITIZENS);
+    invalidateSharedTableCache(SUPABASE_TABLES.REQUESTS);
+    invalidateSharedTableCache(SUPABASE_TABLES.BLACKLIST);
+    invalidateSharedTableCache(SUPABASE_TABLES.SYSTEM_SETTINGS);
     updateFirebaseHealth('connected', null);
     notifyLocalTableChange(FS_COLLECTIONS.CITIZENS);
     notifyLocalTableChange(FS_COLLECTIONS.REQUESTS);
@@ -2348,10 +2427,233 @@ export async function fsWipeSelectedCollections(
 }
 
 // ============================================================================
-// 15. Realtime Watchers (Supabase Realtime `postgres_changes` + Initial Load)
+// 15. Single Shared Supabase Realtime Channel Hub (Zero Lag Across Computers)
 // ============================================================================
+// Uses ONE multiplexed Realtime channel per browser session across all 6 tables
+// + deduplicated initial table fetch + O(1) incremental row cache patching
+// + automatic teardown on last unsubscribe and window beforeunload/pagehide.
 
-let watcherCounter = 0;
+interface SharedTableSubscriber {
+  id: number;
+  table: string;
+  colName: string;
+  keyLike?: string;
+  exactKey?: string;
+  onEmit: (rows: any[], removedIds: string[]) => void;
+  onError?: (err: Error) => void;
+}
+
+const SHARED_REALTIME_TABLES = [
+  SUPABASE_TABLES.CITIZENS,
+  SUPABASE_TABLES.REQUESTS,
+  SUPABASE_TABLES.BLACKLIST,
+  SUPABASE_TABLES.USERS,
+  SUPABASE_TABLES.DEPARTMENTS,
+  SUPABASE_TABLES.SYSTEM_SETTINGS
+] as const;
+
+let sharedSubscriberSeq = 0;
+const sharedTableCache = new Map<string, Map<string, any>>();
+const sharedTableLoaded = new Set<string>();
+const sharedTableInitPromises = new Map<string, Promise<{ error: string | null }>>();
+const sharedSubscribers = new Map<number, SharedTableSubscriber>();
+const sharedEmitTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const sharedPendingRemoved = new Map<number, Set<string>>();
+
+let sharedRealtimeChannel: ReturnType<typeof supabase.channel> | null = null;
+let sharedUnloadHookRegistered = false;
+
+function getTablePrimaryKey(table: string, row: any): string {
+  if (!row || typeof row !== 'object') return '';
+  if (table === SUPABASE_TABLES.SYSTEM_SETTINGS) {
+    return String(row.key || '').trim();
+  }
+  return String(row.id || row.citizen_id || row.request_id || row.user_id || '').trim();
+}
+
+function getCachedTableRow(table: string, pk: string): any | null {
+  const map = sharedTableCache.get(table);
+  if (!map || !pk) return null;
+  return map.get(pk) ?? null;
+}
+
+function patchSharedTableRow(table: string, pk: string, rowOrNull: any | null): void {
+  if (!pk) return;
+  let map = sharedTableCache.get(table);
+  if (!map) {
+    map = new Map<string, any>();
+    sharedTableCache.set(table, map);
+  }
+  if (rowOrNull === null) {
+    map.delete(pk);
+  } else {
+    map.set(pk, rowOrNull);
+  }
+}
+
+function invalidateSharedTableCache(table: string): void {
+  sharedTableLoaded.delete(table);
+  sharedTableInitPromises.delete(table);
+}
+
+function filterCachedRowsForSubscriber(sub: SharedTableSubscriber): any[] {
+  const map = sharedTableCache.get(sub.table);
+  if (!map) return [];
+  if (sub.table !== SUPABASE_TABLES.SYSTEM_SETTINGS) {
+    return Array.from(map.values());
+  }
+  if (sub.exactKey) {
+    const hit = map.get(sub.exactKey);
+    return hit ? [hit] : [];
+  }
+  if (sub.keyLike) {
+    const prefix = sub.keyLike.replace(/%$/, '');
+    const out: any[] = [];
+    map.forEach((row, k) => {
+      if (k.startsWith(prefix)) out.push(row);
+    });
+    return out;
+  }
+  const out: any[] = [];
+  map.forEach((row, k) => {
+    if (!k.startsWith('col:')) out.push(row);
+  });
+  return out;
+}
+
+function scheduleSubscriberEmit(sub: SharedTableSubscriber, removedId?: string): void {
+  if (removedId) {
+    let set = sharedPendingRemoved.get(sub.id);
+    if (!set) {
+      set = new Set();
+      sharedPendingRemoved.set(sub.id, set);
+    }
+    set.add(removedId);
+  }
+  if (sharedEmitTimers.has(sub.id)) return;
+  const timer = setTimeout(() => {
+    sharedEmitTimers.delete(sub.id);
+    if (!sharedSubscribers.has(sub.id)) return;
+    const removedSet = sharedPendingRemoved.get(sub.id);
+    const removedIds = removedSet ? Array.from(removedSet) : [];
+    if (removedSet) removedSet.clear();
+    try {
+      sub.onEmit(filterCachedRowsForSubscriber(sub), removedIds);
+    } catch (err) {
+      console.warn('Shared realtime subscriber emit error:', err);
+    }
+  }, 45);
+  sharedEmitTimers.set(sub.id, timer);
+}
+
+function emitTableSubscribersFromCache(table: string, changedKey?: string, removedId?: string): void {
+  sharedSubscribers.forEach((sub) => {
+    if (sub.table !== table) return;
+    if (table === SUPABASE_TABLES.SYSTEM_SETTINGS && changedKey) {
+      if (sub.exactKey && changedKey !== sub.exactKey) return;
+      if (sub.keyLike) {
+        const prefix = sub.keyLike.replace(/%$/, '');
+        if (!changedKey.startsWith(prefix)) return;
+      } else if (!sub.exactKey && changedKey.startsWith('col:')) {
+        return;
+      }
+    }
+    scheduleSubscriberEmit(sub, removedId);
+  });
+}
+
+async function ensureTableHydrated(table: string, forceReload = false): Promise<{ error: string | null }> {
+  if (!forceReload && sharedTableLoaded.has(table)) {
+    return { error: null };
+  }
+  if (!forceReload) {
+    const inFlight = sharedTableInitPromises.get(table);
+    if (inFlight) return inFlight;
+  }
+
+  const p = (async () => {
+    const { rows, error } = await fetchAllRowsFromTable(table);
+    sharedTableInitPromises.delete(table);
+    if (error) {
+      return { error };
+    }
+    const map = new Map<string, any>();
+    for (const r of rows) {
+      const pk = getTablePrimaryKey(table, r);
+      if (pk) map.set(pk, r);
+    }
+    sharedTableCache.set(table, map);
+    sharedTableLoaded.add(table);
+    return { error: null };
+  })();
+
+  sharedTableInitPromises.set(table, p);
+  return p;
+}
+
+function cleanupSharedRealtimeChannel(): void {
+  sharedEmitTimers.forEach((t) => clearTimeout(t));
+  sharedEmitTimers.clear();
+  if (sharedRealtimeChannel) {
+    const ch = sharedRealtimeChannel;
+    sharedRealtimeChannel = null;
+    try {
+      void supabase.removeChannel(ch);
+    } catch {
+      // Ignore teardown errors
+    }
+  }
+}
+
+function ensureSharedRealtimeChannel(): void {
+  if (sharedRealtimeChannel) return;
+
+  let ch = supabase.channel('office_unified_realtime_v1');
+  for (const table of SHARED_REALTIME_TABLES) {
+    ch = ch.on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table },
+      (payload: any) => {
+        const eventType = String(payload?.eventType || '');
+        const newRow = payload?.new;
+        const oldRow = payload?.old;
+
+        if (eventType === 'DELETE') {
+          const pk = getTablePrimaryKey(table, oldRow);
+          if (pk) {
+            patchSharedTableRow(table, pk, null);
+          }
+          let removedId: string | undefined;
+          if (table === SUPABASE_TABLES.SYSTEM_SETTINGS && pk) {
+            const parts = pk.split(':');
+            removedId = parts.length >= 3 ? parts.slice(2).join(':') : pk;
+          } else {
+            removedId = pk || undefined;
+          }
+          emitTableSubscribersFromCache(table, pk || undefined, removedId);
+          return;
+        }
+
+        if (newRow && typeof newRow === 'object') {
+          const pk = getTablePrimaryKey(table, newRow);
+          if (pk) {
+            patchSharedTableRow(table, pk, newRow);
+            emitTableSubscribersFromCache(table, pk);
+          }
+        }
+      }
+    );
+  }
+
+  sharedRealtimeChannel = ch.subscribe();
+
+  if (!sharedUnloadHookRegistered && typeof window !== 'undefined') {
+    sharedUnloadHookRegistered = true;
+    const teardown = () => cleanupSharedRealtimeChannel();
+    window.addEventListener('beforeunload', teardown);
+    window.addEventListener('pagehide', teardown);
+  }
+}
 
 function resolveSupabaseTableForCollection(colName: string): {
   table: string;
@@ -2415,22 +2717,37 @@ export function fsWatchCollection<T>(
   onError?: (err: Error) => void
 ): () => void {
   let cancelled = false;
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingRemovedIds: string[] = [];
   const { table, keyLike } = resolveSupabaseTableForCollection(colName);
+  const subId = ++sharedSubscriberSeq;
 
-  const loadSnapshot = async () => {
-    if (cancelled) return;
-    const { rows, error } = await fetchAllRowsFromTable(table, keyLike ? { keyLike } : undefined);
+  const sub: SharedTableSubscriber = {
+    id: subId,
+    table,
+    colName,
+    keyLike,
+    onEmit: (rows, removedIds) => {
+      if (cancelled) return;
+      updateFirebaseHealth('connected', null);
+      const mapped = mapTableRowsForCollection<T>(colName, rows);
+      onData(mapped, removedIds, { fromCache: false, hasPendingWrites: false });
+    },
+    onError
+  };
+
+  sharedSubscribers.set(subId, sub);
+  ensureSharedRealtimeChannel();
+
+  // Deduplicated initial table hydration (fetches each of the 6 tables at most ONCE!)
+  void ensureTableHydrated(table).then(({ error }) => {
     if (cancelled) return;
     if (error) {
-      const arMsg = `تعذر جلب البيانات اللحظية (${colName}) من Supabase: ${error}`;
+      const arMsg = `تعذر جلب البيانات اللحظية من قاعدة البيانات: ${error}`;
       updateFirebaseHealth('error', arMsg);
       if (colName === FS_COLLECTIONS.REQUESTS || colName === FS_COLLECTIONS.CITIZENS) {
         pushCloudSyncAlert({
           severity: 'error',
           target: 'firebase',
-          title: `تعذر جلب بيانات (${table}) من Supabase`,
+          title: 'تعذر جلب البيانات من قاعدة البيانات',
           message: arMsg,
           details: error
         });
@@ -2438,68 +2755,34 @@ export function fsWatchCollection<T>(
       if (onError) onError(new Error(error));
       return;
     }
+    sub.onEmit(filterCachedRowsForSubscriber(sub), []);
+  });
 
-    updateFirebaseHealth('connected', null);
-    const mapped = mapTableRowsForCollection<T>(colName, rows);
-    const removed = pendingRemovedIds.splice(0, pendingRemovedIds.length);
-    onData(mapped, removed, { fromCache: false, hasPendingWrites: false });
-  };
-
-  const scheduleRefresh = (removedId?: string) => {
-    if (removedId) pendingRemovedIds.push(removedId);
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      void loadSnapshot();
-    }, 180);
-  };
-
-  // 1. Initial load immediately
-  void loadSnapshot();
-
-  // 2. Supabase Realtime postgres_changes subscription
-  const channelName = `rt_${colName}_${++watcherCounter}_${Math.random().toString(36).slice(2, 7)}`;
-  const channel = supabase
-    .channel(channelName)
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table },
-      (payload: any) => {
-        if (cancelled) return;
-
-        // Filter irrelevant `system_settings` keys so changes to e.g. audit_logs don't re-fetch interviews
-        if (table === SUPABASE_TABLES.SYSTEM_SETTINGS) {
-          const changedKey = String(payload?.new?.key || payload?.old?.key || '');
-          if (keyLike) {
-            const prefix = keyLike.replace(/%$/, '');
-            if (changedKey && !changedKey.startsWith(prefix)) return;
-          } else if (colName === FS_COLLECTIONS.SETTINGS || colName === FS_COLLECTIONS.SYSTEM_SETTINGS) {
-            if (changedKey.startsWith('col:')) return;
-          }
-        }
-
-        let removedId: string | undefined;
-        if (payload?.eventType === 'DELETE') {
-          const oldRow = payload.old || {};
-          if (table === SUPABASE_TABLES.SYSTEM_SETTINGS && typeof oldRow.key === 'string') {
-            const parts = oldRow.key.split(':');
-            removedId = parts.length >= 3 ? parts.slice(2).join(':') : oldRow.key;
-          } else {
-            removedId = String(oldRow.id || oldRow.citizen_id || oldRow.request_id || oldRow.user_id || '').trim() || undefined;
-          }
-        }
-        scheduleRefresh(removedId);
-      }
-    )
-    .subscribe();
-
-  // 3. In-tab instant refresh listener
-  const unsubLocal = registerLocalTableListener(colName, () => scheduleRefresh());
+  // In-tab instant refresh listener (reads from patched cache or reloads if invalidated)
+  const unsubLocal = registerLocalTableListener(colName, () => {
+    if (cancelled) return;
+    if (sharedTableLoaded.has(table)) {
+      scheduleSubscriberEmit(sub);
+    } else {
+      void ensureTableHydrated(table, true).then(({ error }) => {
+        if (!cancelled && !error) scheduleSubscriberEmit(sub);
+      });
+    }
+  });
 
   return () => {
     cancelled = true;
-    if (debounceTimer) clearTimeout(debounceTimer);
     unsubLocal();
-    void supabase.removeChannel(channel);
+    const t = sharedEmitTimers.get(subId);
+    if (t) {
+      clearTimeout(t);
+      sharedEmitTimers.delete(subId);
+    }
+    sharedPendingRemoved.delete(subId);
+    sharedSubscribers.delete(subId);
+    if (sharedSubscribers.size === 0) {
+      cleanupSharedRealtimeChannel();
+    }
   };
 }
 
@@ -2507,36 +2790,48 @@ export function fsWatchGeneralSettings(
   callback: (general: Partial<SystemSettings>) => void
 ): () => void {
   let cancelled = false;
+  const subId = ++sharedSubscriberSeq;
 
-  const load = async () => {
-    const val = await getSettingRow<Partial<SystemSettings>>(FS_SETTINGS_DOCS.GENERAL);
-    if (!cancelled && val && typeof val === 'object') {
-      callback(val);
+  const sub: SharedTableSubscriber = {
+    id: subId,
+    table: SUPABASE_TABLES.SYSTEM_SETTINGS,
+    colName: 'settings:general',
+    exactKey: FS_SETTINGS_DOCS.GENERAL,
+    onEmit: (rows) => {
+      if (cancelled) return;
+      const val = rows[0]?.value;
+      if (val && typeof val === 'object') {
+        callback(val as Partial<SystemSettings>);
+      }
     }
   };
 
-  void load();
+  sharedSubscribers.set(subId, sub);
+  ensureSharedRealtimeChannel();
 
-  const channel = supabase
-    .channel(`rt_settings_general_${++watcherCounter}`)
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: SUPABASE_TABLES.SYSTEM_SETTINGS },
-      (payload: any) => {
-        const k = String(payload?.new?.key || payload?.old?.key || '');
-        if (k === FS_SETTINGS_DOCS.GENERAL) {
-          void load();
-        }
-      }
-    )
-    .subscribe();
+  void ensureTableHydrated(SUPABASE_TABLES.SYSTEM_SETTINGS).then(({ error }) => {
+    if (!cancelled && !error) {
+      sub.onEmit(filterCachedRowsForSubscriber(sub), []);
+    }
+  });
 
-  const unsubLocal = registerLocalTableListener('settings:general', () => void load());
+  const unsubLocal = registerLocalTableListener('settings:general', () => {
+    if (!cancelled) scheduleSubscriberEmit(sub);
+  });
 
   return () => {
     cancelled = true;
     unsubLocal();
-    void supabase.removeChannel(channel);
+    const t = sharedEmitTimers.get(subId);
+    if (t) {
+      clearTimeout(t);
+      sharedEmitTimers.delete(subId);
+    }
+    sharedPendingRemoved.delete(subId);
+    sharedSubscribers.delete(subId);
+    if (sharedSubscribers.size === 0) {
+      cleanupSharedRealtimeChannel();
+    }
   };
 }
 
@@ -2544,36 +2839,48 @@ export function fsWatchCloudConfig(
   callback: (cfg: Partial<SystemSettings>) => void
 ): () => void {
   let cancelled = false;
+  const subId = ++sharedSubscriberSeq;
 
-  const load = async () => {
-    const val = await getSettingRow<Partial<SystemSettings>>('cloud_config');
-    if (!cancelled && val && typeof val === 'object') {
-      callback(val);
+  const sub: SharedTableSubscriber = {
+    id: subId,
+    table: SUPABASE_TABLES.SYSTEM_SETTINGS,
+    colName: 'settings:cloud_config',
+    exactKey: 'cloud_config',
+    onEmit: (rows) => {
+      if (cancelled) return;
+      const val = rows[0]?.value;
+      if (val && typeof val === 'object') {
+        callback(val as Partial<SystemSettings>);
+      }
     }
   };
 
-  void load();
+  sharedSubscribers.set(subId, sub);
+  ensureSharedRealtimeChannel();
 
-  const channel = supabase
-    .channel(`rt_settings_cloud_${++watcherCounter}`)
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: SUPABASE_TABLES.SYSTEM_SETTINGS },
-      (payload: any) => {
-        const k = String(payload?.new?.key || payload?.old?.key || '');
-        if (k === 'cloud_config') {
-          void load();
-        }
-      }
-    )
-    .subscribe();
+  void ensureTableHydrated(SUPABASE_TABLES.SYSTEM_SETTINGS).then(({ error }) => {
+    if (!cancelled && !error) {
+      sub.onEmit(filterCachedRowsForSubscriber(sub), []);
+    }
+  });
 
-  const unsubLocal = registerLocalTableListener('settings:cloud_config', () => void load());
+  const unsubLocal = registerLocalTableListener('settings:cloud_config', () => {
+    if (!cancelled) scheduleSubscriberEmit(sub);
+  });
 
   return () => {
     cancelled = true;
     unsubLocal();
-    void supabase.removeChannel(channel);
+    const t = sharedEmitTimers.get(subId);
+    if (t) {
+      clearTimeout(t);
+      sharedEmitTimers.delete(subId);
+    }
+    sharedPendingRemoved.delete(subId);
+    sharedSubscribers.delete(subId);
+    if (sharedSubscribers.size === 0) {
+      cleanupSharedRealtimeChannel();
+    }
   };
 }
 
@@ -2631,6 +2938,7 @@ export async function fsSaveBlacklistEntry(entry: FirestoreBlacklistEntry): Prom
       .from(SUPABASE_TABLES.BLACKLIST)
       .upsert(row, { onConflict: 'id' });
     if (error) throw new Error(error.message);
+    patchSharedTableRow(SUPABASE_TABLES.BLACKLIST, row.id, row);
     updateFirebaseHealth('connected', null);
     notifyLocalTableChange(FS_COLLECTIONS.BLACKLIST);
   } catch (error) {
@@ -2646,6 +2954,7 @@ export async function fsDeleteBlacklistEntry(citizenId: string): Promise<void> {
       .from(SUPABASE_TABLES.BLACKLIST)
       .delete()
       .or(`id.eq.${safeId},citizen_id.eq.${safeId}`);
+    patchSharedTableRow(SUPABASE_TABLES.BLACKLIST, safeId, null);
     notifyLocalTableChange(FS_COLLECTIONS.BLACKLIST);
   } catch (error) {
     console.warn('Supabase blacklist delete notice:', error);
@@ -2863,11 +3172,11 @@ async function fetchAndParseCsvFallback(
   try {
     const res = await fetch(csvUrl, { method: 'GET' });
     if (!res.ok) {
-      return { citizens: [], requests: [], error: `HTTP ${res.status} أثناء قراءة CSV من Google Sheet` };
+      return { citizens: [], requests: [], error: `تعذر قراءة الأرشيف الاحتياطي (رمز ${res.status})` };
     }
     const csvText = await res.text();
     if (!csvText || csvText.trim().startsWith('<!DOCTYPE html') || csvText.trim().startsWith('<html')) {
-      return { citizens: [], requests: [], error: 'تعذر قراءة CSV مباشرة — يرجى التأكد من أن الجدول قابل للقراءة أو استخدام رابط Apps Script.' };
+      return { citizens: [], requests: [], error: 'تعذر قراءة الأرشيف الاحتياطي مباشرة — يرجى التحقق من صلاحيات الوصول.' };
     }
 
     const wb = XLSX.read(csvText, { type: 'string' });
@@ -2938,7 +3247,7 @@ async function fetchAndParseCsvFallback(
           ReferralSource: referrer,
           IsHistoricalImported: true,
           CreatedAt: createdAt,
-          CreatedBy: 'Google Sheet'
+          CreatedBy: 'الأرشيف الاحتياطي'
         });
       }
 
@@ -2969,7 +3278,7 @@ async function fetchAndParseCsvFallback(
         DeputyNotes: directorNotes || '',
         IsHistoricalImported: true,
         CreatedAt: createdAt,
-        CreatedBy: 'Google Sheet'
+        CreatedBy: 'الأرشيف الاحتياطي'
       });
     });
 
@@ -2991,11 +3300,31 @@ export async function importPreviousDataFromGoogleSheetToSupabase(options?: {
   sheetId?: string;
   gid?: string;
   actor?: string;
+  onProgress?: (progress: SheetImportProgress) => void;
 }): Promise<GoogleSheetToSupabaseImportResult> {
   const appsScriptUrl = (options?.appsScriptUrl || PINNED_APPS_SCRIPT_URL).trim();
   const sheetId = (options?.sheetId || PINNED_GOOGLE_SHEET_ID).trim();
   const gid = (options?.gid || DEFAULT_GOOGLE_SHEET_GID).trim();
   const actor = options?.actor || 'الإدارة';
+  const emitProgress = (p: SheetImportProgress) => {
+    try {
+      options?.onProgress?.(p);
+    } catch {
+      // Ignore UI progress callback errors
+    }
+  };
+
+  emitProgress({
+    phase: 'fetching',
+    label: 'جاري الاتصال بالأرشيف الاحتياطي وسحب البيانات السابقة...',
+    percent: 5,
+    citizensDone: 0,
+    citizensTotal: 0,
+    requestsDone: 0,
+    requestsTotal: 0,
+    otherDone: 0,
+    otherTotal: 0
+  });
 
   try {
     let source: 'apps_script' | 'csv_fallback' | 'none' = 'none';
@@ -3029,13 +3358,35 @@ export async function importPreviousDataFromGoogleSheetToSupabase(options?: {
 
     // 2. Automatic CSV fallback if Apps Script returned 0 records or failed
     if (source === 'none') {
+      emitProgress({
+        phase: 'fetching',
+        label: 'جاري قراءة البيانات عبر المسار البديل من الأرشيف الاحتياطي...',
+        percent: 12,
+        citizensDone: 0,
+        citizensTotal: 0,
+        requestsDone: 0,
+        requestsTotal: 0,
+        otherDone: 0,
+        otherTotal: 0
+      });
       const csvRes = await fetchAndParseCsvFallback(sheetId, gid);
       if (csvRes.citizens.length > 0 || csvRes.requests.length > 0) {
         citizens = csvRes.citizens;
         requests = csvRes.requests;
         source = 'csv_fallback';
       } else {
-        const combinedError = [scriptErr, csvRes.error].filter(Boolean).join(' | ') || 'لم يتم العثور على سجلات في Google Sheet.';
+        const combinedError = [scriptErr, csvRes.error].filter(Boolean).join(' | ') || 'لم يتم العثور على سجلات في الأرشيف الاحتياطي.';
+        emitProgress({
+          phase: 'error',
+          label: combinedError,
+          percent: 0,
+          citizensDone: 0,
+          citizensTotal: 0,
+          requestsDone: 0,
+          requestsTotal: 0,
+          otherDone: 0,
+          otherTotal: 0
+        });
         return {
           success: false,
           source: 'none',
@@ -3080,10 +3431,7 @@ export async function importPreviousDataFromGoogleSheetToSupabase(options?: {
       };
     });
 
-    // 3. Upsert Citizens & Requests cleanly into Supabase
-    const crRes = await fsBulkSaveCitizensAndRequests(normalizedCitizens, normalizedRequests);
-
-    // 4. Upsert other sections pulled from Apps Script (interviews, letters, org, cheques, customRecords)
+    // Prepare auxiliary rows count upfront for accurate overall percentage
     const nowIso = new Date().toISOString();
     const auxRows: Array<{ key: string; value: any; updated_at: string }> = [];
     interviews.forEach(i => {
@@ -3132,13 +3480,58 @@ export async function importPreviousDataFromGoogleSheetToSupabase(options?: {
       });
     });
 
+    const otherTotal = auxRows.length;
+
+    // 3. Upsert Citizens & Requests cleanly into Supabase with live progress reporting
+    const crRes = await fsBulkSaveCitizensAndRequests(
+      normalizedCitizens,
+      normalizedRequests,
+      (p) => {
+        const denom = Math.max(1, p.totalCitizens + p.totalRequests + otherTotal);
+        const done = p.savedCitizens + p.savedRequests;
+        const pct = Math.min(95, 15 + Math.round((done / denom) * 80));
+        emitProgress({
+          phase: p.phase,
+          label:
+            p.phase === 'citizens'
+              ? `جاري استيراد المراجعين إلى قاعدة البيانات (${p.savedCitizens} / ${p.totalCitizens})...`
+              : `جاري استيراد المعاملات إلى قاعدة البيانات (${p.savedRequests} / ${p.totalRequests})...`,
+          percent: pct,
+          citizensDone: p.savedCitizens,
+          citizensTotal: p.totalCitizens,
+          requestsDone: p.savedRequests,
+          requestsTotal: p.totalRequests,
+          otherDone: 0,
+          otherTotal
+        });
+      }
+    );
+
+    // 4. Upsert other sections pulled from Apps Script (interviews, letters, org, cheques, customRecords)
     let otherImported = 0;
-    for (let i = 0; i < auxRows.length; i += 200) {
-      const slice = auxRows.slice(i, i + 200);
+    const AUX_CHUNK = 100;
+    for (let i = 0; i < auxRows.length; i += AUX_CHUNK) {
+      const slice = auxRows.slice(i, i + AUX_CHUNK);
       const { error } = await supabase
         .from(SUPABASE_TABLES.SYSTEM_SETTINGS)
         .upsert(slice, { onConflict: 'key' });
-      if (!error) otherImported += slice.length;
+      if (!error) {
+        otherImported += slice.length;
+        slice.forEach(row => patchSharedTableRow(SUPABASE_TABLES.SYSTEM_SETTINGS, row.key, row));
+      }
+      const denom = Math.max(1, normalizedCitizens.length + normalizedRequests.length + otherTotal);
+      const done = crRes.savedCitizens + crRes.savedRequests + otherImported;
+      emitProgress({
+        phase: 'other',
+        label: `جاري استيراد الأقسام المساندة (${otherImported} / ${otherTotal})...`,
+        percent: Math.min(99, 15 + Math.round((done / denom) * 84)),
+        citizensDone: crRes.savedCitizens,
+        citizensTotal: normalizedCitizens.length,
+        requestsDone: crRes.savedRequests,
+        requestsTotal: normalizedRequests.length,
+        otherDone: otherImported,
+        otherTotal
+      });
     }
 
     // Trigger immediate live refresh across all watchers
@@ -3151,7 +3544,19 @@ export async function importPreviousDataFromGoogleSheetToSupabase(options?: {
     if (customRecords.length) notifyLocalTableChange(FS_COLLECTIONS.CUSTOM_RECORDS);
 
     const totalImported = crRes.savedCitizens + crRes.savedRequests + otherImported;
-    const msg = `تم جلب ومزامنة (${crRes.savedCitizens}) مراجع و(${crRes.savedRequests}) معاملة${otherImported > 0 ? ` و(${otherImported}) سجل إضافي` : ''} من Google Sheet إلى Supabase بنجاح دون تكرار.`;
+    const msg = `تمت مزامنة البيانات بنجاح: (${crRes.savedCitizens}) مراجع و(${crRes.savedRequests}) معاملة${otherImported > 0 ? ` و(${otherImported}) سجل إضافي` : ''} دون تكرار.`;
+
+    emitProgress({
+      phase: crRes.success ? 'done' : 'error',
+      label: crRes.success ? msg : crRes.error || 'تعذر حفظ بعض السجلات في قاعدة البيانات.',
+      percent: crRes.success ? 100 : 0,
+      citizensDone: crRes.savedCitizens,
+      citizensTotal: normalizedCitizens.length,
+      requestsDone: crRes.savedRequests,
+      requestsTotal: normalizedRequests.length,
+      otherDone: otherImported,
+      otherTotal
+    });
 
     await fsSaveBackupStatus({
       action: 'manual_import',
@@ -3174,11 +3579,22 @@ export async function importPreviousDataFromGoogleSheetToSupabase(options?: {
       requestsImported: crRes.savedRequests,
       otherImported,
       totalImported,
-      message: crRes.success ? msg : crRes.error || 'تعذر حفظ بعض السجلات في Supabase.',
+      message: crRes.success ? msg : crRes.error || 'تعذر حفظ بعض السجلات في قاعدة البيانات.',
       error: crRes.error
     };
   } catch (err: any) {
     const errMsg = err?.message || String(err);
+    emitProgress({
+      phase: 'error',
+      label: `تعذر استيراد البيانات من الأرشيف الاحتياطي: ${errMsg}`,
+      percent: 0,
+      citizensDone: 0,
+      citizensTotal: 0,
+      requestsDone: 0,
+      requestsTotal: 0,
+      otherDone: 0,
+      otherTotal: 0
+    });
     return {
       success: false,
       source: 'none',
@@ -3186,7 +3602,7 @@ export async function importPreviousDataFromGoogleSheetToSupabase(options?: {
       requestsImported: 0,
       otherImported: 0,
       totalImported: 0,
-      message: `تعذر جلب البيانات من Google Sheet إلى Supabase: ${errMsg}`,
+      message: `تعذر استيراد البيانات من الأرشيف الاحتياطي: ${errMsg}`,
       error: errMsg
     };
   }

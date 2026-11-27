@@ -220,7 +220,7 @@ export const Sidebar: React.FC = () => {
     },
     {
       id: 'apps_script',
-      label: 'مزامنة Google Sheets',
+      label: 'مزامنة الأرشيف الاحتياطي',
       icon: CloudDownload,
       badge: 'سحابي',
       badgeColor: 'bg-blue-500/30 text-blue-300 border-blue-500/40',

@@ -206,7 +206,7 @@ export const SystemWipeModal: React.FC<SystemWipeModalProps> = ({ isOpen, onClos
                 <span>تصفير النظام وحذف البيانات (سحابياً ومحلياً)</span>
               </h3>
               <p className="text-xs text-red-100 font-medium">
-                تصفير فوري ومتزامن للواجهة و Firebase Firestore و Google Sheets مع الإبقاء على صف العناوين (Headers)
+                تصفير فوري ومتزامن للواجهة وقاعدة البيانات والأرشيف الاحتياطي مع الإبقاء على صف العناوين (Headers)
               </p>
             </div>
           </div>
@@ -230,7 +230,7 @@ export const SystemWipeModal: React.FC<SystemWipeModalProps> = ({ isOpen, onClos
                 {wipeMode === 'all' ? 'تم تصفير المنظومة بالكامل بنجاح!' : 'تم تصفير الأقسام المحددة بنجاح!'}
               </h4>
               <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
-                تم مسح البيانات فوراً من الواجهة و Firebase Firestore و Google Sheets مع الإبقاء التام على صف العناوين (Headers) وحسابات الموظفين وإعدادات النظام.
+                تم مسح البيانات فوراً من الواجهة وقاعدة البيانات والأرشيف الاحتياطي مع الإبقاء التام على صف العناوين (Headers) وحسابات الموظفين وإعدادات النظام.
               </p>
             </div>
           ) : (
@@ -275,7 +275,7 @@ export const SystemWipeModal: React.FC<SystemWipeModalProps> = ({ isOpen, onClos
                 <div className="text-xs space-y-1">
                   <p className="font-bold">حماية ذكية للبنية السحابية:</p>
                   <p className="text-amber-800 leading-relaxed">
-                    يتم حذف صفوف البيانات فقط من الواجهة و <strong>Firebase Firestore</strong> و <strong>Google Sheets</strong> مع <strong>الإبقاء التام على صف العناوين (Headers)</strong> وحسابات الموظفين والأيقونات وهيكل الأقسام.
+                    يتم حذف صفوف البيانات فقط من الواجهة و <strong>قاعدة البيانات الرئيسية</strong> و <strong>الأرشيف الاحتياطي</strong> مع <strong>الإبقاء التام على صف العناوين (Headers)</strong> وحسابات الموظفين والأيقونات وهيكل الأقسام.
                   </p>
                 </div>
               </div>
@@ -429,7 +429,7 @@ export const SystemWipeModal: React.FC<SystemWipeModalProps> = ({ isOpen, onClos
                   <Trash2 className="w-4 h-4" />
                   <span>
                     {isWiping
-                      ? 'جاري التصفير المتزامن في Firestore و Google Sheets...'
+                      ? 'جاري التصفير المتزامن في قاعدة البيانات والأرشيف الاحتياطي...'
                       : wipeMode === 'all'
                       ? 'تأكيد تصفير المنظومة بالكامل (مع بقاء العناوين)'
                       : `تأكيد تصفير (${selectedSectionKeys.length}) قسم محدد فقط`}

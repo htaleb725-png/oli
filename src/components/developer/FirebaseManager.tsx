@@ -25,12 +25,16 @@ export const FirebaseManager: React.FC = () => {
     customSections,
     customRecords,
     users,
+    currentUser,
     isFirestoreSyncing,
     syncAllToFirestoreNow,
     fetchAllFromFirestoreNow,
     isImportingFromGoogleSheet,
+    sheetImportProgress,
     importFromGoogleSheetToSupabase
   } = useApp();
+
+  const isDeveloperRole = currentUser?.Role === 'developer';
 
   const [syncStatusMsg, setSyncStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -39,18 +43,18 @@ export const FirebaseManager: React.FC = () => {
     setIsProcessing(true);
     setSyncStatusMsg({
       type: 'info',
-      text: 'جاري جلب السجلات السابقة من Google Sheet وحفظها في Supabase دون تكرار...'
+      text: 'جاري استيراد ومزامنة الأرشيف الاحتياطي إلى قاعدة البيانات دون تكرار...'
     });
     try {
       const res = await importFromGoogleSheetToSupabase();
       setSyncStatusMsg({
         type: res.success ? 'success' : 'error',
-        text: res.message
+        text: res.success ? 'تمت مزامنة البيانات بنجاح' : res.message
       });
     } catch (err: any) {
       setSyncStatusMsg({
         type: 'error',
-        text: `فشل الجلب من Google Sheet: ${err?.message || 'خطأ غير متوقع'}`
+        text: `تعذر استيراد الأرشيف الاحتياطي: ${err?.message || 'خطأ غير متوقع'}`
       });
     } finally {
       setIsProcessing(false);
@@ -59,7 +63,7 @@ export const FirebaseManager: React.FC = () => {
 
   const handlePushAll = async () => {
     setIsProcessing(true);
-    setSyncStatusMsg({ type: 'info', text: 'جاري رفع ومزامنة كافة السجلات والبيانات مع Supabase...' });
+    setSyncStatusMsg({ type: 'info', text: 'جاري رفع ومزامنة كافة السجلات والبيانات مع قاعدة البيانات...' });
     try {
       const res = await syncAllToFirestoreNow();
       if (res.error) {
@@ -67,7 +71,7 @@ export const FirebaseManager: React.FC = () => {
       } else {
         setSyncStatusMsg({
           type: 'success',
-          text: `تمت المزامنة بنجاح! تم رفع (${res.successCount} من إجمالي ${res.total}) عنصر إلى قاعدة بيانات Supabase السحابية.`
+          text: `تمت مزامنة البيانات بنجاح (${res.successCount} من إجمالي ${res.total} عنصر)`
         });
       }
     } catch (err: any) {
@@ -79,11 +83,11 @@ export const FirebaseManager: React.FC = () => {
 
   const handleFetchAll = async () => {
     setIsProcessing(true);
-    setSyncStatusMsg({ type: 'info', text: 'جاري استيراد وتحديث كافة البيانات المخزنة من Supabase إلى المنظومة...' });
+    setSyncStatusMsg({ type: 'info', text: 'جاري تحديث كافة البيانات المخزنة من قاعدة البيانات إلى المنظومة...' });
     try {
       const res = await fetchAllFromFirestoreNow();
       if (res.success) {
-        setSyncStatusMsg({ type: 'success', text: 'تم تحديث كافة السجلات بنجاح من قاعدة بيانات Supabase ⚡' });
+        setSyncStatusMsg({ type: 'success', text: 'تم تحديث البيانات في قاعدة البيانات بنجاح' });
       } else {
         setSyncStatusMsg({ type: 'error', text: `فشل التحديث: ${res.error || 'تعذر جلب السجلات'}` });
       }
@@ -116,33 +120,35 @@ export const FirebaseManager: React.FC = () => {
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-base font-black text-slate-900 dark:text-white">
-                مركز إدارة قاعدة بيانات Supabase السحابية + شريك Google Sheet
+                مركز إدارة قاعدة البيانات السحابية والأرشيف الاحتياطي
               </h3>
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
-                Supabase Realtime + Google Sheet مزدوج
+                مزامنة لحظية ومزدوجة
               </span>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
-              قاعدة بيانات Supabase الأساسية (6 جداول + اشتراك لحظي) مع استمرار المزامنة والنسخ الاحتياطي التلقائي مع Google Sheet.
+              قاعدة البيانات الأساسية (6 جداول + تحديث لحظي مباشر) مع استمرار المزامنة والنسخ الاحتياطي التلقائي.
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap shrink-0">
-          <button
-            type="button"
-            onClick={handleImportFromGoogleSheet}
-            disabled={isProcessing || isImportingFromGoogleSheet || isFirestoreSyncing}
-            className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-50"
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-            <span>
-              {isImportingFromGoogleSheet
-                ? 'جاري الجلب من Google Sheet...'
-                : 'جلب البيانات السابقة من Google Sheet إلى Supabase'}
-            </span>
-          </button>
+          {isDeveloperRole && (
+            <button
+              type="button"
+              onClick={handleImportFromGoogleSheet}
+              disabled={isProcessing || isImportingFromGoogleSheet || isFirestoreSyncing}
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>
+                {isImportingFromGoogleSheet
+                  ? `جاري الاستيراد... (${sheetImportProgress?.percent ?? 0}%)`
+                  : 'استيراد ومزامنة الأرشيف الاحتياطي إلى قاعدة البيانات'}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             onClick={handlePushAll}
@@ -150,7 +156,7 @@ export const FirebaseManager: React.FC = () => {
             className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-50"
           >
             <ArrowUpCircle className="w-4 h-4" />
-            <span>رفع كافة البيانات الآن (Push)</span>
+            <span>رفع كافة البيانات الآن</span>
           </button>
           <button
             type="button"
@@ -159,10 +165,57 @@ export const FirebaseManager: React.FC = () => {
             className="px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white font-bold text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95 disabled:opacity-50"
           >
             <ArrowDownCircle className="w-4 h-4 text-emerald-400" />
-            <span>تحديث مباشر من Supabase</span>
+            <span>تحديث مباشر من قاعدة البيانات</span>
           </button>
         </div>
       </div>
+
+      {/* Live Progress Counter for Backup Archive Import (Developer Only) */}
+      {isDeveloperRole && sheetImportProgress && (isImportingFromGoogleSheet || sheetImportProgress.phase === 'done' || sheetImportProgress.phase === 'error') && (
+        <div className={`p-4 rounded-2xl border space-y-2.5 shadow-xs ${
+          sheetImportProgress.phase === 'error'
+            ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800'
+            : sheetImportProgress.phase === 'done'
+            ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800'
+            : 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800'
+        }`}>
+          <div className="flex items-center justify-between gap-2 text-xs font-black">
+            <span className="text-slate-800 dark:text-slate-100">{sheetImportProgress.label}</span>
+            <span className="font-mono text-emerald-700 dark:text-emerald-300 shrink-0">
+              {sheetImportProgress.percent}%
+            </span>
+          </div>
+          <div className="w-full h-2.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+            <div
+              className={`h-full transition-all duration-300 ${
+                sheetImportProgress.phase === 'error'
+                  ? 'bg-rose-500'
+                  : sheetImportProgress.phase === 'done'
+                  ? 'bg-emerald-600'
+                  : 'bg-blue-600'
+              }`}
+              style={{ width: `${Math.max(3, Math.min(100, sheetImportProgress.percent))}%` }}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+            <span>
+              المراجعون: <strong className="font-mono text-slate-900 dark:text-white">{sheetImportProgress.citizensDone} / {sheetImportProgress.citizensTotal}</strong>
+            </span>
+            <span>•</span>
+            <span>
+              المعاملات: <strong className="font-mono text-slate-900 dark:text-white">{sheetImportProgress.requestsDone} / {sheetImportProgress.requestsTotal}</strong>
+            </span>
+            {sheetImportProgress.otherTotal > 0 && (
+              <>
+                <span>•</span>
+                <span>
+                  الأقسام المساندة: <strong className="font-mono text-slate-900 dark:text-white">{sheetImportProgress.otherDone} / {sheetImportProgress.otherTotal}</strong>
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Notification Toast */}
       {syncStatusMsg && (
@@ -197,7 +250,7 @@ export const FirebaseManager: React.FC = () => {
           </div>
           <div>
             <span className="text-[11px] text-slate-400 font-bold block">خادم القاعدة الأساسية</span>
-            <span className="text-xs font-black text-slate-900 dark:text-white font-mono">Supabase PostgreSQL</span>
+            <span className="text-xs font-black text-slate-900 dark:text-white">قاعدة البيانات الرئيسية</span>
           </div>
         </div>
 
@@ -207,7 +260,7 @@ export const FirebaseManager: React.FC = () => {
           </div>
           <div>
             <span className="text-[11px] text-slate-400 font-bold block">نمط المزامنة المزدوجة</span>
-            <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 font-mono">Supabase Realtime + Google Sheet</span>
+            <span className="text-xs font-black text-emerald-600 dark:text-emerald-400">مزامنة لحظية + أرشيف احتياطي</span>
           </div>
         </div>
 
@@ -217,7 +270,7 @@ export const FirebaseManager: React.FC = () => {
           </div>
           <div>
             <span className="text-[11px] text-slate-400 font-bold block">الجداول النشطة (6 جداول)</span>
-            <span className="text-xs font-black text-slate-900 dark:text-white">citizens · requests · blacklist · users · departments · system_settings</span>
+            <span className="text-xs font-black text-slate-900 dark:text-white">المراجعون · المعاملات · الحظر · الحسابات · الأقسام · الإعدادات</span>
           </div>
         </div>
       </div>
@@ -227,10 +280,10 @@ export const FirebaseManager: React.FC = () => {
         <div className="flex items-center justify-between">
           <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
             <Layers className="w-4 h-4 text-emerald-500" />
-            <span>جداول قاعدة بيانات Supabase الستة - إجمالي السجلات: ({totalRecords})</span>
+            <span>جداول قاعدة البيانات الستة - إجمالي السجلات: ({totalRecords})</span>
           </h4>
           <span className="text-[11px] text-slate-400">
-            حفظ مزدوج تلقائي وفوري في Supabase و Google Sheet
+            حفظ مزدوج تلقائي وفوري في قاعدة البيانات والأرشيف الاحتياطي
           </span>
         </div>
 

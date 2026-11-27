@@ -422,10 +422,46 @@ html:not(.dark) tbody tr:hover {
     width: 100% !important;
     max-width: 100% !important;
   }
+
+  /* When Citizen History Modal is open, Ctrl+P prints strictly the official A4 document */
+  body.citizen-history-open header,
+  body.citizen-history-open aside,
+  body.citizen-history-open nav,
+  body.citizen-history-open main,
+  body.citizen-history-open footer {
+    display: none !important;
+  }
+
+  .org-history-print-sheet {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #FFFFFF !important;
+    color: #0F172A !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .org-history-print-sheet thead {
+    display: table-header-group;
+  }
+
+  .org-history-print-sheet tr,
+  .org-history-print-sheet .print-avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
 }
 
 .print-only {
   display: none;
+}
+
+.isolated-print-wrapper .org-history-print-sheet {
+  display: block !important;
 }
 
 /* Mobile APK-style safe area & smooth touch optimizations */

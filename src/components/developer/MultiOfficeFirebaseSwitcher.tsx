@@ -122,16 +122,16 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
 
   const handleTestConnection = async () => {
     setIsTesting(true);
-    setStatusMsg({ type: 'info', text: 'جاري فحص الاتصال بقواعد بيانات Firebase و Google Sheets للمكتب المحدد...' });
+    setStatusMsg({ type: 'info', text: 'جاري فحص الاتصال بقاعدة البيانات والأرشيف الاحتياطي للمكتب المحدد...' });
     try {
       const fsRes = await fetchAllFromFirestoreNow();
       let sheetsMsg = '';
       if (googleSheetId.trim()) {
         try {
           const sRes = await fetchAllFromGoogleSheetsNow();
-          sheetsMsg = sRes.success ? '✓ وجدول Google Sheets متصل.' : '⚠️ تنبيه Google Sheets: ' + sRes.message;
+          sheetsMsg = sRes.success ? '✓ والأرشيف الاحتياطي متصل.' : '⚠️ تنبيه الأرشيف الاحتياطي: ' + sRes.message;
         } catch {
-          sheetsMsg = '⚠️ تعذر فحص Google Sheets.';
+          sheetsMsg = '⚠️ تعذر فحص الأرشيف الاحتياطي.';
         }
       }
 
@@ -143,7 +143,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
       } else {
         setStatusMsg({
           type: 'error',
-          text: `فحص الاتصال بـ Firebase: ${fsRes.error || 'تعذر القراءة'}. ${sheetsMsg}`
+          text: `فحص الاتصال بقاعدة البيانات: ${fsRes.error || 'تعذر القراءة'}. ${sheetsMsg}`
         });
       }
     } catch (e: any) {
@@ -155,12 +155,12 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
 
   const handlePullGoogleSheetsNow = async () => {
     if (!googleSheetId.trim() && !appsScriptUrl.trim()) {
-      setStatusMsg({ type: 'error', text: 'يرجى إدخال معرف جدول Google Sheets أو رابط Apps Script أولاً لجلب البيانات منه.' });
+      setStatusMsg({ type: 'error', text: 'يرجى إدخال معرف جدول الأرشيف الاحتياطي أو رابط الربط أولاً لجلب البيانات منه.' });
       return;
     }
 
     setIsPullingSheets(true);
-    setStatusMsg({ type: 'info', text: 'جاري سحب واستيراد كافة بيانات هذا المكتب من جدول Google Sheets الآن...' });
+    setStatusMsg({ type: 'info', text: 'جاري استيراد ومزامنة كافة بيانات هذا المكتب من الأرشيف الاحتياطي الآن...' });
 
     try {
       if (typeof window !== 'undefined') {
@@ -174,7 +174,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
       if (res.success) {
         setStatusMsg({
           type: 'success',
-          text: `✓ ${res.message || 'تم بنجاح جلب كافة سجلات ومعاملات المكتب من جدول Google Sheets وتحديث واجهات النظام.'}`
+          text: `تمت مزامنة البيانات بنجاح`
         });
       } else {
         setStatusMsg({
@@ -191,12 +191,12 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
 
   const handlePushGoogleSheetsNow = async () => {
     if (!googleSheetId.trim() && !appsScriptUrl.trim()) {
-      setStatusMsg({ type: 'error', text: 'يرجى إدخال معرف جدول Google Sheets أو رابط Apps Script أولاً لحفظ السجلات فيه.' });
+      setStatusMsg({ type: 'error', text: 'يرجى إدخال معرف جدول الأرشيف الاحتياطي أو رابط الربط أولاً لحفظ السجلات فيه.' });
       return;
     }
 
     setIsPushingSheets(true);
-    setStatusMsg({ type: 'info', text: 'جاري إرسال وتحديث سجلات المنظومة في جدول Google Sheets ومجلد Drive الآن...' });
+    setStatusMsg({ type: 'info', text: 'جاري إرسال وتحديث سجلات المنظومة في الأرشيف الاحتياطي ومجلد Drive الآن...' });
 
     try {
       if (typeof window !== 'undefined') {
@@ -210,7 +210,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
       if (res.success) {
         setStatusMsg({
           type: 'success',
-          text: `✓ ${res.message || 'تم بنجاح إرسال وحفظ كافة السجلات في جدول Google Sheets ومجلد Drive.'}`
+          text: `تمت مزامنة البيانات بنجاح`
         });
       } else {
         setStatusMsg({
@@ -285,7 +285,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
 
       setStatusMsg({
         type: 'success',
-        text: `تم بنجاح تغيير وتثبيت إعدادات (${officeName.trim()}) للنائب (${deputyName.trim()})! تم ربط جدول Google Sheets ومفتاح العزل السحابي [${cleanWorkspace}]. النظام مهيأ وجاهز للعمل للنائب الجديد دون الحاجة لأي تعديل برمجي.`
+        text: `تم تحديث البيانات في قاعدة البيانات بنجاح — تم تثبيت إعدادات (${officeName.trim()}) للنائب (${deputyName.trim()}) وربط الأرشيف الاحتياطي ومفتاح العزل [${cleanWorkspace}].`
       });
     } catch (err: any) {
       setStatusMsg({ type: 'error', text: `فشل الحفظ والتطبيق: ${err.message || 'حدث خطأ'}` });
@@ -317,7 +317,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
               يمكنك نشر هذا البرنامج لأي نائب أو مكتب تشريعي جديد. من هذه الشاشة يمكنك تعديل اسم النائب، صفته، اسم المكتب، 
-              وربط جدول Google Sheets ومجلد Drive ومفتاح قاعدة البيانات السحابية بالكامل بضغطة زر دون الرجوع للكود.
+              وربط الأرشيف الاحتياطي ومجلد Drive ومفتاح قاعدة البيانات السحابية بالكامل بضغطة زر دون الرجوع للكود.
             </p>
           </div>
         </div>
@@ -474,15 +474,15 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
             <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2">
               <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-              <span>2. قاعدة بيانات Google Sheets ومجلد Drive الخاصة بهذا المكتب:</span>
+              <span>2. إعدادات الأرشيف الاحتياطي ومجلد Drive الخاصة بهذا المكتب:</span>
             </h4>
-            <span className="text-[10px] text-slate-400 font-mono">Google Cloud Real-time Layer</span>
+            <span className="text-[10px] text-slate-400 font-mono">Cloud Archive Layer</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                معرّف جدول Google Sheets (Spreadsheet ID)
+                معرّف جدول الأرشيف الاحتياطي (Archive ID)
               </label>
               <input
                 type="text"
@@ -561,7 +561,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
         <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
           <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
             <Flame className="w-4 h-4 text-amber-500" />
-            <span>3. مفتاح عزل قاعدة البيانات السحابية (Firebase Partition Key):</span>
+            <span>3. مفتاح عزل قاعدة البيانات السحابية (Partition Key):</span>
           </h4>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -595,7 +595,7 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
 
             <div className="space-y-1.5">
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                مشروع Firebase السحابي (Project ID)
+                معرّف المشروع السحابي (Project ID)
               </label>
               <input
                 type="text"
@@ -653,8 +653,8 @@ export const MultiOfficeFirebaseSwitcher: React.FC = () => {
             <p>أدخل اسم النائب وصفته واسم المكتب، وسيتم تحديث شريط الأخبار، الترويسات، والباجات فوراً.</p>
           </div>
           <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-750 space-y-1">
-            <span className="font-bold text-slate-900 dark:text-white block">2. جدول Google Sheets</span>
-            <p>ضع معرّف جدول البيانات الجديد الخاص بالنائب، وسيقوم النظام بتخزين واسترجاع بياناته حصراً من هذا الجدول.</p>
+            <span className="font-bold text-slate-900 dark:text-white block">2. جدول الأرشيف الاحتياطي</span>
+            <p>ضع معرّف جدول الأرشيف الجديد الخاص بالنائب، وسيقوم النظام بتخزين واسترجاع النسخة الاحتياطية منه تلقائياً.</p>
           </div>
           <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-750 space-y-1">
             <span className="font-bold text-slate-900 dark:text-white block">3. عزل البيانات التام</span>

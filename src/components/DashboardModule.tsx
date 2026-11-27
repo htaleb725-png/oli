@@ -414,7 +414,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
         },
         {
           id: 'tile_apps_script',
-          ...getMeta('tile_apps_script', 'مزامنة Google Sheets السحابية', 'ربط ومزامنة الجداول الخارجية'),
+          ...getMeta('tile_apps_script', 'مزامنة الأرشيف الاحتياطي السحابي', 'ربط ومزامنة الجداول الخارجية والنسخ الاحتياطي'),
           icon: CloudDownload,
           iconColor: 'text-blue-600 dark:text-blue-400',
           iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800',
@@ -425,16 +425,41 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       );
     }
 
-    // Strict Centralized RBAC & Visibility Filtering:
+    const TILE_COLOR_PALETTE: Record<string, { iconColor: string; iconBg: string }> = {
+      blue: { iconColor: 'text-blue-600 dark:text-blue-400', iconBg: 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800' },
+      emerald: { iconColor: 'text-emerald-600 dark:text-emerald-400', iconBg: 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800' },
+      amber: { iconColor: 'text-amber-600 dark:text-amber-400', iconBg: 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800' },
+      purple: { iconColor: 'text-purple-600 dark:text-purple-400', iconBg: 'bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800' },
+      indigo: { iconColor: 'text-indigo-600 dark:text-indigo-400', iconBg: 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800' },
+      rose: { iconColor: 'text-rose-600 dark:text-rose-400', iconBg: 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800' },
+      teal: { iconColor: 'text-teal-600 dark:text-teal-400', iconBg: 'bg-teal-50 dark:bg-teal-950/50 border-teal-200 dark:border-teal-800' },
+      orange: { iconColor: 'text-orange-600 dark:text-orange-400', iconBg: 'bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800' }
+    };
+
+    // Strict Centralized RBAC, Visibility, Color Override & Order Sorting:
     // - Hidden tiles configured by Developer in Icons Studio are hidden immediately
+    // - Custom colors & order persisted in Supabase system_settings apply live across all computers
     // - Social Care is strictly restricted and NEVER appears unless granted
-    const filteredList = list.filter(tile => {
-      if (systemSettings?.customTilesConfig?.[tile.id]?.hidden) {
-        return false;
-      }
-      const mappedSectionId = mapTileIdToSectionId(tile.id);
-      return canUserAccessSection(currentUser, mappedSectionId, customSections);
-    });
+    const filteredList = list
+      .filter(tile => {
+        if (systemSettings?.customTilesConfig?.[tile.id]?.hidden) {
+          return false;
+        }
+        const mappedSectionId = mapTileIdToSectionId(tile.id);
+        return canUserAccessSection(currentUser, mappedSectionId, customSections);
+      })
+      .map((tile, idx) => {
+        const cfg = systemSettings?.customTilesConfig?.[tile.id];
+        const colorStyle = cfg?.iconColor ? TILE_COLOR_PALETTE[cfg.iconColor] : undefined;
+        return {
+          tile: colorStyle
+            ? { ...tile, iconColor: colorStyle.iconColor, iconBg: colorStyle.iconBg }
+            : tile,
+          order: typeof cfg?.order === 'number' ? cfg.order : 1000 + idx
+        };
+      })
+      .sort((a, b) => a.order - b.order)
+      .map(entry => entry.tile);
 
     return filteredList;
   }, [

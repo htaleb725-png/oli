@@ -504,6 +504,9 @@ export interface SystemSettings {
   parliamentEmblemUrl: string;
   maintenanceMode: boolean;
   tickerNews: string[];
+  tickerEnabled?: boolean;
+  tickerSpeed?: 'slow' | 'normal' | 'fast';
+  tickerColor?: 'navy' | 'emerald' | 'amber' | 'rose' | 'indigo';
   googleSheetId?: string;
   googleSheetGid?: string;
   activeGoogleSheetId?: string;
@@ -534,6 +537,7 @@ export interface SystemSettings {
     iconColor?: string;
     bgGradient?: string;
     hidden?: boolean;
+    order?: number;
   }>;
   hiddenBuiltInTiles?: string[]; // أيقونات الأقسام المخفية أو المحذوفة من لوحة التحكم من قبل المطور
   customTextOverrides?: Record<string, string>; // قاموس تعديل جميع نصوص النظام بالكامل للمطور

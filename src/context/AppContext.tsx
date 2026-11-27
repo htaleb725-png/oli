@@ -90,7 +90,8 @@ import {
   fsSaveBackupStatus,
   FS_COLLECTIONS,
   importPreviousDataFromGoogleSheetToSupabase,
-  GoogleSheetToSupabaseImportResult
+  GoogleSheetToSupabaseImportResult,
+  SheetImportProgress
 } from '../services/firebaseFirestoreService';
 import { getHomeSectionForRole, normalizeUserRecord, canUserAccessSection } from '../utils/permissions';
 import {
@@ -472,8 +473,9 @@ interface AppContextType {
     }
   ) => Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }>;
 
-  // Supabase <-> Google Sheet Historical Importer & Empty-Table Detection
+  // Supabase <-> Google Sheet Historical Importer (Developer Panel Only)
   isImportingFromGoogleSheet: boolean;
+  sheetImportProgress: SheetImportProgress | null;
   isSupabaseRequestsEmpty: boolean;
   importFromGoogleSheetToSupabase: () => Promise<GoogleSheetToSupabaseImportResult>;
 
@@ -761,6 +763,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [firestoreRequestsSyncError, setFirestoreRequestsSyncError] = useState<string | null>(null);
   const [firestoreLastSaveError, setFirestoreLastSaveError] = useState<string | null>(null);
   const [isImportingFromGoogleSheet, setIsImportingFromGoogleSheet] = useState<boolean>(false);
+  const [sheetImportProgress, setSheetImportProgress] = useState<SheetImportProgress | null>(null);
   const [isSupabaseRequestsEmpty, setIsSupabaseRequestsEmpty] = useState<boolean>(false);
 
   const clearFirestoreDiagnostics = () => {
@@ -1037,7 +1040,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       },
       (err) => {
         const msg = err?.message || String(err || 'خطأ غير معروف');
-        setFirestoreRequestsSyncError(`تعذر جلب سجل المراجعين من Firebase Firestore (visitors): ${msg}`);
+        setFirestoreRequestsSyncError(`تعذر جلب سجل المراجعين من قاعدة البيانات: ${msg}`);
       }
     );
     unsubs.push(unsubCitizens);
@@ -1062,7 +1065,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       },
       (err) => {
         const msg = err?.message || String(err || 'خطأ غير معروف');
-        setFirestoreRequestsSyncError(`تعذر جلب المعاملات الواردة من Supabase (requests): ${msg}`);
+        setFirestoreRequestsSyncError(`تعذر جلب المعاملات الواردة من قاعدة البيانات: ${msg}`);
       }
     );
     unsubs.push(unsubRequests);
@@ -1407,6 +1410,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...(cfg.loginCredentialsTabText !== undefined ? { loginCredentialsTabText: cfg.loginCredentialsTabText } : {}),
           ...(cfg.loginSecurityBadgeText !== undefined ? { loginSecurityBadgeText: cfg.loginSecurityBadgeText } : {}),
           ...(cfg.loginFooterCopyrightText !== undefined ? { loginFooterCopyrightText: cfg.loginFooterCopyrightText } : {}),
+          ...(Array.isArray(cfg.tickerNews) ? { tickerNews: cfg.tickerNews } : {}),
+          ...(typeof cfg.tickerEnabled === 'boolean' ? { tickerEnabled: cfg.tickerEnabled } : {}),
+          ...(cfg.tickerSpeed !== undefined ? { tickerSpeed: cfg.tickerSpeed } : {}),
+          ...(cfg.tickerColor !== undefined ? { tickerColor: cfg.tickerColor } : {}),
           ...(cfg.logoUrl ? { logoUrl: cfg.logoUrl } : {})
         });
         systemSettingsRef.current = next;
@@ -1846,7 +1853,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (fsResult.user) {
           const cleanFsUser = normalizeUserRecord(fsResult.user);
           upsertMatchedUserLocally(cleanFsUser);
-          activateUserSession(cleanFsUser, 'تمت مطابقة الحساب والصلاحيات من Firebase Firestore بنجاح');
+          activateUserSession(cleanFsUser, 'تمت مطابقة الحساب والصلاحيات من قاعدة البيانات بنجاح');
           return true;
         }
         if (fsResult.isDeveloper) {
@@ -1864,7 +1871,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
     if (localMatch.user) {
-      activateUserSession(localMatch.user, 'تمت مطابقة الحساب من قاعدة Firebase Firestore بنجاح');
+      activateUserSession(localMatch.user, 'تمت مطابقة الحساب من قاعدة البيانات بنجاح');
       return true;
     }
     if (localMatch.wrongPassword) {
@@ -1994,7 +2001,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         severity: 'success',
         target: 'firebase',
         title: `تم حفظ حساب الموظف (${targetUser.FullName})`,
-        message: 'تم تحديث الحساب والرمز والصلاحيات مباشرة في Firebase Firestore (alaa-office-2026).'
+        message: 'تم تحديث البيانات في قاعدة البيانات بنجاح'
       });
     } catch (err: any) {
       firebaseOk = false;
@@ -2004,7 +2011,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         severity: 'error',
         target: 'firebase',
         title: `فشل حفظ حساب الموظف (${targetUser.FullName})`,
-        message: 'تعذر حفظ الحساب في Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.',
+        message: 'تعذر حفظ الحساب في قاعدة البيانات. يرجى التحقق من الاتصال وإعادة المحاولة.',
         details: firebaseError
       });
     }
@@ -2069,7 +2076,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           severity: 'success',
           target: 'firebase',
           title: `تم الحذف النهائي للمستخدم (${target.FullName})`,
-          message: 'تم حذف الحساب نهائياً من Firebase Firestore (alaa-office-2026) وتحديث الأقسام فوراً.'
+          message: 'تم الحذف من قاعدة البيانات بنجاح'
         });
       } catch (err: any) {
         const errMsg = err?.message || String(err);
@@ -2078,7 +2085,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           severity: 'error',
           target: 'firebase',
           title: `فشل حذف المستخدم (${target.FullName})`,
-          message: 'تعذر حذف الحساب من Firebase Firestore. يرجى التحقق من الاتصال والمحاولة مجدداً.',
+          message: 'تعذر حذف الحساب من قاعدة البيانات. يرجى التحقق من الاتصال والمحاولة مجدداً.',
           details: errMsg
         });
       }
@@ -2156,7 +2163,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           severity: 'success',
           target: 'firebase',
           title: `تم الحذف النهائي (${trimmed})`,
-          message: 'تم حذف العنصر نهائياً من Firebase Firestore (alaa-office-2026).'
+          message: 'تم الحذف من قاعدة البيانات بنجاح'
         });
       })
       .catch(err => {
@@ -2164,7 +2171,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           severity: 'error',
           target: 'firebase',
           title: `فشل حذف العنصر (${trimmed})`,
-          message: 'تعذر حذف العنصر من Firebase Firestore. يرجى المحاولة مجدداً.',
+          message: 'تعذر حذف العنصر من قاعدة البيانات. يرجى المحاولة مجدداً.',
           details: err instanceof Error ? err.message : String(err)
         });
       });
@@ -2296,7 +2303,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const outcome = await receptionDomain.saveCitizen(newCitizen, 'insert', getCloudCtx());
         if (!outcome.firebaseOk) {
-          const reason = outcome.firebaseError || 'تعذر حفظ بيانات المراجع في Firebase Firestore.';
+          const reason = outcome.firebaseError || 'تعذر حفظ بيانات المراجع في قاعدة البيانات.';
           setFirestoreLastSaveError(`فشل حفظ المراجع (${fullName}): ${reason}`);
           options?.onPersistResult?.({ ok: false, error: reason, citizenId: newCitizenId });
         } else {
@@ -2313,7 +2320,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           severity: 'error',
           target: 'firebase',
           title: `فشل حفظ المراجع (${fullName})`,
-          message: 'تعذر حفظ بيانات المراجع في Firebase Firestore (alaa-office-2026).',
+          message: 'تعذر حفظ بيانات المراجع في قاعدة البيانات.',
           details: reason
         });
         options?.onPersistResult?.({ ok: false, error: reason, citizenId: newCitizenId });
@@ -2442,7 +2449,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog(
       'حذف نهائي شامل لسجل مراجع',
       'الإدارة / الاستعلامات / المدير',
-      `تم حذف المواطن ${target?.FullName || citizenId} (${citizenId}) وجميع متعلقاته (${matchingReqIds.length} معاملة، ${matchingInterviewIds.length} مقابلة، ${matchingLetterIds.length} كتاب رسمي) نهائياً من Firebase Firestore و Google Sheets`
+      `تم حذف المراجع ${target?.FullName || citizenId} (${citizenId}) وجميع متعلقاته (${matchingReqIds.length} معاملة، ${matchingInterviewIds.length} مقابلة، ${matchingLetterIds.length} كتاب رسمي) نهائياً من قاعدة البيانات والأرشيف الاحتياطي`
     );
 
     // 4. Broadcast cascade deletion live to open tabs
@@ -3020,7 +3027,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const outcome = await adminRequestsDomain.saveRequest(newRequest, 'insert', getCloudCtx());
         if (!outcome.firebaseOk) {
-          const reason = outcome.firebaseError || 'تعذر حفظ المعاملة في Firebase Firestore.';
+          const reason = outcome.firebaseError || 'تعذر حفظ المعاملة في قاعدة البيانات.';
           setFirestoreLastSaveError(`فشل حفظ المعاملة (${candidate}) للمراجع (${newRequest.CitizenName}): ${reason}`);
           options?.onPersistResult?.({ ok: false, error: reason, requestId: candidate });
         } else {
@@ -3036,7 +3043,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         pushCloudSyncAlert({
           severity: 'error',
           target: 'firebase',
-          title: `فشل إرسال المعاملة (${candidate}) إلى Firebase Firestore`,
+          title: `تعذر إرسال المعاملة (${candidate}) إلى قاعدة البيانات`,
           message: 'تعذر حفظ المعاملة الجديدة وإيصالها إلى شاشة مدير المكتب.',
           details: reason
         });
@@ -3375,7 +3382,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     emitServerMutation('documents', 'delete', { id: docId });
     archiveDocumentsDomain.deleteDocument(docId, target?.Title).catch(() => {});
     if (target) {
-      addAuditLog('حذف وثيقة من الأرشيف', 'أرشيف المستندات', `تم حذف المستند [${target.Title}] نهائياً من Firebase Firestore`);
+      addAuditLog('حذف وثيقة من الأرشيف', 'أرشيف المستندات', `تم حذف المستند [${target.Title}] نهائياً من قاعدة البيانات`);
     }
   };
 
@@ -3451,6 +3458,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       normalizedPatch.uiCustomizations !== undefined ||
       normalizedPatch.customTextOverrides !== undefined ||
       normalizedPatch.textReplacements !== undefined ||
+      normalizedPatch.tickerNews !== undefined ||
+      normalizedPatch.tickerEnabled !== undefined ||
+      normalizedPatch.tickerSpeed !== undefined ||
+      normalizedPatch.tickerColor !== undefined ||
       normalizedPatch.settingsVersion !== undefined
     );
     const nextVersion = isVisualOrIconBroadcast
@@ -3520,7 +3531,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ).catch(() => {});
     }
 
-    addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام وحفظها في Firebase Firestore');
+    addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام وحفظها في قاعدة البيانات');
     return savedToFirestore;
   };
 
@@ -3533,7 +3544,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       sheetsIntegration.refreshLocalConfig();
     } catch {}
-    addAuditLog('تحديث مجلد Google Drive', 'لوحة المطور', `تم ربط وتثبيت معرف المجلد (${cleanId}) في Firebase Firestore`);
+    addAuditLog('تحديث مجلد المرفقات السحابي', 'لوحة المطور', `تم ربط وتثبيت معرف مجلد المرفقات (${cleanId}) في قاعدة البيانات`);
   };
 
   const addNotification = (
@@ -4435,10 +4446,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushCloudSyncAlert({
       severity: fsOk ? 'success' : 'error',
       target: 'firebase',
-      title: fsOk ? 'تم تصفير قاعدة البيانات بنجاح' : 'تعذر إكمال تصفير Firebase Firestore',
+      title: fsOk ? 'تم تصفير قاعدة البيانات بنجاح' : 'تعذر إكمال تصفير قاعدة البيانات',
       message: fsOk
-        ? 'تم حذف وتفريغ كافة السجلات نهائياً من Firebase Firestore (alaa-office-2026) مع الإبقاء على حسابات الكادر والإعدادات.'
-        : 'حدث خطأ أثناء تفريغ البيانات من Firebase Firestore. يرجى التحقق من الاتصال والمحاولة مجدداً.',
+        ? 'تم حذف وتفريغ كافة السجلات نهائياً من قاعدة البيانات مع الإبقاء على حسابات الكادر والإعدادات.'
+        : 'حدث خطأ أثناء تفريغ البيانات من قاعدة البيانات. يرجى التحقق من الاتصال والمحاولة مجدداً.',
       details: !fsOk ? fsErr : undefined
     });
 
@@ -4451,7 +4462,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ActionType: 'تصفير شامل',
       Section: 'إدارة وتصفير البيانات',
       Department: 'إدارة وتصفير البيانات',
-      Details: 'تم تصفير النظام بالكامل بواسطة المطور (0 سجل) في الواجهة و Firebase Firestore و Google Sheets مع الحفاظ على صف العناوين.',
+      Details: 'تم تصفير النظام بالكامل بواسطة المطور (0 سجل) في الواجهة وقاعدة البيانات والأرشيف الاحتياطي مع الحفاظ على صف العناوين.',
       UserName: currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'المطور',
       User: currentUser ? currentUser.FullName : 'المطور',
       Timestamp: formattedDate
@@ -4513,10 +4524,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pushCloudSyncAlert({
       severity: fsOk ? 'success' : 'error',
       target: 'firebase',
-      title: fsOk ? `تم تصفير (${keys.length}) قسم محدد بنجاح` : `فشل تصفير الأقسام المحددة في Firebase Firestore`,
+      title: fsOk ? 'تم الحذف من قاعدة البيانات بنجاح' : 'تعذر تصفير الأقسام المحددة في قاعدة البيانات',
       message: fsOk
-        ? 'تم حذف سجلات الأقسام المختارة نهائياً من Firebase Firestore (alaa-office-2026) مع الإبقاء على بقية الأقسام سليمة.'
-        : 'تعذر حذف سجلات الأقسام المختارة من Firebase Firestore. يرجى التحقق من الاتصال والمحاولة مجدداً.',
+        ? `تم حذف سجلات (${keys.length}) قسم محدد نهائياً من قاعدة البيانات مع الإبقاء على بقية الأقسام سليمة.`
+        : 'تعذر حذف سجلات الأقسام المختارة من قاعدة البيانات. يرجى التحقق من الاتصال والمحاولة مجدداً.',
       details: !fsOk ? fsErr : undefined
     });
 
@@ -4583,7 +4594,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .catch(() => {});
     fsSyncDepartmentsRegistry(usersRef.current, nextSections).catch(() => {});
 
-    addAuditLog('إضافة قسم مخصص جديد', 'لوحة التحكم والعمليات', `تم إنشاء القسم وحفظه في Firebase Firestore: ${newSection.title}`);
+    addAuditLog('إضافة قسم مخصص جديد', 'لوحة التحكم والعمليات', `تم إنشاء القسم وحفظه في قاعدة البيانات: ${newSection.title}`);
     return newSection;
   };
 
@@ -4604,7 +4615,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .catch(() => {});
     fsSyncDepartmentsRegistry(usersRef.current, nextSections).catch(() => {});
 
-    addAuditLog('تعديل قسم مخصص', 'لوحة التحكم والعمليات', `تم تحديث القسم في Firebase Firestore: ${section.title}`);
+    addAuditLog('تعديل قسم مخصص', 'لوحة التحكم والعمليات', `تم تحديث القسم في قاعدة البيانات: ${section.title}`);
   };
 
   const deleteCustomSection = (sectionId: string) => {
@@ -4619,7 +4630,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     emitServerMutation('customSections', 'delete', { id: sectionId });
     customSectionsDomain.deleteSection(sectionId, target?.title).catch(() => {});
     fsSyncDepartmentsRegistry(usersRef.current, nextSections).catch(() => {});
-    addAuditLog('حذف قسم مخصص', 'لوحة التحكم والعمليات', `تم حذف القسم (${target?.title || sectionId}) وسجلاته نهائياً من Firebase Firestore`);
+    addAuditLog('حذف قسم مخصص', 'لوحة التحكم والعمليات', `تم حذف القسم (${target?.title || sectionId}) وسجلاته نهائياً من قاعدة البيانات`);
   };
 
   // Dynamic Custom Records (سجلات الأقسام المخصصة -> تُوجّه مباشرة إلى ورقة القسم الخاصة بها)
@@ -4705,7 +4716,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         severity: 'success',
         target: 'firebase',
         title: 'تم تحديث رمز المطور السري',
-        message: 'تم حفظ الرمز الجديد مباشرة في Firebase Firestore (alaa-office-2026) وإلغاء الرمز السابق.'
+        message: 'تم تحديث البيانات في قاعدة البيانات بنجاح'
       });
     } catch (e: any) {
       console.warn('Saving passcode to firestore warning:', e);
@@ -4713,12 +4724,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         severity: 'error',
         target: 'firebase',
         title: 'فشل حفظ رمز المطور السري',
-        message: 'تعذر حفظ الرمز في Firebase Firestore. يرجى المحاولة مجدداً.',
+        message: 'تعذر حفظ الرمز في قاعدة البيانات. يرجى المحاولة مجدداً.',
         details: e?.message || String(e)
       });
       return false;
     }
-    addAuditLog('تحديث رمز دخول المطور', 'لوحة المطور', 'قام المطور بتغيير رمز الدخول السري للمنظومة وحفظه في Firebase Firestore');
+    addAuditLog('تحديث رمز دخول المطور', 'لوحة المطور', 'قام المطور بتغيير رمز الدخول السري للمنظومة وحفظه في قاعدة البيانات');
     return true;
   };
 
@@ -4902,7 +4913,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog(
       'استيراد إكسل دفعي شامل',
       'قسم الإدارة',
-      `تم استيراد ومعالجة (${validCitizens.length}) مراجع و (${validRequests.length}) معاملة وحفظها في قاعدة البيانات وجوجل شيت بنجاح`
+      `تم استيراد ومعالجة (${validCitizens.length}) مراجع و (${validRequests.length}) معاملة وحفظها في قاعدة البيانات والأرشيف الاحتياطي بنجاح`
     );
 
     return {
@@ -5091,7 +5102,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       return { success: false, error: res.error };
     } catch (e: any) {
-      const msg = e?.message || String(e || 'تعذر جلب البيانات من Firebase Firestore');
+      const msg = e?.message || String(e || 'تعذر جلب البيانات من قاعدة البيانات');
       setFirestoreRequestsSyncError(msg);
       return { success: false, error: msg };
     } finally {
@@ -5204,7 +5215,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addAuditLog(
         'ربط حساب Google وإنشاء قاعدة البيانات',
         'لوحة المطور السحابية',
-        `تم تسجيل دخول المطور (${email}) وإنشاء وتهيئة قاعدة بيانات Google Sheets ومجلد Google Drive بنجاح`
+        `تم تسجيل دخول المطور (${email}) وإنشاء وتهيئة الأرشيف الاحتياطي ومجلد Google Drive بنجاح`
       );
 
       return { success: true };
@@ -5275,13 +5286,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             sheetsSynced = true;
             hasAnySuccess = true;
             if (!successMessage) {
-              successMessage = `تم بنجاح إرسال النسخة الاحتياطية اليدوية (${citizens.length} مراجع، ${requests.length} معاملة، ${customRecords.length} سجل قسم) إلى Google Sheets.`;
+              successMessage = 'تمت مزامنة البيانات بنجاح';
             }
           } else if (bulkRes.error) {
             appsScriptError = bulkRes.error;
           }
         } catch (scriptErr: any) {
-          appsScriptError = scriptErr?.message || 'تعذر الاتصال برابط Google Apps Script';
+          appsScriptError = scriptErr?.message || 'تعذر الاتصال بخدمة الأرشيف الاحتياطي';
           console.warn('Apps Script manual backup error:', scriptErr);
         }
       }
@@ -5298,20 +5309,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           message: successMessage
         }).catch(() => {});
         addAuditLog(
-          'نسخ احتياطي يدوي إلى Google Sheet',
+          'نسخ احتياطي يدوي إلى الأرشيف الاحتياطي',
           'النسخ الاحتياطي والتصدير',
-          `تم تصدير نسخة احتياطية يدوية (${citizens.length} مراجع، ${requests.length} معاملة) إلى شيت Google (${targetSheetId})`
+          `تم تصدير نسخة احتياطية يدوية (${citizens.length} مراجع، ${requests.length} معاملة) إلى الأرشيف الاحتياطي`
         );
         return {
           success: true,
           sheetsSynced: true,
-          message: successMessage || 'تم بنجاح حفظ النسخة الاحتياطية اليدوية في Google Sheets.'
+          message: successMessage || 'تمت مزامنة البيانات بنجاح'
         };
       }
 
       const failureMsg =
         appsScriptError ||
-        'يرجى التأكد من صحة رابط Google Apps Script (/exec) وصلاحية النشر (Anyone) لإتمام النسخ الاحتياطي اليدوي.';
+        'يرجى التحقق من إعدادات الاتصال بالأرشيف الاحتياطي وصلاحية النشر لإتمام النسخ الاحتياطي اليدوي.';
       fsSaveBackupStatus({
         action: 'manual_backup',
         status: 'error',
@@ -5323,8 +5334,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       pushCloudSyncAlert({
         severity: 'error',
         target: 'google_sheets',
-        title: 'فشل النسخ الاحتياطي اليدوي مع Google Sheets',
-        message: 'تعذر إرسال البيانات إلى Google Apps Script.',
+        title: 'تعذر إكمال النسخ الاحتياطي اليدوي',
+        message: 'تعذر إرسال البيانات إلى الأرشيف الاحتياطي.',
         details: failureMsg
       });
       return {
@@ -5589,14 +5600,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               success: true,
               message:
                 scriptRes.message ||
-                `✓ تم سحب (${cleanCitizens.length}) مراجع و (${cleanRequests.length}) معاملة و (${cleanCustomRecords.length}) سجل قسم من Google Sheets وتحديث Firebase Firestore مباشرة.`
+                `تمت مزامنة البيانات بنجاح (${cleanCitizens.length} مراجع، ${cleanRequests.length} معاملة، ${cleanCustomRecords.length} سجل قسم).`
             };
           }
           if (scriptRes && !scriptRes.success) {
             appsScriptPullError = scriptRes.error || scriptRes.message || '';
           }
         } catch (scriptErr: any) {
-          appsScriptPullError = scriptErr?.message || 'تعذر سحب البيانات من Google Apps Script';
+          appsScriptPullError = scriptErr?.message || 'تعذر سحب البيانات من الأرشيف الاحتياطي';
           console.warn('Apps Script fetch notice:', scriptErr);
         }
       }
@@ -5611,7 +5622,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const { cleanCitizens, cleanRequests } = await applyAndMirrorToFirestore(fullData);
           return {
             success: true,
-            message: `✓ تم سحب (${cleanCitizens.length}) مراجع و (${cleanRequests.length}) معاملة من Google Sheets وتحديث Firebase Firestore مباشرة.`
+            message: `تمت مزامنة البيانات بنجاح (${cleanCitizens.length} مراجع، ${cleanRequests.length} معاملة).`
           };
         }
       } catch (directErr) {
@@ -5623,7 +5634,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const res = await pullAllDataFromGoogleSheets();
         if (res.success && res.data && (res.data.citizens.length > 0 || res.data.requests.length > 0)) {
           await applyAndMirrorToFirestore(res.data);
-          return { success: true, message: `✓ ${res.message}` };
+          return { success: true, message: `تمت مزامنة البيانات بنجاح` };
         }
       } catch (batchErr) {
         console.warn('pullAllDataFromGoogleSheets notice:', batchErr);
@@ -5631,7 +5642,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return {
         success: false,
-        message: appsScriptPullError || 'لا تتوفر بيانات جديدة من Google Sheets أو تعذر الاتصال برابط Apps Script (/exec).'
+        message: appsScriptPullError || 'لا تتوفر بيانات جديدة في الأرشيف الاحتياطي أو تعذر الاتصال بالخادم.'
       };
     } finally {
       setIsGoogleSyncing(false);
@@ -5640,6 +5651,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const importFromGoogleSheetToSupabase = async (): Promise<GoogleSheetToSupabaseImportResult> => {
     setIsImportingFromGoogleSheet(true);
+    setSheetImportProgress({
+      phase: 'fetching',
+      label: 'جاري تهيئة الاتصال بالأرشيف الاحتياطي...',
+      percent: 2,
+      citizensDone: 0,
+      citizensTotal: 0,
+      requestsDone: 0,
+      requestsTotal: 0,
+      otherDone: 0,
+      otherTotal: 0
+    });
     try {
       const targetScriptUrl =
         systemSettingsRef.current.appsScriptUrl ||
@@ -5654,7 +5676,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         appsScriptUrl: targetScriptUrl,
         sheetId: targetSheetId,
         gid: PINNED_GOOGLE_SHEET_GID,
-        actor: currentUser?.FullName || 'الإدارة'
+        actor: currentUser?.FullName || 'المطور',
+        onProgress: (p) => setSheetImportProgress(p)
       });
 
       if (res.success) {
@@ -5663,21 +5686,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         await fetchAllFromFirestoreNow().catch(() => {});
         addAuditLog(
-          'جلب البيانات السابقة من Google Sheet إلى Supabase',
+          'استيراد ومزامنة الأرشيف الاحتياطي إلى قاعدة البيانات',
           'إدارة البيانات',
           res.message
         );
         pushCloudSyncAlert({
           severity: 'success',
           target: 'both',
-          title: 'تم جلب البيانات السابقة من Google Sheet إلى Supabase بنجاح',
+          title: 'تمت مزامنة البيانات بنجاح',
           message: res.message
         });
       } else {
         pushCloudSyncAlert({
           severity: 'error',
           target: 'google_sheets',
-          title: 'تعذر جلب البيانات السابقة من Google Sheet',
+          title: 'تعذر استيراد الأرشيف الاحتياطي',
           message: res.message,
           details: res.error
         });
@@ -5844,6 +5867,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         batchImportRecords,
         // Supabase <-> Google Sheet Historical Importer
         isImportingFromGoogleSheet,
+        sheetImportProgress,
         isSupabaseRequestsEmpty,
         importFromGoogleSheetToSupabase,
         // Compatibility alias

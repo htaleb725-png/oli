@@ -262,7 +262,7 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
       const deliveryRate = scoped.reqs.length ? Math.round((deliveredReqs.length / scoped.reqs.length) * 100) : 0;
       return {
         title: 'لوحة إحصائيات قسم الإدارة والمعاملات والصادر',
-        subtitle: 'مؤشرات حية مباشرة من Firestore — الإنجاز، الاستلام (مستلم / غير مستلم)، الوزارات والمعرّفين',
+        subtitle: 'مؤشرات حية مباشرة من قاعدة البيانات — الإنجاز، الاستلام (مستلم / غير مستلم)، الوزارات والمعرّفين',
         kpis: [
           { label: 'إجمالي المعاملات', value: scoped.reqs.length, note: `نسبة الإنجاز: ${rate}%`, icon: FolderKanban, accent: 'text-blue-600 dark:text-blue-400' },
           { label: 'معاملات منجزة وصادرة', value: completedReqs.length, note: `قيد الإجراء: ${pendingReqs.length} · مرفوض: ${rejectedReqs.length}`, icon: CheckCircle2, accent: 'text-emerald-600 dark:text-emerald-400' },
@@ -652,7 +652,7 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
         <div className="p-4 rounded-xl bg-slate-50/70 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800">
           <div className="flex items-center justify-between mb-3">
             <div className="text-xs font-black text-slate-800 dark:text-slate-200">
-              التوزيع حسب المعرّفين والتزكيات (أعلى 7 معرّفين — تحديث لحظي من Firestore)
+              التوزيع حسب المعرّفين والتزكيات (أعلى 7 معرّفين — تحديث لحظي مباشر)
             </div>
             <span className="text-[11px] font-bold text-slate-500">
               إجمالي المعاملات المفحوصة: {scoped.reqs.length.toLocaleString()}
