@@ -33,6 +33,8 @@ import {
 } from 'lucide-react';
 import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../utils/permissions';
 import { parseExcelDateValue } from '../utils/outgoingNumberHelper';
+import { getLocalTodayIsoDate, extractLocalDateYMD } from '../utils/archiveHelper';
+import { cleanReferrerLabel, normalizeReferrerGroupKey } from '../utils/referrerHelper';
 
 export type AnalyticsDepartmentKey =
   | 'executive_all'
@@ -56,6 +58,8 @@ const CHART_COLORS = ['#0f766e', '#2563eb', '#d97706', '#7c3aed', '#0891b2', '#d
 
 function extractIsoDay(raw?: string): string {
   if (!raw) return '';
+  const local = extractLocalDateYMD(raw);
+  if (local) return local;
   const parsed = parseExcelDateValue(raw);
   const match = String(parsed || raw).trim().match(/(\d{4}-\d{2}-\d{2})/);
   return match ? match[1] : '';
@@ -66,8 +70,8 @@ function isWithinWindow(rawDate: string | undefined, win: TimeWindow, todayIso: 
   const day = extractIsoDay(rawDate);
   if (!day) return false;
   if (win === 'today') return day === todayIso;
-  const itemMs = Date.parse(day);
-  const nowMs = Date.parse(todayIso);
+  const itemMs = Date.parse(`${day}T00:00:00`);
+  const nowMs = Date.parse(`${todayIso}T00:00:00`);
   if (isNaN(itemMs) || isNaN(nowMs)) return false;
   const diffDays = (nowMs - itemMs) / 86_400_000;
   if (win === 'week') return diffDays >= 0 && diffDays <= 7;
@@ -80,9 +84,8 @@ function buildDailySeries(dates: (string | undefined)[], daysCount = 10): Array<
   const now = new Date();
   const labels: string[] = [];
   for (let i = daysCount - 1; i >= 0; i--) {
-    const dt = new Date(now);
-    dt.setDate(now.getDate() - i);
-    const iso = dt.toISOString().split('T')[0];
+    const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const iso = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
     labels.push(iso);
     counts.set(iso, 0);
   }
@@ -133,7 +136,7 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('all');
   const [execDrilldown, setExecDrilldown] = useState<AnalyticsDepartmentKey>('executive_all');
 
-  const todayIso = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const todayIso = useMemo(() => getLocalTodayIsoDate(), []);
   const activeDept: AnalyticsDepartmentKey =
     department === 'executive_all' ? execDrilldown : department;
 
@@ -182,13 +185,49 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
     ];
   }, [scoped, socialCareRecords]);
 
+  // Live grouped Referrers distribution (cleaned & variant-merged directly from Firestore requests/citizens)
+  const topReferrersData = useMemo(() => {
+    const citizenById = new Map<string, string>();
+    (citizens || []).forEach(c => {
+      if (c?.Citizen_ID) {
+        const clean = cleanReferrerLabel(c.ReferralSource);
+        if (clean) citizenById.set(c.Citizen_ID, clean);
+      }
+    });
+    const groups = new Map<string, { label: string; count: number }>();
+    scoped.reqs.forEach(r => {
+      const clean = cleanReferrerLabel(r.ReferralSource) || citizenById.get(r.Citizen_ID) || '';
+      if (!clean) return;
+      const key = normalizeReferrerGroupKey(clean) || clean;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        groups.set(key, { label: clean, count: 1 });
+      }
+    });
+    return Array.from(groups.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 7)
+      .map(item => ({
+        name: item.label.length > 26 ? `${item.label.slice(0, 26)}…` : item.label,
+        العدد: item.count
+      }));
+  }, [scoped.reqs, citizens]);
+
   // Build view model dynamically per department
   const view = useMemo(() => {
     const completedReqs = scoped.reqs.filter((r) => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber));
-    const pendingReqs = scoped.reqs.filter((r) => r.ProcessingStatus !== 'منجز' && r.ProcessingStatus !== 'مرفوض');
-    const deliveredReqs = scoped.reqs.filter((r) => r.DeliveryStatus === 'مستلم');
+    const rejectedReqs = scoped.reqs.filter((r) => r.ProcessingStatus === 'مرفوض');
+    const pendingReqs = scoped.reqs.filter(
+      (r) => !(r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber)) && r.ProcessingStatus !== 'مرفوض'
+    );
+    const deliveredReqs = scoped.reqs.filter((r) => r.DeliveryStatus === 'مستلم' || r.RequestStatus === 'مستلم');
     const undeliveredReqs = scoped.reqs.filter(
-      (r) => (r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber)) && r.DeliveryStatus !== 'مستلم'
+      (r) => !(r.DeliveryStatus === 'مستلم' || r.RequestStatus === 'مستلم')
+    );
+    const completedUndeliveredReqs = completedReqs.filter(
+      (r) => !(r.DeliveryStatus === 'مستلم' || r.RequestStatus === 'مستلم')
     );
 
     if (activeDept === 'reception') {
@@ -220,15 +259,15 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
 
     if (activeDept === 'admin') {
       const rate = scoped.reqs.length ? Math.round((completedReqs.length / scoped.reqs.length) * 100) : 0;
-      const deliveryRate = completedReqs.length ? Math.round((deliveredReqs.length / completedReqs.length) * 100) : 0;
+      const deliveryRate = scoped.reqs.length ? Math.round((deliveredReqs.length / scoped.reqs.length) * 100) : 0;
       return {
         title: 'لوحة إحصائيات قسم الإدارة والمعاملات والصادر',
-        subtitle: 'مؤشرات الإنجاز، حالة استلام المراجعين للكتب المنجزة (مستلم / غير مستلم)، وأكثر الوزارات مخاطبة',
+        subtitle: 'مؤشرات حية مباشرة من Firestore — الإنجاز، الاستلام (مستلم / غير مستلم)، الوزارات والمعرّفين',
         kpis: [
           { label: 'إجمالي المعاملات', value: scoped.reqs.length, note: `نسبة الإنجاز: ${rate}%`, icon: FolderKanban, accent: 'text-blue-600 dark:text-blue-400' },
-          { label: 'معاملات منجزة وصادرة', value: completedReqs.length, note: `قيد الإجراء: ${pendingReqs.length}`, icon: CheckCircle2, accent: 'text-emerald-600 dark:text-emerald-400' },
-          { label: 'مستلم من المراجع', value: deliveredReqs.length, note: `نسبة التسليم: ${deliveryRate}%`, icon: PackageCheck, accent: 'text-teal-600 dark:text-teal-400' },
-          { label: 'منجز — غير مستلم بعد', value: undeliveredReqs.length, note: 'بانتظار مراجعة المواطن', icon: PackageX, accent: 'text-amber-600 dark:text-amber-400' }
+          { label: 'معاملات منجزة وصادرة', value: completedReqs.length, note: `قيد الإجراء: ${pendingReqs.length} · مرفوض: ${rejectedReqs.length}`, icon: CheckCircle2, accent: 'text-emerald-600 dark:text-emerald-400' },
+          { label: 'مستلم من المراجع', value: deliveredReqs.length, note: `نسبة الاستلام: ${deliveryRate}%`, icon: PackageCheck, accent: 'text-teal-600 dark:text-teal-400' },
+          { label: 'غير مستلم بعد', value: undeliveredReqs.length, note: `منها منجز جاهز للتسليم: ${completedUndeliveredReqs.length}`, icon: PackageX, accent: 'text-amber-600 dark:text-amber-400' }
         ],
         trendTitle: 'معدل إنجاز وإصدار المعاملات (آخر 10 أيام)',
         trendData: buildDailySeries(scoped.reqs.map((r) => r.OutgoingDate || r.CreatedAt)),
@@ -236,9 +275,10 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
         barData: topNMap(scoped.reqs.map((r) => r.Entity || 'غير محدد'), 7),
         pieTitle: 'توزيع حالة الاستلام والإنجاز',
         pieData: [
-          { name: 'منجز ومستلم', value: deliveredReqs.length },
-          { name: 'منجز (غير مستلم)', value: undeliveredReqs.length },
-          { name: 'قيد المتابعة', value: pendingReqs.length }
+          { name: 'مستلم', value: deliveredReqs.length },
+          { name: 'غير مستلم (منجز)', value: completedUndeliveredReqs.length },
+          { name: 'قيد المتابعة', value: pendingReqs.length },
+          { name: 'مرفوض', value: rejectedReqs.length }
         ].filter((d) => d.value > 0)
       };
     }
@@ -371,9 +411,10 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
       barData: executiveComparisonData.map((d) => ({ name: d.القسم, العدد: d.السجلات })),
       pieTitle: 'موقف الإنجاز والاستلام العام',
       pieData: [
-        { name: 'منجز ومستلم', value: deliveredReqs.length },
-        { name: 'منجز (غير مستلم)', value: undeliveredReqs.length },
+        { name: 'مستلم', value: deliveredReqs.length },
+        { name: 'غير مستلم (منجز)', value: completedUndeliveredReqs.length },
         { name: 'قيد الإجراء', value: pendingReqs.length },
+        { name: 'مرفوض', value: rejectedReqs.length },
         { name: 'الرعاية الاجتماعية', value: socialCareRecords.fromCustom.length }
       ].filter((d) => d.value > 0)
     };
@@ -605,6 +646,51 @@ export const DepartmentAnalyticsDashboard: React.FC<DepartmentAnalyticsDashboard
           )}
         </div>
       </div>
+
+      {/* Live Distribution by Referrers (التوزيع حسب المعرّفين — مباشر من Firestore) */}
+      {(activeDept === 'executive_all' || activeDept === 'admin') && topReferrersData.length > 0 && (
+        <div className="p-4 rounded-xl bg-slate-50/70 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs font-black text-slate-800 dark:text-slate-200">
+              التوزيع حسب المعرّفين والتزكيات (أعلى 7 معرّفين — تحديث لحظي من Firestore)
+            </div>
+            <span className="text-[11px] font-bold text-slate-500">
+              إجمالي المعاملات المفحوصة: {scoped.reqs.length.toLocaleString()}
+            </span>
+          </div>
+          <div className="h-52 w-full" dir="ltr">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={topReferrersData}
+                layout="vertical"
+                margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
+                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10, fill: '#64748b' }} />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={120}
+                  tick={{ fontSize: 10, fill: '#334155', fontWeight: 600 }}
+                />
+                <Tooltip
+                  contentStyle={{
+                    borderRadius: '10px',
+                    border: '1px solid #cbd5e1',
+                    fontSize: '12px',
+                    direction: 'rtl'
+                  }}
+                />
+                <Bar dataKey="العدد" radius={[0, 6, 6, 0]} barSize={16}>
+                  {topReferrersData.map((_, idx) => (
+                    <Cell key={idx} fill={CHART_COLORS[(idx + 1) % CHART_COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
     </section>
   );
 };

@@ -55,6 +55,7 @@ import {
   mapTileIdToSectionId,
   SOCIAL_CARE_LEGACY_CUSTOM_ID
 } from '../utils/permissions';
+import { extractLocalDateYMD, getLocalTodayIsoDate } from '../utils/archiveHelper';
 
 export interface DashboardModuleProps {
   onBackToDirectorHub?: () => void;
@@ -169,37 +170,62 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     }));
   }, [employeeStats]);
 
-  // Recharts Data: Department Distribution Pie Chart
+  // Recharts Data: Department Distribution Pie Chart (strictly real Firestore counts — zero artificial fallback values)
   const departmentPieData = useMemo(() => {
     const deptCounts: { [dept: string]: number } = {
       'الاستعلامات': citizens.length,
       'الإدارة والمعاملات': requests.length,
       'المقابلات': interviews.length,
-      'الرقابة والتدقيق': auditLogs.length
+      'التنظيم والجماهير': organizationRecords.length
     };
 
     const COLORS = ['#3B82F6', '#F59E0B', '#14B8A6', '#8B5CF6'];
 
-    return Object.entries(deptCounts).map(([name, value], index) => ({
-      name,
-      value: value || 1,
-      color: COLORS[index % COLORS.length]
-    }));
-  }, [citizens, requests, interviews, auditLogs]);
+    return Object.entries(deptCounts)
+      .map(([name, value], index) => ({
+        name,
+        value,
+        color: COLORS[index % COLORS.length]
+      }))
+      .filter(item => item.value > 0);
+  }, [citizens.length, requests.length, interviews.length, organizationRecords.length]);
 
-  // Recharts Data: Activity Timeline / Velocity
+  // Recharts Data: Real Activity Timeline over the Last 7 Local Days directly from live Firestore records
   const timelineActivityData = useMemo(() => {
-    // Generate synthetic last 6 periods based on real data counts for visualization
-    const totalOps = auditLogs.length + requests.length + citizens.length;
-    return [
-      { period: 'السبت', إنجاز: Math.round(totalOps * 0.12), تسجيل: Math.round(citizens.length * 0.14) },
-      { period: 'الأحد', إنجاز: Math.round(totalOps * 0.18), تسجيل: Math.round(citizens.length * 0.20) },
-      { period: 'الإثنين', إنجاز: Math.round(totalOps * 0.22), تسجيل: Math.round(citizens.length * 0.25) },
-      { period: 'الثلاثاء', إنجاز: Math.round(totalOps * 0.20), تسجيل: Math.round(citizens.length * 0.18) },
-      { period: 'الأربعاء', إنجاز: Math.round(totalOps * 0.16), تسجيل: Math.round(citizens.length * 0.15) },
-      { period: 'الخميس', إنجاز: Math.round(totalOps * 0.12), تسجيل: Math.round(citizens.length * 0.08) }
-    ];
-  }, [auditLogs, requests, citizens]);
+    const dayNamesAr = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+    const now = new Date();
+    const buckets: Array<{ iso: string; period: string; إنجاز: number; تسجيل: number }> = [];
+    const byIso = new Map<string, { iso: string; period: string; إنجاز: number; تسجيل: number }>();
+
+    for (let i = 6; i >= 0; i--) {
+      const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      const iso = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      const label = `${dayNamesAr[dt.getDay()]} (${iso.slice(5)})`;
+      const row = { iso, period: label, إنجاز: 0, تسجيل: 0 };
+      buckets.push(row);
+      byIso.set(iso, row);
+    }
+
+    (citizens || []).forEach(c => {
+      const ymd = extractLocalDateYMD(c?.CreatedAt);
+      if (ymd && byIso.has(ymd)) {
+        byIso.get(ymd)!.تسجيل += 1;
+      }
+    });
+
+    (requests || []).forEach(r => {
+      const ymd = extractLocalDateYMD(r?.OutgoingDate || r?.CreatedAt);
+      if (ymd && byIso.has(ymd)) {
+        if (r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber)) {
+          byIso.get(ymd)!.إنجاز += 1;
+        } else {
+          byIso.get(ymd)!.تسجيل += 1;
+        }
+      }
+    });
+
+    return buckets.map(({ period, إنجاز, تسجيل }) => ({ period, إنجاز, تسجيل }));
+  }, [requests, citizens]);
 
   // Overall metric totals
   const totalCompleted = useMemo(() => {
@@ -446,7 +472,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'إحصائيات أداء الموظفين');
-    XLSX.writeFile(wb, `Staff_Performance_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.writeFile(wb, `Staff_Performance_${getLocalTodayIsoDate()}.xlsx`);
   };
 
   const handleExportCompleteDatabase = () => {

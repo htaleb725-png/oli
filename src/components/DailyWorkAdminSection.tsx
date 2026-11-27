@@ -180,30 +180,101 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return computeNextOutgoingNumber(requests, systemSettings, officialLetters, customRecords).nextNumber;
   };
 
-  const advanceOutgoingBaseline = (outgoingNumberStr: string) => {
+  const advanceOutgoingBaseline = (outgoingNumberStr: string, citizenNameStr?: string) => {
     const seq = extractOutgoingSequence(outgoingNumberStr).seq;
     if (seq <= 0 || seq > MAX_VALID_OUTGOING_SEQ) return;
     const isSuq = systemSettings?.officeBranch === 'suq_al_shuyoukh';
+    const cleanName = (citizenNameStr || '').trim();
+    const cleanRaw = (outgoingNumberStr || '').trim();
     if (isSuq) {
       const cur = Number(systemSettings?.lastOutgoingNumberSuq) || 0;
-      if (cur > MAX_VALID_OUTGOING_SEQ || seq > cur) {
-        updateSystemSettings({ lastOutgoingNumberSuq: seq });
+      if (cur > MAX_VALID_OUTGOING_SEQ || seq >= cur) {
+        updateSystemSettings({
+          lastOutgoingNumberSuq: seq,
+          ...(cleanName ? { lastRegisteredName: cleanName } : {}),
+          ...(cleanRaw ? { lastOutgoingRaw: cleanRaw } : {})
+        });
       }
     } else {
       const cur = Number(systemSettings?.lastOutgoingNumberNasiriyah) || 0;
-      if (cur > MAX_VALID_OUTGOING_SEQ || seq > cur) {
-        updateSystemSettings({ lastOutgoingNumberNasiriyah: seq });
+      if (cur > MAX_VALID_OUTGOING_SEQ || seq >= cur) {
+        updateSystemSettings({
+          lastOutgoingNumberNasiriyah: seq,
+          ...(cleanName ? { lastRegisteredName: cleanName } : {}),
+          ...(cleanRaw ? { lastOutgoingRaw: cleanRaw } : {})
+        });
       }
     }
   };
 
-  // Real-time detection of last completed request citizen in administration (strictly completed/outgoing requests)
+  // Real-time detection of last outgoing number and date recorded across ALL requests, official letters & custom sections
+  const outgoingComputed = useMemo(() => {
+    return computeNextOutgoingNumber(requests, systemSettings, officialLetters, customRecords);
+  }, [
+    requests,
+    officialLetters,
+    customRecords,
+    systemSettings?.officeBranch,
+    systemSettings?.lastOutgoingNumberNasiriyah,
+    systemSettings?.lastOutgoingNumberSuq,
+    systemSettings?.outgoingBaselineSetAt,
+    systemSettings?.outgoingBaselineLabel,
+    systemSettings?.lastRegisteredName,
+    systemSettings?.lastOutgoingRaw
+  ]);
+
+  const lastOutgoingRecord = outgoingComputed.lastOutgoingRecord || null;
+  const nextAutoOutgoingNumber = outgoingComputed.nextNumber;
+
+  // Real-time detection of last completed request citizen in administration:
+  // Always synchronized with the authoritative last outgoing number record (or latest completed request by date)
   const lastCompletedAdminCitizen = useMemo(() => {
+    if (lastOutgoingRecord && lastOutgoingRecord.citizenName && lastOutgoingRecord.citizenName.trim()) {
+      const linkedReq = lastOutgoingRecord.request;
+      const linkedCit = linkedReq
+        ? citizens.find(c => c.Citizen_ID === linkedReq.Citizen_ID)
+        : citizens.find(c => (c.FullName || '').trim() === lastOutgoingRecord.citizenName.trim());
+
+      return {
+        citizen:
+          linkedCit ||
+          ({
+            Citizen_ID: linkedReq?.Citizen_ID || '',
+            FullName: lastOutgoingRecord.citizenName,
+            Phone1: linkedReq?.CitizenPhone || '',
+            District: linkedReq?.Address || 'الناصرية'
+          } as Citizen),
+        request:
+          linkedReq ||
+          ({
+            Request_ID: '',
+            Citizen_ID: linkedCit?.Citizen_ID || '',
+            CitizenName: lastOutgoingRecord.citizenName,
+            OutgoingNumber: lastOutgoingRecord.outgoingNumber,
+            OutgoingDate: lastOutgoingRecord.outgoingDate,
+            Entity: '',
+            ProcessingStatus: 'منجز',
+            RequestStatus: 'غير مستلم',
+            Priority: 'عام',
+            Details: '',
+            CreatedAt: lastOutgoingRecord.outgoingDate || '',
+            CreatedBy: ''
+          } as OfficeRequest),
+        outgoingNumber: lastOutgoingRecord.outgoingNumber
+      };
+    }
+
     if (!requests || requests.length === 0) return null;
     const completedReqs = requests
       .filter(r => (r.OutgoingNumber && r.OutgoingNumber.trim()) || r.ProcessingStatus === 'منجز')
       .slice()
-      .reverse();
+      .sort((a, b) => {
+        const seqDiff = extractOutgoingSequence(b.OutgoingNumber).seq - extractOutgoingSequence(a.OutgoingNumber).seq;
+        if (seqDiff !== 0) return seqDiff;
+        const dateA = a.OutgoingDate || a.UpdatedAt || a.CreatedAt || '';
+        const dateB = b.OutgoingDate || b.UpdatedAt || b.CreatedAt || '';
+        return dateB.localeCompare(dateA);
+      });
 
     for (const req of completedReqs) {
       const cit = citizens.find(c => c.Citizen_ID === req.Citizen_ID);
@@ -228,24 +299,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       }
     }
     return null;
-  }, [requests, citizens]);
-
-  // Real-time detection of last outgoing number and date recorded across ALL requests, official letters & custom sections
-  const outgoingComputed = useMemo(() => {
-    return computeNextOutgoingNumber(requests, systemSettings, officialLetters, customRecords);
-  }, [
-    requests,
-    officialLetters,
-    customRecords,
-    systemSettings?.officeBranch,
-    systemSettings?.lastOutgoingNumberNasiriyah,
-    systemSettings?.lastOutgoingNumberSuq,
-    systemSettings?.outgoingBaselineSetAt,
-    systemSettings?.outgoingBaselineLabel
-  ]);
-
-  const lastOutgoingRecord = outgoingComputed.lastOutgoingRecord || null;
-  const nextAutoOutgoingNumber = outgoingComputed.nextNumber;
+  }, [lastOutgoingRecord, requests, citizens]);
 
   const handleSaveManualCounter = () => {
     const parsed = extractOutgoingSequence(manualCounterInput);
@@ -410,7 +464,8 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       });
     }
 
-    advanceOutgoingBaseline(finalOutgoingNumber);
+    const lastBulkName = createdCitizensList[createdCitizensList.length - 1]?.name || '';
+    advanceOutgoingBaseline(finalOutgoingNumber, lastBulkName);
 
     printCollectiveOutgoingReceipt({
       outgoingNumber: finalOutgoingNumber,
@@ -543,7 +598,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
       savedReqId = newReq.Request_ID;
     }
 
-    advanceOutgoingBaseline(finalOutgoingNumber);
+    advanceOutgoingBaseline(finalOutgoingNumber, formApplicantName.trim());
 
     // 3. Show Official Outgoing Certificate / Confirmation Card as popup modal
     setSavedOfficialCard({

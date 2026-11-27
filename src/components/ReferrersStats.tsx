@@ -18,12 +18,28 @@ import {
   UserCheck,
   Filter,
   ArrowUpDown,
-  PackageCheck
+  PackageCheck,
+  CheckSquare,
+  Square,
+  Layers
 } from 'lucide-react';
 import { Citizen, OfficeRequest } from '../types';
+import {
+  cleanReferrerLabel,
+  normalizeReferrerGroupKey,
+  normalizeArabicSearch
+} from '../utils/referrerHelper';
+
+interface ReferrerVariantItem {
+  label: string;
+  requestsCount: number;
+  citizensCount: number;
+}
 
 interface ReferrerSummary {
+  groupKey: string;
   name: string;
+  variants: ReferrerVariantItem[];
   category: 'women' | 'men' | 'org';
   categoryLabel: string;
   citizensCount: number;
@@ -32,6 +48,7 @@ interface ReferrerSummary {
   inProgressCount: number;
   rejectedCount: number;
   deliveredCount: number;
+  undeliveredCount: number;
   completionRate: number;
   topEntities: string[];
   citizens: Citizen[];
@@ -79,6 +96,10 @@ export const ReferrersStats: React.FC = () => {
   const [sortBy, setSortBy] = useState<'requests' | 'rate' | 'citizens' | 'name'>('requests');
   const [selectedReferrer, setSelectedReferrer] = useState<ReferrerSummary | null>(null);
   const [modalSearch, setModalSearch] = useState('');
+  // Multi-select state for grouping/searching primary referrers and their matching variants
+  const [checkedGroupKeys, setCheckedGroupKeys] = useState<string[]>([]);
+  const [executedSearchKeys, setExecutedSearchKeys] = useState<string[] | null>(null);
+  const [combinedResultsFilter, setCombinedResultsFilter] = useState('');
 
   // Smart classifier for Iraqi Arabic referrer names (Women / Men / Organizations)
   const classifyReferrer = (name: string): { category: 'women' | 'men' | 'org'; label: string } => {
@@ -169,13 +190,17 @@ export const ReferrersStats: React.FC = () => {
     return { category: 'men', label: 'معرّف / منسق (رجال)' };
   };
 
-  // Aggregate citizens and requests by Referrer name accurately
+  // Aggregate citizens and requests by cleaned & normalized Referrer group (merges spelling & honorific variants cleanly)
   const referrerList = useMemo<ReferrerSummary[]>(() => {
+    const DIRECT_KEY = '__direct_no_referrer__';
+    const DIRECT_LABEL = 'مباشر (بدون معرف)';
+
     const map = new Map<
       string,
       {
         citizensMap: Map<string, Citizen>;
         requestsMap: Map<string, OfficeRequest>;
+        variantCounts: Map<string, { citizens: Set<string>; requests: Set<string> }>;
       }
     >();
 
@@ -184,40 +209,66 @@ export const ReferrersStats: React.FC = () => {
       if (c && c.Citizen_ID) citizenById.set(c.Citizen_ID, c);
     });
 
-    const getBucket = (rawName: string) => {
-      const clean = rawName.trim() || 'مباشر (بدون معرف)';
-      if (!map.has(clean)) {
-        map.set(clean, { citizensMap: new Map(), requestsMap: new Map() });
+    const getBucket = (rawName?: string) => {
+      const cleanedLabel = cleanReferrerLabel(rawName);
+      const groupKey = cleanedLabel ? normalizeReferrerGroupKey(cleanedLabel) || normalizeArabicSearch(cleanedLabel) : DIRECT_KEY;
+      const displayLabel = cleanedLabel || DIRECT_LABEL;
+
+      if (!map.has(groupKey)) {
+        map.set(groupKey, {
+          citizensMap: new Map(),
+          requestsMap: new Map(),
+          variantCounts: new Map()
+        });
       }
-      return map.get(clean)!;
+      const bucket = map.get(groupKey)!;
+      if (!bucket.variantCounts.has(displayLabel)) {
+        bucket.variantCounts.set(displayLabel, { citizens: new Set(), requests: new Set() });
+      }
+      return { bucket, displayLabel };
     };
 
     (citizens || []).forEach(c => {
       if (!c || !c.Citizen_ID) return;
-      const refName = (c.ReferralSource || '').trim() || 'مباشر (بدون معرف)';
-      getBucket(refName).citizensMap.set(c.Citizen_ID, c);
+      const { bucket, displayLabel } = getBucket(c.ReferralSource);
+      bucket.citizensMap.set(c.Citizen_ID, c);
+      bucket.variantCounts.get(displayLabel)!.citizens.add(c.Citizen_ID);
     });
 
     (requests || []).forEach(r => {
       if (!r || !r.Request_ID) return;
       const cit = citizenById.get(r.Citizen_ID);
-      const refName = (r.ReferralSource || cit?.ReferralSource || '').trim() || 'مباشر (بدون معرف)';
-      const bucket = getBucket(refName);
+      const rawRef = cleanReferrerLabel(r.ReferralSource) || cleanReferrerLabel(cit?.ReferralSource);
+      const { bucket, displayLabel } = getBucket(rawRef);
       bucket.requestsMap.set(r.Request_ID, r);
+      bucket.variantCounts.get(displayLabel)!.requests.add(r.Request_ID);
       if (cit) {
         bucket.citizensMap.set(cit.Citizen_ID, cit);
+        bucket.variantCounts.get(displayLabel)!.citizens.add(cit.Citizen_ID);
       }
     });
 
     const list: ReferrerSummary[] = [];
-    map.forEach((bucket, name) => {
+    map.forEach((bucket, groupKey) => {
       const citArr = Array.from(bucket.citizensMap.values());
       const reqArr = Array.from(bucket.requestsMap.values());
       const completedCount = reqArr.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber)).length;
       const rejectedCount = reqArr.filter(r => r.ProcessingStatus === 'مرفوض').length;
       const inProgressCount = Math.max(0, reqArr.length - completedCount - rejectedCount);
-      const deliveredCount = reqArr.filter(r => r.DeliveryStatus === 'مستلم').length;
+      const deliveredCount = reqArr.filter(r => r.DeliveryStatus === 'مستلم' || r.RequestStatus === 'مستلم').length;
+      const undeliveredCount = Math.max(0, reqArr.length - deliveredCount);
       const completionRate = reqArr.length > 0 ? Math.round((completedCount / reqArr.length) * 100) : 0;
+
+      // Sort original spellings by usage count to select the most authoritative canonical label
+      const variants: ReferrerVariantItem[] = Array.from(bucket.variantCounts.entries())
+        .map(([label, sets]) => ({
+          label,
+          requestsCount: sets.requests.size,
+          citizensCount: sets.citizens.size
+        }))
+        .sort((a, b) => b.requestsCount - a.requestsCount || b.citizensCount - a.citizensCount || a.label.localeCompare(b.label, 'ar'));
+
+      const canonicalName = groupKey === DIRECT_KEY ? DIRECT_LABEL : (variants[0]?.label || DIRECT_LABEL);
 
       // Top 3 entities per referrer
       const entCounts = new Map<string, number>();
@@ -230,10 +281,12 @@ export const ReferrersStats: React.FC = () => {
         .slice(0, 3)
         .map(([e]) => e);
 
-      const cls = classifyReferrer(name);
+      const cls = classifyReferrer(canonicalName);
 
       list.push({
-        name,
+        groupKey,
+        name: canonicalName,
+        variants,
         category: cls.category,
         categoryLabel: cls.label,
         citizensCount: citArr.length,
@@ -242,6 +295,7 @@ export const ReferrersStats: React.FC = () => {
         inProgressCount,
         rejectedCount,
         deliveredCount,
+        undeliveredCount,
         completionRate,
         topEntities,
         citizens: citArr,
@@ -259,17 +313,110 @@ export const ReferrersStats: React.FC = () => {
     return { all: referrerList.length, women, men, org };
   }, [referrerList]);
 
+  // Arabic-normalized matching candidates for the interactive multi-select search picker
+  const searchMatchingReferrers = useMemo(() => {
+    const normQ = normalizeArabicSearch(searchQuery);
+    if (!normQ) return [];
+    const tokens = normQ.split(' ').filter(Boolean);
+    return referrerList.filter(r => {
+      if (r.groupKey === '__direct_no_referrer__') return false;
+      const haystack = normalizeArabicSearch(
+        `${r.name} ${r.variants.map(v => v.label).join(' ')}`
+      );
+      return tokens.every(tok => haystack.includes(tok));
+    });
+  }, [referrerList, searchQuery]);
+
+  const toggleGroupKey = (groupKey: string) => {
+    setCheckedGroupKeys(prev =>
+      prev.includes(groupKey) ? prev.filter(k => k !== groupKey) : [...prev, groupKey]
+    );
+  };
+
+  const selectAllMatchingSearch = () => {
+    const matchKeys = searchMatchingReferrers.map(r => r.groupKey);
+    setCheckedGroupKeys(prev => Array.from(new Set([...prev, ...matchKeys])));
+  };
+
+  const clearMultiSelection = () => {
+    setCheckedGroupKeys([]);
+    setExecutedSearchKeys(null);
+    setCombinedResultsFilter('');
+  };
+
+  const handleExecuteMultiReferrerSearch = () => {
+    const targetKeys =
+      checkedGroupKeys.length > 0
+        ? checkedGroupKeys
+        : searchMatchingReferrers.map(r => r.groupKey);
+    if (targetKeys.length === 0) return;
+    if (checkedGroupKeys.length === 0) {
+      setCheckedGroupKeys(targetKeys);
+    }
+    setExecutedSearchKeys(targetKeys);
+    setCombinedResultsFilter('');
+  };
+
+  // Combined search results computed live from Firestore state for all selected referrers/variants
+  const combinedSearchResult = useMemo(() => {
+    if (!executedSearchKeys || executedSearchKeys.length === 0) return null;
+    const keySet = new Set(executedSearchKeys);
+    const matchedGroups = referrerList.filter(r => keySet.has(r.groupKey));
+    if (matchedGroups.length === 0) return null;
+
+    const reqMap = new Map<string, OfficeRequest>();
+    const citMap = new Map<string, Citizen>();
+    matchedGroups.forEach(g => {
+      g.requests.forEach(req => reqMap.set(req.Request_ID, req));
+      g.citizens.forEach(cit => citMap.set(cit.Citizen_ID, cit));
+    });
+
+    const allRequests = Array.from(reqMap.values());
+    const q = normalizeArabicSearch(combinedResultsFilter);
+    const visibleRequests = !q
+      ? allRequests
+      : allRequests.filter(req =>
+          normalizeArabicSearch(
+            `${req.CitizenName} ${req.CitizenPhone || ''} ${req.Entity || ''} ${req.Details || ''} ${req.OutgoingNumber || ''} ${req.ReferralSource || ''}`
+          ).includes(q)
+        );
+
+    const completedCount = allRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber)).length;
+    const rejectedCount = allRequests.filter(r => r.ProcessingStatus === 'مرفوض').length;
+    const inProgressCount = Math.max(0, allRequests.length - completedCount - rejectedCount);
+    const deliveredCount = allRequests.filter(r => r.DeliveryStatus === 'مستلم' || r.RequestStatus === 'مستلم').length;
+    const undeliveredCount = Math.max(0, allRequests.length - deliveredCount);
+    const completionRate = allRequests.length > 0 ? Math.round((completedCount / allRequests.length) * 100) : 0;
+
+    return {
+      groups: matchedGroups,
+      names: matchedGroups.map(g => g.name),
+      allRequests,
+      visibleRequests,
+      citizensCount: citMap.size,
+      requestsCount: allRequests.length,
+      completedCount,
+      inProgressCount,
+      rejectedCount,
+      deliveredCount,
+      undeliveredCount,
+      completionRate
+    };
+  }, [executedSearchKeys, referrerList, combinedResultsFilter]);
+
   const filteredReferrers = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const normQ = normalizeArabicSearch(searchQuery);
     const list = referrerList.filter(r => {
       if (filterMode === 'women' && r.category !== 'women') return false;
       if (filterMode === 'men' && r.category !== 'men') return false;
       if (filterMode === 'org' && r.category !== 'org') return false;
       if (filterMode === 'specific' && selectedReferrerName !== 'ALL' && r.name !== selectedReferrerName) return false;
-      if (q) {
-        const inName = r.name.toLowerCase().includes(q);
-        const inEnt = r.topEntities.some(e => e.toLowerCase().includes(q));
-        if (!inName && !inEnt) return false;
+      if (normQ) {
+        const tokens = normQ.split(' ').filter(Boolean);
+        const targetText = normalizeArabicSearch(
+          `${r.name} ${r.variants.map(v => v.label).join(' ')} ${r.topEntities.join(' ')}`
+        );
+        if (!tokens.every(tok => targetText.includes(tok))) return false;
       }
       return true;
     });
@@ -573,6 +720,121 @@ export const ReferrersStats: React.FC = () => {
     addAuditLog('طباعة كشف معرف A4', 'قسم الإدارة — المعرفين', `تمت طباعة الكشف التفصيلي للمعرف: ${refItem.name} (${refItem.requestsCount} طلب)`);
   };
 
+  // Official A4 Print for Multi-Selected Referrers / Variants Search Results (يستخدم نفس قالب الطباعة الرسمي بالنظام)
+  const handlePrintCombinedSearchA4 = () => {
+    if (!combinedSearchResult) return;
+    const officeTitle = systemSettings?.officeName || systemSettings?.appName || 'مكتب النائب المهندسة علا عودة الناشي';
+    const printDate = new Date().toLocaleDateString('ar-IQ', { year: 'numeric', month: 'long', day: 'numeric' });
+    const titleNames = combinedSearchResult.names.join(' ، ');
+    const rowsHtml = combinedSearchResult.visibleRequests.map((req, idx) => `
+      <tr>
+        <td style="text-align:center;font-weight:700;">${idx + 1}</td>
+        <td style="font-weight:800;color:#0b192c;">${escapeHtml(req.CitizenName || '—')}</td>
+        <td style="font-family:monospace;text-align:center;direction:ltr;">${escapeHtml(req.CitizenPhone || '—')}</td>
+        <td style="font-weight:700;color:#0f766e;">${escapeHtml(cleanReferrerLabel(req.ReferralSource) || '—')}</td>
+        <td style="font-weight:700;color:#1d4ed8;">${escapeHtml(req.Entity || '—')}</td>
+        <td style="line-height:1.45;">${escapeHtml(req.Details || '—')}</td>
+        <td style="font-family:monospace;text-align:center;">${escapeHtml(req.OutgoingNumber || '—')}</td>
+        <td style="text-align:center;font-weight:700;">${escapeHtml(req.ProcessingStatus || 'قيد المتابعة')}</td>
+        <td style="text-align:center;">${escapeHtml(req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم')}</td>
+        <td style="font-family:monospace;text-align:center;font-size:10px;">${escapeHtml(req.OutgoingDate || (req.CreatedAt ? String(req.CreatedAt).split('T')[0] : '—'))}</td>
+      </tr>
+    `).join('');
+
+    const html = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<title>كشف معاملات المعرفين المحددين</title>
+<style>
+  @page { size: A4 landscape; margin: 11mm; }
+  body { font-family: 'Tajawal', 'Cairo', Tahoma, Arial, sans-serif; color: #0f172a; margin: 0; padding: 0; direction: rtl; background: #fff; }
+  .header { border-bottom: 3px double #0b192c; padding-bottom: 10px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
+  .header h1 { margin: 0; font-size: 17px; color: #0b192c; font-weight: 900; }
+  .header .sub { margin: 4px 0 0; font-size: 11.5px; color: #1e40af; font-weight: 800; line-height: 1.5; }
+  .meta { font-size: 11px; text-align: left; color: #334155; line-height: 1.6; white-space: nowrap; }
+  .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 12px; }
+  .kpi { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 8px; background: #f8fafc; text-align: center; }
+  .kpi .lbl { font-size: 10px; color: #475569; font-weight: 700; }
+  .kpi .val { font-size: 15px; font-weight: 900; color: #0b192c; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  th { background: #0b192c; color: #fff; padding: 7px 5px; border: 1px solid #0b192c; font-weight: 800; text-align: center; }
+  td { padding: 5.5px 5px; border: 1px solid #cbd5e1; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .footer { margin-top: 16px; padding-top: 8px; border-top: 1px solid #cbd5e1; display: flex; justify-content: space-between; font-size: 10px; color: #475569; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>${escapeHtml(officeTitle)} — كشف نتائج بحث التزكيات والمعرّفين</h1>
+      <div class="sub">المعرّفون المحددون (${combinedSearchResult.groups.length}): ${escapeHtml(titleNames)}</div>
+    </div>
+    <div class="meta">
+      <div>تاريخ الطباعة: <strong>${escapeHtml(printDate)}</strong></div>
+      <div>عدد المعاملات بالكشف: <strong>${combinedSearchResult.visibleRequests.length.toLocaleString()}</strong></div>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">المراجعين</div><div class="val">${combinedSearchResult.citizensCount.toLocaleString()}</div></div>
+    <div class="kpi"><div class="lbl">إجمالي الطلبات</div><div class="val" style="color:#1d4ed8;">${combinedSearchResult.requestsCount.toLocaleString()}</div></div>
+    <div class="kpi"><div class="lbl">المنجز</div><div class="val" style="color:#047857;">${combinedSearchResult.completedCount.toLocaleString()}</div></div>
+    <div class="kpi"><div class="lbl">المستلم</div><div class="val" style="color:#0f766e;">${combinedSearchResult.deliveredCount.toLocaleString()}</div></div>
+    <div class="kpi"><div class="lbl">غير المستلم</div><div class="val" style="color:#b45309;">${combinedSearchResult.undeliveredCount.toLocaleString()}</div></div>
+    <div class="kpi"><div class="lbl">نسبة الإنجاز</div><div class="val">${combinedSearchResult.completionRate}%</div></div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:28px;">ت</th>
+        <th style="text-align:right;min-width:125px;">اسم المواطن</th>
+        <th style="width:86px;">رقم الهاتف</th>
+        <th style="width:105px;">المعرّف</th>
+        <th style="width:115px;">الوزارة / الجهة</th>
+        <th style="text-align:right;">موضوع وتفاصيل الطلب</th>
+        <th style="width:80px;">العدد الصادر</th>
+        <th style="width:66px;">الإنجاز</th>
+        <th style="width:62px;">الاستلام</th>
+        <th style="width:72px;">التاريخ</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml || '<tr><td colspan="10" style="text-align:center;padding:18px;color:#64748b;">لا توجد معاملات مطابقة</td></tr>'}
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <span>كشف تفصيلي رسمي صادر من ${escapeHtml(officeTitle)}</span>
+    <span>توقيع مسؤول الإدارة: _______________________</span>
+  </div>
+</body>
+</html>`;
+
+    printHtmlViaIframe(html);
+    addAuditLog('طباعة كشف نتائج بحث المعرفين A4', 'قسم الإدارة — المعرفين', `تمت طباعة (${combinedSearchResult.visibleRequests.length}) معاملة للمعرفين المحددين: ${titleNames}`);
+  };
+
+  const handleExportCombinedSearchExcel = () => {
+    if (!combinedSearchResult) return;
+    const data = combinedSearchResult.visibleRequests.map((req, idx) => ({
+      'ت': idx + 1,
+      'رقم الطلب': req.Request_ID,
+      'اسم المواطن': req.CitizenName,
+      'رقم الهاتف': req.CitizenPhone || '—',
+      'المعرّف': cleanReferrerLabel(req.ReferralSource) || '—',
+      'الجهة / الوزارة': req.Entity || '—',
+      'موضوع الطلب': req.Details || '—',
+      'العدد الصادر': req.OutgoingNumber || '—',
+      'حالة الإنجاز': req.ProcessingStatus || 'قيد المتابعة',
+      'حالة الاستلام': req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم',
+      'التاريخ': req.OutgoingDate || (req.CreatedAt ? String(req.CreatedAt).split('T')[0] : '—')
+    }));
+    exportToExcel(data, `كشف_معاملات_المعرفين_المحددين`);
+    addAuditLog('تصدير نتائج بحث المعرفين Excel', 'قسم الإدارة — المعرفين', `تم تصدير (${data.length}) معاملة للمعرفين المحددين`);
+  };
+
   const modalFilteredRequests = useMemo(() => {
     if (!selectedReferrer) return [];
     const q = modalSearch.trim().toLowerCase();
@@ -770,15 +1032,32 @@ export const ReferrersStats: React.FC = () => {
 
           {/* Row 3: Search, Quick Referrer Selector, and Sort */}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
-            <div className="relative md:col-span-5">
-              <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="بحث باسم المعرف أو المنسق أو الوزارة..."
-                className="w-full pr-9 pl-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
-              />
+            <div className="relative md:col-span-5 flex items-center gap-1.5">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleExecuteMultiReferrerSearch();
+                    }
+                  }}
+                  placeholder="ابحث باسم المعرّف (مثلاً: احمد) لتحديد الصيغ المتشابهة..."
+                  className="w-full pr-9 pl-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleExecuteMultiReferrerSearch}
+                disabled={checkedGroupKeys.length === 0 && searchMatchingReferrers.length === 0}
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-45 text-white text-xs font-black flex items-center gap-1.5 shrink-0 shadow-xs transition-all cursor-pointer"
+              >
+                <Search className="w-3.5 h-3.5" />
+                <span>بحث{checkedGroupKeys.length > 0 ? ` (${checkedGroupKeys.length})` : ''}</span>
+              </button>
             </div>
 
             <div className="md:col-span-4 flex items-center gap-1.5">
@@ -798,7 +1077,7 @@ export const ReferrersStats: React.FC = () => {
               >
                 <option value="ALL">-- اختيار معرف محدد مباشرة ({referrerList.length}) --</option>
                 {referrerList.map(r => (
-                  <option key={r.name} value={r.name}>
+                  <option key={r.groupKey} value={r.name}>
                     {r.name} ({r.requestsCount} طلب / {r.citizensCount} مراجع)
                   </option>
                 ))}
@@ -819,13 +1098,240 @@ export const ReferrersStats: React.FC = () => {
               </select>
             </div>
           </div>
+
+          {/* Interactive Multi-Select Referrers & Similar Variants Picker */}
+          {(searchMatchingReferrers.length > 0 || checkedGroupKeys.length > 0) && (
+            <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-black text-blue-950 dark:text-blue-200">
+                  <Layers className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                  <span>
+                    {searchMatchingReferrers.length > 0
+                      ? `خيارات المعرّف والصيغ المتشابهة المطابقة (${searchMatchingReferrers.length}) — حدد واحداً أو أكثر ثم اضغط "بحث":`
+                      : `المعرّفون المحددون حالياً (${checkedGroupKeys.length}) — اضغط "بحث" لعرض كافة معاملاتهم وطباعتها:`}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {searchMatchingReferrers.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={selectAllMatchingSearch}
+                      className="px-2.5 py-1 rounded-lg bg-blue-100 hover:bg-blue-200 dark:bg-blue-900/60 text-blue-900 dark:text-blue-100 text-[11px] font-bold cursor-pointer"
+                    >
+                      تحديد الكل ({searchMatchingReferrers.length})
+                    </button>
+                  )}
+                  {checkedGroupKeys.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={clearMultiSelection}
+                      className="px-2.5 py-1 rounded-lg bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px] font-bold cursor-pointer"
+                    >
+                      إلغاء التحديد
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleExecuteMultiReferrerSearch}
+                    className="px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center gap-1 cursor-pointer shadow-xs"
+                  >
+                    <Search className="w-3 h-3" />
+                    <span>بحث وعرض المعاملات</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto pt-0.5">
+                {(searchMatchingReferrers.length > 0
+                  ? searchMatchingReferrers
+                  : referrerList.filter(r => checkedGroupKeys.includes(r.groupKey))
+                ).map(item => {
+                  const isChecked = checkedGroupKeys.includes(item.groupKey);
+                  return (
+                    <button
+                      key={item.groupKey}
+                      type="button"
+                      onClick={() => toggleGroupKey(item.groupKey)}
+                      className={`px-2.5 py-1.5 rounded-xl border text-right text-xs transition-all cursor-pointer flex items-center gap-2 ${
+                        isChecked
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:border-blue-400'
+                      }`}
+                    >
+                      {isChecked ? (
+                        <CheckSquare className="w-3.5 h-3.5 shrink-0 text-white" />
+                      ) : (
+                        <Square className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                      )}
+                      <span className="font-bold">{item.name}</span>
+                      <span
+                        className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-md ${
+                          isChecked ? 'bg-white/20 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        {item.requestsCount} طلب
+                      </span>
+                      {item.variants.length > 1 && (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded-md ${
+                            isChecked ? 'bg-amber-400/25 text-amber-100' : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                          }`}
+                          title={item.variants.map(v => `${v.label} (${v.requestsCount})`).join(' | ')}
+                        >
+                          +{item.variants.length - 1} صيغ
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
+
+        {/* Combined Search Results Panel for Selected Referrers / Variants */}
+        {combinedSearchResult && (
+          <div className="p-4 border-b-2 border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-slate-900/80 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-lg bg-blue-600 text-white text-[11px] font-black">
+                    نتائج البحث المجمّع ({combinedSearchResult.groups.length} معرّف)
+                  </span>
+                  <h4 className="text-sm font-black text-slate-900 dark:text-white">
+                    {combinedSearchResult.names.slice(0, 4).join(' ، ')}
+                    {combinedSearchResult.names.length > 4 ? ` (+${combinedSearchResult.names.length - 4})` : ''}
+                  </h4>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                  <span>المراجعين: <strong className="text-slate-900 dark:text-white">{combinedSearchResult.citizensCount}</strong></span>
+                  <span>•</span>
+                  <span>إجمالي الطلبات: <strong className="text-blue-700 dark:text-blue-400">{combinedSearchResult.requestsCount}</strong></span>
+                  <span>•</span>
+                  <span>المنجز: <strong className="text-emerald-700 dark:text-emerald-400">{combinedSearchResult.completedCount}</strong></span>
+                  <span>•</span>
+                  <span>المستلم: <strong className="text-teal-700 dark:text-teal-400">{combinedSearchResult.deliveredCount}</strong></span>
+                  <span>•</span>
+                  <span>غير المستلم: <strong className="text-amber-700 dark:text-amber-400">{combinedSearchResult.undeliveredCount}</strong></span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handlePrintCombinedSearchA4}
+                  className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-700 text-white text-xs font-black flex items-center gap-1.5 shadow-xs cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>طباعة ({combinedSearchResult.visibleRequests.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportCombinedSearchExcel}
+                  className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5 shadow-xs cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Excel</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExecutedSearchKeys(null)}
+                  className="p-2 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+                  title="إغلاق نتائج البحث"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="relative flex-1 min-w-[220px] max-w-md">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={combinedResultsFilter}
+                  onChange={e => setCombinedResultsFilter(e.target.value)}
+                  placeholder="تصفية داخل نتائج المعاملات (اسم المواطن، الهاتف، الصادر، الجهة...)"
+                  className="w-full pr-8 pl-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <span className="text-[11px] font-bold text-slate-500">
+                المعروض: {combinedSearchResult.visibleRequests.length.toLocaleString()} من {combinedSearchResult.requestsCount.toLocaleString()} معاملة
+              </span>
+            </div>
+
+            <div className="overflow-x-auto max-h-96 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+              <table className="w-full text-right text-xs">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
+                  <tr>
+                    <th className="p-2.5 text-center w-10">ت</th>
+                    <th className="p-2.5">اسم المواطن</th>
+                    <th className="p-2.5">الهاتف</th>
+                    <th className="p-2.5">المعرّف</th>
+                    <th className="p-2.5">الوزارة / الجهة</th>
+                    <th className="p-2.5">موضوع الطلب</th>
+                    <th className="p-2.5 text-center">العدد الصادر</th>
+                    <th className="p-2.5 text-center">الحالة</th>
+                    <th className="p-2.5 text-center">الاستلام</th>
+                    <th className="p-2.5 text-center">التاريخ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {combinedSearchResult.visibleRequests.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="p-6 text-center text-slate-400 font-bold">
+                        لا توجد معاملات مطابقة للبحث الحالي.
+                      </td>
+                    </tr>
+                  ) : (
+                    combinedSearchResult.visibleRequests.map((req, idx) => {
+                      const isDelivered = req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم';
+                      return (
+                        <tr key={req.Request_ID || idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="p-2.5 text-center font-mono text-slate-400 tabular-nums">{idx + 1}</td>
+                          <td className="p-2.5 font-bold text-slate-900 dark:text-white whitespace-nowrap">{req.CitizenName}</td>
+                          <td className="p-2.5 font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap" dir="ltr">{req.CitizenPhone || '—'}</td>
+                          <td className="p-2.5 font-bold text-teal-700 dark:text-teal-300 whitespace-nowrap">
+                            {cleanReferrerLabel(req.ReferralSource) || '—'}
+                          </td>
+                          <td className="p-2.5 font-semibold text-blue-700 dark:text-blue-400 whitespace-nowrap">{req.Entity || '—'}</td>
+                          <td className="p-2.5 text-slate-600 dark:text-slate-300 max-w-xs truncate" title={req.Details}>{req.Details || '—'}</td>
+                          <td className="p-2.5 text-center font-mono font-bold text-slate-800 dark:text-slate-200 whitespace-nowrap">{req.OutgoingNumber || '—'}</td>
+                          <td className="p-2.5 text-center whitespace-nowrap">
+                            <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[10px] font-bold">
+                              {req.ProcessingStatus || 'قيد المتابعة'}
+                            </span>
+                          </td>
+                          <td className="p-2.5 text-center whitespace-nowrap">
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                                isDelivered
+                                  ? 'bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-800'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                              }`}
+                            >
+                              {isDelivered ? 'مستلم' : 'غير مستلم'}
+                            </span>
+                          </td>
+                          <td className="p-2.5 text-center font-mono text-[10px] text-slate-400 whitespace-nowrap tabular-nums">
+                            {req.OutgoingDate || (req.CreatedAt ? String(req.CreatedAt).split('T')[0] : '—')}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* High-Density Executive Table */}
         <div className="overflow-x-auto">
           <table className="w-full text-right text-xs">
             <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700">
               <tr>
+                <th className="p-3 w-10 text-center">تحديد</th>
                 <th className="p-3 w-10 text-center">ت</th>
                 <th className="p-3">اسم المعرف / المنسق</th>
                 <th className="p-3 text-center">التصنيف</th>
@@ -842,19 +1348,44 @@ export const ReferrersStats: React.FC = () => {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
               {filteredReferrers.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="p-10 text-center text-slate-400 font-bold">
+                  <td colSpan={12} className="p-10 text-center text-slate-400 font-bold">
                     لا توجد بيانات معرفين مطابقة لمعايير البحث أو الفلترة الحالية.
                   </td>
                 </tr>
               ) : (
-                filteredReferrers.map((ref, idx) => (
+                filteredReferrers.map((ref, idx) => {
+                  const isRowChecked = checkedGroupKeys.includes(ref.groupKey);
+                  return (
                   <tr
-                    key={ref.name}
-                    className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
+                    key={ref.groupKey}
+                    className={`transition-colors ${
+                      isRowChecked
+                        ? 'bg-blue-50/60 dark:bg-blue-950/30'
+                        : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                    }`}
                   >
+                    <td className="p-3 text-center">
+                      <button
+                        type="button"
+                        onClick={() => toggleGroupKey(ref.groupKey)}
+                        className="text-slate-500 hover:text-blue-600 cursor-pointer"
+                        title="تحديد للبحث المجمّع والطباعة"
+                      >
+                        {isRowChecked ? (
+                          <CheckSquare className="w-4 h-4 text-blue-600 mx-auto" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-400 mx-auto" />
+                        )}
+                      </button>
+                    </td>
                     <td className="p-3 text-center font-mono text-slate-400 tabular-nums">{idx + 1}</td>
                     <td className="p-3 font-black text-slate-900 dark:text-white whitespace-nowrap">
-                      {ref.name}
+                      <div>{ref.name}</div>
+                      {ref.variants.length > 1 && (
+                        <div className="text-[10px] font-medium text-slate-400 mt-0.5 truncate max-w-[220px]" title={ref.variants.map(v => v.label).join(' ، ')}>
+                          صيغ مدمجة ({ref.variants.length}): {ref.variants.slice(0, 3).map(v => v.label).join(' ، ')}
+                        </div>
+                      )}
                     </td>
                     <td className="p-3 text-center whitespace-nowrap">
                       <span
@@ -932,7 +1463,8 @@ export const ReferrersStats: React.FC = () => {
                       </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

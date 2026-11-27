@@ -664,7 +664,9 @@ export async function pushToGoogleSheetsRealtime(
       table: entityType,
       sheetType: entityType,
       spreadsheetId: resolvedSheetId,
+      sheetId: resolvedSheetId,
       sheetGid: PINNED_GOOGLE_SHEET_GID,
+      gid: PINNED_GOOGLE_SHEET_GID,
       id: targetId,
       Citizen_ID: targetId,
       Request_ID: targetId,
@@ -793,7 +795,9 @@ export async function pushBulkDataToGoogleSheets(
         {
           action: 'bulk_sync',
           spreadsheetId: resolvedSheetId,
+          sheetId: resolvedSheetId,
           sheetGid: PINNED_GOOGLE_SHEET_GID,
+          gid: PINNED_GOOGLE_SHEET_GID,
           customSections: i === 0 ? activeSections : undefined,
           data: {
             citizens: citSlice,

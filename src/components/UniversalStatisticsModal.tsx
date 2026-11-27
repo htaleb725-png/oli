@@ -25,6 +25,8 @@ import {
 } from 'lucide-react';
 import { printHtmlSafely } from '../utils/printReceiptHelper';
 import { DepartmentAnalyticsDashboard } from './DepartmentAnalyticsDashboard';
+import { getLocalTodayIsoDate, extractLocalDateYMD } from '../utils/archiveHelper';
+import { cleanReferrerLabel, normalizeReferrerGroupKey } from '../utils/referrerHelper';
 
 interface UniversalStatisticsModalProps {
   isOpen: boolean;
@@ -68,34 +70,26 @@ const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ on
     );
   }, [currentUser]);
 
-  // Date filtering helper
-  const now = new Date();
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  
-  const isWithinTimeRange = (dateStr?: string) => {
-    if (!dateStr) return timeRange === 'all';
-    if (timeRange === 'all') return true;
-    
-    const itemDate = new Date(dateStr.slice(0, 10));
-    if (isNaN(itemDate.getTime())) return true;
+  // Local date filtering helper (avoids UTC midnight drift)
+  const todayStr = getLocalTodayIsoDate();
+  const todayLocalMs = Date.parse(`${todayStr}T00:00:00`);
 
-    if (timeRange === 'today') {
-      return dateStr.startsWith(todayStr);
-    }
-    if (timeRange === 'week') {
-      const diffDays = (now.getTime() - itemDate.getTime()) / (1000 * 3600 * 24);
-      return diffDays <= 7;
-    }
-    if (timeRange === 'month') {
-      const diffDays = (now.getTime() - itemDate.getTime()) / (1000 * 3600 * 24);
-      return diffDays <= 30;
-    }
+  const isWithinTimeRange = (dateStr?: string) => {
+    if (timeRange === 'all') return true;
+    const ymd = extractLocalDateYMD(dateStr);
+    if (!ymd) return false;
+    if (timeRange === 'today') return ymd === todayStr;
+    const itemMs = Date.parse(`${ymd}T00:00:00`);
+    if (isNaN(itemMs) || isNaN(todayLocalMs)) return false;
+    const diffDays = (todayLocalMs - itemMs) / (1000 * 3600 * 24);
+    if (timeRange === 'week') return diffDays >= 0 && diffDays <= 7;
+    if (timeRange === 'month') return diffDays >= 0 && diffDays <= 30;
     return true;
   };
 
-  // Filtered collections
+  // Filtered collections (live from Firestore onSnapshot state)
   const filteredCitizens = citizens.filter(c => isWithinTimeRange(c.CreatedAt));
-  const filteredRequests = requests.filter(r => isWithinTimeRange(r.CreatedAt));
+  const filteredRequests = requests.filter(r => isWithinTimeRange(r.OutgoingDate || r.CreatedAt));
   const filteredInterviews = interviews.filter(i => isWithinTimeRange(i.InterviewDate || i.CreatedAt));
   const filteredCheques = cheques.filter(c => isWithinTimeRange(c.IssueDate || c.CreatedAt));
   const filteredLetters = officialLetters.filter(l => isWithinTimeRange(l.LetterDate));
@@ -103,14 +97,18 @@ const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ on
   // Executive Stats Calculation
   const totalCitizens = filteredCitizens.length;
   const blockedCitizensCount = filteredCitizens.filter(c => c.IsBlocked).length;
-  const todayNewCitizensCount = citizens.filter(c => (c.CreatedAt || '').startsWith(todayStr)).length;
+  const todayNewCitizensCount = citizens.filter(c => extractLocalDateYMD(c.CreatedAt) === todayStr).length;
 
   const totalRequests = filteredRequests.length;
   const completedRequests = filteredRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber));
-  const pendingRequests = filteredRequests.filter(r => r.ProcessingStatus === 'قيد الإجراء' || r.ProcessingStatus === 'بانتظار الموافقة' || !r.OutgoingNumber);
-  const specialRequests = filteredRequests.filter(r => r.Priority === 'خاص جداً' || (r.DirectorNotes && r.DirectorNotes.includes('خاص')));
   const rejectedRequests = filteredRequests.filter(r => r.ProcessingStatus === 'مرفوض' || (r.DirectorNotes && r.DirectorNotes.includes('مرفوض')));
-  const todayCompletedRequests = requests.filter(r => (r.OutgoingDate === todayStr || (r.CreatedAt || '').startsWith(todayStr)) && r.OutgoingNumber).length;
+  const pendingRequests = filteredRequests.filter(
+    r => !(r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber)) && r.ProcessingStatus !== 'مرفوض'
+  );
+  const deliveredRequests = filteredRequests.filter(r => r.DeliveryStatus === 'مستلم' || r.RequestStatus === 'مستلم');
+  const undeliveredRequestsCount = Math.max(0, totalRequests - deliveredRequests.length);
+  const specialRequests = filteredRequests.filter(r => r.Priority === 'خاص جداً' || r.DirectorDecision === 'خاص' || (r.DirectorNotes && r.DirectorNotes.includes('خاص')));
+  const todayCompletedRequests = requests.filter(r => (extractLocalDateYMD(r.OutgoingDate) === todayStr || extractLocalDateYMD(r.CreatedAt) === todayStr) && Boolean(r.OutgoingNumber)).length;
 
   const totalChequesAmount = filteredCheques.reduce((sum, c) => sum + (Number(c.Amount) || 0), 0);
   const totalInterviewsCount = filteredInterviews.length;
@@ -127,6 +125,30 @@ const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ on
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5);
   }, [filteredRequests]);
+
+  // Top Referrers breakdown (cleaned & variant-grouped)
+  const referrerCounts = useMemo(() => {
+    const citRefMap = new Map<string, string>();
+    citizens.forEach(c => {
+      if (c?.Citizen_ID) {
+        const clean = cleanReferrerLabel(c.ReferralSource);
+        if (clean) citRefMap.set(c.Citizen_ID, clean);
+      }
+    });
+    const groups = new Map<string, { label: string; count: number }>();
+    filteredRequests.forEach(r => {
+      const clean = cleanReferrerLabel(r.ReferralSource) || citRefMap.get(r.Citizen_ID) || '';
+      if (!clean) return;
+      const key = normalizeReferrerGroupKey(clean) || clean;
+      const ex = groups.get(key);
+      if (ex) ex.count += 1;
+      else groups.set(key, { label: clean, count: 1 });
+    });
+    return Array.from(groups.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+      .map(item => [item.label, item.count] as [string, number]);
+  }, [filteredRequests, citizens]);
 
   // Top Districts breakdown
   const districtCounts = useMemo(() => {
@@ -184,7 +206,7 @@ const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ on
             <tr>
               <td style="border: 1px solid #cbd5e1; padding: 8px;">إجمالي الطلبات والمعاملات</td>
               <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center; font-weight: bold;">${totalRequests}</td>
-              <td style="border: 1px solid #cbd5e1; padding: 8px;">منجز: ${completedRequests.length} | قيد التدقيق: ${pendingRequests.length}</td>
+              <td style="border: 1px solid #cbd5e1; padding: 8px;">منجز: ${completedRequests.length} | مستلم: ${deliveredRequests.length} | غير مستلم: ${undeliveredRequestsCount} | قيد التدقيق: ${pendingRequests.length}</td>
             </tr>
             <tr>
               <td style="border: 1px solid #cbd5e1; padding: 8px;">المعاملات الصادرة اليوم</td>
@@ -540,6 +562,37 @@ const UniversalStatisticsModalContent: React.FC<{ onClose: () => void }> = ({ on
                       })
                     )}
                   </div>
+                </div>
+              </div>
+
+              {/* Top Referrers Breakdown (التوزيع حسب المعرّفين والتزكيات) */}
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-teal-600" />
+                    <span>التوزيع حسب المعرّفين والتزكيات (مباشر من Firestore)</span>
+                  </h4>
+                  <span className="text-[10px] text-slate-400 font-bold">مستلم: {deliveredRequests.length} | غير مستلم: {undeliveredRequestsCount}</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+                  {referrerCounts.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-2 col-span-full">لا توجد بيانات معرّفين كافية في هذا النطاق الزمني</p>
+                  ) : (
+                    referrerCounts.map(([refLabel, count], idx) => {
+                      const pct = totalRequests > 0 ? Math.round((count / totalRequests) * 100) : 0;
+                      return (
+                        <div key={idx} className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-1">
+                          <div className="text-xs font-black text-slate-900 dark:text-white truncate" title={refLabel}>
+                            {idx + 1}. {refLabel}
+                          </div>
+                          <div className="flex items-center justify-between text-[11px] font-mono font-bold text-teal-700 dark:text-teal-400">
+                            <span>{count} معاملة</span>
+                            <span>{pct}%</span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             </>

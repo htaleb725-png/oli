@@ -464,6 +464,8 @@ interface AppContextType {
       anchoredOutgoingBaseline?: number;
       anchorTimestamp?: string;
       anchorLabel?: string;
+      lastRegisteredName?: string;
+      lastOutgoingRaw?: string;
     }
   ) => Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }>;
 
@@ -2643,13 +2645,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         safeLocalStorageSet(STORAGE_KEY_PREFIX + 'citizens', JSON.stringify(next));
         return next;
       });
+      const ctxUnblock = getCloudCtx();
       clearedDuplicates.forEach(c => {
         emitServerMutation('citizens', 'upsert', { item: c });
-        fsSaveCitizen(c).catch(() => {});
+        fsSaveCitizen(c)
+          .then(() => {
+            void pushToGoogleSheetsRealtime('citizens', c, 'update', ctxUnblock.appsScriptUrl, ctxUnblock.googleSheetId, {
+              backgroundBackup: true
+            });
+          })
+          .catch(() => {});
       });
     }
 
-    // 2. Clear blocked state on all matching requests + persist to Firestore
+    // 2. Clear blocked state on all matching requests + persist to Firestore & Google Sheets background backup
     const updatedUnblockedRequests: OfficeRequest[] = requests
       .filter(r => {
         const matchId = r.Citizen_ID && r.Citizen_ID.trim().toLowerCase() === cleanId;
@@ -2665,9 +2674,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         safeLocalStorageSet(STORAGE_KEY_PREFIX + 'requests', JSON.stringify(sanitizeRequestsForStorage(next)));
         return next;
       });
+      const ctxReqUnblock = getCloudCtx();
       updatedUnblockedRequests.forEach(r => {
         emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([r])[0] || r });
-        fsSaveRequest(r).catch(() => {});
+        fsSaveRequest(r)
+          .then(() => {
+            void pushToGoogleSheetsRealtime('requests', r, 'update', ctxReqUnblock.appsScriptUrl, ctxReqUnblock.googleSheetId, {
+              backgroundBackup: true
+            });
+          })
+          .catch(() => {});
       });
     }
 
@@ -4608,6 +4624,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       anchoredOutgoingBaseline?: number;
       anchorTimestamp?: string;
       anchorLabel?: string;
+      lastRegisteredName?: string;
+      lastOutgoingRaw?: string;
     }
   ): Promise<{ importedCitizens: number; importedRequests: number; firestoreSaved?: boolean; sheetsDispatched?: boolean }> => {
     // 1. Strict validation - filter out ghost/undefined & ensure imported/restored archive rows never flood Daily Work
@@ -4646,7 +4664,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
 
-    // Authoritatively anchor outgoing counter from the uploaded file's outgoing column (using live ref, never stale closure)
+    // Authoritatively anchor outgoing counter & last registered citizen name from the uploaded file
     const liveSettings = systemSettingsRef.current;
     const explicitAnchor =
       options?.anchoredOutgoingBaseline &&
@@ -4655,22 +4673,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       options.anchoredOutgoingBaseline <= MAX_VALID_OUTGOING_SEQ
         ? Math.floor(options.anchoredOutgoingBaseline)
         : 0;
+    const explicitLastName = (options?.lastRegisteredName || '').trim();
+    const explicitLastRaw = (options?.lastOutgoingRaw || '').trim();
 
-    if (explicitAnchor > 0) {
+    if (explicitAnchor > 0 || explicitLastName) {
       const anchorTs = options?.anchorTimestamp || new Date().toISOString();
-      const anchorLbl = options?.anchorLabel || `آخر عدد في الملف المرفوع (${explicitAnchor})`;
-      updateSettings({
-        lastOutgoingNumberNasiriyah: explicitAnchor,
-        lastOutgoingNumberSuq: explicitAnchor,
+      const anchorLbl = options?.anchorLabel || (explicitAnchor > 0 ? `آخر عدد في الملف المرفوع (${explicitAnchor})` : explicitLastName);
+      const settingsPatch = {
+        ...(explicitAnchor > 0
+          ? {
+              lastOutgoingNumberNasiriyah: explicitAnchor,
+              lastOutgoingNumberSuq: explicitAnchor
+            }
+          : {}),
         outgoingBaselineSetAt: anchorTs,
-        outgoingBaselineLabel: anchorLbl
-      });
-      fsSyncSettingsStructure({
-        lastOutgoingNumberNasiriyah: explicitAnchor,
-        lastOutgoingNumberSuq: explicitAnchor,
-        outgoingBaselineSetAt: anchorTs,
-        outgoingBaselineLabel: anchorLbl
-      }).catch(() => {});
+        outgoingBaselineLabel: anchorLbl,
+        ...(explicitLastName ? { lastRegisteredName: explicitLastName } : {}),
+        ...(explicitLastRaw ? { lastOutgoingRaw: explicitLastRaw } : {})
+      };
+      updateSettings(settingsPatch);
+      fsSyncSettingsStructure(settingsPatch).catch(() => {});
     } else if (requestsCount > 0) {
       const recentAnchorMs = liveSettings?.outgoingBaselineSetAt
         ? Date.parse(liveSettings.outgoingBaselineSetAt)
@@ -4731,8 +4753,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const sheetsPromise = pushBulkDataToGoogleSheets(
         validCitizens,
         sanitizedRequests,
-        systemSettings.appsScriptUrl,
-        systemSettings.googleSheetId
+        liveSettings?.appsScriptUrl || systemSettings.appsScriptUrl,
+        liveSettings?.googleSheetId || systemSettings.googleSheetId,
+        { silentBackground: true }
       )
         .then(res => {
           sheetsDispatched = Boolean(res.appsScriptSent || res.directSheetsSent);

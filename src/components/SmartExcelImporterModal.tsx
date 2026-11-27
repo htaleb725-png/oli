@@ -22,11 +22,14 @@ import {
   MAX_VALID_OUTGOING_SEQ,
   scanMaxOutgoingSequences,
   findLastOutgoingInRawValues,
+  isValidImportedCitizenName,
   parseExcelDateValue,
   parseDeliveryStatus,
   splitCombinedOutgoingAndDate,
   toWesternDigits
 } from '../utils/outgoingNumberHelper';
+import { cleanReferrerLabel } from '../utils/referrerHelper';
+import { fsSyncReferrer } from '../services/firebaseFirestoreService';
 import { SOCIAL_CARE_LEGACY_CUSTOM_ID } from '../utils/permissions';
 
 interface Props {
@@ -153,9 +156,18 @@ const CANONICAL_FIELDS: FieldSpec[] = [
   },
   {
     key: 'referrer',
-    label: 'المعرف',
-    exactPatterns: [/^المعرف$/i, /^المعرّف$/i, /^معرف$/i, /^جهة التزكية$/i, /^التزكية$/i, /^الوسيط$/i],
-    strongPatterns: [/المعرف/i, /معرف/i, /تزكي/i, /منسق/i, /^referrer$/i],
+    label: 'المعرف / المعرّف الموحد',
+    exactPatterns: [
+      /^المعر[فّ]\s*الموحد$/i,
+      /^المعرف الموحد$/i,
+      /^المعرف$/i,
+      /^المعرّف$/i,
+      /^معرف$/i,
+      /^جهة التزكية$/i,
+      /^التزكية$/i,
+      /^الوسيط$/i
+    ],
+    strongPatterns: [/معر[فّ]\s*موحد/i, /المعر[فّ]/i, /المعرف/i, /معرف/i, /تزكي/i, /منسق/i, /^referrer$/i],
     fallbackPatterns: []
   },
   {
@@ -372,6 +384,9 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     deliveredCount: number;
     undeliveredCount: number;
     detectedMaxOutgoing?: number;
+    lastRegisteredName?: string;
+    lastOutgoingRaw?: string;
+    referrersSyncedCount?: number;
     nextOutgoingPreview?: string;
     firestoreSaved?: boolean;
     sheetsDispatched?: boolean;
@@ -502,19 +517,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         };
 
         const rawName = getField('name');
-        if (
-          !rawName ||
-          rawName.length < 2 ||
-          rawName.toLowerCase() === 'undefined' ||
-          rawName.toLowerCase() === 'null' ||
-          rawName === 'الاسم' ||
-          rawName === 'اسم صاحب الطلب' ||
-          rawName === 'اسم المواطن' ||
-          rawName === 'ت' ||
-          rawName === 'name' ||
-          rawName === 'الملاحظات' ||
-          rawName === 'مواطن بدون اسم'
-        ) {
+        if (!isValidImportedCitizenName(rawName)) {
           continue;
         }
 
@@ -531,7 +534,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         const rawOutgoing = splitOut.outgoingNumber;
         const rawOutgoingDate = splitOut.outgoingDate || parseExcelDateValue(rawOutgoingDateRaw);
         const rawPhone = cleanPhoneNumber(getField('phone'));
-        const rawReferrer = getField('referrer');
+        const rawReferrer = cleanReferrerLabel(getField('referrer'));
         const rawAddress = getField('address');
         const rawMargin = getField('margin');
         const rawStatus = getField('status');
@@ -773,9 +776,10 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
     );
   };
 
-  // Live scan of the uploaded Excel file's (رقم الكتاب / العدد) column across all selected sheets
+  // Live scan of the uploaded Excel file's (رقم الكتاب / العدد) column strictly from cleaned valid rows
+  // Guarantees 1-to-1 pairing between every valid citizen name and its exact outgoing number, excluding blank/junk rows
   const detectedFileOutgoing = useMemo(() => {
-    if (!loadedWorkbook || availableSheets.length === 0) {
+    if (!loadedWorkbook || availableSheets.length === 0 || parsedFileRows.length === 0) {
       return {
         lastSeq: 0,
         lastInFileOrder: 0,
@@ -787,55 +791,32 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         columnHeader: ''
       };
     }
+
     const rawEntries: Array<{ outgoing: any; citizenName?: string }> = [];
-    let usedHeader = '';
-    for (const s of availableSheets) {
-      if (!s.selected) continue;
-      const ws = loadedWorkbook.Sheets[s.name];
-      if (!ws) continue;
-      const matrix = XLSX.utils.sheet_to_json(ws, { defval: '', header: 1 }) as any[][];
-      let headerRowIdx = 0;
-      for (let r = 0; r < Math.min(matrix.length, 6); r++) {
-        const nonEmpty = (matrix[r] || []).filter((c) => String(c || '').trim() !== '');
-        if (nonEmpty.length >= 2) {
-          headerRowIdx = r;
-          break;
-        }
+    let lastValidRowName = '';
+    for (const row of parsedFileRows) {
+      if (isValidImportedCitizenName(row.name)) {
+        lastValidRowName = row.name;
       }
-      const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '', range: headerRowIdx });
-      if (rows.length === 0) continue;
-      const sheetHeaders = Object.keys(rows[0] || {});
-      const autoMap = detectExclusiveColumnMapping(sheetHeaders);
-      const userOutCol = columnMapping.outgoingNumber;
-      const outHeader =
-        userOutCol === '__NONE__'
-          ? ''
-          : userOutCol && sheetHeaders.includes(userOutCol)
-          ? userOutCol
-          : autoMap.outgoingNumber || '';
-      if (!outHeader) continue;
-      if (!usedHeader) usedHeader = outHeader;
-      const dateHeader =
-        columnMapping.outgoingDate && sheetHeaders.includes(columnMapping.outgoingDate)
-          ? columnMapping.outgoingDate
-          : autoMap.outgoingDate || '';
-      const nameHeader =
-        columnMapping.name && sheetHeaders.includes(columnMapping.name)
-          ? columnMapping.name
-          : autoMap.name || '';
-      for (const r of rows) {
-        const split = splitCombinedOutgoingAndDate(r[outHeader], dateHeader ? r[dateHeader] : '');
-        const citizenName = nameHeader ? String(r[nameHeader] || '').trim() : '';
-        if (split.outgoingNumber) {
-          rawEntries.push({ outgoing: split.outgoingNumber, citizenName });
-        } else if (r[outHeader] !== undefined && r[outHeader] !== '') {
-          rawEntries.push({ outgoing: r[outHeader], citizenName });
-        }
+      if (row.outgoingNumber) {
+        rawEntries.push({
+          outgoing: row.outgoingNumber,
+          citizenName: row.name
+        });
       }
     }
+
     const stats = findLastOutgoingInRawValues(rawEntries);
-    return { ...stats, columnHeader: usedHeader };
-  }, [loadedWorkbook, availableSheets, columnMapping.outgoingNumber, columnMapping.outgoingDate, columnMapping.name]);
+    const resolvedLastCitizenName =
+      (stats.lastCitizenName && isValidImportedCitizenName(stats.lastCitizenName) ? stats.lastCitizenName : '') ||
+      lastValidRowName;
+
+    return {
+      ...stats,
+      lastCitizenName: resolvedLastCitizenName,
+      columnHeader: columnMapping.outgoingNumber && columnMapping.outgoingNumber !== '__NONE__' ? columnMapping.outgoingNumber : ''
+    };
+  }, [loadedWorkbook, availableSheets, parsedFileRows, columnMapping.outgoingNumber]);
 
   if (!isOpen) return null;
 
@@ -1118,7 +1099,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             Rating: 'لائق',
             Job: rawJob || 'كاسب',
             Education: rawEducation || 'إعدادية فما دون',
-            ReferralSource: rawReferrer || `استيراد إكسل (${item.sheetName})`,
+            ReferralSource: rawReferrer || '',
             CreatedAt: rawOutgoingDate || nowStamp,
             CreatedBy: currentUser?.FullName || 'موظف الإدارة',
             RegisteredVia: isReceptionTarget ? 'استعلامات' : 'إدارة',
@@ -1281,7 +1262,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           Margin: rawMargin || undefined,
           Education: rawEducation || targetCitizen.Education,
           Job: rawJob || targetCitizen.Job,
-          ReferralSource: rawReferrer || targetCitizen.ReferralSource,
+          ReferralSource: rawReferrer || cleanReferrerLabel(targetCitizen.ReferralSource) || '',
           CreatedAt: rawOutgoingDate || nowStamp,
           CreatedBy: `استيراد وتصفية (${currentUser?.FullName || 'الإدارة'})`,
           OtherNotes: rawNotes || `ملف: ${fileName} [${item.sheetName}]`,
@@ -1326,8 +1307,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
           ...Array.from(gapFilledExistingRequests.values())
         ];
 
-        // 1. Determine the exact last outgoing number in the uploaded file's (العدد / الصادر) column
-        // Prefer full-column detection across the uploaded file so filtering rows never drops the true last sequence
+        // 1. Determine the exact last outgoing number & linked last registered citizen name from cleaned rows
         const fileOutgoingStats =
           detectedFileOutgoing.recommendedBaseline > 0
             ? detectedFileOutgoing
@@ -1342,17 +1322,45 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
 
         maxAnyOutgoing = targetOutgoingBaseline;
         const anchorTimestamp = new Date().toISOString();
-        const anchorLabel = fileOutgoingStats.lastCitizenName
-          ? `${fileOutgoingStats.lastCitizenName} (${fileName} — آخر عدد: ${targetOutgoingBaseline})`
-          : `${fileName} (${targetOutgoingBaseline})`;
+        const lastRegisteredName =
+          (fileOutgoingStats.lastCitizenName && isValidImportedCitizenName(fileOutgoingStats.lastCitizenName)
+            ? fileOutgoingStats.lastCitizenName
+            : '') ||
+          (rowsToImport.length > 0 ? rowsToImport[rowsToImport.length - 1].name : '');
+        const lastOutgoingRaw =
+          (fileOutgoingStats.lastRaw && String(fileOutgoingStats.lastRaw).trim()) ||
+          (targetOutgoingBaseline > 0 ? String(targetOutgoingBaseline) : '');
+        const anchorLabel = lastRegisteredName
+          ? `${lastRegisteredName} (${fileName} — آخر عدد: ${lastOutgoingRaw || targetOutgoingBaseline})`
+          : `${fileName} (${lastOutgoingRaw || targetOutgoingBaseline})`;
 
-        if (targetOutgoingBaseline > 0) {
+        if (targetOutgoingBaseline > 0 || lastRegisteredName) {
           updateSystemSettings({
-            lastOutgoingNumberNasiriyah: targetOutgoingBaseline,
-            lastOutgoingNumberSuq: targetOutgoingBaseline,
+            ...(targetOutgoingBaseline > 0
+              ? {
+                  lastOutgoingNumberNasiriyah: targetOutgoingBaseline,
+                  lastOutgoingNumberSuq: targetOutgoingBaseline
+                }
+              : {}),
             outgoingBaselineSetAt: anchorTimestamp,
-            outgoingBaselineLabel: anchorLabel
+            outgoingBaselineLabel: anchorLabel,
+            ...(lastRegisteredName ? { lastRegisteredName } : {}),
+            ...(lastOutgoingRaw ? { lastOutgoingRaw } : {})
           });
+        }
+
+        // 1b. Extract and sync all real unique referrers from imported rows to Firestore `referrers` collection
+        const uniqueExtractedReferrers = Array.from(
+          new Set(
+            rowsToImport
+              .map(r => cleanReferrerLabel(r.referrer))
+              .filter(Boolean)
+          )
+        );
+        if (uniqueExtractedReferrers.length > 0) {
+          void Promise.allSettled(
+            uniqueExtractedReferrers.slice(0, 250).map(refLabel => fsSyncReferrer(refLabel))
+          );
         }
 
         const isSuqBranch = systemSettings.officeBranch === 'suq_al_shuyoukh';
@@ -1432,8 +1440,10 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
         // Pass the anchored outgoing baseline directly so batchImportRecords NEVER overrides it with stale closure state
         batchImportRecords(allCitizensToCommit, allRequestsToCommit, {
           anchoredOutgoingBaseline: targetOutgoingBaseline > 0 ? targetOutgoingBaseline : undefined,
-          anchorTimestamp: targetOutgoingBaseline > 0 ? anchorTimestamp : undefined,
-          anchorLabel: targetOutgoingBaseline > 0 ? anchorLabel : undefined
+          anchorTimestamp: targetOutgoingBaseline > 0 || lastRegisteredName ? anchorTimestamp : undefined,
+          anchorLabel: targetOutgoingBaseline > 0 || lastRegisteredName ? anchorLabel : undefined,
+          lastRegisteredName: lastRegisteredName || undefined,
+          lastOutgoingRaw: lastOutgoingRaw || undefined
         })
           .then((syncRes) => {
             setIsProcessing(false);
@@ -1453,6 +1463,9 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
               deliveredCount,
               undeliveredCount,
               detectedMaxOutgoing: maxAnyOutgoing > 0 ? maxAnyOutgoing : undefined,
+              lastRegisteredName: lastRegisteredName || undefined,
+              lastOutgoingRaw: lastOutgoingRaw || undefined,
+              referrersSyncedCount: uniqueExtractedReferrers.length,
               nextOutgoingPreview,
               firestoreSaved: syncRes?.firestoreSaved,
               sheetsDispatched: syncRes?.sheetsDispatched
@@ -1461,7 +1474,7 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
             addAuditLog(
               'استيراد وتصفية ملف إكسل',
               targetDeptLabel,
-              `تم استيراد ${createdRequests.length} معاملة جديدة وإكمال نواقص ${gapFilledCount} سجل موجود (مستلم: ${deliveredCount} | غير مستلم: ${undeliveredCount}) إلى ${targetDeptLabel}${maxAnyOutgoing > 0 ? ` وتحديث عداد الصادر بعد العدد (${maxAnyOutgoing})` : ''}`
+              `تم استيراد ${createdRequests.length} معاملة جديدة وإكمال نواقص ${gapFilledCount} سجل موجود (مستلم: ${deliveredCount} | غير مستلم: ${undeliveredCount}) إلى ${targetDeptLabel}${lastRegisteredName ? ` | آخر اسم: ${lastRegisteredName}` : ''}${maxAnyOutgoing > 0 ? ` | آخر عدد صادر: ${lastOutgoingRaw || maxAnyOutgoing}` : ''}`
             );
           })
           .catch((err) => {
@@ -2099,13 +2112,23 @@ export const SmartExcelImporterModal: React.FC<Props> = ({ isOpen, onClose }) =>
               </div>
             </div>
 
-            {importSummary.detectedMaxOutgoing && (
+            {(importSummary.detectedMaxOutgoing || importSummary.lastRegisteredName) && (
               <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200 text-xs font-bold flex items-center justify-between flex-wrap gap-2">
-                <span>تم رصد أعلى عدد صادر في الملف وتحديث تسلسل المكتب تلقائياً:</span>
+                <div className="space-y-0.5">
+                  <span>تم رصد آخر سجل مكتمل وأعلى عدد صادر في الملف وتحديث تسلسل المكتب تلقائياً:</span>
+                  {importSummary.lastRegisteredName && (
+                    <div className="text-[11px] text-amber-900 dark:text-amber-100">
+                      آخر اسم مسجل: <strong className="font-black">{importSummary.lastRegisteredName}</strong>
+                      {importSummary.referrersSyncedCount ? ` • تم استخراج ومزامنة (${importSummary.referrersSyncedCount}) معرّف إلى قسم التزكيات` : ''}
+                    </div>
+                  )}
+                </div>
                 <div className="flex items-center gap-2 font-mono tabular-nums">
-                  <span className="px-2 py-0.5 rounded bg-amber-200/80 text-slate-950 font-black">
-                    آخر صادر بالملف: {importSummary.detectedMaxOutgoing}
-                  </span>
+                  {importSummary.detectedMaxOutgoing && (
+                    <span className="px-2 py-0.5 rounded bg-amber-200/80 text-slate-950 font-black">
+                      آخر عدد/صادر: {importSummary.lastOutgoingRaw || importSummary.detectedMaxOutgoing}
+                    </span>
+                  )}
                   {importSummary.nextOutgoingPreview && (
                     <span className="px-2 py-0.5 rounded bg-slate-900 text-amber-300 font-black">
                       الصادر القادم: {importSummary.nextOutgoingPreview}

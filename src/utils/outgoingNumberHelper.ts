@@ -1,4 +1,89 @@
 import { OfficeRequest, OfficialLetter, SystemSettings } from '../types';
+import { getLocalTodayIsoDate } from './archiveHelper';
+
+const INVALID_IMPORTED_NAME_EXACT = new Set([
+  'الاسم',
+  'الاسم الكامل',
+  'اسم صاحب الطلب',
+  'صاحب الطلب',
+  'اسم المواطن',
+  'اسم المراجع',
+  'الاسم الرباعي',
+  'الاسم الثلاثي',
+  'اسم الدائرة',
+  'الدائرة',
+  'الوزارة',
+  'الجهة',
+  'رقم الكتاب',
+  'العدد',
+  'الصادر',
+  'التسلسل',
+  'ت',
+  'المعرف',
+  'المعرّف',
+  'المعرف الموحد',
+  'الملاحظات',
+  'ملاحظات',
+  'ملاحظة',
+  'المجموع',
+  'المجموع الكلي',
+  'الإجمالي',
+  'الاجمالي',
+  'اجمالي',
+  'مجموع',
+  'العدد الكلي',
+  'عدد الطلبات',
+  'مواطن بدون اسم',
+  'غير محدد',
+  'لا يوجد',
+  'بدون اسم',
+  'name',
+  'full name',
+  'fullname',
+  'citizen',
+  'total',
+  'grand total',
+  'summary',
+  'notes',
+  'undefined',
+  'null',
+  'nan',
+  'n/a',
+  'none'
+]);
+
+/**
+ * Strictly validates whether a cell value from an Excel import represents a real citizen name,
+ * excluding empty cells, repeated headers, summary/total rows, pure numbers/dates, and random symbols.
+ */
+export function isValidImportedCitizenName(rawName?: string | null): boolean {
+  const cleaned = String(rawName || '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned || cleaned.length < 2) return false;
+
+  const lower = cleaned.toLowerCase();
+  if (INVALID_IMPORTED_NAME_EXACT.has(lower)) return false;
+
+  if (
+    /^(المجموع|الإجمالي|الاجمالي|اجمالي|مجموع|ملاحظة|ملاحظات|كشف|جدول|تقرير|الصفحة|صفحة|total|subtotal|summary)\b/i.test(
+      cleaned
+    )
+  ) {
+    return false;
+  }
+
+  const lettersOnly = cleaned.replace(/[^a-zA-Z\u0621-\u064A\u0671-\u06D3]/g, '');
+  if (lettersOnly.length < 2) return false;
+
+  const digitsOnly = cleaned.replace(/[^0-9٠-٩]/g, '');
+  if (digitsOnly.length >= 4 && digitsOnly.length >= lettersOnly.length) return false;
+
+  if (/^(.)\1+$/.test(lettersOnly)) return false;
+
+  return true;
+}
 
 /**
  * Convert Arabic-Indic (٠-٩) and Persian (۰-۹) digits to Western ASCII digits (0-9)
@@ -640,28 +725,50 @@ export function computeNextOutgoingNumber(
 
   const maxFound = Math.max(effectiveBaseline, robustMaxFromRecords);
 
-  // Pick the best real record matching maxFound (latest in order if duplicates share the max sequence)
+  // Pick the best real record matching maxFound:
+  // Prefer valid real citizen name + latest OutgoingDate / CreatedAt / orderIdx so lastName and lastOutgoing always match
   let bestRecord: CandidateRecord | undefined;
+  const pickBetterCandidate = (current: CandidateRecord | undefined, next: CandidateRecord): CandidateRecord => {
+    if (!current) return next;
+    const curValid = isValidImportedCitizenName(current.citizenName);
+    const nextValid = isValidImportedCitizenName(next.citizenName);
+    if (nextValid && !curValid) return next;
+    if (curValid && !nextValid) return current;
+    const curDate = current.outgoingDate || '';
+    const nextDate = next.outgoingDate || '';
+    if (nextDate && curDate && nextDate !== curDate) {
+      return nextDate > curDate ? next : current;
+    }
+    if (nextDate && !curDate) return next;
+    if (curDate && !nextDate) return current;
+    return next.orderIdx >= current.orderIdx ? next : current;
+  };
+
   if (maxFound > 0) {
     for (const c of effectiveCandidates) {
       if (c.seq === maxFound) {
-        bestRecord = c;
+        bestRecord = pickBetterCandidate(bestRecord, c);
       }
     }
     if (!bestRecord) {
       for (const c of allCandidates) {
         if (c.seq === maxFound) {
-          bestRecord = c;
+          bestRecord = pickBetterCandidate(bestRecord, c);
         }
       }
     }
     if (!bestRecord && effectiveBaseline > 0 && maxFound === effectiveBaseline) {
       bestRecord = {
-        outgoingNumber: `${branchPrefix} / ${branchCode} / ${effectiveBaseline}`,
+        outgoingNumber:
+          (systemSettings?.lastOutgoingRaw && String(systemSettings.lastOutgoingRaw).trim()) ||
+          `${branchPrefix} / ${branchCode} / ${effectiveBaseline}`,
         outgoingDate: systemSettings?.outgoingBaselineSetAt
           ? systemSettings.outgoingBaselineSetAt.split('T')[0]
-          : new Date().toISOString().split('T')[0],
-        citizenName: systemSettings?.outgoingBaselineLabel || 'عداد الصادر اليدوي / المرفوع',
+          : getLocalTodayIsoDate(),
+        citizenName:
+          (systemSettings?.lastRegisteredName && String(systemSettings.lastRegisteredName).trim()) ||
+          systemSettings?.outgoingBaselineLabel ||
+          'عداد الصادر اليدوي / المرفوع',
         seq: effectiveBaseline,
         branch: targetBranch,
         orderIdx: -1

@@ -16,6 +16,7 @@ import {
 import { db, auth } from '../lib/firebase';
 import { updateFirebaseHealth, pushCloudSyncAlert } from './cloudSyncAlerts';
 import { resolveCanonicalUserRole, normalizeUserRecord } from '../utils/permissions';
+import { cleanReferrerLabel, normalizeReferrerGroupKey } from '../utils/referrerHelper';
 import { 
   Citizen, 
   OfficeRequest, 
@@ -2178,12 +2179,12 @@ export async function fsDeleteBlacklistEntry(citizenId: string): Promise<void> {
   }
 }
 
-// 18.3 Unified Referrers Collection (`referrers`) — merges similar spellings under one canonical document
+// 18.3 Unified Referrers Collection (`referrers`) — cleans placeholders & merges similar spellings under one canonical document
 export async function fsSyncReferrer(rawReferrerName?: string): Promise<void> {
-  const cleanName = String(rawReferrerName || '').trim();
+  const cleanName = cleanReferrerLabel(rawReferrerName);
   if (!cleanName || cleanName.length < 2 || isFirestoreTemporarilyBlocked()) return;
-  const normKey = normalizeArabicEntityKey(cleanName);
-  if (!normKey || normKey === 'مباشر' || normKey === 'بدون' || normKey === 'غير محدد') return;
+  const normKey = normalizeReferrerGroupKey(cleanName) || normalizeArabicEntityKey(cleanName);
+  if (!normKey) return;
 
   const col = getFSCol(FS_COLLECTIONS.REFERRERS);
   const docId = sanitizeFirestoreDocId(`ref_${normKey}`, 'REF');
@@ -2192,7 +2193,7 @@ export async function fsSyncReferrer(rawReferrerName?: string): Promise<void> {
     const existing = await getDoc(ref).catch(() => null);
     const prevData = existing?.exists() ? existing.data() : null;
     const prevAliases: string[] = Array.isArray(prevData?.aliases) ? prevData.aliases : [];
-    const nextAliases = Array.from(new Set([...prevAliases, cleanName])).slice(0, 30);
+    const nextAliases = Array.from(new Set([...prevAliases, cleanName])).slice(0, 40);
     await setDoc(
       ref,
       {
@@ -2211,9 +2212,9 @@ export async function fsSyncReferrer(rawReferrerName?: string): Promise<void> {
 }
 
 export async function fsDeleteReferrerByName(rawReferrerName: string): Promise<void> {
-  const cleanName = String(rawReferrerName || '').trim();
+  const cleanName = cleanReferrerLabel(rawReferrerName);
   if (!cleanName || isFirestoreTemporarilyBlocked()) return;
-  const normKey = normalizeArabicEntityKey(cleanName);
+  const normKey = normalizeReferrerGroupKey(cleanName) || normalizeArabicEntityKey(cleanName);
   if (!normKey) return;
   const col = getFSCol(FS_COLLECTIONS.REFERRERS);
   const docId = sanitizeFirestoreDocId(`ref_${normKey}`, 'REF');
