@@ -29,6 +29,7 @@ import {
   AuditLog,
   CustomSection,
   CustomSectionRecord,
+  DocumentArchiveItem,
   UrgentNotification
 } from '../types';
 
@@ -272,6 +273,7 @@ export const FS_COLLECTIONS = {
   DROPDOWNS: 'dropdowns',
   CUSTOM_SECTIONS: 'custom_sections',
   CUSTOM_RECORDS: 'custom_records',
+  DOCUMENTS: 'documents',
   DELETED_RECORDS: 'deleted_records',
   NOTIFICATIONS: 'notifications'
 } as const;
@@ -379,13 +381,36 @@ export async function fsSaveCitizen(citizen: Citizen): Promise<void> {
   }
 }
 
+export async function fsDeleteArchivesForRecord(recordId: string): Promise<void> {
+  if (!recordId || isFirestoreTemporarilyBlocked()) return;
+  const safeId = sanitizeFirestoreDocId(recordId, 'REC');
+  const col = getFSCol(FS_COLLECTIONS.ARCHIVES);
+  try {
+    const q = query(collection(db, col), where('recordId', '==', safeId));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const batch = writeBatch(db);
+      snap.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch (err) {
+    console.warn('Firestore archive cascade delete notice:', err);
+  }
+}
+
 export async function fsDeleteCitizen(citizenId: string): Promise<void> {
   const safeId = sanitizeFirestoreDocId(citizenId, 'ONA');
   const col = getFSCol(FS_COLLECTIONS.CITIZENS);
   const path = `${col}/${safeId}`;
   try {
     await deleteDoc(doc(db, col, safeId));
-    await fsRegisterDeletedRecord(safeId, 'citizens');
+    await Promise.all([
+      deleteDoc(doc(db, getFSCol(FS_COLLECTIONS.BLACKLIST), safeId)).catch(() => {}),
+      deleteDoc(doc(db, getFSCol(FS_COLLECTIONS.ORGANIZATIONS), safeId)).catch(() => {}),
+      fsDeleteArchivesForRecord(safeId),
+      fsRegisterDeletedRecord(safeId, 'citizens')
+    ]);
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -410,7 +435,11 @@ export async function fsDeleteRequest(requestId: string): Promise<void> {
   const path = `${col}/${safeId}`;
   try {
     await deleteDoc(doc(db, col, safeId));
-    await fsRegisterDeletedRecord(safeId, 'requests');
+    await Promise.all([
+      fsDeleteArchivesForRecord(safeId),
+      fsRegisterDeletedRecord(safeId, 'requests')
+    ]);
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -588,6 +617,55 @@ export async function fsSaveOrgRecord(record: OrganizationRecord): Promise<void>
     updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function fsDeleteOrgRecord(orgIdOrCitizenId: string): Promise<void> {
+  const col = getFSCol(FS_COLLECTIONS.ORGANIZATIONS);
+  const safeId = sanitizeFirestoreDocId(orgIdOrCitizenId, 'ORG');
+  const path = `${col}/${safeId}`;
+  try {
+    await deleteDoc(doc(db, col, safeId));
+    await fsRegisterDeletedRecord(safeId, 'organizations');
+    updateFirebaseHealth('connected', null);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+// 6b. Archive Documents Operations (`documents` collection)
+export async function fsSaveDocument(docItem: DocumentArchiveItem): Promise<void> {
+  const col = getFSCol(FS_COLLECTIONS.DOCUMENTS);
+  const safeId = sanitizeFirestoreDocId(docItem.Doc_ID, 'DOC');
+  const path = `${col}/${safeId}`;
+  const nowIso = new Date().toISOString();
+  const payload: any = {
+    ...docItem,
+    Doc_ID: safeId,
+    UpdatedAt: nowIso,
+    updatedAt: nowIso
+  };
+  if (typeof payload.FileUrl === 'string' && payload.FileUrl.length > 450000) {
+    payload.FileUrl = '';
+  }
+  try {
+    await setDoc(doc(db, col, safeId), stripUndefinedProps(payload), { merge: true });
+    updateFirebaseHealth('connected', null);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function fsDeleteDocument(docId: string): Promise<void> {
+  const col = getFSCol(FS_COLLECTIONS.DOCUMENTS);
+  const safeId = sanitizeFirestoreDocId(docId, 'DOC');
+  const path = `${col}/${safeId}`;
+  try {
+    await deleteDoc(doc(db, col, safeId));
+    await fsRegisterDeletedRecord(safeId, 'documents');
+    updateFirebaseHealth('connected', null);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
 
@@ -908,17 +986,13 @@ export async function fsVerifyLogin(
             (uId && cleanUser === uId) ||
             (uFull && cleanUser === uFull) ||
             (uPhone && cleanUser === uPhone);
-          const passMatched = Boolean(cleanPass && uPass && (cleanPass === uPass || cleanPass.toLowerCase() === uPass.toLowerCase()));
+          const passMatched = Boolean(cleanPass && uPass && cleanPass === uPass);
           if (userMatched && passMatched) {
             if (u.Status === 'frozen') return { success: false, frozen: true };
             return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
           }
         } else {
-          if (
-            rawCode &&
-            ((uPass && (rawCode === uPass || rawCode.toLowerCase() === uPass.toLowerCase())) ||
-              (uId && rawCode.toLowerCase() === uId))
-          ) {
+          if (rawCode && uPass && rawCode === uPass) {
             if (u.Status === 'frozen') return { success: false, frozen: true };
             return { success: true, user: u, isDeveloper: u.Role === 'developer', matchedSource: 'firebase_user' };
           }
@@ -1079,6 +1153,17 @@ export async function fsDeleteDropdown(category: string, value: string, existing
   const path = `${col}/${docId}`;
   try {
     await deleteDoc(doc(db, col, docId));
+    const lowerCat = String(category || '').toLowerCase();
+    if (
+      lowerCat === 'referralsource' ||
+      lowerCat === 'referrers' ||
+      lowerCat === 'referrer' ||
+      lowerCat.includes('معرف') ||
+      lowerCat.includes('محيل')
+    ) {
+      await fsDeleteReferrerByName(value);
+    }
+    updateFirebaseHealth('connected', null);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -1328,6 +1413,7 @@ export async function fsBulkPullAll(): Promise<{
   users: User[];
   customSections: CustomSection[];
   customRecords: CustomSectionRecord[];
+  documents: DocumentArchiveItem[];
   dropdowns: DropdownItem[];
   notifications: UrgentNotification[];
   auditLogs: AuditLog[];
@@ -1372,6 +1458,7 @@ export async function fsBulkPullAll(): Promise<{
     const colUsers = getFSCol(FS_COLLECTIONS.USERS);
     const colSections = getFSCol(FS_COLLECTIONS.CUSTOM_SECTIONS);
     const colRecords = getFSCol(FS_COLLECTIONS.CUSTOM_RECORDS);
+    const colDocuments = getFSCol(FS_COLLECTIONS.DOCUMENTS);
     const colDropdowns = getFSCol(FS_COLLECTIONS.DROPDOWNS);
     const colSettings = getFSCol(FS_COLLECTIONS.SETTINGS);
     const colDeleted = getFSCol(FS_COLLECTIONS.DELETED_RECORDS);
@@ -1388,6 +1475,7 @@ export async function fsBulkPullAll(): Promise<{
       rawUsers,
       rawCustomSections,
       rawCustomRecords,
+      rawDocuments,
       dropdowns,
       rawNotifications,
       rawAuditLogs,
@@ -1404,6 +1492,7 @@ export async function fsBulkPullAll(): Promise<{
       fetchCol<User>(colUsers),
       fetchCol<CustomSection>(colSections),
       fetchCol<CustomSectionRecord>(colRecords),
+      fetchCol<DocumentArchiveItem>(colDocuments),
       fetchCol<DropdownItem>(colDropdowns),
       fetchCol<UrgentNotification>(colNotifications),
       fetchCol<AuditLog>(colAuditLogs),
@@ -1428,6 +1517,7 @@ export async function fsBulkPullAll(): Promise<{
       .map(u => normalizeUserRecord(u));
     const customSections = rawCustomSections.filter(s => s && s.id && !deletedIdsSet.has(s.id));
     const customRecords = rawCustomRecords.filter(cr => cr && cr.id && !deletedIdsSet.has(cr.id) && !deletedIdsSet.has(cr.sectionId));
+    const documents = rawDocuments.filter(docItem => docItem && docItem.Doc_ID && !deletedIdsSet.has(docItem.Doc_ID));
     const notifications = rawNotifications
       .filter(n => n && n.id && n.title)
       .sort((a, b) => Date.parse(b.createdAtIso || '') - Date.parse(a.createdAtIso || ''));
@@ -1455,6 +1545,7 @@ export async function fsBulkPullAll(): Promise<{
       users,
       customSections,
       customRecords,
+      documents,
       dropdowns,
       notifications,
       auditLogs,
@@ -1475,6 +1566,7 @@ export async function fsBulkPullAll(): Promise<{
       users: [],
       customSections: [],
       customRecords: [],
+      documents: [],
       dropdowns: [],
       notifications: [],
       auditLogs: [],
@@ -1519,6 +1611,9 @@ export async function fsWipeAllCollections(): Promise<{ success: boolean; delete
   try {
     const businessCollections = [
       FS_COLLECTIONS.CITIZENS,
+      FS_COLLECTIONS.ARCHIVES,
+      FS_COLLECTIONS.BLACKLIST,
+      FS_COLLECTIONS.DOCUMENTS,
       FS_COLLECTIONS.REQUESTS,
       FS_COLLECTIONS.INTERVIEWS,
       FS_COLLECTIONS.LETTERS,
@@ -1856,6 +1951,20 @@ export async function fsSyncReferrer(rawReferrerName?: string): Promise<void> {
     );
   } catch (err) {
     console.warn('Firestore referrer sync notice:', err);
+  }
+}
+
+export async function fsDeleteReferrerByName(rawReferrerName: string): Promise<void> {
+  const cleanName = String(rawReferrerName || '').trim();
+  if (!cleanName || isFirestoreTemporarilyBlocked()) return;
+  const normKey = normalizeArabicEntityKey(cleanName);
+  if (!normKey) return;
+  const col = getFSCol(FS_COLLECTIONS.REFERRERS);
+  const docId = sanitizeFirestoreDocId(`ref_${normKey}`, 'REF');
+  try {
+    await deleteDoc(doc(db, col, docId));
+  } catch (err) {
+    console.warn('Firestore referrer delete notice:', err);
   }
 }
 

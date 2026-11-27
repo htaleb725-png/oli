@@ -228,6 +228,20 @@
       },
       "required": ["id", "sectionId"]
     },
+    "ArchiveDocument": {
+      "title": "ArchiveDocument",
+      "description": "Uploaded office archive document record linked to a citizen or correspondence",
+      "type": "object",
+      "properties": {
+        "Doc_ID": { "type": "string" },
+        "Citizen_ID": { "type": "string" },
+        "CitizenName": { "type": "string" },
+        "Title": { "type": "string" },
+        "Category": { "type": "string" },
+        "UploadedAt": { "type": "string" }
+      },
+      "required": ["Doc_ID", "Title"]
+    },
     "Notification": {
       "title": "Notification",
       "description": "Real-time role-aware office alert and workflow notification",
@@ -305,6 +319,10 @@
     "/custom_records/{recordId}": {
       "schema": "CustomSectionRecord",
       "description": "Records belonging to dynamic custom departments"
+    },
+    "/documents/{docId}": {
+      "schema": "ArchiveDocument",
+      "description": "Uploaded archive documents with real Firestore deleteDoc support"
     },
     "/notifications/{notificationId}": {
       "schema": "Notification",

@@ -106,10 +106,8 @@ import {
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
 import {
-  pushToGoogleSheetsRealtime,
   pushBulkDataToGoogleSheets,
   pullDataFromGoogleAppsScript,
-  verifyLoginWithGoogleSheets,
   setRuntimeCloudConfig,
   setRuntimeCustomSections,
   wipeGoogleSheetsViaAppsScript,
@@ -165,6 +163,7 @@ import {
   organizationDomain,
   lettersDomain,
   chequesDomain,
+  archiveDocumentsDomain,
   customSectionsDomain
 } from '../services/domainControllers';
 
@@ -216,41 +215,14 @@ function emitServerMutation(
   payload: { item?: any; id?: string }
 ): void {
   if (typeof window === 'undefined') return;
-  // 1. Instant <5ms cross-tab sync across all open department tabs/windows in same browser/PWA
+  // Instant <5ms cross-tab sync within same browser/PWA (Cross-device sync runs exclusively via Firebase Firestore onSnapshot)
   postCrossTabMessage({ type: 'mutation', entity, op, item: payload.item, id: payload.id });
-  // 2. Unified server-side live store + SSE broadcast (works identically on Vercel & Node!)
-  try {
-    fetch('/api/sync/state?mode=mutate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode: 'mutate',
-        entity,
-        op,
-        item: payload.item,
-        id: payload.id,
-        clientId: LIVE_SYNC_CLIENT_ID
-      })
-    }).catch(() => {});
-  } catch {}
 }
 
 function emitServerBulk(payload: Record<string, any>): void {
   if (typeof window === 'undefined') return;
-  // 1. Instant cross-tab sync for bulk imports & settings
+  // Instant same-browser cross-tab sync (Cross-device persistence runs exclusively via Firebase Firestore)
   postCrossTabMessage({ type: 'bulk_payload', payload });
-  // 2. Unified server-side live store + SSE broadcast (works identically on Vercel & Node!)
-  try {
-    fetch('/api/sync/state?mode=bulk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode: 'bulk',
-        ...payload,
-        clientId: LIVE_SYNC_CLIENT_ID
-      })
-    }).catch(() => {});
-  } catch {}
 }
 
 // Strictly In-Memory Deleted IDs Registry (hydrated live from Firebase Firestore `deleted_records` — ZERO localStorage/sessionStorage!)
@@ -749,6 +721,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSystemZeroed, setIsSystemZeroed] = useState<boolean>(false);
   const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
   const firestorePasscodeLoadedRef = useRef<boolean>(false);
+  const hasSeededInitialUsersRef = useRef<boolean>(false);
   const hasShownLoadingOnceRef = useRef<boolean>(false);
   const initialHydrationCompleteRef = useRef<boolean>(false);
 
@@ -854,12 +827,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [currentUser, isSplashOpen, activeSection]);
 
-  // Silently keep currentUser's role, department & permissions strictly synced with their exact User_ID record (never forces logout)
+  // Keep currentUser's status, role, department & permissions strictly synced live with Firestore `users`
   useEffect(() => {
     if (isSplashOpen || !currentUser?.User_ID || users.length === 0) return;
     const rawLiveMatch = users.find((u) => u.User_ID === currentUser.User_ID);
     if (!rawLiveMatch) return;
     const liveMatch = normalizeUserRecord(rawLiveMatch);
+    if (liveMatch.Status === 'frozen' && liveMatch.Role !== 'developer') {
+      clearPersistedAuthSession();
+      setCurrentUser(null);
+      setIsSplashOpen(true);
+      setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة.');
+      return;
+    }
     const roleChanged = liveMatch.Role !== currentUser.Role;
     const hasMetaChanges =
       roleChanged ||
@@ -934,6 +914,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCustomSections(prev => prev.some(s => removeSet.has(s.id)) ? prev.filter(s => !removeSet.has(s.id)) : prev);
       setCustomRecords(prev => prev.some(r => removeSet.has(r.id) || removeSet.has(r.sectionId))
         ? prev.filter(r => !removeSet.has(r.id) && !removeSet.has(r.sectionId))
+        : prev
+      );
+      setDocuments(prev => prev.some(d => removeSet.has(d.Doc_ID) || removeSet.has(d.Citizen_ID))
+        ? prev.filter(d => !removeSet.has(d.Doc_ID) && !removeSet.has(d.Citizen_ID))
         : prev
       );
       setUsers(prev => prev.some(u => removeSet.has(u.User_ID)) ? prev.filter(u => !removeSet.has(u.User_ID)) : prev);
@@ -1032,7 +1016,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
-      if (Array.isArray(items) && items.length > 0) {
+      if ((meta && !meta.fromCache) || (Array.isArray(items) && items.length > 0)) {
         setCustomSections(prev => reconcileLiveFirestoreSnapshot(prev, items, 'id', meta, mergeCustomSections));
       }
     });
@@ -1046,11 +1030,108 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     unsubs.push(unsubRecords);
 
+    const unsubDocuments = fsWatchCollection<DocumentArchiveItem>(FS_COLLECTIONS.DOCUMENTS, (items, removedIds, meta) => {
+      if (removedIds && removedIds.length > 0) {
+        purgeDeletedIdsEverywhere(removedIds);
+      }
+      const deletedIds = getStoredDeletedIds();
+      if (meta && !meta.fromCache) {
+        setDocuments(items.filter(d => d && d.Doc_ID && !deletedIds.has(d.Doc_ID)));
+      } else if (Array.isArray(items) && items.length > 0) {
+        setDocuments(prev => {
+          const map = new Map<string, DocumentArchiveItem>();
+          prev.forEach(d => {
+            if (d?.Doc_ID && !deletedIds.has(d.Doc_ID)) map.set(d.Doc_ID, d);
+          });
+          items.forEach(d => {
+            if (d?.Doc_ID && !deletedIds.has(d.Doc_ID)) map.set(d.Doc_ID, d);
+          });
+          return Array.from(map.values());
+        });
+      }
+    });
+    unsubs.push(unsubDocuments);
+
+    const unsubBlacklist = fsWatchCollection<any>(FS_COLLECTIONS.BLACKLIST, (items, removedIds, meta) => {
+      const removedSet = new Set((removedIds || []).map(id => String(id || '').trim()).filter(Boolean));
+      const blockedById = new Map<string, any>();
+      (items || []).forEach(b => {
+        if (b && b.Citizen_ID && b.IsBlocked !== false) {
+          blockedById.set(String(b.Citizen_ID).trim(), b);
+        }
+      });
+      if (removedSet.size === 0 && blockedById.size === 0 && !(meta && !meta.fromCache)) return;
+      setCitizens(prev => {
+        let changed = false;
+        const map = new Map<string, Citizen>();
+        prev.forEach(c => {
+          if (!c?.Citizen_ID) return;
+          if (removedSet.has(c.Citizen_ID) && c.IsBlocked) {
+            changed = true;
+            map.set(c.Citizen_ID, {
+              ...c,
+              IsBlocked: false,
+              BlockReason: undefined,
+              BlockedAt: undefined,
+              BlockedBy: undefined
+            });
+          } else {
+            map.set(c.Citizen_ID, c);
+          }
+        });
+        blockedById.forEach((b, cid) => {
+          const existing = map.get(cid);
+          if (existing) {
+            if (!existing.IsBlocked || existing.BlockReason !== (b.BlockReason || existing.BlockReason)) {
+              changed = true;
+              map.set(cid, {
+                ...existing,
+                IsBlocked: true,
+                BlockReason: b.BlockReason || existing.BlockReason || 'محظور من قبل الإدارة',
+                BlockedAt: b.BlockedAt || existing.BlockedAt,
+                BlockedBy: b.BlockedBy || existing.BlockedBy
+              });
+            }
+          } else {
+            changed = true;
+            map.set(cid, {
+              Citizen_ID: cid,
+              FullName: b.FullName || 'مراجع محظور',
+              Phone1: b.Phone1 || '',
+              Gender: 'ذكر',
+              District: b.District || 'الناصرية - المركز',
+              SubDistrict: 'المركز',
+              Job: 'كاسب',
+              Education: 'إعدادية فما دون',
+              Rating: 'مراجعة أمنية / محظور',
+              CreatedAt: b.BlockedAt || new Date().toISOString().split('T')[0],
+              IsBlocked: true,
+              BlockReason: b.BlockReason || 'محظور من قبل الإدارة',
+              BlockedAt: b.BlockedAt,
+              BlockedBy: b.BlockedBy || 'الإدارة'
+            });
+          }
+        });
+        return changed ? Array.from(map.values()) : prev;
+      });
+    });
+    unsubs.push(unsubBlacklist);
+
     const unsubUsers = fsWatchCollection<User>(FS_COLLECTIONS.USERS, (items, removedIds, meta) => {
       if (removedIds && removedIds.length > 0) {
         purgeDeletedIdsEverywhere(removedIds);
       }
+      // First-boot seed into brand-new alaa-office-2026 Firestore when server confirms `users` collection is empty
+      if (meta && !meta.fromCache && Array.isArray(items) && items.length === 0 && !hasSeededInitialUsersRef.current) {
+        hasSeededInitialUsersRef.current = true;
+        const normalizedSeed = INITIAL_USERS.map(normalizeUserRecord);
+        fsSyncAllUsers(normalizedSeed)
+          .then(() => fsSyncDepartmentsRegistry(normalizedSeed, customSectionsRef.current))
+          .catch(() => {});
+        return;
+      }
       if (Array.isArray(items) && items.length > 0) {
+        hasSeededInitialUsersRef.current = true;
         const normalizedIncoming = items.map(normalizeUserRecord);
         setUsers(prev =>
           reconcileLiveFirestoreSnapshot(
@@ -1120,12 +1201,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const cloudDoc = docs.find((d: any) => d && (d.googleDriveFolderId || d.appsScriptUrl || typeof d.lastOutgoingNumberNasiriyah === 'number') && !d.appName);
       const mergedRemote = { ...(generalDoc || {}), ...(cloudDoc || {}) };
 
-      // Authoritative Developer Passcode lock from Firebase Firestore
+      // Authoritative Developer Passcode lock from Firebase Firestore (zero localStorage persistence)
       const authoritativePasscode = String(authDoc?.passcode || mergedRemote.developerPasscode || '').trim();
       if (authoritativePasscode.length >= 3) {
         firestorePasscodeLoadedRef.current = true;
         setDeveloperPasscodeState(authoritativePasscode);
-        try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', authoritativePasscode); } catch {}
       }
 
       if (Object.keys(mergedRemote).length > 0) {
@@ -1198,113 +1278,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }).catch(() => {});
 
-    // Non-authoritative fallback hydration from /api/users & /api/settings:
-    // NEVER allowed to downgrade Firebase Firestore passwords or reset developerPasscode to stale defaults!
+    // Exclusive Single Source of Truth: Firebase Firestore (alaa-office-2026 / (default))
+    // Zero legacy /api/users, /api/settings, /api/blacklist, or /api/sync/state hydration!
     (async () => {
-      try {
-        const res = await fetch('/api/users');
-        if (res.ok) {
-          const data = await res.json();
-          const serverUsers: User[] = Array.isArray(data?.users) ? data.users : [];
-          const serverDeleted = new Set<string>(Array.isArray(data?.deletedIds) ? data.deletedIds : []);
-          const localDeleted = getStoredDeletedIds();
-          serverDeleted.forEach(id => localDeleted.add(id));
-
-          if (serverUsers.length > 0) {
-            setUsers(prev => mergeUsers(prev, serverUsers, localDeleted, { incomingAuthoritative: false }));
-          }
-          // Only adopt server passcode if Firestore has NOT provided one and it is not a stale default overwrite
-          const srvCode = String(data?.developerPasscode || '').trim();
-          if (srvCode.length >= 3 && !firestorePasscodeLoadedRef.current && srvCode !== '2026') {
-            setDeveloperPasscodeState(srvCode);
-          }
-        }
-      } catch {
-        // Ignore if running without backend API (e.g., pure static host)
-      }
-
-      // Hydrate non-security UI settings and custom sections from /api/settings (never clobbering developerPasscode)
-      try {
-        const sRes = await fetch('/api/settings');
-        if (sRes.ok) {
-          const sData = await sRes.json();
-          if (sData?.systemSettings && Object.keys(sData.systemSettings).length > 0) {
-            const remoteVer = Number(sData.settingsVersion || sData.systemSettings.settingsVersion || 0);
-            const { developerPasscode: _ignoredServerPasscode, ...safeServerSettings } = sData.systemSettings;
-            setSystemSettings(prev => {
-              const merged = { ...prev, ...safeServerSettings, settingsVersion: remoteVer || prev.settingsVersion };
-              systemSettingsRef.current = merged;
-              return merged;
-            });
-          }
-          if (Array.isArray(sData?.customSections) && sData.customSections.length > 0) {
-            setCustomSections(prev => mergeCustomSections(prev, sData.customSections, getStoredDeletedIds()));
-          }
-        }
-      } catch {}
-
-      // Hydrate shared blacklist from /api/blacklist so blocks persist across all devices
-      try {
-        const bRes = await fetch('/api/blacklist');
-        if (bRes.ok) {
-          const bData = await bRes.json();
-          const remoteBlocked: any[] = Array.isArray(bData?.items) ? bData.items : [];
-          const remoteUnblocked = new Set<string>(Array.isArray(bData?.unblockedIds) ? bData.unblockedIds : []);
-          if (remoteBlocked.length > 0 || remoteUnblocked.size > 0) {
-            setCitizens(prev => {
-              const map = new Map<string, Citizen>();
-              prev.forEach(c => {
-                if (!c || !c.Citizen_ID) return;
-                if (remoteUnblocked.has(c.Citizen_ID)) {
-                  map.set(c.Citizen_ID, {
-                    ...c,
-                    IsBlocked: false,
-                    BlockReason: undefined,
-                    BlockedAt: undefined,
-                    BlockedBy: undefined
-                  });
-                } else {
-                  map.set(c.Citizen_ID, c);
-                }
-              });
-              remoteBlocked.forEach(b => {
-                if (!b || !b.Citizen_ID) return;
-                const existing = map.get(b.Citizen_ID);
-                if (existing) {
-                  map.set(b.Citizen_ID, {
-                    ...existing,
-                    IsBlocked: true,
-                    BlockReason: b.BlockReason || existing.BlockReason,
-                    BlockedAt: b.BlockedAt || existing.BlockedAt,
-                    BlockedBy: b.BlockedBy || existing.BlockedBy
-                  });
-                } else {
-                  map.set(b.Citizen_ID, {
-                    Citizen_ID: b.Citizen_ID,
-                    FullName: b.FullName,
-                    Phone1: b.Phone1 || '',
-                    Gender: 'ذكر',
-                    District: b.District || 'الناصرية - المركز',
-                    SubDistrict: 'المركز',
-                    Job: 'كاسب',
-                    Education: 'إعدادية فما دون',
-                    Rating: 'مراجعة أمنية / محظور',
-                    CreatedAt: b.BlockedAt || new Date().toISOString().split('T')[0],
-                    IsBlocked: true,
-                    BlockReason: b.BlockReason || 'محظور من قبل الإدارة',
-                    BlockedAt: b.BlockedAt,
-                    BlockedBy: b.BlockedBy || 'الإدارة'
-                  });
-                }
-              });
-              return Array.from(map.values());
-            });
-          }
-        }
-      } catch {}
-
-      // Live Cloud Sync: Firebase Firestore onSnapshot is the sole real-time bus across all devices & Vercel instances.
-      // Volatile serverless /api/sync/state memory is NEVER allowed to overwrite or resurrect business records!
       let lastCatchupAt = Date.now();
 
       const applyIncomingMutation = (payload: any) => {
@@ -1463,17 +1439,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  // Google Sheets & Drive Central Database Connection State
+  // Google OAuth Manual Backup Session State (sheetId & driveFolderId come exclusively from Firestore system_settings)
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-    const sheetId = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : null;
-    const folderId = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_drive_folder_id') : null;
     const email = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_user_email') : null;
 
-    if (token && sheetId) {
+    if (token) {
       setIsGoogleConnected(true);
-      setSpreadsheetId(sheetId);
-      if (folderId) setDriveFolderId(folderId);
       if (email) setGoogleUserEmail(email);
     }
   }, []);
@@ -1606,7 +1578,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setAuditLogs(prev => [newLog, ...prev].slice(0, 600));
     fsAddAuditLog(newLog).catch(() => {});
-    pushToGoogleSheetsRealtime('drive_archive', newLog, 'insert', systemSettingsRef.current.appsScriptUrl);
   };
 
   const activateUserSession = (user: User, sourceMessage: string) => {
@@ -1679,18 +1650,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))
       ]);
 
-    const mirrorMatchedUserToServer = (matchedUser: User) => {
-      try {
-        fetch('/api/users', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(normalizeUserRecord(matchedUser))
-        }).catch(() => {});
-      } catch {
-        // ignore background mirror errors
-      }
-    };
-
     const matchLocalUser = (): { user?: User; frozen?: boolean; wrongPassword?: boolean } => {
       let matchedNameOnly = false;
       for (const rawU of usersRef.current) {
@@ -1710,8 +1669,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             (uPhone && cleanUser === uPhone);
           if (userMatched) {
             const passMatched =
-              (uPass && (cleanPass === uPass || cleanPass.toLowerCase() === uPass.toLowerCase())) ||
-              (u.Role === 'developer' && currentDevCode && cleanPass === currentDevCode);
+              Boolean(uPass && cleanPass === uPass) ||
+              (u.Role === 'developer' && Boolean(currentDevCode) && cleanPass === currentDevCode);
             if (passMatched) {
               if (u.Status === 'frozen') return { frozen: true };
               return { user: u };
@@ -1719,11 +1678,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             matchedNameOnly = true;
           }
         } else {
-          if (
-            rawCode &&
-            ((uPass && (rawCode === uPass || rawCode.toLowerCase() === uPass.toLowerCase())) ||
-              (uId && rawCode.toLowerCase() === uId))
-          ) {
+          if (rawCode && uPass && rawCode === uPass) {
             if (u.Status === 'frozen') return { frozen: true };
             return { user: u };
           }
@@ -1734,8 +1689,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     let sawWrongPassword = false;
 
-    // 1. AUTHORITATIVE FIREBASE FIRESTORE CHECK FIRST (ensures real staff roles/codes/departments win over any stale local seed!)
-    const fsResult = await withTimeout(fsVerifyLogin(usernameOrCode, pass), 4500);
+    // 1. EXCLUSIVE FIREBASE FIRESTORE AUTH CHECK (alaa-office-2026 / (default), strict Exact Match)
+    const fsResult = await withTimeout(fsVerifyLogin(usernameOrCode, pass), 5500);
     if (fsResult) {
       if (fsResult.frozen) {
         setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
@@ -1745,7 +1700,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (fsResult.user) {
           const cleanFsUser = normalizeUserRecord(fsResult.user);
           upsertMatchedUserLocally(cleanFsUser);
-          mirrorMatchedUserToServer(cleanFsUser);
           activateUserSession(cleanFsUser, 'تمت مطابقة الحساب والصلاحيات من Firebase Firestore بنجاح');
           return true;
         }
@@ -1757,64 +1711,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    // 2. LIVE SERVER DATABASE CHECK (/api/auth/login — fallback when Firestore did not match or timed out)
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
-      const serverRes = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          usernameOrCode: usernameOrCode.trim(),
-          password: (pass || '').trim(),
-          mode: isDualMode ? 'credentials' : 'passcode'
-        }),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-
-      if (serverRes.ok) {
-        const serverData = await serverRes.json();
-        if (serverData?.frozen) {
-          setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
-          return false;
-        }
-        if (serverData?.success) {
-          if (serverData.user) {
-            const cleanServerUser = normalizeUserRecord(serverData.user);
-            upsertMatchedUserLocally(cleanServerUser);
-            activateUserSession(cleanServerUser, 'تمت مطابقة الحساب والصلاحيات من قاعدة بيانات الخادم');
-            return true;
-          }
-          if (serverData.isDeveloper) {
-            const devUser = normalizeUserRecord(usersRef.current.find((u) => u.Role === 'developer') || INITIAL_USERS[0]);
-            activateUserSession(devUser, 'تمت مطابقة رمز المطور المعتمد');
-            return true;
-          }
-        } else if (serverData?.reason === 'wrong_password') {
-          sawWrongPassword = true;
-        }
-      }
-    } catch {
-      // Server endpoint unavailable or timed out — continue seamlessly to local & Sheets checks
-    }
-
-    // 3. LOCAL LIVE USERS CHECK (already synced with Firestore on mount)
+    // 2. LIVE FIRESTORE-SYNCED USERS CHECK (exact match fallback if server read timed out)
     const localMatch = matchLocalUser();
     if (localMatch.frozen) {
       setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
       return false;
     }
     if (localMatch.user) {
-      mirrorMatchedUserToServer(localMatch.user);
-      activateUserSession(localMatch.user, 'تمت مطابقة الحساب بنجاح');
+      activateUserSession(localMatch.user, 'تمت مطابقة الحساب من قاعدة Firebase Firestore بنجاح');
       return true;
     }
     if (localMatch.wrongPassword) {
       sawWrongPassword = true;
     }
 
-    // 4. DEVELOPER PASSCODE CHECK (strictly honors active custom developerPasscode)
+    // 3. DEVELOPER PASSCODE CHECK (strictly honors active Firestore developerPasscode)
     const devAccount = usersRef.current.find((u) => u.Role === 'developer');
     const devAccountPass = normalizeDigits(devAccount?.Password || '');
     const activeDevPass = currentDevCode || devAccountPass || '2026';
@@ -1831,39 +1742,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return true;
     }
 
-    // 5. GOOGLE SHEETS FALLBACK CHECK (header-aligned & canonical role resolved)
-    const gsResult = await withTimeout(
-      verifyLoginWithGoogleSheets(
-        usernameOrCode,
-        pass,
-        systemSettings.appsScriptUrl,
-        systemSettings.googleSheetId
-      ),
-      5000
-    );
-
-    if (gsResult) {
-      if (gsResult.frozen) {
-        setLastLoginError('تم تجميد هذا الحساب من قبل الإدارة. يرجى مراجعة المطور أو مدير المكتب.');
-        return false;
-      }
-      if (gsResult.success) {
-        if (gsResult.user) {
-          const cleanGsUser = normalizeUserRecord(gsResult.user);
-          upsertMatchedUserLocally(cleanGsUser);
-          mirrorMatchedUserToServer(cleanGsUser);
-          activateUserSession(cleanGsUser, 'تمت مطابقة الحساب من القاعدة السحابية بنجاح');
-          return true;
-        }
-        if (gsResult.isDeveloper) {
-          const devUser = normalizeUserRecord(usersRef.current.find((u) => u.Role === 'developer') || INITIAL_USERS[0]);
-          activateUserSession(devUser, 'تمت مطابقة رمز المطور السحابي بنجاح');
-          return true;
-        }
-      }
-    }
-
-    // 6. Clear contextual error message
+    // 4. Clear contextual error message
     setLastLoginError(
       sawWrongPassword
         ? 'كلمة المرور أو الرمز السري غير صحيح لهذا الحساب. يرجى التأكد من الرمز والمحاولة مجدداً.'
@@ -1951,50 +1830,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const persistUserAcrossAllDatabases = async (
-    targetUser: User
+    targetUser: User,
+    nextUsersList?: User[]
   ): Promise<{ serverOk: boolean; firebaseOk: boolean; sheetsOk: boolean; firebaseError?: string }> => {
-    let serverOk = false;
     let firebaseOk = false;
-    let sheetsOk = false;
     let firebaseError: string | undefined;
 
-    // 1. Save to shared server DB (/api/users) AND unified sync hub (/api/sync/state?mode=mutate)
+    // 1. Instant same-browser tab echo
     emitServerMutation('users', 'upsert', { item: targetUser });
-    try {
-      const res = await fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(targetUser)
-      });
-      serverOk = res.ok;
-    } catch {
-      serverOk = true;
-    }
 
-    // 2. Save to Firebase Firestore
+    // 2. Exclusive Primary Persistence: Firebase Firestore (alaa-office-2026 / (default))
     try {
       await fsSaveUser(targetUser);
       firebaseOk = true;
+      await fsSyncDepartmentsRegistry(nextUsersList || usersRef.current, customSectionsRef.current).catch(() => {});
+      pushCloudSyncAlert({
+        severity: 'success',
+        target: 'firebase',
+        title: `تم حفظ حساب الموظف (${targetUser.FullName})`,
+        message: 'تم تحديث الحساب والرمز والصلاحيات مباشرة في Firebase Firestore (alaa-office-2026).'
+      });
     } catch (err: any) {
       firebaseOk = false;
       firebaseError = err?.message || String(err);
       console.warn('Firestore user save warning:', firebaseError);
+      pushCloudSyncAlert({
+        severity: 'error',
+        target: 'firebase',
+        title: `فشل حفظ حساب الموظف (${targetUser.FullName})`,
+        message: 'تعذر حفظ الحساب في Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.',
+        details: firebaseError
+      });
     }
 
-    // 3. Push to Google Sheets / Apps Script if configured
-    try {
-      const sheetPayload = {
-        ...targetUser,
-        Permissions: JSON.stringify(targetUser.Permissions || []),
-        AllowedSections: JSON.stringify(targetUser.AllowedSections || [])
-      };
-      await pushToGoogleSheetsRealtime('users', sheetPayload, 'upsert', systemSettings.appsScriptUrl, systemSettings.googleSheetId);
-      sheetsOk = Boolean(systemSettings.appsScriptUrl || systemSettings.googleSheetId);
-    } catch {
-      sheetsOk = false;
-    }
-
-    return { serverOk, firebaseOk, sheetsOk, firebaseError };
+    return { serverOk: firebaseOk, firebaseOk, sheetsOk: false, firebaseError };
   };
 
   const addUser = async (
@@ -2002,18 +1871,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ): Promise<{ user: User; serverOk: boolean; firebaseOk: boolean; sheetsOk: boolean; firebaseError?: string }> => {
     const newId = `USR-${Date.now().toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
     const nowIso = new Date().toISOString();
-    const newUser: User = {
+    const newUser: User = normalizeUserRecord({
       ...userData,
       User_ID: newId,
       CreatedAt: nowIso.split('T')[0],
       UpdatedAt: nowIso
-    };
-    setUsers(prev => {
-      const next = [...prev.filter(u => u.User_ID !== newId), newUser];
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(next));
-      return next;
     });
-    const syncRes = await persistUserAcrossAllDatabases(newUser);
+    const nextUsers = [...usersRef.current.filter(u => u.User_ID !== newId), newUser];
+    setUsers(nextUsers);
+    const syncRes = await persistUserAcrossAllDatabases(newUser, nextUsers);
     addAuditLog('إضافة مستخدم جديد', 'إدارة المستخدمين', `تم إنشاء حساب للموظف ${newUser.FullName} بصلاحية ${newUser.RoleArabic}`);
     return { user: newUser, ...syncRes };
   };
@@ -2021,29 +1887,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateUser = async (
     updated: User
   ): Promise<{ user: User; serverOk: boolean; firebaseOk: boolean; sheetsOk: boolean; firebaseError?: string }> => {
-    const stamped: User = {
+    const stamped: User = normalizeUserRecord({
       ...updated,
       UpdatedAt: new Date().toISOString()
-    };
-    setUsers(prev => {
-      const next = prev.map(u => u.User_ID === stamped.User_ID ? stamped : u);
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(next));
-      return next;
     });
+    const nextUsers = usersRef.current.map(u => (u.User_ID === stamped.User_ID ? stamped : u));
+    setUsers(nextUsers);
     if (currentUser?.User_ID === stamped.User_ID) {
       setCurrentUser(stamped);
     }
-    const syncRes = await persistUserAcrossAllDatabases(stamped);
-    // Keep developerPasscode synchronized whenever the developer user's password is changed
+    const syncRes = await persistUserAcrossAllDatabases(stamped, nextUsers);
+    // Keep developerPasscode synchronized in Firestore whenever the developer user's password is changed
     if (stamped.Role === 'developer' && stamped.Password && stamped.Password.trim().length >= 3) {
       const cleanDevPass = stamped.Password.trim();
       setDeveloperPasscodeState(cleanDevPass);
-      try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', cleanDevPass); } catch {}
-      fetch('/api/auth/developer-passcode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newCode: cleanDevPass })
-      }).catch(() => {});
       fsSaveDeveloperPasscode(cleanDevPass).catch(() => {});
     }
     addAuditLog('تعديل حساب مستخدم', 'إدارة المستخدمين', `تم تعديل بيانات المستخدم ${stamped.FullName}`);
@@ -2051,33 +1908,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteUser = async (userId: string): Promise<{ serverOk: boolean; firebaseOk: boolean }> => {
-    const target = users.find(u => u.User_ID === userId);
-    let serverOk = false;
+    const target = usersRef.current.find(u => u.User_ID === userId);
     let firebaseOk = false;
     if (target) {
       recordDeletedId(userId);
-      setUsers(prev => {
-        const next = prev.filter(u => u.User_ID !== userId);
-        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(next));
-        return next;
-      });
+      const nextUsers = usersRef.current.filter(u => u.User_ID !== userId);
+      setUsers(nextUsers);
       emitServerMutation('users', 'delete', { id: userId });
-      try {
-        const res = await fetch(`/api/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
-        serverOk = res.ok;
-      } catch {
-        serverOk = true;
-      }
       try {
         await fsDeleteUser(userId);
         firebaseOk = true;
-      } catch (err) {
-        console.warn('Firestore user delete warning:', err);
+        await fsSyncDepartmentsRegistry(nextUsers, customSectionsRef.current).catch(() => {});
+        pushCloudSyncAlert({
+          severity: 'success',
+          target: 'firebase',
+          title: `تم الحذف النهائي للمستخدم (${target.FullName})`,
+          message: 'تم حذف الحساب نهائياً من Firebase Firestore (alaa-office-2026) وتحديث الأقسام فوراً.'
+        });
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        console.warn('Firestore user delete warning:', errMsg);
+        pushCloudSyncAlert({
+          severity: 'error',
+          target: 'firebase',
+          title: `فشل حذف المستخدم (${target.FullName})`,
+          message: 'تعذر حذف الحساب من Firebase Firestore. يرجى التحقق من الاتصال والمحاولة مجدداً.',
+          details: errMsg
+        });
       }
-      pushToGoogleSheetsRealtime('users', { User_ID: userId, id: userId }, 'delete', systemSettings.appsScriptUrl, systemSettings.googleSheetId);
       addAuditLog('حذف حساب مستخدم', 'إدارة المستخدمين', `تم حذف حساب ${target.FullName}`);
     }
-    return { serverOk, firebaseOk };
+    return { serverOk: firebaseOk, firebaseOk };
   };
 
   const syncUsersToAllDatabasesNow = async (): Promise<{
@@ -2087,71 +1948,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     count: number;
     firebaseError?: string;
   }> => {
-    let serverOk = false;
-    let firebaseOk = false;
-    let sheetsOk = false;
-    let firebaseError: string | undefined;
-
-    const deletedIds = Array.from(getStoredDeletedIds());
-    try {
-      const res = await fetch('/api/users/bulk-sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ users, deletedIds, developerPasscode })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        serverOk = true;
-        if (Array.isArray(data?.users) && data.users.length > 0) {
-          setUsers(prev => {
-            const merged = mergeUsers(prev, data.users, getStoredDeletedIds());
-            safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(merged));
-            return merged;
-          });
-        }
-      }
-    } catch {
-      serverOk = false;
+    const fsRes = await fsSyncAllUsers(usersRef.current);
+    if (fsRes.success) {
+      await fsSyncDepartmentsRegistry(usersRef.current, customSectionsRef.current).catch(() => {});
     }
-
-    const fsRes = await fsSyncAllUsers(users);
-    firebaseOk = fsRes.success;
-    if (!fsRes.success) firebaseError = fsRes.error;
-
-    if (systemSettings.appsScriptUrl || systemSettings.googleSheetId) {
-      try {
-        for (const u of users) {
-          await pushToGoogleSheetsRealtime(
-            'users',
-            {
-              ...u,
-              Permissions: JSON.stringify(u.Permissions || []),
-              AllowedSections: JSON.stringify(u.AllowedSections || [])
-            },
-            'upsert',
-            systemSettings.appsScriptUrl,
-            systemSettings.googleSheetId
-          );
-        }
-        sheetsOk = true;
-      } catch {
-        sheetsOk = false;
-      }
-    }
-
-    return { serverOk, firebaseOk, sheetsOk, count: users.length, firebaseError };
+    return {
+      serverOk: fsRes.success,
+      firebaseOk: fsRes.success,
+      sheetsOk: false,
+      count: usersRef.current.length,
+      firebaseError: fsRes.success ? undefined : fsRes.error
+    };
   };
 
   const checkCloudDbHealth = async (): Promise<{ serverOk: boolean; firebaseOk: boolean; firebaseError?: string }> => {
-    let serverOk = false;
-    try {
-      const res = await fetch('/api/users');
-      serverOk = res.ok;
-    } catch {
-      serverOk = false;
-    }
     const fsHealth = await fsCheckConnection();
-    return { serverOk, firebaseOk: fsHealth.connected, firebaseError: fsHealth.error };
+    return { serverOk: fsHealth.connected, firebaseOk: fsHealth.connected, firebaseError: fsHealth.error };
   };
 
   const addDropdownItem = (category: string, value: string) => {
@@ -2167,14 +1979,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setDropdowns(prev => {
         const already = prev.some(d => d.Category.toLowerCase() === category.toLowerCase() && d.ItemValue.trim().toLowerCase() === trimmed.toLowerCase());
         if (already) return prev;
-        const next = [...prev, newItem];
-        safeLocalStorageSet(STORAGE_KEY_PREFIX + 'dropdowns', JSON.stringify(next));
-        return next;
+        return [...prev, newItem];
       });
       fsSaveDropdown(newItem).catch(err => console.warn('Firestore dropdown save:', err));
+      const lowerCat = category.toLowerCase();
+      if (lowerCat === 'referralsource' || lowerCat === 'referrers' || lowerCat.includes('معرف') || lowerCat.includes('محيل')) {
+        fsSyncReferrer(trimmed).catch(() => {});
+      }
       emitServerMutation('dropdowns', 'upsert', { item: newItem });
       addAuditLog('إضافة عنصر دائم للقوائم', 'القوائم المنسدلة', `تمت إضافة [${trimmed}] وحفظها دائماً في قائمة ${category}`);
-      pushToGoogleSheetsRealtime('dropdowns', { id: newItem.id, Category: category, ItemValue: trimmed, Value: trimmed }, 'upsert', systemSettings.appsScriptUrl);
     }
 
     // Keep systemSettings.receptionResidentialAreas synchronized automatically
@@ -2191,8 +2004,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const dropId = buildSafeDropdownDocId(category, trimmed);
     setDropdowns(prev => prev.filter(d => !(d.Category.toLowerCase() === category.toLowerCase() && d.ItemValue.trim().toLowerCase() === trimmed.toLowerCase())));
     emitServerMutation('dropdowns', 'delete', { id: dropId });
-    fsDeleteDropdown(category, trimmed).catch(err => console.warn('Firestore dropdown delete:', err));
-    pushToGoogleSheetsRealtime('dropdowns', { id: dropId, Category: category, ItemValue: trimmed }, 'delete', systemSettings.appsScriptUrl);
+    fsDeleteDropdown(category, trimmed)
+      .then(() => {
+        pushCloudSyncAlert({
+          severity: 'success',
+          target: 'firebase',
+          title: `تم الحذف النهائي (${trimmed})`,
+          message: 'تم حذف العنصر نهائياً من Firebase Firestore (alaa-office-2026).'
+        });
+      })
+      .catch(err => {
+        pushCloudSyncAlert({
+          severity: 'error',
+          target: 'firebase',
+          title: `فشل حذف العنصر (${trimmed})`,
+          message: 'تعذر حذف العنصر من Firebase Firestore. يرجى المحاولة مجدداً.',
+          details: err instanceof Error ? err.message : String(err)
+        });
+      });
     addAuditLog('حذف عنصر من القوائم', 'القوائم المنسدلة', `تم حذف [${trimmed}] من قائمة ${category}`);
   };
 
@@ -2386,14 +2215,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const matchingInterviews = interviews.filter(i => i.Citizen_ID === citizenId);
       const matchingCheques = cheques.filter(ch => ch.Citizen_ID === citizenId);
       const matchingLetters = officialLetters.filter(l => l.Citizen_ID === citizenId);
+      const matchingOrgs = organizationRecords.filter(o => o.Citizen_ID === citizenId);
+      const matchingDocs = documents.filter(d => d.Citizen_ID === citizenId || (d as any).CitizenId === citizenId);
 
       const matchingReqIds = matchingReqs.map(r => r.Request_ID);
       const matchingInterviewIds = matchingInterviews.map(i => i.Interview_ID);
       const matchingChequeIds = matchingCheques.map(ch => ch.id);
       const matchingLetterIds = matchingLetters.map(l => l.Letter_ID);
+      const matchingOrgIds = matchingOrgs.map(o => o.Org_ID || o.Citizen_ID).filter(Boolean);
+      const matchingDocIds = matchingDocs.map(d => d.Doc_ID).filter(Boolean);
 
       // Record all IDs in permanent tombstone set
-      [citizenId, ...matchingReqIds, ...matchingInterviewIds, ...matchingChequeIds, ...matchingLetterIds].forEach(id => {
+      [
+        citizenId,
+        ...matchingReqIds,
+        ...matchingInterviewIds,
+        ...matchingChequeIds,
+        ...matchingLetterIds,
+        ...matchingOrgIds,
+        ...matchingDocIds
+      ].forEach(id => {
         if (id) recordDeletedId(id);
       });
 
@@ -2417,17 +2258,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addAuditLog(
         'حذف نهائي شامل لسجل مراجع',
         'الإدارة / الاستعلامات',
-        `تم حذف المواطن ${target.FullName} (${citizenId}) وجميع متعلقاته (${matchingReqIds.length} معاملة، ${matchingInterviewIds.length} مقابلة، ${matchingLetterIds.length} كتاب رسمي) نهائياً من كافة قواعد البيانات`
+        `تم حذف المواطن ${target.FullName} (${citizenId}) وجميع متعلقاته (${matchingReqIds.length} معاملة، ${matchingInterviewIds.length} مقابلة، ${matchingLetterIds.length} كتاب رسمي) نهائياً من Firebase Firestore`
       );
 
-      // 4. Broadcast cascade deletion live to all connected devices
+      // 4. Broadcast cascade deletion live to open tabs
       emitServerMutation('citizens', 'delete', { id: citizenId });
       matchingReqIds.forEach(reqId => emitServerMutation('requests', 'delete', { id: reqId }));
       matchingInterviewIds.forEach(intId => emitServerMutation('interviews', 'delete', { id: intId }));
       matchingChequeIds.forEach(chqId => emitServerMutation('cheques', 'delete', { id: chqId }));
       matchingLetterIds.forEach(letId => emitServerMutation('officialLetters', 'delete', { id: letId }));
+      matchingOrgIds.forEach(orgId => emitServerMutation('organizationRecords', 'delete', { id: orgId }));
+      matchingDocIds.forEach(docId => emitServerMutation('documents', 'delete', { id: docId }));
 
-      // 5. Dual Cloud Cascade Delete (Firebase Firestore + Google Sheets)
+      // 5. Direct Real Cascade Delete (`deleteDoc`) in Firebase Firestore
       const cloudCtx = getCloudCtx();
       receptionDomain.deleteCitizen(citizenId, cloudCtx).catch(() => {});
       matchingReqIds.forEach(reqId => {
@@ -2441,6 +2284,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       matchingLetterIds.forEach(letId => {
         lettersDomain.deleteLetter(letId, cloudCtx).catch(() => {});
+      });
+      matchingOrgIds.forEach(orgId => {
+        organizationDomain.deleteRecord(orgId, cloudCtx).catch(() => {});
+      });
+      matchingDocIds.forEach(docId => {
+        archiveDocumentsDomain.deleteDocument(docId).catch(() => {});
       });
     }
   };
@@ -2606,22 +2455,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       UpdatedAt: nowIso
     }).catch(() => {});
 
-    // 4. Mirror to local Express server if active
-    fetch('/api/blacklist', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        Citizen_ID: targetCitizen.Citizen_ID,
-        FullName: targetCitizen.FullName,
-        Phone1: targetCitizen.Phone1 || '',
-        District: targetCitizen.District || 'الناصرية - المركز',
-        BlockReason: cleanReason,
-        BlockedAt: nowStamp,
-        BlockedBy: operator,
-        IsBlocked: true
-      })
-    }).catch(() => {});
-
     addAuditLog('إدراج بالقائمة السوداء', 'الإدارة / الرقابة', `تم حظر المراجع ${targetCitizen.FullName} (${targetCitizen.Citizen_ID}) بسبب: ${cleanReason}`);
   };
 
@@ -2706,12 +2539,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
 
-    // 3. Remove from Firestore `blacklist` collection + local Express server if active
+    // 3. Remove directly from Firestore `blacklist` collection (real deleteDoc)
     fsDeleteBlacklistEntry(cit.Citizen_ID).catch(() => {});
     matchingBlockedDuplicates.forEach(c => {
       if (c.Citizen_ID) fsDeleteBlacklistEntry(c.Citizen_ID).catch(() => {});
     });
-    fetch(`/api/blacklist/${encodeURIComponent(cit.Citizen_ID)}`, { method: 'DELETE' }).catch(() => {});
 
     addAuditLog('إلغاء حظر مراجع', 'الإدارة / الرقابة', `تم إلغاء حظر المراجع ${cit.FullName} (${cit.Citizen_ID}) وإعادته للقائمة المسموح بها`);
   };
@@ -3075,10 +2907,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const updated: OfficeRequest = {
             ...req,
             ProcessingStatus: newStatus,
-            DeputyNotes: notes ? (req.DeputyNotes ? `${req.DeputyNotes} | ${notes}` : notes) : req.DeputyNotes
+            DeputyNotes: notes ? (req.DeputyNotes ? `${req.DeputyNotes} | ${notes}` : notes) : req.DeputyNotes,
+            UpdatedAt: new Date().toISOString()
           };
           modifiedList.push(updated);
-          pushToGoogleSheetsRealtime('requests', updated, 'update', systemSettings.appsScriptUrl);
+          fsSaveRequest(updated).catch(() => {});
           return updated;
         }
         return req;
@@ -3211,10 +3044,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDynamicFields(prev => [...prev, newField]);
     addAuditLog('إضافة حقل ديناميكي', 'لوحة التحكم', `تمت إضافة الحقل [${fieldData.fieldLabel}] إلى قسم ${fieldData.sectionArabic}`);
-    // Directly add column header to Google Sheets without waiting for manual sync
-    sheetsIntegration.addDynamicFieldColumn(fieldData.section, fieldData.fieldLabel).catch(err => {
-      console.warn('Sheets direct addDynamicFieldColumn error:', err);
-    });
   };
 
   const deleteDynamicField = (id: string) => {
@@ -3238,6 +3067,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDocuments(prev => [newDoc, ...prev]);
     emitServerMutation('documents', 'upsert', { item: newDoc });
+    archiveDocumentsDomain.saveDocument(newDoc).catch(() => {});
     if (!options?.skipAuditLog) {
       addAuditLog('رفع وثيقة للأرشيف', 'أرشيف المستندات', `تم رفع المستند [${docData.Title}] للمواطن ${docData.CitizenName}`);
     }
@@ -3245,10 +3075,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteDocument = (docId: string) => {
     const target = documents.find(d => d.Doc_ID === docId);
+    recordDeletedId(docId);
+    setDocuments(prev => prev.filter(d => d.Doc_ID !== docId));
+    emitServerMutation('documents', 'delete', { id: docId });
+    archiveDocumentsDomain.deleteDocument(docId, target?.Title).catch(() => {});
     if (target) {
-      setDocuments(prev => prev.filter(d => d.Doc_ID !== docId));
-      emitServerMutation('documents', 'delete', { id: docId });
-      addAuditLog('حذف وثيقة من الأرشيف', 'أرشيف المستندات', `تم حذف المستند [${target.Title}]`);
+      addAuditLog('حذف وثيقة من الأرشيف', 'أرشيف المستندات', `تم حذف المستند [${target.Title}] نهائياً من Firebase Firestore`);
     }
   };
 
@@ -3287,11 +3119,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const cleanDriveId = extractDriveFolderId(normalizedPatch.googleDriveFolderId);
       normalizedPatch.googleDriveFolderId = cleanDriveId;
       setDriveFolderId(cleanDriveId);
-      try {
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('al_nashi_drive_folder_id', cleanDriveId);
-        }
-      } catch {}
       setRuntimeCloudConfig({ googleDriveFolderId: cleanDriveId });
     }
     if (typeof normalizedPatch.googleSheetId === 'string' && normalizedPatch.googleSheetId.trim()) {
@@ -3301,11 +3128,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       normalizedPatch.googleSheetId = cleanSheetId;
       normalizedPatch.activeGoogleSheetId = cleanSheetId;
       setSpreadsheetId(cleanSheetId);
-      try {
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('al_nashi_sheet_id', cleanSheetId);
-        }
-      } catch {}
       setRuntimeCloudConfig({ googleSheetId: cleanSheetId });
     }
 
@@ -3344,52 +3166,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     systemSettingsRef.current = merged;
     setSystemSettings(merged);
-    safeLocalStorageSet(STORAGE_KEY_PREFIX + 'settings', JSON.stringify(merged));
 
-    if (isVisualOrIconBroadcast && nextVersion > 0) {
-      try {
-        sessionStorage.setItem('al_nashi_local_initiated_settings_ver', String(nextVersion));
-        sessionStorage.setItem('al_nashi_baseline_settings_ver', String(nextVersion));
-      } catch {}
-    }
-
-    // Push to shared server API AND unified sync hub so ALL connected users on Vercel & Node immediately receive settings updates
-    fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemSettings: merged,
-        customSections,
-        broadcastUpdate: isVisualOrIconBroadcast,
-        settingsVersion: nextVersion,
-        updateSummary,
-        updatedBy: currentUser?.FullName || 'المطور'
-      })
-    }).catch(() => {});
     emitServerBulk({
       systemSettings: merged,
       customSections,
       settingsVersion: nextVersion
     });
 
+    // Exclusive Single Source of Truth: Firebase Firestore `system_settings`
     fsSaveSettings(merged).catch(err => console.warn('Firestore settings update:', err));
-    pushToGoogleSheetsRealtime('settings', { id: 'main_settings', ...merged }, 'upsert', merged.appsScriptUrl);
-    addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام ومزامنتها لجميع المستخدمين');
+    addAuditLog('تحديث إعدادات المنظومة', 'لوحة التحكم', 'تم تعديل الإعدادات العامة والهوية البصرية للنظام وحفظها في Firebase Firestore');
   };
 
   const setGoogleDriveFolderId = (rawFolderId: string) => {
     if (!rawFolderId || !rawFolderId.trim()) return;
     const cleanId = extractDriveFolderId(rawFolderId);
     setDriveFolderId(cleanId);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('al_nashi_drive_folder_id', cleanId);
-    }
     setRuntimeCloudConfig({ googleDriveFolderId: cleanId });
     updateSettings({ googleDriveFolderId: cleanId });
     try {
       sheetsIntegration.refreshLocalConfig();
     } catch {}
-    addAuditLog('تحديث مجلد Google Drive', 'لوحة المطور', `تم ربط وتثبيت معرف المجلد (${cleanId}) في المنظومة`);
+    addAuditLog('تحديث مجلد Google Drive', 'لوحة المطور', `تم ربط وتثبيت معرف المجلد (${cleanId}) في Firebase Firestore`);
   };
 
   const addNotification = (
@@ -3485,7 +3283,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCitizens(prev => prev.map(c => c.Citizen_ID === citizenId ? updatedCitizen : c));
     emitServerMutation('citizens', 'upsert', { item: updatedCitizen });
     fsSaveCitizen(updatedCitizen).catch(() => {});
-    pushToGoogleSheetsRealtime('citizens', updatedCitizen, 'update', systemSettings.appsScriptUrl);
 
     // Audit log
     addAuditLog('إحالة مسار المراجع', 'سلسلة الإحالات', `تمت إحالة المراجع ${cit.FullName} (${cit.Citizen_ID}) من [${fromStage}] إلى [${toStage}] - توجيه: ${directiveNote || 'متابعة وإجراء اللازم'}`);
@@ -3570,7 +3367,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
     fsSaveRequest(updatedReq).catch(() => {});
     addAuditLog('إحالة مسار طلب إداري', 'قسم الإدارة', `تمت إحالة الطلب ${requestId} إلى ${toStage}`);
-    pushToGoogleSheetsRealtime('requests', updatedReq, 'update', systemSettings.appsScriptUrl);
   };
 
   // الأرشفة الذكية الشاملة: نقل كافة بيانات المراجع والطلبات المكتملة تلقائياً إلى أرشيف طويل الأمد
@@ -4060,45 +3856,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     purgeLegacyBrowserBusinessData();
     clearBusinessRecordsFromIDB().catch(() => {});
 
-    // 4. PARALLEL CLOUD WIPE: Execute Firebase Firestore + Google Sheets (keeping Row 1 headers!) + Drive + Server simultaneously
+    // 4. CLOUD WIPE: Execute real deletion in Firebase Firestore (alaa-office-2026) + manual backup Sheets wipe
     const targetScriptUrl =
-      (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
       systemSettingsRef.current.appsScriptUrl ||
       systemSettingsRef.current.googleAppsScriptUrl ||
-      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
+      PINNED_APPS_SCRIPT_URL;
 
-    const [fsRes, sheetsRes] = await Promise.allSettled([
+    const [fsRes] = await Promise.allSettled([
       fsWipeAllCollections(),
-      wipeGoogleSheetsViaAppsScript('all', undefined, targetScriptUrl),
+      wipeGoogleSheetsViaAppsScript('all', undefined, targetScriptUrl).catch(() => {}),
       wipeDeveloperCloudData().catch(() => {}),
-      clearAllImagesFromDB().catch(() => {}),
-      fetch('/api/sync/state?mode=wipe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'wipe', clientId: LIVE_SYNC_CLIENT_ID })
-      }).catch(() => {}),
-      fetch('/api/blacklist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: [], unblockedIds: [] })
-      }).catch(() => {})
+      clearAllImagesFromDB().catch(() => {})
     ]);
 
-    const sheetsOk = sheetsRes.status === 'fulfilled' && sheetsRes.value?.success;
-    const sheetsErr =
-      sheetsRes.status === 'fulfilled'
-        ? sheetsRes.value?.error || sheetsRes.value?.message
-        : String(sheetsRes.reason || '');
     const fsOk = fsRes.status === 'fulfilled' && fsRes.value?.success;
+    const fsErr = fsRes.status === 'fulfilled' ? fsRes.value?.error : String(fsRes.reason || '');
 
     pushCloudSyncAlert({
-      severity: fsOk && sheetsOk ? 'success' : 'error',
-      target: sheetsOk ? 'both' : 'google_sheets',
-      title: sheetsOk ? 'تم تصفير النظام بالكامل بنجاح' : 'تم تصفير الواجهة وFirestore، وفشل تصفير Google Sheets',
-      message: sheetsOk
-        ? 'تم تفريغ جميع السجلات فوراً من الواجهة و Firebase Firestore و Google Sheets (مع الإبقاء على صف العناوين Headers وحسابات الكادر).'
-        : 'تم تفريغ السجلات من الواجهة و Firebase Firestore، لكن تعذر تصفير Google Sheets عبر Apps Script.',
-      details: !sheetsOk ? sheetsErr : undefined
+      severity: fsOk ? 'success' : 'error',
+      target: 'firebase',
+      title: fsOk ? 'تم تصفير قاعدة البيانات بنجاح' : 'تعذر إكمال تصفير Firebase Firestore',
+      message: fsOk
+        ? 'تم حذف وتفريغ كافة السجلات نهائياً من Firebase Firestore (alaa-office-2026) مع الإبقاء على حسابات الكادر والإعدادات.'
+        : 'حدث خطأ أثناء تفريغ البيانات من Firebase Firestore. يرجى التحقق من الاتصال والمحاولة مجدداً.',
+      details: !fsOk ? fsErr : undefined
     });
 
     // 5. Log audit entry
@@ -4155,33 +3936,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCustomRecords(prev => prev.filter(rec => !customKeySet.has(String(rec.sectionId || 'sec_social_welfare'))));
     }
 
-    // 2. PARALLEL CLOUD WIPE for ONLY the selected sections in Firebase Firestore + Google Sheets (keeping Row 1 headers!)
+    // 2. CLOUD WIPE for ONLY the selected sections in Firebase Firestore (alaa-office-2026)
     const targetScriptUrl =
-      (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
       systemSettingsRef.current.appsScriptUrl ||
       systemSettingsRef.current.googleAppsScriptUrl ||
-      (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') || '' : '');
+      PINNED_APPS_SCRIPT_URL;
 
-    const [fsRes, sheetsRes] = await Promise.allSettled([
+    const [fsRes] = await Promise.allSettled([
       fsWipeSelectedCollections(keys),
-      wipeGoogleSheetsViaAppsScript('sections', keys, targetScriptUrl)
+      wipeGoogleSheetsViaAppsScript('sections', keys, targetScriptUrl).catch(() => {})
     ]);
 
-    const sheetsOk = sheetsRes.status === 'fulfilled' && sheetsRes.value?.success;
-    const sheetsErr =
-      sheetsRes.status === 'fulfilled'
-        ? sheetsRes.value?.error || sheetsRes.value?.message
-        : String(sheetsRes.reason || '');
     const fsOk = fsRes.status === 'fulfilled' && fsRes.value?.success;
+    const fsErr = fsRes.status === 'fulfilled' ? fsRes.value?.error : String(fsRes.reason || '');
 
     pushCloudSyncAlert({
-      severity: fsOk && sheetsOk ? 'success' : 'error',
-      target: sheetsOk ? 'both' : 'google_sheets',
-      title: sheetsOk ? `تم تصفير (${keys.length}) قسم محدد بنجاح` : `تم تصفير (${keys.length}) قسم في الواجهة وFirestore، وفشل تصفير Google Sheets`,
-      message: sheetsOk
-        ? 'تم حذف سجلات الأقسام المختارة فوراً من الواجهة و Firebase Firestore و Google Sheets (مع الإبقاء على صف العناوين وبقية الأقسام سليمة).'
-        : 'تم حذف سجلات الأقسام المختارة من الواجهة و Firebase Firestore، لكن تعذر تصفيرها في Google Sheets عبر Apps Script.',
-      details: !sheetsOk ? sheetsErr : undefined
+      severity: fsOk ? 'success' : 'error',
+      target: 'firebase',
+      title: fsOk ? `تم تصفير (${keys.length}) قسم محدد بنجاح` : `فشل تصفير الأقسام المحددة في Firebase Firestore`,
+      message: fsOk
+        ? 'تم حذف سجلات الأقسام المختارة نهائياً من Firebase Firestore (alaa-office-2026) مع الإبقاء على بقية الأقسام سليمة.'
+        : 'تعذر حذف سجلات الأقسام المختارة من Firebase Firestore. يرجى التحقق من الاتصال والمحاولة مجدداً.',
+      details: !fsOk ? fsErr : undefined
     });
 
     addAuditLog(
@@ -4238,50 +4014,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     emitServerMutation('customSections', 'upsert', { item: newSection });
 
-    // Dual Cloud Save + Automatic Google Sheet Creation & Column Ordering via Apps Script!
+    // Save directly to Firebase Firestore (`custom_sections` + `departments`)
     customSectionsDomain
       .saveSectionAndProvisionSheet(newSection, nextSections, {
         ...getCloudCtx(),
         customSections: nextSections
       })
       .catch(() => {});
+    fsSyncDepartmentsRegistry(usersRef.current, nextSections).catch(() => {});
 
-    // Optional Direct Sheets API tab creation if Developer Google OAuth token is also active
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('al_nashi_google_token') : null;
-      const sheetId = systemSettings.googleSheetId || (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_sheet_id') : '');
-      if (token && sheetId) {
-        const headerCols = ['معرف القيد', ...(newSection.fields || []).map(f => f.label), 'تاريخ الإنشاء', 'الموظف المسؤول'];
-        ensureSheetTabExists(token, sheetId, `قسم_${newSection.title}`, headerCols).catch(() => {});
-        if (newSection.isMultiSectionHub && Array.isArray(newSection.subSections)) {
-          for (const sub of newSection.subSections) {
-            if (!sub.targetBuiltInSection) {
-              const subHeaders = ['معرف القيد', ...(sub.fields || []).map(f => f.label), 'تاريخ الإنشاء', 'الموظف المسؤول'];
-              ensureSheetTabExists(token, sheetId, `قسم_${newSection.title}_${sub.title}`, subHeaders).catch(() => {});
-            }
-          }
-        }
-      }
-    } catch {}
-
-    addAuditLog('إضافة قسم مخصص جديد', 'لوحة التحكم والعمليات', `تم إنشاء القسم وتخصيص ورقة Google Sheet تلقائياً: ${newSection.title}`);
-    const broadcastVer = Math.max(Date.now(), (systemSettings.settingsVersion || 0) + 1);
-    try {
-      sessionStorage.setItem('al_nashi_local_initiated_settings_ver', String(broadcastVer));
-      sessionStorage.setItem('al_nashi_baseline_settings_ver', String(broadcastVer));
-    } catch {}
-    fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemSettings: { ...systemSettings, settingsVersion: broadcastVer, lastUpdateNote: `تم إضافة قسم وأيقونة جديدة: ${newSection.title}` },
-        customSections: nextSections,
-        broadcastUpdate: true,
-        settingsVersion: broadcastVer,
-        updateSummary: `تم إضافة قسم وأيقونة جديدة: ${newSection.title}`,
-        updatedBy: currentUser?.FullName || 'المطور'
-      })
-    }).catch(() => {});
+    addAuditLog('إضافة قسم مخصص جديد', 'لوحة التحكم والعمليات', `تم إنشاء القسم وحفظه في Firebase Firestore: ${newSection.title}`);
     return newSection;
   };
 
@@ -4294,32 +4036,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     emitServerMutation('customSections', 'upsert', { item: updated });
 
-    // Dual Cloud Save + Non-destructive column update in the section's dedicated Google Sheet tab!
     customSectionsDomain
       .saveSectionAndProvisionSheet(updated, nextSections, {
         ...getCloudCtx(),
         customSections: nextSections
       })
       .catch(() => {});
+    fsSyncDepartmentsRegistry(usersRef.current, nextSections).catch(() => {});
 
-    const broadcastVer = Math.max(Date.now(), (systemSettings.settingsVersion || 0) + 1);
-    try {
-      sessionStorage.setItem('al_nashi_local_initiated_settings_ver', String(broadcastVer));
-      sessionStorage.setItem('al_nashi_baseline_settings_ver', String(broadcastVer));
-    } catch {}
-    fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemSettings: { ...systemSettings, settingsVersion: broadcastVer, lastUpdateNote: `تم تحديث أيقونة وبيانات قسم: ${section.title}` },
-        customSections: nextSections,
-        broadcastUpdate: true,
-        settingsVersion: broadcastVer,
-        updateSummary: `تم تحديث أيقونة وبيانات قسم: ${section.title}`,
-        updatedBy: currentUser?.FullName || 'المطور'
-      })
-    }).catch(() => {});
-    addAuditLog('تعديل قسم مخصص', 'لوحة التحكم والعمليات', `تم تحديث القسم وتنظيم أعمدة ورقته تلقائياً: ${section.title}`);
+    addAuditLog('تعديل قسم مخصص', 'لوحة التحكم والعمليات', `تم تحديث القسم في Firebase Firestore: ${section.title}`);
   };
 
   const deleteCustomSection = (sectionId: string) => {
@@ -4332,25 +4057,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setRuntimeCustomSections(nextSections);
     setCustomRecords(nextRecords);
     emitServerMutation('customSections', 'delete', { id: sectionId });
-    customSectionsDomain.deleteSection(sectionId).catch(() => {});
-    const broadcastVer = Math.max(Date.now(), (systemSettings.settingsVersion || 0) + 1);
-    try {
-      sessionStorage.setItem('al_nashi_local_initiated_settings_ver', String(broadcastVer));
-      sessionStorage.setItem('al_nashi_baseline_settings_ver', String(broadcastVer));
-    } catch {}
-    fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemSettings: { ...systemSettings, settingsVersion: broadcastVer, lastUpdateNote: `تم حذف قسم: ${target?.title || sectionId}` },
-        customSections: nextSections,
-        broadcastUpdate: true,
-        settingsVersion: broadcastVer,
-        updateSummary: `تم حذف قسم: ${target?.title || sectionId}`,
-        updatedBy: currentUser?.FullName || 'المطور'
-      })
-    }).catch(() => {});
-    addAuditLog('حذف قسم مخصص', 'لوحة التحكم والعمليات', `تم إزالة القسم (${target?.title || sectionId}) من الواجهة مع الحفاظ غير التدميري على أرشيف الورقة في Google Sheets`);
+    customSectionsDomain.deleteSection(sectionId, target?.title).catch(() => {});
+    fsSyncDepartmentsRegistry(usersRef.current, nextSections).catch(() => {});
+    addAuditLog('حذف قسم مخصص', 'لوحة التحكم والعمليات', `تم حذف القسم (${target?.title || sectionId}) وسجلاته نهائياً من Firebase Firestore`);
   };
 
   // Dynamic Custom Records (سجلات الأقسام المخصصة -> تُوجّه مباشرة إلى ورقة القسم الخاصة بها)
@@ -4414,44 +4123,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('تعديل ظهور حقول الاستعلامات', 'لوحة المطور', `تعديل حالة الحقل: ${fieldKey}`);
   };
 
-  // Developer Passcode Management (رمز دخول المطور السري — قابل للتغيير بالكامل مع إلغاء الرموز القديمة)
+  // Developer Passcode Management (رمز دخول المطور السري — محفوظ حصرياً في Firebase Firestore)
   const setDeveloperPasscode = async (newCode: string): Promise<boolean> => {
     const normalized = (newCode || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString()).trim();
     if (!normalized || normalized.length < 3) return false;
     firestorePasscodeLoadedRef.current = true;
     setDeveloperPasscodeState(normalized);
-    try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', normalized); } catch {}
 
-    // Update Developer user record Password locally & across databases
+    // Update Developer user record Password directly in Firebase Firestore
     const nowIso = new Date().toISOString();
-    setUsers(prev => {
-      const next = prev.map(u => u.Role === 'developer' ? { ...u, Password: normalized, UpdatedAt: nowIso } : u);
-      safeLocalStorageSet(STORAGE_KEY_PREFIX + 'users', JSON.stringify(next));
-      return next;
-    });
-
-    // Save to shared server auth store immediately
-    try {
-      await fetch('/api/auth/developer-passcode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newCode: normalized })
-      });
-    } catch (e) {
-      console.warn('Saving developer passcode to server warning:', e);
-    }
+    setUsers(prev => prev.map(u => (u.Role === 'developer' ? { ...u, Password: normalized, UpdatedAt: nowIso } : u)));
 
     updateSettings({ developerPasscode: normalized });
     try {
       await fsSaveDeveloperPasscode(normalized);
-      const devUser = users.find(u => u.Role === 'developer');
+      const devUser = usersRef.current.find(u => u.Role === 'developer');
       if (devUser) {
         await fsSaveUser({ ...devUser, Password: normalized, UpdatedAt: nowIso });
       }
-    } catch (e) {
+      pushCloudSyncAlert({
+        severity: 'success',
+        target: 'firebase',
+        title: 'تم تحديث رمز المطور السري',
+        message: 'تم حفظ الرمز الجديد مباشرة في Firebase Firestore (alaa-office-2026) وإلغاء الرمز السابق.'
+      });
+    } catch (e: any) {
       console.warn('Saving passcode to firestore warning:', e);
+      pushCloudSyncAlert({
+        severity: 'error',
+        target: 'firebase',
+        title: 'فشل حفظ رمز المطور السري',
+        message: 'تعذر حفظ الرمز في Firebase Firestore. يرجى المحاولة مجدداً.',
+        details: e?.message || String(e)
+      });
+      return false;
     }
-    addAuditLog('تحديث رمز دخول المطور', 'لوحة المطور', 'قام المطور بتغيير رمز الدخول السري للمنظومة وإلغاء الرمز السابق');
+    addAuditLog('تحديث رمز دخول المطور', 'لوحة المطور', 'قام المطور بتغيير رمز الدخول السري للمنظومة وحفظه في Firebase Firestore');
     return true;
   };
 
@@ -4756,6 +4463,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (res.customRecords && res.customRecords.length > 0) {
           setCustomRecords(prev => mergeCustomRecords(prev, res.customRecords, deletedIds));
         }
+        if (res.documents && res.documents.length > 0) {
+          setDocuments(res.documents);
+        }
         if (res.dropdowns && res.dropdowns.length > 0) {
           setDropdowns(prev => {
             const seen = new Set(prev.map(d => `${d.Category.toLowerCase()}:${d.ItemValue.trim().toLowerCase()}`));
@@ -4792,7 +4502,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const cleanCode = String(res.developerPasscode).trim();
           firestorePasscodeLoadedRef.current = true;
           setDeveloperPasscodeState(cleanCode);
-          try { localStorage.setItem(STORAGE_KEY_PREFIX + 'dev_passcode', cleanCode); } catch {}
         }
         if (res.systemSettings) {
           setRuntimeCloudConfig({
@@ -5292,10 +5001,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Attempt 1: Google Apps Script Web App (Authoritative primary reference — works on Vercel & every device!)
       const targetScriptUrl =
         overrideScriptUrl ||
-        (import.meta as any).env?.VITE_GOOGLE_APPS_SCRIPT_URL ||
         systemSettingsRef.current.appsScriptUrl ||
         systemSettingsRef.current.googleAppsScriptUrl ||
-        (typeof window !== 'undefined' ? localStorage.getItem('al_nashi_apps_script_url') : '');
+        PINNED_APPS_SCRIPT_URL;
 
       let appsScriptPullError = '';
       if (targetScriptUrl && targetScriptUrl.startsWith('http')) {

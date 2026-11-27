@@ -194,9 +194,11 @@ export function reportDualCloudWriteResult(params: {
   firebaseError?: string;
   sheetsOk?: boolean;
   sheetsError?: string;
+  actionType?: 'save' | 'delete';
   retry?: () => Promise<void>;
 }): void {
-  const { entityLabel, firebaseOk, firebaseError, retry } = params;
+  const { entityLabel, firebaseOk, firebaseError, actionType = 'save', retry } = params;
+  const isDelete = actionType === 'delete';
 
   if (firebaseOk) {
     updateFirebaseHealth('connected', null);
@@ -204,21 +206,32 @@ export function reportDualCloudWriteResult(params: {
       severity: 'success',
       target: 'firebase',
       entityLabel,
-      title: `تم الحفظ في قاعدة البيانات (${entityLabel})`,
-      message: 'تم حفظ البيانات مباشرة في Firebase Firestore (alaa-office-2026).'
+      title: isDelete
+        ? `تم الحذف النهائي من قاعدة البيانات (${entityLabel})`
+        : `تم الحفظ في قاعدة البيانات (${entityLabel})`,
+      message: isDelete
+        ? 'تم حذف السجل نهائياً من Firebase Firestore (alaa-office-2026) وتحديث العرض فوراً.'
+        : 'تم حفظ البيانات مباشرة في Firebase Firestore (alaa-office-2026).'
     });
     return;
   }
 
   const cleanErr =
-    firebaseError || 'تعذر حفظ البيانات في Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.';
+    firebaseError ||
+    (isDelete
+      ? 'تعذر حذف السجل من Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.'
+      : 'تعذر حفظ البيانات في Firebase Firestore. يرجى التحقق من الاتصال وإعادة المحاولة.');
   updateFirebaseHealth('error', cleanErr);
   pushCloudSyncAlert({
     severity: 'error',
     target: 'firebase',
     entityLabel,
-    title: `فشل الحفظ في قاعدة البيانات (${entityLabel})`,
-    message: 'تعذر حفظ التعديلات مباشرة في Firebase Firestore. يرجى التحقق من الاتصال أو الصلاحيات والمحاولة مجدداً.',
+    title: isDelete
+      ? `فشل الحذف من قاعدة البيانات (${entityLabel})`
+      : `فشل الحفظ في قاعدة البيانات (${entityLabel})`,
+    message: isDelete
+      ? 'تعذر إتمام عملية الحذف في Firebase Firestore. يرجى التحقق من الاتصال أو الصلاحيات والمحاولة مجدداً.'
+      : 'تعذر حفظ التعديلات مباشرة في Firebase Firestore. يرجى التحقق من الاتصال أو الصلاحيات والمحاولة مجدداً.',
     details: cleanErr,
     retry
   });

@@ -16,6 +16,7 @@ import {
   OrganizationRecord,
   CustomSection,
   CustomSectionRecord,
+  DocumentArchiveItem,
   User
 } from '../types';
 import {
@@ -30,6 +31,9 @@ import {
   fsSaveCheque,
   fsDeleteCheque,
   fsSaveOrgRecord,
+  fsDeleteOrgRecord,
+  fsSaveDocument,
+  fsDeleteDocument,
   fsSaveCustomSection,
   fsDeleteCustomSection,
   fsSaveCustomRecord,
@@ -79,8 +83,9 @@ async function executeFirestoreOperation(params: {
   entityLabel: string;
   firestoreOp: () => Promise<void>;
   silentSuccess?: boolean;
+  actionType?: 'save' | 'delete';
 }): Promise<DualWriteOutcome> {
-  const { entityLabel, firestoreOp, silentSuccess = true } = params;
+  const { entityLabel, firestoreOp, silentSuccess = true, actionType = 'save' } = params;
 
   let firebaseOk = false;
   let firebaseError: string | undefined;
@@ -94,7 +99,7 @@ async function executeFirestoreOperation(params: {
   }
 
   const retryFn = async () => {
-    await executeFirestoreOperation({ entityLabel, firestoreOp, silentSuccess: false });
+    await executeFirestoreOperation({ entityLabel, firestoreOp, silentSuccess: false, actionType });
   };
 
   if (!silentSuccess || !firebaseOk) {
@@ -103,6 +108,7 @@ async function executeFirestoreOperation(params: {
       firebaseOk,
       firebaseError,
       sheetsOk: true,
+      actionType,
       retry: !firebaseOk ? retryFn : undefined
     });
   }
@@ -127,8 +133,10 @@ export const receptionDomain = {
 
   async deleteCitizen(citizenId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
-      entityLabel: `حذف مراجع: ${citizenId}`,
-      firestoreOp: () => fsDeleteCitizen(citizenId)
+      entityLabel: `المراجع: ${citizenId}`,
+      firestoreOp: () => fsDeleteCitizen(citizenId),
+      silentSuccess: false,
+      actionType: 'delete'
     });
   }
 };
@@ -150,8 +158,10 @@ export const adminRequestsDomain = {
 
   async deleteRequest(requestId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
-      entityLabel: `حذف معاملة: ${requestId}`,
-      firestoreOp: () => fsDeleteRequest(requestId)
+      entityLabel: `المعاملة: ${requestId}`,
+      firestoreOp: () => fsDeleteRequest(requestId),
+      silentSuccess: false,
+      actionType: 'delete'
     });
   }
 };
@@ -173,8 +183,10 @@ export const interviewsDomain = {
 
   async deleteInterview(interviewId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
-      entityLabel: `حذف مقابلة: ${interviewId}`,
-      firestoreOp: () => fsDeleteInterview(interviewId)
+      entityLabel: `المقابلة: ${interviewId}`,
+      firestoreOp: () => fsDeleteInterview(interviewId),
+      silentSuccess: false,
+      actionType: 'delete'
     });
   }
 };
@@ -191,6 +203,15 @@ export const organizationDomain = {
     return executeFirestoreOperation({
       entityLabel: `تنظيم وجماهير: ${record.FullName || record.Citizen_ID}`,
       firestoreOp: () => fsSaveOrgRecord(record)
+    });
+  },
+
+  async deleteRecord(orgIdOrCitizenId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
+      entityLabel: `سجل التنظيم: ${orgIdOrCitizenId}`,
+      firestoreOp: () => fsDeleteOrgRecord(orgIdOrCitizenId),
+      silentSuccess: false,
+      actionType: 'delete'
     });
   }
 };
@@ -212,8 +233,10 @@ export const lettersDomain = {
 
   async deleteLetter(letterId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
-      entityLabel: `حذف كتاب رسمي: ${letterId}`,
-      firestoreOp: () => fsDeleteOfficialLetter(letterId)
+      entityLabel: `الكتاب الرسمي: ${letterId}`,
+      firestoreOp: () => fsDeleteOfficialLetter(letterId),
+      silentSuccess: false,
+      actionType: 'delete'
     });
   }
 };
@@ -235,8 +258,31 @@ export const chequesDomain = {
 
   async deleteCheque(chequeId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
-      entityLabel: `حذف صك: ${chequeId}`,
-      firestoreOp: () => fsDeleteCheque(chequeId)
+      entityLabel: `الصك: ${chequeId}`,
+      firestoreOp: () => fsDeleteCheque(chequeId),
+      silentSuccess: false,
+      actionType: 'delete'
+    });
+  }
+};
+
+// ============================================================================
+// 6b. قسم أرشيف المستندات (Archive Documents Domain Controller)
+// ============================================================================
+export const archiveDocumentsDomain = {
+  async saveDocument(docItem: DocumentArchiveItem): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
+      entityLabel: `وثيقة أرشيف: ${docItem.Title || docItem.Doc_ID}`,
+      firestoreOp: () => fsSaveDocument(docItem)
+    });
+  },
+
+  async deleteDocument(docId: string, docTitle?: string): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
+      entityLabel: `الوثيقة: ${docTitle || docId}`,
+      firestoreOp: () => fsDeleteDocument(docId),
+      silentSuccess: false,
+      actionType: 'delete'
     });
   }
 };
@@ -257,12 +303,13 @@ export const customSectionsDomain = {
     });
   },
 
-  async deleteSection(sectionId: string): Promise<void> {
-    try {
-      await fsDeleteCustomSection(sectionId);
-    } catch (err) {
-      console.warn('Custom section delete notice:', extractReadableError(err));
-    }
+  async deleteSection(sectionId: string, sectionTitle?: string): Promise<DualWriteOutcome> {
+    return executeFirestoreOperation({
+      entityLabel: `القسم المخصص: ${sectionTitle || sectionId}`,
+      firestoreOp: () => fsDeleteCustomSection(sectionId),
+      silentSuccess: false,
+      actionType: 'delete'
+    });
   },
 
   async saveRecord(
@@ -282,8 +329,10 @@ export const customSectionsDomain = {
   ): Promise<DualWriteOutcome> {
     const recordId = typeof record === 'string' ? record : record.id;
     return executeFirestoreOperation({
-      entityLabel: `حذف قيد مخصص (${recordId})`,
-      firestoreOp: () => fsDeleteCustomRecord(recordId)
+      entityLabel: `القيد المخصص: ${recordId}`,
+      firestoreOp: () => fsDeleteCustomRecord(recordId),
+      silentSuccess: false,
+      actionType: 'delete'
     });
   }
 };
@@ -304,11 +353,12 @@ export const usersDomain = {
     });
   },
 
-  async deleteUser(userId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+  async deleteUser(userId: string, _ctx: CloudConnectionContext, userName?: string): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
-      entityLabel: `حذف مستخدم: ${userId}`,
+      entityLabel: `المستخدم: ${userName || userId}`,
       firestoreOp: () => fsDeleteUser(userId),
-      silentSuccess: false
+      silentSuccess: false,
+      actionType: 'delete'
     });
   }
 };
