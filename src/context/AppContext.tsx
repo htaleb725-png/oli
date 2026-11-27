@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { MAX_VALID_OUTGOING_SEQ, scanMaxOutgoingSequences } from '../utils/outgoingNumberHelper';
 import {
   ArchiveSectionKey,
+  buildMultiSectionArchivedFields,
   buildSectionArchivedFields,
   buildSectionUnarchivedFields,
   getArchiveSectionLabel,
@@ -375,6 +376,9 @@ interface AppContextType {
     citizenIds?: string[];
     requestIds?: string[];
     sectionKey?: ArchiveSectionKey;
+    extraSectionKeys?: ArchiveSectionKey[];
+    directorNotesByRequestId?: Record<string, string>;
+    preserveNonOrgIsolation?: boolean;
     globalArchive?: boolean;
     reason?: string;
   }) => { archivedCitizens: number; archivedRequests: number };
@@ -2302,93 +2306,99 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteCitizen = (citizenId: string) => {
-    const target = citizens.find(c => c.Citizen_ID === citizenId);
-    if (target) {
-      // 1. Gather all related records and IDs
-      const matchingReqs = requests.filter(r => r.Citizen_ID === citizenId);
-      const matchingInterviews = interviews.filter(i => i.Citizen_ID === citizenId);
-      const matchingCheques = cheques.filter(ch => ch.Citizen_ID === citizenId);
-      const matchingLetters = officialLetters.filter(l => l.Citizen_ID === citizenId);
-      const matchingOrgs = organizationRecords.filter(o => o.Citizen_ID === citizenId);
-      const matchingDocs = documents.filter(d => d.Citizen_ID === citizenId || (d as any).CitizenId === citizenId);
+    if (!citizenId) return;
+    const liveCitizens = citizensRef.current || citizens;
+    const liveRequests = requestsRef.current || requests;
+    const target = liveCitizens.find(c => c.Citizen_ID === citizenId);
 
-      const matchingReqIds = matchingReqs.map(r => r.Request_ID);
-      const matchingInterviewIds = matchingInterviews.map(i => i.Interview_ID);
-      const matchingChequeIds = matchingCheques.map(ch => ch.id);
-      const matchingLetterIds = matchingLetters.map(l => l.Letter_ID);
-      const matchingOrgIds = matchingOrgs.map(o => o.Org_ID || o.Citizen_ID).filter(Boolean);
-      const matchingDocIds = matchingDocs.map(d => d.Doc_ID).filter(Boolean);
+    // 1. Gather all related records and IDs
+    const matchingReqs = liveRequests.filter(r => r.Citizen_ID === citizenId);
+    const matchingInterviews = interviews.filter(i => i.Citizen_ID === citizenId);
+    const matchingCheques = cheques.filter(ch => ch.Citizen_ID === citizenId);
+    const matchingLetters = officialLetters.filter(l => l.Citizen_ID === citizenId);
+    const matchingOrgs = organizationRecords.filter(o => o.Citizen_ID === citizenId);
+    const matchingDocs = documents.filter(d => d.Citizen_ID === citizenId || (d as any).CitizenId === citizenId);
 
-      // Record all IDs in permanent tombstone set
-      [
-        citizenId,
-        ...matchingReqIds,
-        ...matchingInterviewIds,
-        ...matchingChequeIds,
-        ...matchingLetterIds,
-        ...matchingOrgIds,
-        ...matchingDocIds
-      ].forEach(id => {
-        if (id) {
-          recordDeletedId(id);
-          markLocallyPendingDelete(id);
-        }
-      });
+    const matchingReqIds = matchingReqs.map(r => r.Request_ID);
+    const matchingInterviewIds = matchingInterviews.map(i => i.Interview_ID);
+    const matchingChequeIds = matchingCheques.map(ch => ch.id);
+    const matchingLetterIds = matchingLetters.map(l => l.Letter_ID);
+    const matchingOrgIds = matchingOrgs.map(o => o.Org_ID || o.Citizen_ID).filter(Boolean);
+    const matchingDocIds = matchingDocs.map(d => d.Doc_ID).filter(Boolean);
 
-      // 2. Cascade delete in local state
-      const nextCitizens = citizens.filter(c => c.Citizen_ID !== citizenId);
-      const nextRequests = requests.filter(r => r.Citizen_ID !== citizenId);
-      const nextInterviews = interviews.filter(i => i.Citizen_ID !== citizenId);
-      const nextCheques = cheques.filter(ch => ch.Citizen_ID !== citizenId);
-      const nextOrgs = organizationRecords.filter(o => o.Citizen_ID !== citizenId);
-      const nextLetters = officialLetters.filter(l => l.Citizen_ID !== citizenId);
-      const nextDocs = documents.filter(d => d.Citizen_ID !== citizenId && (d as any).CitizenId !== citizenId);
+    const allDeletedIds = [
+      citizenId,
+      ...matchingReqIds,
+      ...matchingInterviewIds,
+      ...matchingChequeIds,
+      ...matchingLetterIds,
+      ...matchingOrgIds,
+      ...matchingDocIds
+    ].filter(Boolean);
+    const deletedIdSet = new Set(allDeletedIds);
 
-      setCitizens(nextCitizens);
-      setRequests(nextRequests);
-      setInterviews(nextInterviews);
-      setCheques(nextCheques);
-      setOrganizationRecords(nextOrgs);
-      setOfficialLetters(nextLetters);
-      setDocuments(nextDocs);
+    // Record all IDs in permanent tombstone set
+    allDeletedIds.forEach(id => {
+      recordDeletedId(id);
+      markLocallyPendingDelete(id);
+    });
 
-      addAuditLog(
-        'حذف نهائي شامل لسجل مراجع',
-        'الإدارة / الاستعلامات',
-        `تم حذف المواطن ${target.FullName} (${citizenId}) وجميع متعلقاته (${matchingReqIds.length} معاملة، ${matchingInterviewIds.length} مقابلة، ${matchingLetterIds.length} كتاب رسمي) نهائياً من Firebase Firestore`
-      );
+    // 2. Cascade delete synchronously in refs & local state
+    const nextCitizens = liveCitizens.filter(c => c.Citizen_ID !== citizenId);
+    const nextRequests = liveRequests.filter(r => r.Citizen_ID !== citizenId);
+    const nextInterviews = interviews.filter(i => i.Citizen_ID !== citizenId);
+    const nextCheques = cheques.filter(ch => ch.Citizen_ID !== citizenId);
+    const nextOrgs = organizationRecords.filter(o => o.Citizen_ID !== citizenId);
+    const nextLetters = officialLetters.filter(l => l.Citizen_ID !== citizenId);
+    const nextDocs = documents.filter(d => d.Citizen_ID !== citizenId && (d as any).CitizenId !== citizenId);
 
-      // 4. Broadcast cascade deletion live to open tabs
-      emitServerMutation('citizens', 'delete', { id: citizenId });
-      matchingReqIds.forEach(reqId => emitServerMutation('requests', 'delete', { id: reqId }));
-      matchingInterviewIds.forEach(intId => emitServerMutation('interviews', 'delete', { id: intId }));
-      matchingChequeIds.forEach(chqId => emitServerMutation('cheques', 'delete', { id: chqId }));
-      matchingLetterIds.forEach(letId => emitServerMutation('officialLetters', 'delete', { id: letId }));
-      matchingOrgIds.forEach(orgId => emitServerMutation('organizationRecords', 'delete', { id: orgId }));
-      matchingDocIds.forEach(docId => emitServerMutation('documents', 'delete', { id: docId }));
+    citizensRef.current = nextCitizens;
+    requestsRef.current = nextRequests;
+    setCitizens(nextCitizens);
+    setRequests(nextRequests);
+    setInterviews(nextInterviews);
+    setCheques(nextCheques);
+    setOrganizationRecords(nextOrgs);
+    setOfficialLetters(nextLetters);
+    setDocuments(nextDocs);
+    setNotifications(prev => prev.filter(n => !n.entityId || !deletedIdSet.has(n.entityId)));
 
-      // 5. Direct Real Cascade Delete (`deleteDoc`) in Firebase Firestore
-      const cloudCtx = getCloudCtx();
-      receptionDomain.deleteCitizen(citizenId, cloudCtx).catch(() => {});
-      matchingReqIds.forEach(reqId => {
-        adminRequestsDomain.deleteRequest(reqId, cloudCtx).catch(() => {});
-      });
-      matchingInterviewIds.forEach(intId => {
-        interviewsDomain.deleteInterview(intId, cloudCtx).catch(() => {});
-      });
-      matchingChequeIds.forEach(chId => {
-        chequesDomain.deleteCheque(chId, cloudCtx).catch(() => {});
-      });
-      matchingLetterIds.forEach(letId => {
-        lettersDomain.deleteLetter(letId, cloudCtx).catch(() => {});
-      });
-      matchingOrgIds.forEach(orgId => {
-        organizationDomain.deleteRecord(orgId, cloudCtx).catch(() => {});
-      });
-      matchingDocIds.forEach(docId => {
-        archiveDocumentsDomain.deleteDocument(docId).catch(() => {});
-      });
-    }
+    addAuditLog(
+      'حذف نهائي شامل لسجل مراجع',
+      'الإدارة / الاستعلامات / المدير',
+      `تم حذف المواطن ${target?.FullName || citizenId} (${citizenId}) وجميع متعلقاته (${matchingReqIds.length} معاملة، ${matchingInterviewIds.length} مقابلة، ${matchingLetterIds.length} كتاب رسمي) نهائياً من Firebase Firestore و Google Sheets`
+    );
+
+    // 4. Broadcast cascade deletion live to open tabs
+    emitServerMutation('citizens', 'delete', { id: citizenId });
+    matchingReqIds.forEach(reqId => emitServerMutation('requests', 'delete', { id: reqId }));
+    matchingInterviewIds.forEach(intId => emitServerMutation('interviews', 'delete', { id: intId }));
+    matchingChequeIds.forEach(chqId => emitServerMutation('cheques', 'delete', { id: chqId }));
+    matchingLetterIds.forEach(letId => emitServerMutation('officialLetters', 'delete', { id: letId }));
+    matchingOrgIds.forEach(orgId => emitServerMutation('organizationRecords', 'delete', { id: orgId }));
+    matchingDocIds.forEach(docId => emitServerMutation('documents', 'delete', { id: docId }));
+
+    // 5. Direct Real Cascade Delete (`deleteDoc`) in Firebase Firestore + background Google Sheets `action: "delete"`
+    const cloudCtx = getCloudCtx();
+    receptionDomain.deleteCitizen(citizenId, cloudCtx).catch(() => {});
+    matchingReqIds.forEach(reqId => {
+      adminRequestsDomain.deleteRequest(reqId, cloudCtx).catch(() => {});
+    });
+    matchingInterviewIds.forEach(intId => {
+      interviewsDomain.deleteInterview(intId, cloudCtx).catch(() => {});
+    });
+    matchingChequeIds.forEach(chId => {
+      chequesDomain.deleteCheque(chId, cloudCtx).catch(() => {});
+    });
+    matchingLetterIds.forEach(letId => {
+      lettersDomain.deleteLetter(letId, cloudCtx).catch(() => {});
+    });
+    matchingOrgIds.forEach(orgId => {
+      organizationDomain.deleteRecord(orgId, cloudCtx).catch(() => {});
+    });
+    matchingDocIds.forEach(docId => {
+      archiveDocumentsDomain.deleteDocument(docId).catch(() => {});
+    });
   };
 
   const findCitizenByIdOrName = (query: string): Citizen[] => {
@@ -3015,11 +3025,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteRequest = (requestId: string) => {
+    if (!requestId) return;
     recordDeletedId(requestId);
     markLocallyPendingDelete(requestId);
-    setRequests(prev => prev.filter(r => r.Request_ID !== requestId));
+    const nextRequests = (requestsRef.current || requests).filter(r => r.Request_ID !== requestId);
+    requestsRef.current = nextRequests;
+    setRequests(nextRequests);
+    setNotifications(prev => prev.filter(n => n.entityId !== requestId));
     emitServerMutation('requests', 'delete', { id: requestId });
-    addAuditLog('حذف نهائي لطلب إداري', 'قسم الإدارة', `تم حذف الطلب ${requestId} نهائياً من قاعدة البيانات`);
+    addAuditLog('حذف نهائي لطلب إداري', 'قسم الإدارة / المدير', `تم حذف الطلب ${requestId} نهائياً من قاعدة البيانات`);
     adminRequestsDomain.deleteRequest(requestId, getCloudCtx()).catch(() => {});
   };
 
@@ -3742,11 +3756,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   };
 
-  // أرشفة مستقلة لكل قسم: تخفي السجل من "العمل اليومي" للقسم الحالي فقط دون التأثير على بقية الأقسام ودون أي حذف من Firestore
+  // أرشفة مستقلة لكل قسم: تخفي السجل من "العمل اليومي" للقسم الحالي (أو الأقسام المحددة) دون أي حذف من Firestore
   const archiveDailyWorkItems = (options: {
     citizenIds?: string[];
     requestIds?: string[];
     sectionKey?: ArchiveSectionKey;
+    extraSectionKeys?: ArchiveSectionKey[];
+    directorNotesByRequestId?: Record<string, string>;
+    preserveNonOrgIsolation?: boolean;
     globalArchive?: boolean;
     reason?: string;
   }): { archivedCitizens: number; archivedRequests: number } => {
@@ -3759,7 +3776,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const sectionKey: ArchiveSectionKey | undefined = options.globalArchive
       ? undefined
       : (options.sectionKey || 'admin');
-    const lockKey = `archive::${sectionKey || 'global'}::${Array.from(targetCitIds).slice(0, 5).join(',')}::${Array.from(targetReqIds).slice(0, 5).join(',')}`;
+    const targetSections: ArchiveSectionKey[] = sectionKey
+      ? Array.from(new Set([sectionKey, ...(options.extraSectionKeys || [])].filter(Boolean)))
+      : [];
+    const lockKey = `archive::${targetSections.join('+') || 'global'}::${Array.from(targetCitIds).slice(0, 5).join(',')}::${Array.from(targetReqIds).slice(0, 5).join(',')}`;
     const saveLock = acquireSaveLock<{ archivedCitizens: number; archivedRequests: number }>(lockKey, 700, 2000);
     if (!saveLock.allowed) {
       return saveLock.lastResult || { archivedCitizens: 0, archivedRequests: 0 };
@@ -3772,6 +3792,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const sectionLabel = sectionKey ? getArchiveSectionLabel(sectionKey) : 'الأرشيف العام';
     const noteText = options.reason || `أرشفة مستقلة في (${sectionLabel}) — محفوظ بالكامل في قاعدة البيانات دون حذف`;
 
+    const citizensById = new Map<string, Citizen>();
+    for (const c of citizensRef.current || []) {
+      if (c?.Citizen_ID) citizensById.set(c.Citizen_ID, c);
+    }
+
     // Compute updated records SYNCHRONOUSLY from live refs (preserving ALL fields & routing metadata intact)
     const updatedCitizensMap = new Map<string, Citizen>();
     const updatedCitizensList: Citizen[] = [];
@@ -3779,17 +3804,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       for (const c of citizensRef.current || []) {
         if (!c || !targetCitIds.has(c.Citizen_ID)) continue;
         if (sectionKey) {
-          // Independent per-section archiving: update archivedInSections / unarchivedInSections & preserve all data
-          const secFields = buildSectionArchivedFields(c, sectionKey);
+          const secFields =
+            targetSections.length > 1
+              ? buildMultiSectionArchivedFields(c, targetSections)
+              : buildSectionArchivedFields(c, sectionKey);
           const nextCit: Citizen = {
             ...c,
             archivedInSections: secFields.archivedInSections,
             unarchivedInSections: secFields.unarchivedInSections,
-            ArchivedAt: c.ArchivedAt || formattedDate,
-            archivedAt: c.archivedAt || c.ArchivedAt || formattedDate,
-            ArchivedBy: c.ArchivedBy || actorName,
-            archivedBy: c.archivedBy || c.ArchivedBy || actorName,
-            ArchiveNotes: c.ArchiveNotes || noteText,
+            ArchivedAt: formattedDate,
+            archivedAt: formattedDate,
+            ArchivedBy: actorName,
+            archivedBy: actorName,
+            ArchiveNotes: noteText || c.ArchiveNotes,
             UpdatedAt: nowIso
           };
           updatedCitizensMap.set(nextCit.Citizen_ID, nextCit);
@@ -3798,11 +3825,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const nextCit: Citizen = {
             ...c,
             IsArchived: true,
-            ArchivedAt: c.ArchivedAt || formattedDate,
-            archivedAt: c.archivedAt || c.ArchivedAt || formattedDate,
-            ArchivedBy: c.ArchivedBy || actorName,
-            archivedBy: c.archivedBy || c.ArchivedBy || actorName,
-            ArchiveNotes: c.ArchiveNotes || noteText,
+            ArchivedAt: formattedDate,
+            archivedAt: formattedDate,
+            ArchivedBy: actorName,
+            archivedBy: actorName,
+            ArchiveNotes: noteText || c.ArchiveNotes,
             UpdatedAt: nowIso
           };
           (nextCit as any).archived = true;
@@ -3819,16 +3846,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!r) continue;
       const matchesReq = targetReqIds.has(r.Request_ID) || (r.Citizen_ID && targetCitIds.has(r.Citizen_ID));
       if (!matchesReq) continue;
+      const explicitDirNote = options.directorNotesByRequestId?.[r.Request_ID];
+      const mergedDirNote =
+        explicitDirNote !== undefined && explicitDirNote.trim()
+          ? explicitDirNote.trim()
+          : (r.DirectorNotes || '');
+      const linkedCit = citizensById.get(r.Citizen_ID);
+
       if (sectionKey) {
-        const secFields = buildSectionArchivedFields(r, sectionKey);
+        const secFields =
+          targetSections.length > 1
+            ? buildMultiSectionArchivedFields(r, targetSections)
+            : buildSectionArchivedFields(r, sectionKey);
         const nextReq: OfficeRequest = {
           ...r,
+          CitizenName: r.CitizenName || linkedCit?.FullName || 'مراجع',
+          CitizenPhone: r.CitizenPhone || linkedCit?.Phone1 || '',
+          Address: r.Address || r.CitizenAddress || linkedCit?.District || '',
+          DirectorNotes: mergedDirNote || r.DirectorNotes,
+          DirectorDecision:
+            sectionKey === 'director' && !r.DirectorDecision
+              ? 'مؤرشف'
+              : r.DirectorDecision,
+          DirectorDecisionDate:
+            sectionKey === 'director' ? (r.DirectorDecisionDate || formattedDate) : r.DirectorDecisionDate,
+          DirectorDecisionBy:
+            sectionKey === 'director' ? (r.DirectorDecisionBy || actorName) : r.DirectorDecisionBy,
+          referredToOrganization: options.preserveNonOrgIsolation ? false : r.referredToOrganization,
           archivedInSections: secFields.archivedInSections,
           unarchivedInSections: secFields.unarchivedInSections,
-          ArchivedAt: r.ArchivedAt || formattedDate,
-          archivedAt: r.archivedAt || r.ArchivedAt || formattedDate,
-          ArchivedBy: r.ArchivedBy || actorName,
-          archivedBy: r.archivedBy || r.ArchivedBy || actorName,
+          ArchivedAt: formattedDate,
+          archivedAt: formattedDate,
+          ArchivedBy: actorName,
+          archivedBy: actorName,
           UpdatedAt: nowIso
         };
         updatedRequestsMap.set(nextReq.Request_ID, nextReq);
@@ -3836,11 +3886,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } else {
         const nextReq: OfficeRequest = {
           ...r,
+          CitizenName: r.CitizenName || linkedCit?.FullName || 'مراجع',
+          CitizenPhone: r.CitizenPhone || linkedCit?.Phone1 || '',
+          Address: r.Address || r.CitizenAddress || linkedCit?.District || '',
+          DirectorNotes: mergedDirNote || r.DirectorNotes,
+          referredToOrganization: options.preserveNonOrgIsolation ? false : r.referredToOrganization,
           IsArchived: true,
-          ArchivedAt: r.ArchivedAt || formattedDate,
-          archivedAt: r.archivedAt || r.ArchivedAt || formattedDate,
-          ArchivedBy: r.ArchivedBy || actorName,
-          archivedBy: r.archivedBy || r.ArchivedBy || actorName,
+          ArchivedAt: formattedDate,
+          archivedAt: formattedDate,
+          ArchivedBy: actorName,
+          archivedBy: actorName,
           UpdatedAt: nowIso
         };
         (nextReq as any).archived = true;
@@ -3885,36 +3940,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ]);
         }
         // Mirror per-department archive entries cleanly into dedicated Firestore `archives` collection
+        // with FULL transaction data, Reception notes, and Director notes
         const archiveDept = sectionKey || 'global';
         const archiveActorName = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'النظام';
         const archiveNoteText = options.reason || '';
+        const visibleDepts = targetSections.length > 0 ? targetSections : ['global'];
         const archiveEntries = [
           ...updatedCitizensList.map(cit => ({
             id: `${archiveDept}_visitor_${cit.Citizen_ID}`,
             recordId: cit.Citizen_ID,
             recordType: 'visitor' as const,
+            citizenId: cit.Citizen_ID,
             department: archiveDept,
             departmentLabel: sectionLabel,
+            alsoVisibleIn: visibleDepts,
             fullName: cit.FullName || cit.Citizen_ID,
             phone: cit.Phone1 || '',
+            district: cit.District || '',
+            createdAt: cit.CreatedAt || '',
             archivedAt: formattedDate,
             archivedBy: archiveActorName,
             notes: archiveNoteText,
             updatedAt: nowIso
           })),
-          ...updatedRequestsList.map(req => ({
-            id: `${archiveDept}_request_${req.Request_ID}`,
-            recordId: req.Request_ID,
-            recordType: 'request' as const,
-            department: archiveDept,
-            departmentLabel: sectionLabel,
-            fullName: req.CitizenName || req.Request_ID,
-            phone: (req as any).Phone1 || (req as any).CitizenPhone || '',
-            archivedAt: formattedDate,
-            archivedBy: archiveActorName,
-            notes: archiveNoteText,
-            updatedAt: nowIso
-          }))
+          ...updatedRequestsList.map(req => {
+            const cit = citizensById.get(req.Citizen_ID);
+            return {
+              id: `${archiveDept}_request_${req.Request_ID}`,
+              recordId: req.Request_ID,
+              recordType: 'request' as const,
+              citizenId: req.Citizen_ID || '',
+              requestId: req.Request_ID,
+              department: archiveDept,
+              departmentLabel: sectionLabel,
+              alsoVisibleIn: visibleDepts,
+              fullName: req.CitizenName || cit?.FullName || req.Request_ID,
+              phone: req.CitizenPhone || cit?.Phone1 || '',
+              district: req.Address || cit?.District || '',
+              entity: req.Entity || '',
+              details: req.Details || '',
+              receptionNotes: req.ReceptionNotes || '',
+              directorNotes: req.DirectorNotes || '',
+              directorDecision: req.DirectorDecision || '',
+              processingStatus: req.ProcessingStatus || '',
+              deliveryStatus: req.DeliveryStatus || (req.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم'),
+              outgoingNumber: req.OutgoingNumber || '',
+              outgoingDate: req.OutgoingDate || '',
+              createdAt: req.CreatedAt || '',
+              archivedAt: formattedDate,
+              archivedBy: archiveActorName,
+              notes: archiveNoteText,
+              updatedAt: nowIso
+            };
+          })
         ];
         await fsSaveSectionArchiveEntries(archiveEntries).catch(() => {});
 
@@ -4025,6 +4103,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...r,
           archivedInSections: secFields.archivedInSections,
           unarchivedInSections: secFields.unarchivedInSections,
+          DirectorDecision:
+            sectionKey === 'director' && r.DirectorDecision === 'مؤرشف'
+              ? ''
+              : r.DirectorDecision,
           UpdatedAt: nowIso
         };
         updatedReqsMap.set(nextReq.Request_ID, nextReq);

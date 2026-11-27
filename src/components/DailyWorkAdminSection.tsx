@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import { useApp } from '../context/AppContext';
 import { Citizen, OfficeRequest, ProcessingStatus, Priority } from '../types';
 import {
@@ -38,14 +39,21 @@ import {
   ListPlus,
   FolderKanban,
   Archive,
-  RotateCcw
+  RotateCcw,
+  Download
 } from 'lucide-react';
 import { SearchableSelect } from './SearchableSelect';
 import { DHI_QAR_DISTRICTS, IRAQI_MINISTRIES, DEFAULT_CLANS } from './ReceptionModule';
 import { printSingleOutgoingReceipt, printCollectiveOutgoingReceipt } from '../utils/printReceiptHelper';
 import { GoogleDriveArchiveModal } from './GoogleDriveArchiveModal';
 import { computeNextOutgoingNumber, extractOutgoingSequence, MAX_VALID_OUTGOING_SEQ } from '../utils/outgoingNumberHelper';
-import { isCitizenArchivedInSection } from '../utils/archiveHelper';
+import {
+  getLocalTodayIsoDate,
+  isCitizenArchivedInSection,
+  isHistoricalOrImportedRecord,
+  isRecordRegisteredToday,
+  isRequestArchivedInSection
+} from '../utils/archiveHelper';
 
 interface DailyWorkAdminSectionProps {
   onOpenSmartArchive?: () => void;
@@ -712,13 +720,17 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return map;
   }, [requests]);
 
+  const todayLocalYmd = getLocalTodayIsoDate();
+
   // Build mapped records helper for Admin section (independent per-section archiving: 'admin')
-  const mapCitizenToAdminItem = (cit: Citizen, archivedFlag: boolean) => {
-    const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
+  const mapCitizenToAdminItem = (cit: Citizen, archivedFlag: boolean, overrideReqs?: OfficeRequest[]) => {
+    const citRequests = overrideReqs ?? (requestsByCitizenMap.get(cit.Citizen_ID) || []);
     const hasRejection = citRequests.some(r => r.DirectorDecision === 'رفض' || r.ProcessingStatus === 'مرفوض');
     const hasSpecial = citRequests.some(r => r.DirectorDecision === 'خاص');
     const hasGeneral = citRequests.some(r => r.DirectorDecision === 'عام');
-    const hasPending = citRequests.some(r => !r.DirectorDecision && r.ProcessingStatus !== 'منجز');
+    const hasPending = citRequests.some(
+      r => !r.DirectorDecision && r.ProcessingStatus !== 'منجز' && r.DirectorDecision !== 'مؤرشف'
+    );
     const hasCompleted = citRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.OutgoingNumber));
     const isImportedOrFiltered = isImportedOrNonNewItem(cit, citRequests);
 
@@ -737,38 +749,79 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
 
   // Helper: identify imported / database-filtered / non-new records inside Daily Work
   const isImportedOrNonNewItem = (cit: Citizen, citReqs: OfficeRequest[]): boolean => {
-    const importRegex = /استيراد|إكسل|اكسل|مسترد|تصفية|ملف|مقاطعة|سابق|أرشيف/i;
-    if (cit.IsHistoricalImported) return true;
-    if (importRegex.test(String(cit.ReferralSource || '')) || importRegex.test(String(cit.CreatedBy || ''))) return true;
-    if (String(cit.Citizen_ID || '').includes('-IMP-') || String(cit.Citizen_ID || '').startsWith('IMP')) return true;
-    return citReqs.some(
-      r =>
-        Boolean(r.IsHistoricalImported) ||
-        String(r.Request_ID || '').includes('-IMP-') ||
-        importRegex.test(String(r.CreatedBy || '')) ||
-        importRegex.test(String(r.RegisteredVia || '')) ||
-        importRegex.test(String(r.OtherNotes || ''))
-    );
+    if (isHistoricalOrImportedRecord(cit)) return true;
+    return citReqs.some(r => isHistoricalOrImportedRecord(r));
   };
 
-  // Active Daily Work records for Admin section ONLY (unarchived in 'admin')
+  // Active Daily Work records for Admin section ONLY:
+  // Strictly restricted to TODAY'S newly registered records (local date), excluding all historical/old/imported records.
   const dailyRecords = useMemo(() => {
-    return (citizens || [])
-      .filter(cit => {
-        const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
-        return !isCitizenArchivedInSection(cit, 'admin', citRequests);
-      })
-      .map(cit => mapCitizenToAdminItem(cit, false));
-  }, [citizens, requestsByCitizenMap]);
+    const parseTs = (val?: string) => {
+      if (!val) return 0;
+      const t = Date.parse(String(val).replace(' ', 'T'));
+      return isNaN(t) ? 0 : t;
+    };
 
-  // Archived records belonging to Admin Section Archive ONLY (archived in 'admin')
+    const list: ReturnType<typeof mapCitizenToAdminItem>[] = [];
+    for (const cit of citizens || []) {
+      if (!cit || isHistoricalOrImportedRecord(cit)) continue;
+      const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
+      if (isCitizenArchivedInSection(cit, 'admin', citRequests)) continue;
+
+      // Filter strictly to today's newly registered, non-historical, unarchived requests
+      const todayRequests = citRequests
+        .filter(
+          r =>
+            r &&
+            !isHistoricalOrImportedRecord(r) &&
+            !isRequestArchivedInSection(r, 'admin') &&
+            isRecordRegisteredToday(r, todayLocalYmd)
+        )
+        .sort((a, b) => parseTs(b.CreatedAt || b.UpdatedAt) - parseTs(a.CreatedAt || a.UpdatedAt));
+
+      const citizenRegisteredToday = isRecordRegisteredToday(cit, todayLocalYmd);
+
+      // Include ONLY if newly registered today (either a brand-new today request, or a brand-new today citizen with no requests yet)
+      if (todayRequests.length > 0) {
+        list.push(mapCitizenToAdminItem(cit, false, todayRequests));
+      } else if (citizenRegisteredToday && citRequests.length === 0) {
+        list.push(mapCitizenToAdminItem(cit, false, []));
+      }
+    }
+
+    return list.sort((a, b) => {
+      const tsA = parseTs(a.requests[0]?.CreatedAt || a.citizen.CreatedAt);
+      const tsB = parseTs(b.requests[0]?.CreatedAt || b.citizen.CreatedAt);
+      return tsB - tsA;
+    });
+  }, [citizens, requestsByCitizenMap, todayLocalYmd]);
+
+  // Archived records belonging to Admin Section Archive / أرشيف العمل اليومي (archived in 'admin', including Director-archived items)
   const archivedAdminRecords = useMemo(() => {
+    const parseTs = (val?: string) => {
+      if (!val) return 0;
+      const t = Date.parse(String(val).replace(' ', 'T'));
+      return isNaN(t) ? 0 : t;
+    };
     return (citizens || [])
       .filter(cit => {
+        if (!cit) return false;
         const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
-        return isCitizenArchivedInSection(cit, 'admin', citRequests);
+        return (
+          isCitizenArchivedInSection(cit, 'admin', citRequests) ||
+          citRequests.some(r => isRequestArchivedInSection(r, 'admin'))
+        );
       })
-      .map(cit => mapCitizenToAdminItem(cit, true));
+      .map(cit => {
+        const citRequests = requestsByCitizenMap.get(cit.Citizen_ID) || [];
+        const archivedReqs = citRequests.filter(r => isRequestArchivedInSection(r, 'admin'));
+        return mapCitizenToAdminItem(cit, true, archivedReqs.length > 0 ? archivedReqs : citRequests);
+      })
+      .sort((a, b) => {
+        const tsA = parseTs(a.requests[0]?.ArchivedAt || a.citizen.ArchivedAt || a.citizen.UpdatedAt || a.citizen.CreatedAt);
+        const tsB = parseTs(b.requests[0]?.ArchivedAt || b.citizen.ArchivedAt || b.citizen.UpdatedAt || b.citizen.CreatedAt);
+        return tsB - tsA;
+      });
   }, [citizens, requestsByCitizenMap]);
 
   const archivedDailyCount = archivedAdminRecords.length;
@@ -864,6 +917,128 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
     return filteredDailyRecords.slice(start, start + pageSize);
   }, [filteredDailyRecords, currentPage, pageSize]);
 
+  // Export ONLY the currently filtered Daily Work records (strictly today's newly registered records in 'daily' mode)
+  // Never pulls full database or historical archive; preserves delivery status column & clean RTL print formatting without charts.
+  const handleExportDailyWorkExcel = () => {
+    const exportItems =
+      viewMode === 'daily'
+        ? filteredDailyRecords.filter(item => {
+            if (isHistoricalOrImportedRecord(item.citizen)) return false;
+            const hasTodayReq = item.requests.some(r => isRecordRegisteredToday(r, todayLocalYmd));
+            return hasTodayReq || isRecordRegisteredToday(item.citizen, todayLocalYmd);
+          })
+        : filteredDailyRecords;
+
+    if (exportItems.length === 0) {
+      showBlockBanner(
+        'error',
+        viewMode === 'daily'
+          ? `لا توجد معاملات مسجلة حديثاً لهذا اليوم (${todayLocalYmd}) لتصديرها في ملف Excel.`
+          : 'لا توجد سجلات معروضة في أرشيف العمل اليومي لتصديرها.'
+      );
+      return;
+    }
+
+    const rows: Record<string, string | number>[] = [];
+    let serial = 1;
+
+    for (const item of exportItems) {
+      const cit = item.citizen;
+      const reqsToExport =
+        viewMode === 'daily'
+          ? item.requests.filter(r => isRecordRegisteredToday(r, todayLocalYmd))
+          : item.requests;
+
+      if (reqsToExport.length > 0) {
+        for (const req of reqsToExport) {
+          const deliveryStatus =
+            req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم';
+          rows.push({
+            'ت': serial++,
+            'رقم المراجع': cit.Citizen_ID || '',
+            'رقم المعاملة': req.Request_ID || '',
+            'اسم صاحب الطلب': cit.FullName || req.CitizenName || '',
+            'رقم الهاتف': cit.Phone1 || req.CitizenPhone || '',
+            'القضاء / السكن': [cit.District, cit.SubDistrict].filter(Boolean).join(' - ') || req.Address || '',
+            'الجهة / الوزارة': req.Entity || '',
+            'موضوع الطلب': req.Details || '',
+            'قرار مدير المكتب': req.DirectorDecision || 'بانتظار المدير',
+            'حالة المعاملة': req.ProcessingStatus || 'قيد الإجراء',
+            'حالة الاستلام (مستلم أم غير مستلم)': deliveryStatus,
+            'رقم الصادر': req.OutgoingNumber || '',
+            'تاريخ الصادر': req.OutgoingDate || '',
+            'المعرف / التزكية': cit.ReferralSource || req.ReferralSource || '',
+            'ملاحظات الاستعلامات': req.ReceptionNotes || '',
+            'توجيه وملاحظات المدير': req.DirectorNotes || '',
+            'تاريخ التسجيل': req.CreatedAt || cit.CreatedAt || todayLocalYmd
+          });
+        }
+      } else {
+        rows.push({
+          'ت': serial++,
+          'رقم المراجع': cit.Citizen_ID || '',
+          'رقم المعاملة': '',
+          'اسم صاحب الطلب': cit.FullName || '',
+          'رقم الهاتف': cit.Phone1 || '',
+          'القضاء / السكن': [cit.District, cit.SubDistrict].filter(Boolean).join(' - '),
+          'الجهة / الوزارة': '',
+          'موضوع الطلب': '',
+          'قرار مدير المكتب': 'بانتظار المدير',
+          'حالة المعاملة': 'قيد الإجراء',
+          'حالة الاستلام (مستلم أم غير مستلم)': 'غير مستلم',
+          'رقم الصادر': '',
+          'تاريخ الصادر': '',
+          'المعرف / التزكية': cit.ReferralSource || '',
+          'ملاحظات الاستعلامات': '',
+          'توجيه وملاحظات المدير': '',
+          'تاريخ التسجيل': cit.CreatedAt || todayLocalYmd
+        });
+      }
+    }
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 6 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 28 },
+      { wch: 15 },
+      { wch: 22 },
+      { wch: 26 },
+      { wch: 36 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 24 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 20 },
+      { wch: 28 },
+      { wch: 28 },
+      { wch: 18 }
+    ];
+    (ws as any)['!views'] = [{ rightToLeft: true }];
+
+    const wb = XLSX.utils.book_new();
+    const sheetName = viewMode === 'daily' ? `الأعمال_اليومية_${todayLocalYmd}` : `أرشيف_العمل_اليومي`;
+    XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31));
+
+    const fileName =
+      viewMode === 'daily'
+        ? `الأعمال_اليومية_${todayLocalYmd}.xlsx`
+        : `أرشيف_العمل_اليومي_${todayLocalYmd}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+
+    addAuditLog(
+      'تنزيل Excel للأعمال اليومية',
+      'قسم الإدارة — الأعمال اليومية',
+      `تم تصدير (${rows.length}) سجل مطابق تماماً لجدول ${viewMode === 'daily' ? `الأعمال اليومية المسجلة بتاريخ اليوم (${todayLocalYmd}) حصراً` : 'أرشيف العمل اليومي'} في الملف ${fileName}`
+    );
+    showBlockBanner(
+      'success',
+      `✓ تم تنزيل ملف Excel (${fileName}) بعدد (${rows.length}) سجل مطابق تماماً للجدول المصفّى ${viewMode === 'daily' ? 'لمعاملات اليوم حصراً' : ''}.`
+    );
+  };
+
   return (
     <div className="space-y-4 text-right" dir="rtl">
       {/* Top Banner / Stats Header */}
@@ -884,6 +1059,9 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs bg-emerald-500/20 text-emerald-200 px-3 py-1.5 rounded-xl border border-emerald-400/30 font-black font-mono">
+              معاملات اليوم حصراً: {todayLocalYmd}
+            </span>
             <span className="text-xs bg-white/10 px-3 py-1.5 rounded-xl border border-white/10 font-bold">
               إجمالي المراجعين اليومي: {filteredDailyRecords.length}
             </span>
@@ -970,6 +1148,25 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
           </button>
 
           <div className="mr-auto flex items-center gap-2 flex-wrap">
+            {/* Export Daily Work Filtered Excel Button (strictly today's newly registered records only) */}
+            <button
+              type="button"
+              onClick={handleExportDailyWorkExcel}
+              className="px-3 py-1 rounded-lg font-black transition-all cursor-pointer flex items-center gap-1.5 bg-teal-500 hover:bg-teal-400 text-slate-950 border border-teal-300 shadow-xs active:scale-95"
+              title={
+                viewMode === 'daily'
+                  ? `تنزيل ملف Excel لمعاملات اليوم (${todayLocalYmd}) المسجلة حديثاً والمطابقة للجدول المصفى حصراً`
+                  : 'تنزيل ملف Excel لسجلات أرشيف العمل اليومي المعروضة حالياً'
+              }
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>
+                {viewMode === 'daily'
+                  ? `تنزيل Excel لليوم فقط (${filteredDailyRecords.length})`
+                  : `تنزيل Excel المؤرشف (${filteredDailyRecords.length})`}
+              </span>
+            </button>
+
             {/* Independent Section Archive Toggle Button */}
             <button
               type="button"
@@ -982,7 +1179,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                   ? 'bg-amber-400 text-slate-950 border-amber-300'
                   : 'bg-white/15 hover:bg-white/25 text-white border-white/25'
               }`}
-              title="استعراض السجلات المؤرشفة داخل قسم الإدارة فقط مع إمكانية إرجاع أي سجل للعمل اليومي"
+              title="استعراض السجلات المؤرشفة داخل قسم الإدارة (أرشيف العمل اليومي) مع إمكانية إرجاع أي سجل للعمل اليومي"
             >
               {viewMode === 'section_archive' ? (
                 <>
@@ -992,7 +1189,7 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
               ) : (
                 <>
                   <Archive className="w-3.5 h-3.5 text-amber-300" />
-                  <span>عرض المؤرشف / أرشيف قسم الإدارة ({archivedDailyCount.toLocaleString()})</span>
+                  <span>أرشيف العمل اليومي / الإدارة ({archivedDailyCount.toLocaleString()})</span>
                 </>
               )}
             </button>
@@ -1699,6 +1896,16 @@ export const DailyWorkAdminSection: React.FC<DailyWorkAdminSectionProps> = ({
                     </span>
                   </div>
                 </div>
+
+                {/* Reception Notes if available */}
+                {primaryReq?.ReceptionNotes && (
+                  <div className="p-2.5 rounded-xl bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 text-sky-950 dark:text-sky-100 text-xs font-bold flex items-center justify-between flex-wrap gap-2">
+                    <span className="flex items-center gap-1.5">
+                      <span>📌 ملاحظات موظف الاستعلامات:</span>
+                      <span className="font-normal">{primaryReq.ReceptionNotes}</span>
+                    </span>
+                  </div>
+                )}
 
                 {/* Director Notes if available */}
                 {primaryReq?.DirectorNotes && (

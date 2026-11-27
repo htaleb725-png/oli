@@ -285,3 +285,146 @@ export function buildSectionUnarchivedFields(
     unarchivedInSections: nextUnarchived
   };
 }
+
+/**
+ * Computes updated per-section archive arrays across multiple sections atomically
+ * (e.g., archiving from Director screen into both 'director' and 'admin' daily archive views).
+ */
+export function buildMultiSectionArchivedFields(
+  record: { archivedInSections?: string[]; unarchivedInSections?: string[] } | null | undefined,
+  sectionKeys: ArchiveSectionKey[]
+): { archivedInSections: string[]; unarchivedInSections: string[] } {
+  const cleanKeys = Array.from(
+    new Set(
+      (sectionKeys || [])
+        .map(k => String(k || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+  const prevArchived = normalizeSectionList(record?.archivedInSections);
+  const prevUnarchived = normalizeSectionList(record?.unarchivedInSections);
+
+  const nextArchived = Array.from(new Set([...prevArchived, ...cleanKeys]));
+  const keySet = new Set(cleanKeys);
+  const nextUnarchived = prevUnarchived.filter(s => !keySet.has(s));
+
+  return {
+    archivedInSections: nextArchived,
+    unarchivedInSections: nextUnarchived
+  };
+}
+
+/**
+ * Returns today's date in the user's LOCAL timezone as `YYYY-MM-DD`.
+ * Never uses UTC `toISOString()` so Iraq (UTC+3) late-night/early-morning dates stay exact.
+ */
+export function getLocalTodayIsoDate(referenceDate?: Date): string {
+  const d = referenceDate ? new Date(referenceDate.getTime()) : new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Normalizes a date/timestamp string (ISO with Z/offset, `YYYY-MM-DD HH:mm`, `YYYY/MM/DD`,
+ * `DD/MM/YYYY`, or Arabic-Indic numerals) into a local `YYYY-MM-DD` string.
+ * Returns empty string if unparseable or missing.
+ */
+export function extractLocalDateYMD(raw?: unknown): string {
+  if (raw === null || raw === undefined) return '';
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
+    return getLocalTodayIsoDate(raw);
+  }
+  const str = String(raw)
+    .replace(/[٠-٩]/g, ch => String('٠١٢٣٤٥٦٧٨٩'.indexOf(ch)))
+    .replace(/[۰-۹]/g, ch => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch)))
+    .trim();
+  if (!str) return '';
+
+  // Full ISO timestamp with timezone (Z or +/-HH:MM) -> convert to LOCAL calendar date
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str) && /(Z|[+-]\d{2}:?\d{2})$/i.test(str)) {
+    const parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) {
+      return getLocalTodayIsoDate(parsed);
+    }
+  }
+
+  // Standard YYYY-MM-DD or YYYY/MM/DD (with optional local time)
+  const ymdMatch = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (ymdMatch) {
+    const y = ymdMatch[1];
+    const m = ymdMatch[2].padStart(2, '0');
+    const d = ymdMatch[3].padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // DD/MM/YYYY or DD-MM-YYYY
+  const dmyMatch = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (dmyMatch) {
+    const d = dmyMatch[1].padStart(2, '0');
+    const m = dmyMatch[2].padStart(2, '0');
+    const y = dmyMatch[3];
+    return `${y}-${m}-${d}`;
+  }
+
+  // Fallback native Date parse
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    return getLocalTodayIsoDate(parsed);
+  }
+  return '';
+}
+
+const HISTORICAL_IMPORT_REGEX = /استيراد|إكسل|اكسل|مسترد|تصفية|ملف|مقاطعة|سابق|أرشيف/i;
+
+/**
+ * Returns true if a citizen or request record is a historical/imported archive record
+ * rather than a freshly registered live transaction.
+ */
+export function isHistoricalOrImportedRecord(rec?: Record<string, any> | null): boolean {
+  if (!rec || typeof rec !== 'object') return false;
+  if (parseArchivedFlag(rec.IsHistoricalImported)) return true;
+  const citId = String(rec.Citizen_ID || '');
+  const reqId = String(rec.Request_ID || '');
+  if (citId.includes('-IMP-') || citId.startsWith('IMP')) return true;
+  if (reqId.includes('-IMP-') || reqId.startsWith('IMP')) return true;
+  if (
+    HISTORICAL_IMPORT_REGEX.test(String(rec.ReferralSource || '')) ||
+    HISTORICAL_IMPORT_REGEX.test(String(rec.CreatedBy || '')) ||
+    HISTORICAL_IMPORT_REGEX.test(String(rec.RegisteredVia || '')) ||
+    HISTORICAL_IMPORT_REGEX.test(String(rec.OtherNotes || ''))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Strictly checks whether a record (Citizen or OfficeRequest) was newly registered TODAY
+ * (matching local `YYYY-MM-DD`) and is NOT a historical or previously imported record.
+ */
+export function isRecordRegisteredToday(
+  rec?: Record<string, any> | null,
+  todayYmd?: string
+): boolean {
+  if (!rec || typeof rec !== 'object') return false;
+  if (isHistoricalOrImportedRecord(rec)) return false;
+
+  const targetToday = todayYmd || getLocalTodayIsoDate();
+  const candidates = [
+    rec.CreatedAt,
+    rec.createdAt,
+    rec.submission_date,
+    rec.CreatedDate
+  ];
+
+  for (const candidate of candidates) {
+    const ymd = extractLocalDateYMD(candidate);
+    if (ymd) {
+      return ymd === targetToday;
+    }
+  }
+  return false;
+}
+

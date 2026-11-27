@@ -18,6 +18,11 @@ import {
   FileText
 } from 'lucide-react';
 import { printElementIsolated } from '../utils/printReceiptHelper';
+import {
+  extractLocalDateYMD,
+  getLocalTodayIsoDate,
+  isHistoricalOrImportedRecord
+} from '../utils/archiveHelper';
 
 export type DepartmentType = 'reception' | 'organization' | 'interviews' | 'admin';
 
@@ -99,8 +104,8 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
 
   const effectiveDepartment: DepartmentType = department;
   
-  // Custom date range
-  const todayStr = new Date().toISOString().split('T')[0];
+  // Custom date range (strict local YYYY-MM-DD)
+  const todayStr = getLocalTodayIsoDate();
   const [startDate, setStartDate] = useState(todayStr);
   const [endDate, setEndDate] = useState(todayStr);
   
@@ -124,35 +129,34 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
 
   const printableRef = useRef<HTMLDivElement>(null);
 
-  // Compute date thresholds
+  // Compute date thresholds (local calendar dates)
   const dateRange = useMemo(() => {
     const now = new Date();
     if (period === 'today') {
       return { start: todayStr, end: todayStr };
     }
     if (period === 'week') {
-      const weekAgo = new Date();
-      weekAgo.setDate(now.getDate() - 7);
-      return { start: weekAgo.toISOString().split('T')[0], end: todayStr };
+      const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+      return { start: getLocalTodayIsoDate(weekAgo), end: todayStr };
     }
     if (period === 'month') {
-      const monthAgo = new Date();
-      monthAgo.setDate(now.getDate() - 30);
-      return { start: monthAgo.toISOString().split('T')[0], end: todayStr };
+      const monthAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
+      return { start: getLocalTodayIsoDate(monthAgo), end: todayStr };
     }
     return { start: startDate, end: endDate };
   }, [period, startDate, endDate, todayStr]);
 
   // Extract items based on selected department and date
   const rawItems = useMemo(() => {
-    const isWithinDate = (dStr?: string) => {
-      if (!dStr) return true;
-      const cleanDate = dStr.split(' ')[0].split('T')[0];
+    const isWithinDate = (dStr?: string, rec?: Record<string, any>) => {
+      if (period === 'today' && rec && isHistoricalOrImportedRecord(rec)) return false;
+      const cleanDate = extractLocalDateYMD(dStr);
+      if (!cleanDate) return false;
       return cleanDate >= dateRange.start && cleanDate <= dateRange.end;
     };
 
     if (effectiveDepartment === 'reception') {
-      return citizens.filter(c => isWithinDate(c.CreatedAt)).map(c => ({
+      return citizens.filter(c => isWithinDate(c.CreatedAt, c)).map(c => ({
         id: c.Citizen_ID,
         name: c.FullName,
         phone: c.Phone1 + (c.Phone2 ? ` / ${c.Phone2}` : ''),
@@ -160,6 +164,7 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
         details: `المهنة: ${c.Job || 'كاسب'} | التحصيل: ${c.Education || 'إعدادية'}`,
         date: c.CreatedAt || todayStr,
         status: c.Rating || 'لائق',
+        deliveryStatus: '',
         notes: c.ReferralSource ? `المعرف: ${c.ReferralSource}` : 'مباشر بدون معرف'
       }));
     }
@@ -173,6 +178,7 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
         details: `الثقل: ${o.InfluenceType} | المركز: ${o.ElectionCenter || 'غير محدد'} (محطة ${o.StationNumber || '1'})`,
         date: o.UpdatedAt || todayStr,
         status: o.OrgRating,
+        deliveryStatus: '',
         notes: `النقاط: ${o.EvaluationPoints} | ${o.Notes || 'موقف إيجابي'}`
       }));
     }
@@ -186,12 +192,13 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
         details: i.Subject,
         date: `${i.InterviewDate} (${i.InterviewTime || '10:00 ص'})`,
         status: i.Status,
+        deliveryStatus: '',
         notes: i.DeputyNotes || 'توجيه بالإجراء والمتابعة'
       }));
     }
 
     // Admin
-    return requests.filter(r => isWithinDate(r.CreatedAt)).map(r => ({
+    return requests.filter(r => isWithinDate(r.CreatedAt, r)).map(r => ({
       id: r.Request_ID,
       name: r.CitizenName,
       phone: r.CitizenPhone || '',
@@ -199,9 +206,10 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
       details: r.Details,
       date: r.CreatedAt,
       status: r.ProcessingStatus,
-      notes: r.DeputyNotes || 'متابعة رسمية'
+      deliveryStatus: r.DeliveryStatus === 'مستلم' || r.RequestStatus === 'مستلم' ? 'مستلم' : 'غير مستلم',
+      notes: r.DirectorNotes || r.ReceptionNotes || r.DeputyNotes || 'متابعة رسمية'
     }));
-  }, [effectiveDepartment, citizens, organizationRecords, interviews, requests, dateRange, todayStr]);
+  }, [effectiveDepartment, citizens, organizationRecords, interviews, requests, dateRange, todayStr, period]);
 
   // Filtered items by search query
   const filteredItems = useMemo(() => {
@@ -282,11 +290,15 @@ export const DepartmentWorkReportsModal: React.FC<DepartmentWorkReportsModalProp
       if (visibleColumns.details) row['تفاصيل العمل والمعاملة'] = item.details;
       if (visibleColumns.date) row['تاريخ المراجعة'] = item.date;
       if (visibleColumns.status) row['الموقف / الحالة'] = item.status;
+      if (effectiveDepartment === 'admin') {
+        row['حالة الاستلام (مستلم أم غير مستلم)'] = item.deliveryStatus || 'غير مستلم';
+      }
       if (visibleColumns.notes) row['الملاحظات والتوجيه'] = item.notes;
       return row;
     });
 
     const ws = XLSX.utils.json_to_sheet(exportData);
+    (ws as any)['!views'] = [{ rightToLeft: true }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'تقرير الأعمال');
     

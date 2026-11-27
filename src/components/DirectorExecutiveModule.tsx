@@ -1443,14 +1443,36 @@ export const DirectorExecutiveModule: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => {
+                                const typedNote =
+                                  directorNotesMap[req.Request_ID] !== undefined
+                                    ? directorNotesMap[req.Request_ID]
+                                    : (req.DirectorNotes || '');
+                                const hasOtherActiveAdminReqs = (requests || []).some(
+                                  r =>
+                                    r &&
+                                    r.Citizen_ID === req.Citizen_ID &&
+                                    r.Request_ID !== req.Request_ID &&
+                                    !isRequestArchivedInSection(r, 'admin')
+                                );
                                 archiveDailyWorkItems({
+                                  citizenIds:
+                                    req.Citizen_ID && !hasOtherActiveAdminReqs
+                                      ? [req.Citizen_ID]
+                                      : [],
                                   requestIds: [req.Request_ID],
                                   sectionKey: 'director',
-                                  reason: 'أرشفة مستقلة فردية في قسم مدير المكتب (محفوظ بالكامل ولا يؤثر على بقية الأقسام)'
+                                  extraSectionKeys: ['admin'],
+                                  directorNotesByRequestId: {
+                                    [req.Request_ID]: typedNote
+                                  },
+                                  preserveNonOrgIsolation: true,
+                                  reason:
+                                    typedNote.trim() ||
+                                    'أرشفة من شاشة مدير المكتب (مراجعة استلام طلب / أرشفة مباشرة) — محفوظ بالكامل مع ملاحظات الاستعلامات والمدير في الأرشيف العام وأرشيف العمل اليومي'
                                 });
                                 addNotification({
-                                  title: `📦 أرشفة طلب من مكتب المدير: ${req.CitizenName}`,
-                                  message: `تمت أرشفة الطلب (${req.Request_ID}) في أرشيف مدير المكتب مع الاحتفاظ الكامل بجميع الحقول والقرار.`,
+                                  title: `📦 أرشفة معاملة من مكتب المدير: ${req.CitizenName}`,
+                                  message: `تمت أرشفة الطلب (${req.Request_ID}) بكامل بياناته وملاحظات الاستعلامات والمدير في الأرشيف العام وأرشيف العمل اليومي.`,
                                   type: 'director_decision',
                                   category: 'director',
                                   priority: 'normal',
@@ -1458,13 +1480,15 @@ export const DirectorExecutiveModule: React.FC = () => {
                                   entityId: req.Request_ID,
                                   targetRoles: ['admin', 'admin_officer', 'developer']
                                 });
-                                showArchiveToast(`✓ تمت أرشفة طلب (${req.CitizenName}) في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`);
+                                showArchiveToast(
+                                  `✓ تمت أرشفة معاملة (${req.CitizenName}) بكامل بياناتها وملاحظاتها في الأرشيف العام وأرشيف العمل اليومي وإخراجها من قائمة الوارد.`
+                                );
                               }}
                               className="h-9 px-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700 font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 shrink-0"
-                              title="أرشفة مستقلة في قسم مدير المكتب فقط (لا يختفي من بقية الأقسام)"
+                              title="أرشفة المعاملة بكامل بياناتها وملاحظاتها في الأرشيف العام وأرشيف العمل اليومي وإخراجها من قائمة انتظار المدير"
                             >
                               <Archive className="w-3.5 h-3.5" />
-                              <span>أرشفة</span>
+                              <span>أرشيف</span>
                             </button>
                           )}
 
@@ -1931,7 +1955,7 @@ export const DirectorExecutiveModule: React.FC = () => {
                 <span>{requestToDelete.Entity}</span>
               </div>
               <p className="text-[11px] text-rose-600 dark:text-rose-400 pt-2 border-t border-slate-200 dark:border-slate-700 font-bold">
-                ⚠️ تنبيه: سيتم حذف هذا السجل بشكل نهائي لا رجعة فيه من Firestore و Google Sheets وكافة أجهزة النظام.
+                ⚠️ تنبيه: سيتم حذف هذه المعاملة بشكل نهائي وشامل من شاشة المدير، سجل الاستعلامات، قسم الإدارة، وكافة مجموعات Firebase Firestore والنسخة الاحتياطية في Google Sheets.
               </p>
             </div>
 
@@ -1947,17 +1971,34 @@ export const DirectorExecutiveModule: React.FC = () => {
                 type="button"
                 onClick={() => {
                   const deletedInfo = requestToDelete;
+                  const otherRemainingRequests = (requests || []).filter(
+                    r =>
+                      r &&
+                      r.Citizen_ID === deletedInfo.Citizen_ID &&
+                      r.Request_ID !== deletedInfo.Request_ID
+                  );
+
+                  // 1. Real comprehensive deletion (`deleteDoc` + Google Sheets background `action: "delete"`)
                   deleteRequest(deletedInfo.Request_ID);
+
+                  // 2. If this was the citizen's only transaction, cascade-delete the citizen record too
+                  // so nothing remains stuck in Reception ("الاستعلامات"), Admin, or any Firestore collection
+                  if (deletedInfo.Citizen_ID && otherRemainingRequests.length === 0) {
+                    deleteCitizen(deletedInfo.Citizen_ID);
+                  }
+
                   addNotification({
-                    title: `🗑️ حذف معاملة بقرار مدير المكتب: ${deletedInfo.CitizenName}`,
-                    message: `قام مدير المكتب بحذف الطلب (${deletedInfo.Request_ID}) نهائياً من قاعدة البيانات.`,
+                    title: `🗑️ حذف معاملة نهائياً بقرار مدير المكتب: ${deletedInfo.CitizenName}`,
+                    message: `قام مدير المكتب بحذف المعاملة (${deletedInfo.Request_ID}) نهائياً من شاشة المدير والاستعلامات والإدارة وكافة قواعد البيانات.`,
                     type: 'director_decision',
                     category: 'director',
                     priority: 'high',
                     linkSection: 'admin',
-                    entityId: deletedInfo.Request_ID,
                     targetRoles: ['admin', 'admin_officer', 'developer']
                   });
+                  showArchiveToast(
+                    `✓ تم الحذف النهائي الشامل لمعاملة (${deletedInfo.CitizenName}) من المدير والاستعلامات والإدارة وجميع مسارات Firestore.`
+                  );
                   setRequestToDelete(null);
                 }}
                 className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/25 active:scale-95"

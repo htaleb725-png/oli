@@ -499,6 +499,28 @@ export async function fsDeleteArchivesForRecord(recordId: string): Promise<void>
   }
 }
 
+async function fsDeleteByField(
+  collectionKey: string,
+  fieldName: string,
+  fieldValue: string
+): Promise<void> {
+  if (!fieldValue || isFirestoreTemporarilyBlocked()) return;
+  try {
+    const col = getFSCol(collectionKey);
+    const snap = await getDocs(query(collection(db, col), where(fieldName, '==', fieldValue)));
+    if (snap.empty) return;
+    const docs = snap.docs;
+    const CHUNK = 250;
+    for (let i = 0; i < docs.length; i += CHUNK) {
+      const batch = writeBatch(db);
+      docs.slice(i, i + CHUNK).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch (err) {
+    console.warn(`Firestore cascade delete (${collectionKey}.${fieldName}) notice:`, err);
+  }
+}
+
 export async function fsDeleteCitizen(citizenId: string): Promise<void> {
   const safeId = sanitizeFirestoreDocId(citizenId, 'ONA');
   const col = getFSCol(FS_COLLECTIONS.CITIZENS);
@@ -509,6 +531,14 @@ export async function fsDeleteCitizen(citizenId: string): Promise<void> {
       deleteDoc(doc(db, getFSCol(FS_COLLECTIONS.BLACKLIST), safeId)).catch(() => {}),
       deleteDoc(doc(db, getFSCol(FS_COLLECTIONS.ORGANIZATIONS), safeId)).catch(() => {}),
       fsDeleteArchivesForRecord(safeId),
+      fsDeleteByField(FS_COLLECTIONS.REQUESTS, 'Citizen_ID', safeId),
+      fsDeleteByField(FS_COLLECTIONS.INTERVIEWS, 'Citizen_ID', safeId),
+      fsDeleteByField(FS_COLLECTIONS.LETTERS, 'Citizen_ID', safeId),
+      fsDeleteByField(FS_COLLECTIONS.CHEQUES, 'Citizen_ID', safeId),
+      fsDeleteByField(FS_COLLECTIONS.ORGANIZATIONS, 'Citizen_ID', safeId),
+      fsDeleteByField(FS_COLLECTIONS.DOCUMENTS, 'Citizen_ID', safeId),
+      fsDeleteByField(FS_COLLECTIONS.BLACKLIST, 'Citizen_ID', safeId),
+      fsDeleteByField(FS_COLLECTIONS.NOTIFICATIONS, 'entityId', safeId),
       fsRegisterDeletedRecord(safeId, 'citizens')
     ]);
     updateFirebaseHealth('connected', null);
@@ -540,6 +570,7 @@ export async function fsDeleteRequest(requestId: string): Promise<void> {
     await deleteDoc(doc(db, col, safeId));
     await Promise.all([
       fsDeleteArchivesForRecord(safeId),
+      fsDeleteByField(FS_COLLECTIONS.NOTIFICATIONS, 'entityId', safeId),
       fsRegisterDeletedRecord(safeId, 'requests')
     ]);
     updateFirebaseHealth('connected', null);
@@ -2034,10 +2065,24 @@ export interface FirestoreArchiveEntry {
   id: string;
   recordId: string;
   recordType: 'visitor' | 'request';
+  citizenId?: string;
+  requestId?: string;
   department: string;
   departmentLabel: string;
+  alsoVisibleIn?: string[];
   fullName: string;
   phone?: string;
+  district?: string;
+  entity?: string;
+  details?: string;
+  receptionNotes?: string;
+  directorNotes?: string;
+  directorDecision?: string;
+  processingStatus?: string;
+  deliveryStatus?: string;
+  outgoingNumber?: string;
+  outgoingDate?: string;
+  createdAt?: string;
   archivedAt: string;
   archivedBy?: string;
   notes?: string;
