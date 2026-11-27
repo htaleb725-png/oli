@@ -41,7 +41,11 @@ import {
   fsSaveUser,
   fsDeleteUser
 } from './firebaseFirestoreService';
-import { RealtimeActionType } from './realtimeGoogleSync';
+import {
+  RealtimeActionType,
+  pushToGoogleSheetsRealtime,
+  registerCustomSectionInGoogleSheets
+} from './realtimeGoogleSync';
 import { reportDualCloudWriteResult } from './cloudSyncAlerts';
 
 export interface CloudConnectionContext {
@@ -82,10 +86,11 @@ function extractReadableError(err: unknown): string {
 async function executeFirestoreOperation(params: {
   entityLabel: string;
   firestoreOp: () => Promise<void>;
+  backgroundSheetsOp?: () => Promise<any>;
   silentSuccess?: boolean;
   actionType?: 'save' | 'delete';
 }): Promise<DualWriteOutcome> {
-  const { entityLabel, firestoreOp, silentSuccess = true, actionType = 'save' } = params;
+  const { entityLabel, firestoreOp, backgroundSheetsOp, silentSuccess = true, actionType = 'save' } = params;
 
   let firebaseOk = false;
   let firebaseError: string | undefined;
@@ -98,8 +103,17 @@ async function executeFirestoreOperation(params: {
     firebaseError = extractReadableError(err);
   }
 
+  // Fire non-blocking background backup to Google Apps Script (Code.gs 2026-DYNAMIC-V3) ONLY after Firestore succeeds
+  if (firebaseOk && backgroundSheetsOp) {
+    void Promise.resolve()
+      .then(() => backgroundSheetsOp())
+      .catch(() => {
+        // Silent background backup failure never blocks or slows down live Firestore UI
+      });
+  }
+
   const retryFn = async () => {
-    await executeFirestoreOperation({ entityLabel, firestoreOp, silentSuccess: false, actionType });
+    await executeFirestoreOperation({ entityLabel, firestoreOp, backgroundSheetsOp, silentSuccess: false, actionType });
   };
 
   if (!silentSuccess || !firebaseOk) {
@@ -122,19 +136,32 @@ async function executeFirestoreOperation(params: {
 export const receptionDomain = {
   async saveCitizen(
     citizen: Citizen,
-    _action: RealtimeActionType,
-    _ctx: CloudConnectionContext
+    action: RealtimeActionType,
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `المراجع: ${citizen.FullName || citizen.Citizen_ID}`,
-      firestoreOp: () => fsSaveCitizen(citizen)
+      firestoreOp: () => fsSaveCitizen(citizen),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime('citizens', citizen, action, ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        })
     });
   },
 
-  async deleteCitizen(citizenId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+  async deleteCitizen(citizenId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `المراجع: ${citizenId}`,
       firestoreOp: () => fsDeleteCitizen(citizenId),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime(
+          'citizens',
+          { Citizen_ID: citizenId, id: citizenId },
+          'delete',
+          ctx.appsScriptUrl,
+          ctx.googleSheetId,
+          { backgroundBackup: true }
+        ),
       silentSuccess: false,
       actionType: 'delete'
     });
@@ -147,19 +174,32 @@ export const receptionDomain = {
 export const adminRequestsDomain = {
   async saveRequest(
     request: OfficeRequest,
-    _action: RealtimeActionType,
-    _ctx: CloudConnectionContext
+    action: RealtimeActionType,
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `المعاملة: ${request.Request_ID}`,
-      firestoreOp: () => fsSaveRequest(request)
+      firestoreOp: () => fsSaveRequest(request),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime('requests', request, action, ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        })
     });
   },
 
-  async deleteRequest(requestId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+  async deleteRequest(requestId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `المعاملة: ${requestId}`,
       firestoreOp: () => fsDeleteRequest(requestId),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime(
+          'requests',
+          { Request_ID: requestId, id: requestId },
+          'delete',
+          ctx.appsScriptUrl,
+          ctx.googleSheetId,
+          { backgroundBackup: true }
+        ),
       silentSuccess: false,
       actionType: 'delete'
     });
@@ -172,19 +212,32 @@ export const adminRequestsDomain = {
 export const interviewsDomain = {
   async saveInterview(
     interview: Interview,
-    _action: RealtimeActionType,
-    _ctx: CloudConnectionContext
+    action: RealtimeActionType,
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `مقابلة: ${interview.FullName || interview.Interview_ID}`,
-      firestoreOp: () => fsSaveInterview(interview)
+      firestoreOp: () => fsSaveInterview(interview),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime('interviews', interview, action, ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        })
     });
   },
 
-  async deleteInterview(interviewId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+  async deleteInterview(interviewId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `المقابلة: ${interviewId}`,
       firestoreOp: () => fsDeleteInterview(interviewId),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime(
+          'interviews',
+          { Interview_ID: interviewId, id: interviewId },
+          'delete',
+          ctx.appsScriptUrl,
+          ctx.googleSheetId,
+          { backgroundBackup: true }
+        ),
       silentSuccess: false,
       actionType: 'delete'
     });
@@ -197,19 +250,32 @@ export const interviewsDomain = {
 export const organizationDomain = {
   async saveRecord(
     record: OrganizationRecord,
-    _action: RealtimeActionType,
-    _ctx: CloudConnectionContext
+    action: RealtimeActionType,
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `تنظيم وجماهير: ${record.FullName || record.Citizen_ID}`,
-      firestoreOp: () => fsSaveOrgRecord(record)
+      firestoreOp: () => fsSaveOrgRecord(record),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime('organization', record, action, ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        })
     });
   },
 
-  async deleteRecord(orgIdOrCitizenId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+  async deleteRecord(orgIdOrCitizenId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `سجل التنظيم: ${orgIdOrCitizenId}`,
       firestoreOp: () => fsDeleteOrgRecord(orgIdOrCitizenId),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime(
+          'organization',
+          { Citizen_ID: orgIdOrCitizenId, id: orgIdOrCitizenId },
+          'delete',
+          ctx.appsScriptUrl,
+          ctx.googleSheetId,
+          { backgroundBackup: true }
+        ),
       silentSuccess: false,
       actionType: 'delete'
     });
@@ -222,19 +288,32 @@ export const organizationDomain = {
 export const lettersDomain = {
   async saveLetter(
     letter: OfficialLetter,
-    _action: RealtimeActionType,
-    _ctx: CloudConnectionContext
+    action: RealtimeActionType,
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `كتاب رسمي: ${letter.LetterNumber || letter.Letter_ID}`,
-      firestoreOp: () => fsSaveOfficialLetter(letter)
+      firestoreOp: () => fsSaveOfficialLetter(letter),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime('letters', letter, action, ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        })
     });
   },
 
-  async deleteLetter(letterId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+  async deleteLetter(letterId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `الكتاب الرسمي: ${letterId}`,
       firestoreOp: () => fsDeleteOfficialLetter(letterId),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime(
+          'letters',
+          { Letter_ID: letterId, id: letterId },
+          'delete',
+          ctx.appsScriptUrl,
+          ctx.googleSheetId,
+          { backgroundBackup: true }
+        ),
       silentSuccess: false,
       actionType: 'delete'
     });
@@ -247,19 +326,32 @@ export const lettersDomain = {
 export const chequesDomain = {
   async saveCheque(
     cheque: ChequeRecord,
-    _action: RealtimeActionType,
-    _ctx: CloudConnectionContext
+    action: RealtimeActionType,
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `صك مساعدة: ${cheque.CitizenName || cheque.ChequeNumber}`,
-      firestoreOp: () => fsSaveCheque(cheque)
+      firestoreOp: () => fsSaveCheque(cheque),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime('cheques', cheque, action, ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        })
     });
   },
 
-  async deleteCheque(chequeId: string, _ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
+  async deleteCheque(chequeId: string, ctx: CloudConnectionContext): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `الصك: ${chequeId}`,
       firestoreOp: () => fsDeleteCheque(chequeId),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime(
+          'cheques',
+          { id: chequeId },
+          'delete',
+          ctx.appsScriptUrl,
+          ctx.googleSheetId,
+          { backgroundBackup: true }
+        ),
       silentSuccess: false,
       actionType: 'delete'
     });
@@ -294,11 +386,15 @@ export const customSectionsDomain = {
   async saveSectionAndProvisionSheet(
     section: CustomSection,
     _allUpdatedSections: CustomSection[],
-    _ctx: CloudConnectionContext
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `قسم مخصص: ${section.title}`,
       firestoreOp: () => fsSaveCustomSection(section),
+      backgroundSheetsOp: () =>
+        registerCustomSectionInGoogleSheets(section, ctx.appsScriptUrl, ctx.googleSheetId, {
+          silentBackground: true
+        }),
       silentSuccess: false
     });
   },
@@ -314,23 +410,37 @@ export const customSectionsDomain = {
 
   async saveRecord(
     record: CustomSectionRecord,
-    _action: RealtimeActionType,
-    _ctx: CloudConnectionContext
+    action: RealtimeActionType,
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `قيد قسم مخصص (${record.id})`,
-      firestoreOp: () => fsSaveCustomRecord(record)
+      firestoreOp: () => fsSaveCustomRecord(record),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime('custom_records', record, action, ctx.appsScriptUrl, ctx.googleSheetId, {
+          customSections: ctx.customSections,
+          backgroundBackup: true
+        })
     });
   },
 
   async deleteRecord(
     record: CustomSectionRecord | string,
-    _ctx: CloudConnectionContext
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     const recordId = typeof record === 'string' ? record : record.id;
     return executeFirestoreOperation({
       entityLabel: `القيد المخصص: ${recordId}`,
       firestoreOp: () => fsDeleteCustomRecord(recordId),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime(
+          'custom_records',
+          typeof record === 'string' ? { id: record } : record,
+          'delete',
+          ctx.appsScriptUrl,
+          ctx.googleSheetId,
+          { customSections: ctx.customSections, backgroundBackup: true }
+        ),
       silentSuccess: false,
       actionType: 'delete'
     });
@@ -343,20 +453,33 @@ export const customSectionsDomain = {
 export const usersDomain = {
   async saveUser(
     user: User,
-    _action: RealtimeActionType,
-    _ctx: CloudConnectionContext
+    action: RealtimeActionType,
+    ctx: CloudConnectionContext
   ): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `مستخدم: ${user.FullName || user.Username}`,
       firestoreOp: () => fsSaveUser(user),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime('users', user, action, ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        }),
       silentSuccess: false
     });
   },
 
-  async deleteUser(userId: string, _ctx: CloudConnectionContext, userName?: string): Promise<DualWriteOutcome> {
+  async deleteUser(userId: string, ctx: CloudConnectionContext, userName?: string): Promise<DualWriteOutcome> {
     return executeFirestoreOperation({
       entityLabel: `المستخدم: ${userName || userId}`,
       firestoreOp: () => fsDeleteUser(userId),
+      backgroundSheetsOp: () =>
+        pushToGoogleSheetsRealtime(
+          'users',
+          { User_ID: userId, id: userId },
+          'delete',
+          ctx.appsScriptUrl,
+          ctx.googleSheetId,
+          { backgroundBackup: true }
+        ),
       silentSuccess: false,
       actionType: 'delete'
     });

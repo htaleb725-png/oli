@@ -128,30 +128,47 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
   const resolvedStatus =
     clipStr((citizen as any).status, 60) ||
     (citizen.IsBlocked ? 'محظور' : citizen.IsArchived ? 'مؤرشف' : 'نشط');
+  const resolvedPhone = clipStr(citizen.Phone1, 50) ?? '';
+  const resolvedCreatedAt = clipStr(citizen.CreatedAt, 100) || nowIso.split('T')[0];
+  const resolvedCreatedBy = clipStr(citizen.CreatedBy, 120) || 'موظف الاستعلامات';
+  const resolvedReferrer = clipStr(citizen.ReferralSource, 200) || '';
+  const resolvedArchivedAt = clipStr(citizen.ArchivedAt || citizen.archivedAt, 100) || '';
+  const resolvedArchivedBy = clipStr(citizen.ArchivedBy || citizen.archivedBy, 150) || '';
 
   const copy: any = {
     ...citizen,
     Citizen_ID: safeId,
     FullName: fullName,
-    Phone1: clipStr(citizen.Phone1, 50) ?? '',
+    fullName,
+    Phone1: resolvedPhone,
+    phone: resolvedPhone,
     Rating: clipStr(citizen.Rating, 50) || 'مؤيد',
     District: clipStr(citizen.District, 100) || 'الناصرية',
     SubDistrict: clipStr(citizen.SubDistrict, 100) || 'المركز',
     department: resolvedDepartment,
     status: resolvedStatus,
-    CreatedAt: clipStr(citizen.CreatedAt, 100) || nowIso.split('T')[0],
+    referrer: resolvedReferrer,
+    notes: clipStr(citizen.ArchiveNotes || citizen.ReferralSource, 1000) || '',
+    CreatedAt: resolvedCreatedAt,
+    createdAt: resolvedCreatedAt,
+    CreatedBy: resolvedCreatedBy,
+    responsibleEmployee: resolvedCreatedBy,
     UpdatedAt: nowIso,
     updatedAt: nowIso
   };
-  // Keep IsArchived, archived, and الأرشفة flags synchronized in Firestore (never deleting records)
+  if (resolvedArchivedAt) {
+    copy.ArchivedAt = resolvedArchivedAt;
+    copy.archivedAt = resolvedArchivedAt;
+  }
+  if (resolvedArchivedBy) {
+    copy.ArchivedBy = resolvedArchivedBy;
+    copy.archivedBy = resolvedArchivedBy;
+  }
+  // Keep IsArchived, archived, and الأرشفة flags synchronized in Firestore (never deleting or wiping audit metadata)
   if (typeof citizen.IsArchived === 'boolean') {
     copy.IsArchived = citizen.IsArchived;
     copy.archived = citizen.IsArchived;
     copy['الأرشفة'] = citizen.IsArchived ? 'نعم' : 'لا';
-    if (citizen.IsArchived === false) {
-      copy.ArchivedAt = '';
-      copy.ArchiveCode = '';
-    }
   }
   // Persist independent per-section archive arrays faithfully (including empty [] after unarchiving)
   if (Array.isArray(citizen.archivedInSections)) {
@@ -182,26 +199,78 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
   const safeReqId = sanitizeFirestoreDocId(req.Request_ID, 'REQ');
   const safeCitId = sanitizeFirestoreDocId(req.Citizen_ID, 'ONA');
   const nowIso = new Date().toISOString();
+  const resolvedFullName = clipStr(req.CitizenName, 250) || 'مراجع';
+  const resolvedPhone = clipStr(req.CitizenPhone, 50) ?? '';
+  const resolvedEntity = clipStr(req.Entity, 200) || 'غير محدد';
+  const resolvedDetails = clipStr(req.Details, 10000) ?? '';
+  const resolvedPathType =
+    clipStr(req.pathType || req.route, 40) ||
+    (req.DirectorDecision === 'خاص'
+      ? 'private'
+      : req.DirectorDecision === 'عام'
+      ? 'public'
+      : req.DirectorDecision === 'رفض'
+      ? 'rejected'
+      : '');
+  const resolvedDepartment =
+    clipStr(req.department || req.TargetDepartment, 120) ||
+    (resolvedPathType === 'private'
+      ? 'قسم المعتمد الخاص'
+      : resolvedPathType === 'public'
+      ? 'قسم المعتمد العام'
+      : 'قسم الإدارة');
+  const resolvedStatus = clipStr(req.ProcessingStatus, 50) || 'قيد التدقيق';
+  const resolvedNotes =
+    clipStr(req.DirectorNotes || req.DeputyNotes || req.ReceptionNotes || req.OtherNotes, 2000) || '';
+  const resolvedCreatedAt = clipStr(req.CreatedAt, 100) || nowIso.split('T')[0];
+  const resolvedCreatedBy = clipStr(req.CreatedBy, 120) || 'موظف النظام';
+  const resolvedArchivedAt = clipStr(req.ArchivedAt || req.archivedAt, 100) || '';
+  const resolvedArchivedBy = clipStr(req.ArchivedBy || req.archivedBy, 150) || '';
+
   const copy: any = {
     ...req,
     Request_ID: safeReqId,
     Citizen_ID: safeCitId,
-    Entity: clipStr(req.Entity, 200) || 'غير محدد',
+    CitizenName: resolvedFullName,
+    fullName: resolvedFullName,
+    CitizenPhone: resolvedPhone,
+    phone: resolvedPhone,
+    Entity: resolvedEntity,
+    entity: resolvedEntity,
+    referrer: clipStr(req.ReferralSource, 200) || '',
     RequestStatus: clipStr(req.RequestStatus, 50) || 'مستلم',
-    ProcessingStatus: clipStr(req.ProcessingStatus, 50) || 'قيد التدقيق',
+    ProcessingStatus: resolvedStatus,
+    status: resolvedStatus,
     Priority: clipStr(req.Priority, 50) || 'عام',
-    Details: clipStr(req.Details, 10000) ?? '',
+    Details: resolvedDetails,
+    subject: resolvedDetails,
+    department: resolvedDepartment,
+    TargetDepartment: clipStr(req.TargetDepartment, 120) || resolvedDepartment,
+    notes: resolvedNotes,
+    CreatedAt: resolvedCreatedAt,
+    createdAt: resolvedCreatedAt,
+    CreatedBy: resolvedCreatedBy,
+    responsibleEmployee: resolvedCreatedBy,
     UpdatedAt: nowIso,
     updatedAt: nowIso
   };
+  if (resolvedPathType) {
+    copy.pathType = resolvedPathType;
+    copy.route = resolvedPathType;
+  }
+  if (resolvedArchivedAt) {
+    copy.ArchivedAt = resolvedArchivedAt;
+    copy.archivedAt = resolvedArchivedAt;
+  }
+  if (resolvedArchivedBy) {
+    copy.ArchivedBy = resolvedArchivedBy;
+    copy.archivedBy = resolvedArchivedBy;
+  }
+  // Keep IsArchived, archived, and الأرشفة flags synchronized without wiping audit or routing metadata
   if (typeof req.IsArchived === 'boolean') {
     copy.IsArchived = req.IsArchived;
     copy.archived = req.IsArchived;
     copy['الأرشفة'] = req.IsArchived ? 'نعم' : 'لا';
-    if (req.IsArchived === false) {
-      copy.ArchivedAt = '';
-      copy.ArchiveCode = '';
-    }
   }
   // Persist independent per-section archive arrays faithfully (including empty [] after unarchiving)
   if (Array.isArray(req.archivedInSections)) {

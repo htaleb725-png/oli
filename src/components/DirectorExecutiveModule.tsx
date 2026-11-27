@@ -76,6 +76,7 @@ export const DirectorExecutiveModule: React.FC = () => {
     whatsappTemplates,
     currentUser,
     addAuditLog,
+    addNotification,
     archiveDailyWorkItems,
     restoreDailyWorkItem,
     restoreDailyWorkItems,
@@ -269,6 +270,13 @@ export const DirectorExecutiveModule: React.FC = () => {
     }, 4500);
   };
 
+  const resolveNormalizedDecision = (r: OfficeRequest): 'خاص' | 'عام' | 'رفض' | '' => {
+    if (r.DirectorDecision === 'خاص' || r.pathType === 'private' || r.route === 'private') return 'خاص';
+    if (r.DirectorDecision === 'عام' || r.pathType === 'public' || r.route === 'public') return 'عام';
+    if (r.DirectorDecision === 'رفض' || r.pathType === 'rejected' || r.route === 'rejected') return 'رفض';
+    return '';
+  };
+
   // Reception requests list (active Daily Work OR Director Section Archive depending on directorViewMode)
   const receptionRequests = useMemo(() => {
     const sourceList = directorViewMode === 'section_archive' ? archivedDirectorRequests : activeDirectorRequests;
@@ -289,12 +297,13 @@ export const DirectorExecutiveModule: React.FC = () => {
       })
       .filter(r => {
         if (directorViewMode === 'section_archive') return true;
-        if (statusFilter === 'pending') return !r.DirectorDecision;
-        if (statusFilter === 'special') return r.DirectorDecision === 'خاص';
-        if (statusFilter === 'general') return r.DirectorDecision === 'عام';
-        if (statusFilter === 'rejected') return r.DirectorDecision === 'رفض';
+        const dec = resolveNormalizedDecision(r);
+        if (statusFilter === 'pending') return !dec;
+        if (statusFilter === 'special') return dec === 'خاص';
+        if (statusFilter === 'general') return dec === 'عام';
+        if (statusFilter === 'rejected') return dec === 'رفض';
         if (statusFilter === 'all') return true;
-        return !r.DirectorDecision;
+        return !dec;
       });
   }, [activeDirectorRequests, archivedDirectorRequests, directorViewMode, searchQuery, statusFilter, citizenMap]);
 
@@ -306,10 +315,11 @@ export const DirectorExecutiveModule: React.FC = () => {
     let rejected = 0;
 
     activeDirectorRequests.forEach(r => {
-      if (!r.DirectorDecision) pending++;
-      else if (r.DirectorDecision === 'خاص') special++;
-      else if (r.DirectorDecision === 'عام') general++;
-      else if (r.DirectorDecision === 'رفض') rejected++;
+      const dec = resolveNormalizedDecision(r);
+      if (!dec) pending++;
+      else if (dec === 'خاص') special++;
+      else if (dec === 'عام') general++;
+      else if (dec === 'رفض') rejected++;
     });
 
     return { total: activeDirectorRequests.length, pending, special, general, rejected };
@@ -326,50 +336,92 @@ export const DirectorExecutiveModule: React.FC = () => {
     }
 
     const now = new Date();
+    const nowIso = now.toISOString();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const linkedCitizen = citizenMap.get(request.Citizen_ID);
 
     const nextStage = decision === 'رفض' ? 'مكتمل' : 'مدير الإدارة';
+    const pathTypeValue = decision === 'خاص' ? 'private' : decision === 'عام' ? 'public' : 'rejected';
+    const targetDeptValue =
+      decision === 'خاص'
+        ? 'قسم المعتمد الخاص'
+        : decision === 'عام'
+        ? 'قسم المعتمد العام'
+        : (request.TargetDepartment || 'قسم الإدارة');
+
+    // Preserve ALL existing citizen & request fields intact (never empty or lose any field!)
     const updatedRequest: OfficeRequest = {
       ...request,
+      CitizenName: request.CitizenName || linkedCitizen?.FullName || 'مراجع',
+      CitizenPhone: request.CitizenPhone || linkedCitizen?.Phone1 || '',
+      Address: request.Address || request.CitizenAddress || linkedCitizen?.District || '',
+      ResidentialArea: request.ResidentialArea || linkedCitizen?.ResidentialArea || linkedCitizen?.SubDistrict || '',
+      ReferralSource: request.ReferralSource || linkedCitizen?.ReferralSource || '',
+      Education: request.Education || linkedCitizen?.Education || '',
+      Job: request.Job || linkedCitizen?.Job || '',
+      Entity: request.Entity || 'غير محدد',
+      Details: request.Details || '',
       DirectorDecision: decision,
+      pathType: pathTypeValue,
+      route: pathTypeValue,
+      department: targetDeptValue,
+      TargetDepartment: targetDeptValue,
       DirectorNotes: noteText.trim() || '',
       RejectionReason: decision === 'رفض' ? (noteText.trim() || 'عدم استيفاء الشروط والضوابط') : '',
       DirectorDecisionDate: formattedDate,
       DirectorDecisionBy: currentUser ? `${currentUser.FullName} (مدير المكتب)` : 'مدير المكتب',
       CurrentStage: nextStage,
-      TargetDepartment: request.TargetDepartment || 'قسم الإدارة',
-      ProcessingStatus: decision === 'رفض' ? 'مرفوض' : (request.ProcessingStatus === 'قيد الإجراء' ? 'قيد التدقيق' : request.ProcessingStatus),
+      ProcessingStatus: decision === 'رفض' ? 'مرفوض' : (request.ProcessingStatus === 'قيد الإجراء' ? 'قيد التدقيق' : request.ProcessingStatus || 'قيد التدقيق'),
       DeputyNotes: decision === 'رفض'
         ? `[سبب الرفض من قبل مدير المكتب]: ${noteText.trim() || 'عدم استيفاء الشروط والضوابط'}`
         : noteText.trim() 
           ? `[توجيه المدير - ${decision}]: ${noteText.trim()}` 
-          : `[قرار المدير]: ${decision}`
+          : `[قرار المدير]: ${decision}`,
+      UpdatedAt: nowIso
     };
 
     updateRequest(updatedRequest);
 
     // Advance linked Citizen workflow stage instantaneously so Admin & Reception trackers reflect Director's decision live
-    const linkedCitizen = citizenMap.get(request.Citizen_ID);
     if (linkedCitizen && linkedCitizen.CurrentStage !== nextStage) {
       updateCitizen({
         ...linkedCitizen,
-        CurrentStage: nextStage
+        CurrentStage: nextStage,
+        UpdatedAt: nowIso
       });
     }
+
+    // Immediate live Firestore notification for Admin (appears instantaneously on Admin screen via onSnapshot)
+    const decisionTitle =
+      decision === 'خاص'
+        ? `⭐ قرار مدير المكتب (مسار خاص): ${updatedRequest.CitizenName}`
+        : decision === 'عام'
+        ? `✅ قرار مدير المكتب (مسار عام): ${updatedRequest.CitizenName}`
+        : `⛔ رفض معاملة من مدير المكتب: ${updatedRequest.CitizenName}`;
+    addNotification({
+      title: decisionTitle,
+      message: `الطلب (${updatedRequest.Request_ID}) — الجهة: ${updatedRequest.Entity} | المسار: ${targetDeptValue}${noteText.trim() ? ` | توجيه المدير: ${noteText.trim()}` : ''}`,
+      type: 'director_decision',
+      category: 'director',
+      priority: decision === 'خاص' ? 'urgent' : 'high',
+      linkSection: 'admin',
+      entityId: updatedRequest.Request_ID,
+      targetRoles: ['admin', 'admin_officer', 'developer']
+    });
 
     addAuditLog(
       `قرار مدير المكتب (${decision})`,
       'قسم مدير المكتب',
-      `تم اعتماد قرار (${decision}) للطلب رقم ${request.Request_ID} الخاص بالمواطن ${request.CitizenName}${noteText.trim() ? ` مع بيان السبب/التوجيه: ${noteText.trim()}` : ''}`
+      `تم اعتماد قرار (${decision}) للطلب رقم ${updatedRequest.Request_ID} الخاص بالمواطن ${updatedRequest.CitizenName} (${targetDeptValue})${noteText.trim() ? ` مع بيان السبب/التوجيه: ${noteText.trim()}` : ''}`
     );
 
     setDecisionBanner({
-      id: request.Request_ID,
-      name: request.CitizenName,
+      id: updatedRequest.Request_ID,
+      name: updatedRequest.CitizenName,
       decision: decision
     });
 
-    setSavedFeedbackId(request.Request_ID);
+    setSavedFeedbackId(updatedRequest.Request_ID);
     setTimeout(() => setSavedFeedbackId(null), 3000);
   };
 
@@ -377,23 +429,40 @@ export const DirectorExecutiveModule: React.FC = () => {
     const noteText = directorNotesMap[request.Request_ID] !== undefined 
       ? directorNotesMap[request.Request_ID] 
       : (request.DirectorNotes || '');
+    const linkedCitizen = citizenMap.get(request.Citizen_ID);
 
     const updatedRequest: OfficeRequest = {
       ...request,
+      CitizenName: request.CitizenName || linkedCitizen?.FullName || 'مراجع',
+      CitizenPhone: request.CitizenPhone || linkedCitizen?.Phone1 || '',
       DirectorNotes: noteText.trim() || '',
       DeputyNotes: noteText.trim() 
         ? `[توجيه المدير]: ${noteText.trim()}` 
-        : request.DeputyNotes
+        : request.DeputyNotes,
+      UpdatedAt: new Date().toISOString()
     };
 
     updateRequest(updatedRequest);
+
+    // Live Firestore notification to Admin when Director saves or updates directive notes
+    addNotification({
+      title: `📝 توجيه وملاحظة من مدير المكتب: ${updatedRequest.CitizenName}`,
+      message: `الطلب (${updatedRequest.Request_ID}) — ${noteText.trim() || 'تم تحديث ملاحظة المدير على المعاملة'}`,
+      type: 'director_decision',
+      category: 'director',
+      priority: 'high',
+      linkSection: 'admin',
+      entityId: updatedRequest.Request_ID,
+      targetRoles: ['admin', 'admin_officer', 'developer']
+    });
+
     addAuditLog(
       'تحديث ملاحظات مدير المكتب',
       'قسم مدير المكتب',
-      `تم حفظ وتحديث ملاحظات المدير للطلب رقم ${request.Request_ID}: ${noteText.trim()}`
+      `تم حفظ وتحديث ملاحظات المدير للطلب رقم ${updatedRequest.Request_ID}: ${noteText.trim()}`
     );
 
-    setSavedFeedbackId(request.Request_ID);
+    setSavedFeedbackId(updatedRequest.Request_ID);
     setTimeout(() => setSavedFeedbackId(null), 3000);
   };
 
@@ -746,6 +815,17 @@ export const DirectorExecutiveModule: React.FC = () => {
                       sectionKey: 'director',
                       reason: 'أرشفة مستقلة في قسم مدير المكتب للطلبات المستردة/المصفاة'
                     });
+                    if (res.archivedRequests > 0) {
+                      addNotification({
+                        title: `📦 أرشفة من مكتب المدير (${res.archivedRequests} معاملة)`,
+                        message: `قام مدير المكتب بأرشفة (${res.archivedRequests}) معاملة مستردة/مصفاة مع بقاء كافة بياناتها محفوظة بالكامل.`,
+                        type: 'director_decision',
+                        category: 'director',
+                        priority: 'normal',
+                        linkSection: 'admin',
+                        targetRoles: ['admin', 'admin_officer', 'developer']
+                      });
+                    }
                     showArchiveToast(
                       `✓ تمت أرشفة (${res.archivedRequests}) طلب في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`
                     );
@@ -762,22 +842,33 @@ export const DirectorExecutiveModule: React.FC = () => {
                 confirmClearCompleted ? (
                   <div className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 rounded-xl text-[11px] flex-wrap">
                     <span className="font-bold text-emerald-900 dark:text-emerald-200">أرشفة في قسم مدير المكتب فقط؟</span>
-                    {activeDirectorRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision)) && (
+                    {activeDirectorRequests.some(r => r.ProcessingStatus === 'منجز' || Boolean(resolveNormalizedDecision(r))) && (
                       <button
                         type="button"
                         onClick={() => {
-                          const targets = activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision));
+                          const targets = activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(resolveNormalizedDecision(r)));
                           const res = archiveDailyWorkItems({
                             requestIds: targets.map(r => r.Request_ID),
                             sectionKey: 'director',
                             reason: 'أرشفة مستقلة في قسم مدير المكتب للمعاملات المنجزة/المتخذ قرار بشأنها'
                           });
+                          if (res.archivedRequests > 0) {
+                            addNotification({
+                              title: `📦 أرشفة معاملات مكتملة من مدير المكتب (${res.archivedRequests})`,
+                              message: `تمت أرشفة (${res.archivedRequests}) معاملة مكتملة في أرشيف مدير المكتب مع الاحتفاظ بكامل بياناتها وقراراتها.`,
+                              type: 'director_decision',
+                              category: 'director',
+                              priority: 'normal',
+                              linkSection: 'admin',
+                              targetRoles: ['admin', 'admin_officer', 'developer']
+                            });
+                          }
                           setConfirmClearCompleted(false);
                           showArchiveToast(`✓ تمت أرشفة (${res.archivedRequests}) معاملة في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`);
                         }}
                         className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white font-black cursor-pointer"
                       >
-                        المكتمل ({activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(r.DirectorDecision)).length})
+                        المكتمل ({activeDirectorRequests.filter(r => r.ProcessingStatus === 'منجز' || Boolean(resolveNormalizedDecision(r))).length})
                       </button>
                     )}
                     <button
@@ -788,6 +879,17 @@ export const DirectorExecutiveModule: React.FC = () => {
                           sectionKey: 'director',
                           reason: 'أرشفة مستقلة في قسم مدير المكتب للمعاملات المعروضة'
                         });
+                        if (res.archivedRequests > 0) {
+                          addNotification({
+                            title: `📦 أرشفة من مكتب المدير (${res.archivedRequests} معاملة)`,
+                            message: `قام مدير المكتب بأرشفة (${res.archivedRequests}) معاملة في أرشيف مدير المكتب مع حفظ كامل بياناتها.`,
+                            type: 'director_decision',
+                            category: 'director',
+                            priority: 'normal',
+                            linkSection: 'admin',
+                            targetRoles: ['admin', 'admin_officer', 'developer']
+                          });
+                        }
                         setConfirmClearCompleted(false);
                         showArchiveToast(`✓ تمت أرشفة (${res.archivedRequests}) معاملة في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`);
                       }}
@@ -889,7 +991,7 @@ export const DirectorExecutiveModule: React.FC = () => {
             ) : (
               receptionRequests.slice(0, visibleLimit).map((req) => {
                 const cit = citizenMap.get(req.Citizen_ID);
-                const currentDecision = req.DirectorDecision;
+                const currentDecision = resolveNormalizedDecision(req);
                 const isPending = !currentDecision;
                 const currentNoteInput = directorNotesMap[req.Request_ID] !== undefined 
                   ? directorNotesMap[req.Request_ID] 
@@ -1165,6 +1267,16 @@ export const DirectorExecutiveModule: React.FC = () => {
                                   requestIds: [req.Request_ID],
                                   sectionKey: 'director',
                                   reason: 'أرشفة مستقلة فردية في قسم مدير المكتب (محفوظ بالكامل ولا يؤثر على بقية الأقسام)'
+                                });
+                                addNotification({
+                                  title: `📦 أرشفة طلب من مكتب المدير: ${req.CitizenName}`,
+                                  message: `تمت أرشفة الطلب (${req.Request_ID}) في أرشيف مدير المكتب مع الاحتفاظ الكامل بجميع الحقول والقرار.`,
+                                  type: 'director_decision',
+                                  category: 'director',
+                                  priority: 'normal',
+                                  linkSection: 'admin',
+                                  entityId: req.Request_ID,
+                                  targetRoles: ['admin', 'admin_officer', 'developer']
                                 });
                                 showArchiveToast(`✓ تمت أرشفة طلب (${req.CitizenName}) في أرشيف مدير المكتب فقط دون التأثير على بقية الأقسام.`);
                               }}

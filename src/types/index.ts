@@ -146,6 +146,10 @@ export interface Citizen {
   ArchivedBy?: string;   // الموظف الذي قام بالأرشفة
   ArchiveNotes?: string; // ملاحظات الأرشفة
   ArchiveCode?: string;  // كود الحفظ الأرشيفي
+  archivedAt?: string;   // تاريخ الأرشفة (حقل موحد واضح)
+  archivedBy?: string;   // الموظف الذي قام بالأرشفة (حقل موحد واضح)
+  department?: string;   // القسم المختص (حقل موحد واضح)
+  status?: string;       // الحالة الحالية (حقل موحد واضح)
   archivedInSections?: string[];   // أرشفة مستقلة لكل قسم (مثل: reception, director, admin, organization)
   unarchivedInSections?: string[]; // استرجاع مستقل لكل قسم لسجلات الأرشيف/المسترد
   UpdatedAt?: string;
@@ -219,7 +223,13 @@ export interface OfficeRequest {
   BlockReason?: string;    // سبب الحظر
   IsArchived?: boolean;    // هل تم نقل الطلب إلى الأرشيف طويل الأمد
   ArchivedAt?: string;    // تاريخ ووقت الأرشفة
+  ArchivedBy?: string;    // الموظف الذي قام بالأرشفة
+  archivedAt?: string;    // تاريخ ووقت الأرشفة (حقل موحد واضح)
+  archivedBy?: string;    // الموظف الذي قام بالأرشفة (حقل موحد واضح)
   ArchiveCode?: string;   // كود الحفظ الأرشيفي
+  pathType?: 'private' | 'public' | 'rejected' | string; // المسار المعتمد من المدير (خاص / عام / مرفوض)
+  route?: 'private' | 'public' | 'rejected' | string;    // توجيه المسار الصريح (private / public / rejected)
+  department?: string;    // القسم المختص الواضح (مثل: قسم المعتمد الخاص / قسم المعتمد العام / قسم الإدارة)
   DeliveryStatus?: 'مستلم' | 'غير مستلم'; // هل قام المراجع باستلام الطلب المنجز أم لا
   DeliveredAt?: string;   // تاريخ استلام الطلب من قبل المراجع
   DeliveredBy?: string;   // الموظف الذي وثّق تسليم الطلب

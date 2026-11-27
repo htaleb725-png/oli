@@ -246,10 +246,18 @@ export const AdminModule: React.FC = () => {
 
       // Director decisions counts (exclude historical Excel archive imports from pending queue)
       const isHist = Boolean(req.IsHistoricalImported || req.IsArchived || req.DirectorDecision === 'مؤرشف');
-      if (!isHist && !req.DirectorDecision) directorPending++;
-      else if (req.DirectorDecision === 'رفض') directorRejected++;
-      else if (req.DirectorDecision === 'خاص') directorSpecial++;
-      else if (req.DirectorDecision === 'عام') directorGeneral++;
+      const resolvedDec =
+        req.DirectorDecision === 'خاص' || req.pathType === 'private' || req.route === 'private'
+          ? 'خاص'
+          : req.DirectorDecision === 'عام' || req.pathType === 'public' || req.route === 'public'
+          ? 'عام'
+          : req.DirectorDecision === 'رفض' || req.pathType === 'rejected' || req.route === 'rejected'
+          ? 'رفض'
+          : '';
+      if (!isHist && !resolvedDec) directorPending++;
+      else if (resolvedDec === 'رفض') directorRejected++;
+      else if (resolvedDec === 'خاص') directorSpecial++;
+      else if (resolvedDec === 'عام') directorGeneral++;
     });
 
     return {
@@ -304,11 +312,19 @@ export const AdminModule: React.FC = () => {
       else if (filterCategory === 'dependent') matchesCategory = dep === 'غير مستقل';
 
       const isHist = Boolean(req.IsHistoricalImported || req.IsArchived || req.DirectorDecision === 'مؤرشف');
+      const resolvedDec =
+        req.DirectorDecision === 'خاص' || req.pathType === 'private' || req.route === 'private'
+          ? 'خاص'
+          : req.DirectorDecision === 'عام' || req.pathType === 'public' || req.route === 'public'
+          ? 'عام'
+          : req.DirectorDecision === 'رفض' || req.pathType === 'rejected' || req.route === 'rejected'
+          ? 'رفض'
+          : '';
       let matchesDirector = true;
-      if (directorDecisionFilter === 'pending') matchesDirector = !isHist && !req.DirectorDecision;
-      else if (directorDecisionFilter === 'special') matchesDirector = req.DirectorDecision === 'خاص';
-      else if (directorDecisionFilter === 'general') matchesDirector = req.DirectorDecision === 'عام';
-      else if (directorDecisionFilter === 'rejected') matchesDirector = req.DirectorDecision === 'رفض';
+      if (directorDecisionFilter === 'pending') matchesDirector = !isHist && !resolvedDec;
+      else if (directorDecisionFilter === 'special') matchesDirector = resolvedDec === 'خاص';
+      else if (directorDecisionFilter === 'general') matchesDirector = resolvedDec === 'عام';
+      else if (directorDecisionFilter === 'rejected') matchesDirector = resolvedDec === 'رفض';
 
       const isDelivered = req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم';
       const matchesDelivery =

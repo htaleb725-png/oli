@@ -175,7 +175,8 @@ export function resolveAppsScriptUrl(customUrl?: string): string {
  */
 async function postToAppsScriptWithServerProxy(
   resolvedUrl: string,
-  payload: Record<string, any>
+  payload: Record<string, any>,
+  opts?: { silentBackground?: boolean }
 ): Promise<{
   success: boolean;
   via?: 'proxy' | 'direct';
@@ -183,9 +184,10 @@ async function postToAppsScriptWithServerProxy(
   error?: string;
   corsBlocked?: boolean;
 }> {
+  const silentBackground = Boolean(opts?.silentBackground);
   if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
     const errMsg = 'رابط Google Apps Script غير مضبوط. يرجى تعيين VITE_GOOGLE_APPS_SCRIPT_URL في إعدادات Vercel.';
-    updateSheetsHealth('error', errMsg);
+    if (!silentBackground) updateSheetsHealth('error', errMsg);
     return { success: false, error: errMsg };
   }
 
@@ -248,7 +250,7 @@ async function postToAppsScriptWithServerProxy(
         ? 'رابط Google Apps Script أعاد صفحة HTML (تحقق من صلاحية النشر: Anyone - أي شخص لديه الرابط، وأعد النشر كإصدار جديد).'
         : `استجابة غير متوقعة من Apps Script (HTTP ${directRes.status})`);
 
-    updateSheetsHealth('error', directErr);
+    if (!silentBackground) updateSheetsHealth('error', directErr);
     return { success: false, via: 'direct', error: directErr };
   } catch (directErr: any) {
     const errText = String(directErr?.message || directErr || '');
@@ -262,7 +264,7 @@ async function postToAppsScriptWithServerProxy(
       ? `حظر CORS أو انقطاع الشبكة أثناء الاتصال بـ Google Apps Script. (${proxyFailureReason || 'تأكد من نشر السكربت بصلاحية Anyone وتحديث vercel.json'})`
       : `فشل الترحيل إلى Google Sheets: ${errText} (${proxyFailureReason})`;
 
-    updateSheetsHealth('error', fullErr);
+    if (!silentBackground) updateSheetsHealth('error', fullErr);
     return { success: false, corsBlocked: isCors, error: fullErr };
   }
 }
@@ -377,9 +379,11 @@ export async function testAppsScriptConnection(customUrl?: string): Promise<Apps
 export async function registerCustomSectionInGoogleSheets(
   section: CustomSection,
   customUrl?: string,
-  _customSheetId?: string
+  customSheetId?: string,
+  opts?: { silentBackground?: boolean }
 ): Promise<{ success: boolean; sheets?: any[]; error?: string }> {
   const url = resolveAppsScriptUrl(customUrl);
+  const resolvedSheetId = resolveTargetSheetId(customSheetId);
   if (!url || !url.startsWith('http')) {
     return { success: false, error: 'رابط Google Apps Script غير مضبوط لإنشاء ورقة القسم الجديد.' };
   }
@@ -413,13 +417,19 @@ export async function registerCustomSectionInGoogleSheets(
     }))
   };
 
-  const res = await postToAppsScriptWithServerProxy(url, {
-    action: 'registerSection',
-    table: 'custom_sections',
-    section: sectionPayload,
-    timestamp: new Date().toISOString(),
-    source: 'al_nashi_custom_section_auto_sheet'
-  });
+  const res = await postToAppsScriptWithServerProxy(
+    url,
+    {
+      action: 'registerSection',
+      table: 'custom_sections',
+      spreadsheetId: resolvedSheetId,
+      sheetGid: PINNED_GOOGLE_SHEET_GID,
+      section: sectionPayload,
+      timestamp: new Date().toISOString(),
+      source: 'al_nashi_custom_section_auto_sheet'
+    },
+    { silentBackground: opts?.silentBackground }
+  );
 
   if (!res.success) {
     return { success: false, error: res.error || 'تعذر إنشاء ورقة القسم الجديد في Google Sheets.' };
@@ -437,9 +447,11 @@ export async function registerCustomSectionInGoogleSheets(
  */
 export async function syncSchemaToGoogleAppsScript(
   sections: CustomSection[],
-  customUrl?: string
+  customUrl?: string,
+  customSheetId?: string
 ): Promise<{ success: boolean; count?: number; error?: string }> {
   const url = resolveAppsScriptUrl(customUrl);
+  const resolvedSheetId = resolveTargetSheetId(customSheetId);
   if (!url || !url.startsWith('http')) {
     return { success: false, error: 'رابط Google Apps Script غير مضبوط.' };
   }
@@ -478,6 +490,8 @@ export async function syncSchemaToGoogleAppsScript(
   const res = await postToAppsScriptWithServerProxy(url, {
     action: 'syncSchema',
     table: 'custom_sections',
+    spreadsheetId: resolvedSheetId,
+    sheetGid: PINNED_GOOGLE_SHEET_GID,
     sections: normalizedSections,
     timestamp: new Date().toISOString(),
     source: 'al_nashi_schema_auto_discovery'
@@ -499,13 +513,14 @@ export async function pushToGoogleSheetsRealtime(
   action: RealtimeActionType = 'insert',
   appsScriptUrl?: string,
   sheetId?: string,
-  options?: { customSections?: CustomSection[]; manual?: boolean }
+  options?: { customSections?: CustomSection[]; manual?: boolean; backgroundBackup?: boolean }
 ): Promise<RealtimePushResult> {
-  // Architecture Policy: Firebase Firestore (alaa-office-2026) is the SOLE live database.
-  // Google Sheets is strictly reserved for explicit manual backup & manual import/export actions.
-  if (!options?.manual) {
+  // Architecture Policy: Firebase Firestore (alaa-office-2026) is the primary live SSOT.
+  // Google Sheets executes ONLY on explicit manual actions OR silent non-blocking background backup after Firestore succeeds.
+  if (!options?.manual && !options?.backgroundBackup) {
     return { success: true, via: 'skipped' };
   }
+  const silentBackground = Boolean(options?.backgroundBackup && !options?.manual);
 
   const resolvedSheetId = resolveTargetSheetId(sheetId);
   const resolvedUrl = resolveAppsScriptUrl(appsScriptUrl);
@@ -522,7 +537,12 @@ export async function pushToGoogleSheetsRealtime(
       // Non-destructive policy: deleting a UI section tile NEVER deletes its historical Google Sheet data
       return { success: true, via: 'skipped' };
     }
-    const reg = await registerCustomSectionInGoogleSheets(data as CustomSection, resolvedUrl, resolvedSheetId);
+    const reg = await registerCustomSectionInGoogleSheets(
+      data as CustomSection,
+      resolvedUrl,
+      resolvedSheetId,
+      { silentBackground }
+    );
     return {
       success: reg.success,
       via: reg.success ? 'proxy' : undefined,
@@ -542,7 +562,7 @@ export async function pushToGoogleSheetsRealtime(
 
   let oauthRestOk = false;
 
-  // 1. Optional Direct Google Sheets REST API sync if OAuth token is active
+  // 1. Optional Direct Google Sheets REST API sync if OAuth token is active (manual mode only; background backup uses fast Apps Script webhook)
   const isCoreRestEntity =
     entityType === 'citizens' ||
     entityType === 'requests' ||
@@ -551,7 +571,7 @@ export async function pushToGoogleSheetsRealtime(
     entityType === 'letters' ||
     entityType === 'cheques' ||
     entityType === 'users';
-  if (resolvedSheetId && isCoreRestEntity) {
+  if (!silentBackground && resolvedSheetId && isCoreRestEntity) {
     const coreEntityType = entityType as 'citizens' | 'requests' | 'interviews' | 'organization' | 'letters' | 'cheques' | 'users';
     try {
       const token = await getAccessToken();
@@ -569,14 +589,14 @@ export async function pushToGoogleSheetsRealtime(
     }
   }
 
-  // 2. Primary Webhook / Apps Script Web App sync
+  // 2. Primary Webhook / Apps Script Web App sync (Code.gs 2026-DYNAMIC-V3)
   if (!resolvedUrl || !resolvedUrl.startsWith('http')) {
     if (oauthRestOk) {
       updateSheetsHealth('connected', null);
       return { success: true, via: 'oauth_rest' };
     }
     const errMsg = 'رابط Google Apps Script غير مضبوط (VITE_GOOGLE_APPS_SCRIPT_URL).';
-    updateSheetsHealth('error', errMsg);
+    if (!silentBackground) updateSheetsHealth('error', errMsg);
     return { success: false, error: errMsg };
   }
 
@@ -637,19 +657,25 @@ export async function pushToGoogleSheetsRealtime(
         : sanitizeFlatPayload(data);
   }
 
-  const res = await postToAppsScriptWithServerProxy(resolvedUrl, {
-    action: action === 'delete' ? 'delete' : action === 'insert' ? 'appendRow' : 'updateRow',
-    table: entityType,
-    sheetType: entityType,
-    id: targetId,
-    Citizen_ID: targetId,
-    Request_ID: targetId,
-    ...extraWebhookMeta,
-    data: cleanWebhookData,
-    record: cleanWebhookData,
-    timestamp,
-    source: 'al_nashi_office_system'
-  });
+  const res = await postToAppsScriptWithServerProxy(
+    resolvedUrl,
+    {
+      action: action === 'delete' ? 'delete' : action === 'insert' ? 'appendRow' : 'updateRow',
+      table: entityType,
+      sheetType: entityType,
+      spreadsheetId: resolvedSheetId,
+      sheetGid: PINNED_GOOGLE_SHEET_GID,
+      id: targetId,
+      Citizen_ID: targetId,
+      Request_ID: targetId,
+      ...extraWebhookMeta,
+      data: cleanWebhookData,
+      record: cleanWebhookData,
+      timestamp,
+      source: silentBackground ? 'al_nashi_firestore_background_backup' : 'al_nashi_office_system'
+    },
+    { silentBackground }
+  );
 
   if (res.success) {
     return {
@@ -687,8 +713,10 @@ export async function pushBulkDataToGoogleSheets(
     customSections?: CustomSection[];
     customRecords?: CustomSectionRecord[];
     users?: User[];
+    silentBackground?: boolean;
   }
 ): Promise<{ appsScriptSent: boolean; directSheetsSent: boolean; chunksSent: number; error?: string }> {
+  const silentBackground = Boolean(extraCollections?.silentBackground);
   const resolvedUrl = resolveAppsScriptUrl(customAppsScriptUrl);
   const resolvedSheetId = resolveTargetSheetId(customSheetId);
   let appsScriptSent = false;
@@ -760,24 +788,28 @@ export async function pushBulkDataToGoogleSheets(
       ) {
         continue;
       }
-      const res = await postToAppsScriptWithServerProxy(resolvedUrl, {
-        action: 'bulk_sync',
-        spreadsheetId: resolvedSheetId,
-        sheetGid: PINNED_GOOGLE_SHEET_GID,
-        customSections: i === 0 ? activeSections : undefined,
-        data: {
-          citizens: citSlice,
-          requests: reqSlice,
-          interviews: intSlice,
-          officialLetters: letSlice,
-          cheques: chqSlice,
-          organizationRecords: orgSlice,
-          customRecords: cusSlice,
-          users: usrSlice
+      const res = await postToAppsScriptWithServerProxy(
+        resolvedUrl,
+        {
+          action: 'bulk_sync',
+          spreadsheetId: resolvedSheetId,
+          sheetGid: PINNED_GOOGLE_SHEET_GID,
+          customSections: i === 0 ? activeSections : undefined,
+          data: {
+            citizens: citSlice,
+            requests: reqSlice,
+            interviews: intSlice,
+            officialLetters: letSlice,
+            cheques: chqSlice,
+            organizationRecords: orgSlice,
+            customRecords: cusSlice,
+            users: usrSlice
+          },
+          timestamp: new Date().toISOString(),
+          source: silentBackground ? 'al_nashi_firestore_background_backup' : 'al_nashi_manual_backup'
         },
-        timestamp: new Date().toISOString(),
-        source: 'al_nashi_manual_backup'
-      });
+        { silentBackground }
+      );
       if (res.success) {
         appsScriptSent = true;
         chunksSent++;
@@ -789,7 +821,7 @@ export async function pushBulkDataToGoogleSheets(
       }
     }
 
-    if (!appsScriptSent && lastError) {
+    if (!silentBackground && !appsScriptSent && lastError) {
       pushCloudSyncAlert({
         severity: 'error',
         target: 'google_sheets',
@@ -800,8 +832,8 @@ export async function pushBulkDataToGoogleSheets(
     }
   }
 
-  // 2. Optional direct Google Sheets REST API append
-  if (resolvedSheetId && (citizensList.length > 0 || requestsList.length > 0)) {
+  // 2. Optional direct Google Sheets REST API append (manual backup only)
+  if (!silentBackground && resolvedSheetId && (citizensList.length > 0 || requestsList.length > 0)) {
     try {
       const token = await getAccessToken();
       if (token && !token.startsWith('ya29.al_nashi_session_') && !token.startsWith('ya29.al_nashi_dev_session_')) {

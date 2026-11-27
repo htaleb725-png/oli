@@ -623,7 +623,12 @@ export function toCleanSheetRequestPayload(r: Partial<OfficeRequest>): Record<st
     ReceptionNotes: receptionNotesVal,
     'ملاحظات الاستعلامات': receptionNotesVal,
     RejectionReason: rejectionReasonVal,
-    'سبب الرفض': rejectionReasonVal
+    'سبب الرفض': rejectionReasonVal,
+    pathType: cleanSheetCell(r.pathType || r.route || (r.DirectorDecision === 'خاص' ? 'private' : r.DirectorDecision === 'عام' ? 'public' : r.DirectorDecision === 'رفض' ? 'rejected' : '')),
+    route: cleanSheetCell(r.route || r.pathType || (r.DirectorDecision === 'خاص' ? 'private' : r.DirectorDecision === 'عام' ? 'public' : r.DirectorDecision === 'رفض' ? 'rejected' : '')),
+    department: cleanSheetCell(r.department || r.TargetDepartment || ''),
+    ArchivedAt: cleanSheetCell(r.ArchivedAt || r.archivedAt || ''),
+    ArchivedBy: cleanSheetCell(r.ArchivedBy || r.archivedBy || '')
   };
   return appendDynamicFieldsToPayload(r, base, ['ResidentialArea', 'DeputyNotes']);
 }

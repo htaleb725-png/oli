@@ -106,6 +106,7 @@ import {
 import { findBestArabicMatch } from '../utils/arabicNameMatcher';
 import { clearAllImagesFromDB } from '../utils/imageDb';
 import {
+  pushToGoogleSheetsRealtime,
   pushBulkDataToGoogleSheets,
   pullDataFromGoogleAppsScript,
   setRuntimeCloudConfig,
@@ -2415,7 +2416,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       updatedOthers.forEach(c => {
         emitServerMutation('citizens', 'upsert', { item: c });
-        fsSaveCitizen(c).catch(() => {});
+        fsSaveCitizen(c)
+          .then(() => {
+            const ctx = getCloudCtx();
+            void pushToGoogleSheetsRealtime('citizens', c, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+              backgroundBackup: true
+            }).catch(() => {});
+          })
+          .catch(() => {});
       });
     }
 
@@ -2437,7 +2445,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       updatedBlockedRequests.forEach(r => {
         emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([r])[0] || r });
-        fsSaveRequest(r).catch(() => {});
+        fsSaveRequest(r)
+          .then(() => {
+            const ctx = getCloudCtx();
+            void pushToGoogleSheetsRealtime('requests', r, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+              backgroundBackup: true
+            }).catch(() => {});
+          })
+          .catch(() => {});
       });
     }
 
@@ -2911,7 +2926,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             UpdatedAt: new Date().toISOString()
           };
           modifiedList.push(updated);
-          fsSaveRequest(updated).catch(() => {});
+          fsSaveRequest(updated)
+            .then(() => {
+              const ctx = getCloudCtx();
+              void pushToGoogleSheetsRealtime('requests', updated, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+                backgroundBackup: true
+              }).catch(() => {});
+            })
+            .catch(() => {});
           return updated;
         }
         return req;
@@ -3282,7 +3304,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setCitizens(prev => prev.map(c => c.Citizen_ID === citizenId ? updatedCitizen : c));
     emitServerMutation('citizens', 'upsert', { item: updatedCitizen });
-    fsSaveCitizen(updatedCitizen).catch(() => {});
+    fsSaveCitizen(updatedCitizen)
+      .then(() => {
+        const ctx = getCloudCtx();
+        void pushToGoogleSheetsRealtime('citizens', updatedCitizen, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        }).catch(() => {});
+      })
+      .catch(() => {});
 
     // Audit log
     addAuditLog('إحالة مسار المراجع', 'سلسلة الإحالات', `تمت إحالة المراجع ${cit.FullName} (${cit.Citizen_ID}) من [${fromStage}] إلى [${toStage}] - توجيه: ${directiveNote || 'متابعة وإجراء اللازم'}`);
@@ -3365,7 +3394,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setRequests(prev => prev.map(r => r.Request_ID === requestId ? updatedReq : r));
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
-    fsSaveRequest(updatedReq).catch(() => {});
+    fsSaveRequest(updatedReq)
+      .then(() => {
+        const ctx = getCloudCtx();
+        void pushToGoogleSheetsRealtime('requests', updatedReq, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+          backgroundBackup: true
+        }).catch(() => {});
+      })
+      .catch(() => {});
     addAuditLog('إحالة مسار طلب إداري', 'قسم الإدارة', `تمت إحالة الطلب ${requestId} إلى ${toStage}`);
   };
 
@@ -3492,19 +3528,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const sectionLabel = sectionKey ? getArchiveSectionLabel(sectionKey) : 'الأرشيف العام';
     const noteText = options.reason || `أرشفة مستقلة في (${sectionLabel}) — محفوظ بالكامل في قاعدة البيانات دون حذف`;
 
-    // Compute updated records SYNCHRONOUSLY from live refs
+    // Compute updated records SYNCHRONOUSLY from live refs (preserving ALL fields & routing metadata intact)
     const updatedCitizensMap = new Map<string, Citizen>();
     const updatedCitizensList: Citizen[] = [];
     if (targetCitIds.size > 0) {
       for (const c of citizensRef.current || []) {
         if (!c || !targetCitIds.has(c.Citizen_ID)) continue;
         if (sectionKey) {
-          // Independent per-section archiving: update ONLY archivedInSections / unarchivedInSections, NEVER touch global IsArchived
+          // Independent per-section archiving: update archivedInSections / unarchivedInSections & preserve all data
           const secFields = buildSectionArchivedFields(c, sectionKey);
           const nextCit: Citizen = {
             ...c,
             archivedInSections: secFields.archivedInSections,
             unarchivedInSections: secFields.unarchivedInSections,
+            ArchivedAt: c.ArchivedAt || formattedDate,
+            archivedAt: c.archivedAt || c.ArchivedAt || formattedDate,
+            ArchivedBy: c.ArchivedBy || actorName,
+            archivedBy: c.archivedBy || c.ArchivedBy || actorName,
             ArchiveNotes: c.ArchiveNotes || noteText,
             UpdatedAt: nowIso
           };
@@ -3515,7 +3555,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...c,
             IsArchived: true,
             ArchivedAt: c.ArchivedAt || formattedDate,
+            archivedAt: c.archivedAt || c.ArchivedAt || formattedDate,
             ArchivedBy: c.ArchivedBy || actorName,
+            archivedBy: c.archivedBy || c.ArchivedBy || actorName,
             ArchiveNotes: c.ArchiveNotes || noteText,
             UpdatedAt: nowIso
           };
@@ -3539,6 +3581,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...r,
           archivedInSections: secFields.archivedInSections,
           unarchivedInSections: secFields.unarchivedInSections,
+          ArchivedAt: r.ArchivedAt || formattedDate,
+          archivedAt: r.archivedAt || r.ArchivedAt || formattedDate,
+          ArchivedBy: r.ArchivedBy || actorName,
+          archivedBy: r.archivedBy || r.ArchivedBy || actorName,
           UpdatedAt: nowIso
         };
         updatedRequestsMap.set(nextReq.Request_ID, nextReq);
@@ -3548,6 +3594,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...r,
           IsArchived: true,
           ArchivedAt: r.ArchivedAt || formattedDate,
+          archivedAt: r.archivedAt || r.ArchivedAt || formattedDate,
+          ArchivedBy: r.ArchivedBy || actorName,
+          archivedBy: r.archivedBy || r.ArchivedBy || actorName,
           UpdatedAt: nowIso
         };
         (nextReq as any).archived = true;
@@ -3624,6 +3673,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }))
         ];
         await fsSaveSectionArchiveEntries(archiveEntries).catch(() => {});
+
+        // Non-blocking background backup to Google Apps Script (Code.gs 2026-DYNAMIC-V3) after Firestore succeeds
+        const ctx = getCloudCtx();
+        if (updatedCitizensList.length + updatedRequestsList.length <= 5) {
+          updatedCitizensList.forEach(cit => {
+            void pushToGoogleSheetsRealtime('citizens', cit, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+              backgroundBackup: true
+            }).catch(() => {});
+          });
+          updatedRequestsList.forEach(req => {
+            void pushToGoogleSheetsRealtime('requests', req, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+              backgroundBackup: true
+            }).catch(() => {});
+          });
+        } else {
+          void pushBulkDataToGoogleSheets(
+            updatedCitizensList,
+            updatedRequestsList,
+            ctx.appsScriptUrl,
+            ctx.googleSheetId,
+            { silentBackground: true }
+          ).catch(() => {});
+        }
       } catch (err) {
         console.error('Firestore per-section archive save error:', err);
       } finally {
@@ -3682,12 +3754,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedCitsMap.set(nextCit.Citizen_ID, nextCit);
         updatedCits.push(nextCit);
       } else {
+        // Restore to daily work while strictly preserving ALL citizen fields & archive audit history
         const nextCit: Citizen = {
           ...c,
           IsArchived: false,
           IsHistoricalImported: false,
-          ArchivedAt: undefined,
-          ArchiveCode: undefined,
           archivedInSections: [],
           UpdatedAt: nowIso
         };
@@ -3715,12 +3786,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedReqsMap.set(nextReq.Request_ID, nextReq);
         updatedReqs.push(nextReq);
       } else {
+        // Restore to daily work while strictly preserving ALL request, routing, and archive audit fields
         const nextReq: OfficeRequest = {
           ...r,
           IsArchived: false,
           IsHistoricalImported: false,
-          ArchivedAt: undefined,
-          ArchiveCode: undefined,
           archivedInSections: [],
           DirectorDecision: r.DirectorDecision === 'مؤرشف' ? undefined : r.DirectorDecision,
           UpdatedAt: nowIso
@@ -3771,6 +3841,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...updatedReqs.map(req => `${archiveDept}_request_${req.Request_ID}`)
         ];
         await fsDeleteSectionArchiveEntries(removeDocIds).catch(() => {});
+
+        // Non-blocking background backup to Google Apps Script (Code.gs 2026-DYNAMIC-V3) after Firestore succeeds
+        const ctx = getCloudCtx();
+        if (updatedCits.length + updatedReqs.length <= 5) {
+          updatedCits.forEach(cit => {
+            void pushToGoogleSheetsRealtime('citizens', cit, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+              backgroundBackup: true
+            }).catch(() => {});
+          });
+          updatedReqs.forEach(req => {
+            void pushToGoogleSheetsRealtime('requests', req, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+              backgroundBackup: true
+            }).catch(() => {});
+          });
+        } else {
+          void pushBulkDataToGoogleSheets(
+            updatedCits,
+            updatedReqs,
+            ctx.appsScriptUrl,
+            ctx.googleSheetId,
+            { silentBackground: true }
+          ).catch(() => {});
+        }
       } catch (err) {
         console.error('Firestore per-section restore save error:', err);
       } finally {
