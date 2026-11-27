@@ -247,7 +247,9 @@ export const AdminModule: React.FC = () => {
       // Director decisions counts (exclude historical Excel archive imports from pending queue)
       const isHist = Boolean(req.IsHistoricalImported || req.IsArchived || req.DirectorDecision === 'مؤرشف');
       const resolvedDec =
-        req.DirectorDecision === 'خاص' || req.pathType === 'private' || req.route === 'private'
+        req.DirectorDecision === 'حظر' || req.IsBlocked
+          ? 'حظر'
+          : req.DirectorDecision === 'خاص' || req.pathType === 'private' || req.route === 'private'
           ? 'خاص'
           : req.DirectorDecision === 'عام' || req.pathType === 'public' || req.route === 'public'
           ? 'عام'
@@ -255,7 +257,7 @@ export const AdminModule: React.FC = () => {
           ? 'رفض'
           : '';
       if (!isHist && !resolvedDec) directorPending++;
-      else if (resolvedDec === 'رفض') directorRejected++;
+      else if (resolvedDec === 'رفض' || resolvedDec === 'حظر') directorRejected++;
       else if (resolvedDec === 'خاص') directorSpecial++;
       else if (resolvedDec === 'عام') directorGeneral++;
     });
@@ -313,7 +315,9 @@ export const AdminModule: React.FC = () => {
 
       const isHist = Boolean(req.IsHistoricalImported || req.IsArchived || req.DirectorDecision === 'مؤرشف');
       const resolvedDec =
-        req.DirectorDecision === 'خاص' || req.pathType === 'private' || req.route === 'private'
+        req.DirectorDecision === 'حظر' || req.IsBlocked
+          ? 'حظر'
+          : req.DirectorDecision === 'خاص' || req.pathType === 'private' || req.route === 'private'
           ? 'خاص'
           : req.DirectorDecision === 'عام' || req.pathType === 'public' || req.route === 'public'
           ? 'عام'
@@ -324,7 +328,7 @@ export const AdminModule: React.FC = () => {
       if (directorDecisionFilter === 'pending') matchesDirector = !isHist && !resolvedDec;
       else if (directorDecisionFilter === 'special') matchesDirector = resolvedDec === 'خاص';
       else if (directorDecisionFilter === 'general') matchesDirector = resolvedDec === 'عام';
-      else if (directorDecisionFilter === 'rejected') matchesDirector = resolvedDec === 'رفض';
+      else if (directorDecisionFilter === 'rejected') matchesDirector = resolvedDec === 'رفض' || resolvedDec === 'حظر';
 
       const isDelivered = req.DeliveryStatus === 'مستلم' || req.RequestStatus === 'مستلم';
       const matchesDelivery =
@@ -368,16 +372,32 @@ export const AdminModule: React.FC = () => {
     setShowReferralModal(true);
   };
 
+  const openReferralForRequest = (req: OfficeRequest, cit?: Citizen) => {
+    setReferralTargetRequest(req);
+    setReferralTargetCitizen(cit || null);
+    setReferralStage('مدير التنظيم');
+    setReferralDirective(`تم تسليم الطلب (${req.Request_ID}) للمراجع (${req.CitizenName}) وضبط الحالة على «مستلم» وإحالته لقسم التنظيم للمتابعة الميدانية.`);
+    setShowReferralModal(true);
+  };
+
+  const isReferralRequestDelivered = referralTargetRequest
+    ? referralTargetRequest.DeliveryStatus === 'مستلم' || referralTargetRequest.RequestStatus === 'مستلم'
+    : true;
+  const isOrgReferralBlockedByDelivery =
+    referralStage === 'مدير التنظيم' && Boolean(referralTargetRequest) && !isReferralRequestDelivered;
+
   const handleConfirmReferral = () => {
-    if (referralTargetCitizen) {
-      forwardCitizenWorkflow(
-        referralTargetCitizen.Citizen_ID,
+    if (isOrgReferralBlockedByDelivery) return;
+
+    if (referralTargetRequest) {
+      forwardRequestWorkflow(
+        referralTargetRequest.Request_ID,
         referralStage,
         referralDirective.trim()
       );
-    } else if (referralTargetRequest) {
-      forwardRequestWorkflow(
-        referralTargetRequest.Request_ID,
+    } else if (referralTargetCitizen) {
+      forwardCitizenWorkflow(
+        referralTargetCitizen.Citizen_ID,
         referralStage,
         referralDirective.trim()
       );
@@ -1206,17 +1226,21 @@ export const AdminModule: React.FC = () => {
                     </tr>
                   ) : (
                     filteredRequests.slice(0, visibleRequestsLimit).map((req, idx) => {
+                      const linkedCit = citizenMap.get(req.Citizen_ID);
                       const isHistImported = Boolean(req.IsHistoricalImported || req.IsArchived || req.DirectorDecision === 'مؤرشف');
-                      const isPendingDirector = !isHistImported && !req.DirectorDecision;
+                      const isBlockedByDirector = Boolean(req.IsBlocked || linkedCit?.IsBlocked || req.DirectorDecision === 'حظر');
+                      const isPendingDirector = !isHistImported && !isBlockedByDirector && !req.DirectorDecision;
                       const isRejectedByDirector = req.DirectorDecision === 'رفض';
-                      const isSpecialDirector = req.DirectorDecision === 'خاص';
-                      const isGeneralDirector = req.DirectorDecision === 'عام';
+                      const isSpecialDirector = req.DirectorDecision === 'خاص' || req.pathType === 'private' || req.route === 'private';
+                      const isGeneralDirector = req.DirectorDecision === 'عام' || req.pathType === 'public' || req.route === 'public';
 
                       return (
                       <tr 
                         key={`${req.Request_ID}-${idx}`} 
                         className={`transition-colors border-b ${
-                          isPendingDirector
+                          isBlockedByDirector
+                            ? 'bg-red-100/90 dark:bg-red-950/60 hover:bg-red-100 border-r-4 border-r-red-900 border-red-300 dark:border-red-800'
+                            : isPendingDirector
                             ? 'bg-amber-50/90 dark:bg-amber-950/40 hover:bg-amber-100/80 border-r-4 border-r-amber-500 border-amber-200 dark:border-amber-800/60'
                             : isRejectedByDirector
                             ? 'bg-red-50/90 dark:bg-red-950/40 hover:bg-red-100/80 border-r-4 border-r-red-600 border-red-200 dark:border-red-800/60'
@@ -1236,7 +1260,7 @@ export const AdminModule: React.FC = () => {
                           <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono flex items-center gap-1.5 mt-0.5 flex-wrap">
                             <span>{req.Citizen_ID}</span>
                             {(() => {
-                              const cit = citizenMap.get(req.Citizen_ID);
+                              const cit = linkedCit;
                               const gender = cit?.Gender || 'ذكر';
                               const att = req.AttendanceType || cit?.AttendanceType || 'شخصياً';
                               const dep = req.DependencyStatus || cit?.DependencyStatus || 'مستقل';
@@ -1265,6 +1289,19 @@ export const AdminModule: React.FC = () => {
                         
                         {/* Director's Decision Status & Notes Column */}
                         <td className="p-3 min-w-[200px] max-w-xs">
+                          {isBlockedByDirector && (
+                            <div className="space-y-1 mb-1">
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-red-900 text-white shadow-2xs inline-flex items-center gap-1">
+                                <span>🚫 محظور (القائمة السوداء)</span>
+                              </span>
+                              {(req.BlockReason || linkedCit?.BlockReason) && (
+                                <div className="text-[10px] font-bold text-red-950 dark:text-red-200 bg-red-100 dark:bg-red-950/80 p-1.5 rounded-lg border border-red-300 dark:border-red-800 leading-relaxed">
+                                  سبب الحظر: {req.BlockReason || linkedCit?.BlockReason}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {isPendingDirector && (
                             <div className="space-y-1">
                               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-500 text-slate-950 shadow-2xs animate-pulse inline-flex items-center gap-1">
@@ -1432,13 +1469,13 @@ export const AdminModule: React.FC = () => {
                             <button
                               onClick={() => {
                                 const cit = citizens.find(c => c.Citizen_ID === req.Citizen_ID);
-                                if (cit) openReferralForCitizen(cit);
+                                openReferralForRequest(req, cit);
                               }}
                               className="px-2 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                              title="إحالة إلى مدير التنظيم"
+                              title="إحالة للتنظيم (بعد ضبط حالة الاستلام على مستلم)"
                             >
                               <SendHorizontal className="w-3 h-3" />
-                              <span>إحالة</span>
+                              <span>إحالة للتنظيم</span>
                             </button>
 
                             <button
@@ -1969,16 +2006,41 @@ export const AdminModule: React.FC = () => {
             </div>
 
             <div className="space-y-3 text-right">
-              {referralTargetCitizen && (
-                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs">
+              {(referralTargetRequest || referralTargetCitizen) && (
+                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-1">
                   <div className="flex justify-between">
                     <span className="text-slate-500">المراجع:</span>
-                    <strong className="text-slate-900 font-bold">{referralTargetCitizen.FullName}</strong>
+                    <strong className="text-slate-900 font-bold">
+                      {referralTargetRequest?.CitizenName || referralTargetCitizen?.FullName}
+                    </strong>
                   </div>
-                  <div className="flex justify-between mt-1">
-                    <span className="text-slate-500">الرقم التعريفي والسكن:</span>
-                    <span className="font-mono text-blue-700 font-bold">{referralTargetCitizen.Citizen_ID} - {referralTargetCitizen.District}</span>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">الرقم التعريفي:</span>
+                    <span className="font-mono text-blue-700 font-bold">
+                      {referralTargetRequest?.Request_ID ? `${referralTargetRequest.Request_ID} • ` : ''}
+                      {referralTargetRequest?.Citizen_ID || referralTargetCitizen?.Citizen_ID}
+                    </span>
                   </div>
+                  {referralTargetRequest && (
+                    <div className="flex justify-between items-center pt-1 border-t border-slate-200">
+                      <span className="text-slate-500">حالة الاستلام الحالية:</span>
+                      <span
+                        className={`px-2 py-0.5 rounded font-black text-[11px] ${
+                          isReferralRequestDelivered
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                            : 'bg-rose-100 text-rose-800 border border-rose-300'
+                        }`}
+                      >
+                        {isReferralRequestDelivered ? 'مستلم ✓' : 'غير مستلم'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {isOrgReferralBlockedByDelivery && (
+                <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs font-bold leading-relaxed">
+                  ⚠️ لإحالة هذه المعاملة وظهورها في قسم التنظيم، يجب أولاً ضبط حالة الاستلام على «مستلم» في جدول كافة المعاملات ثم إعادة الضغط على «إحالة للتنظيم».
                 </div>
               )}
 
@@ -2018,8 +2080,9 @@ export const AdminModule: React.FC = () => {
               </button>
               <button
                 type="button"
+                disabled={isOrgReferralBlockedByDelivery}
                 onClick={handleConfirmReferral}
-                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
+                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
               >
                 <SendHorizontal className="w-4 h-4" />
                 <span>تأكيد الإحالة الفورية</span>

@@ -164,6 +164,9 @@ export function sanitizeCitizenForFirestore(citizen: Citizen): Citizen & { updat
     copy.ArchivedBy = resolvedArchivedBy;
     copy.archivedBy = resolvedArchivedBy;
   }
+  if (typeof citizen.referredToOrganization === 'boolean') {
+    copy.referredToOrganization = citizen.referredToOrganization;
+  }
   // Keep IsArchived, archived, and الأرشفة flags synchronized in Firestore (never deleting or wiping audit metadata)
   if (typeof citizen.IsArchived === 'boolean') {
     copy.IsArchived = citizen.IsArchived;
@@ -265,6 +268,9 @@ export function sanitizeRequestForFirestore(req: OfficeRequest): OfficeRequest &
   if (resolvedArchivedBy) {
     copy.ArchivedBy = resolvedArchivedBy;
     copy.archivedBy = resolvedArchivedBy;
+  }
+  if (typeof req.referredToOrganization === 'boolean') {
+    copy.referredToOrganization = req.referredToOrganization;
   }
   // Keep IsArchived, archived, and الأرشفة flags synchronized without wiping audit or routing metadata
   if (typeof req.IsArchived === 'boolean') {
@@ -1949,6 +1955,7 @@ export interface FirestoreBlacklistEntry {
   FullName: string;
   normalizedName: string;
   Phone1?: string;
+  Phone2?: string;
   District?: string;
   BlockReason: string;
   BlockedAt: string;
@@ -1968,6 +1975,8 @@ export async function fsSaveBlacklistEntry(entry: FirestoreBlacklistEntry): Prom
       stripUndefinedProps({
         ...entry,
         Citizen_ID: safeId,
+        Phone1: clipStr(entry.Phone1, 50) || '',
+        Phone2: clipStr(entry.Phone2, 50) || '',
         normalizedName: normalizeArabicEntityKey(entry.FullName),
         IsBlocked: true,
         UpdatedAt: new Date().toISOString()

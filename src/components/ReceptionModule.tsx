@@ -358,14 +358,18 @@ export const ReceptionModule: React.FC = () => {
       Entity: newReqEntity,
       Details: newReqSubject.trim() + (newReqNotes ? ` [ملاحظات: ${newReqNotes.trim()}]` : ''),
       Priority: newReqPriority,
-      RequestStatus: 'مستلم',
+      RequestStatus: 'غير مستلم',
+      DeliveryStatus: 'غير مستلم',
       ProcessingStatus: 'قيد الإجراء',
+      CurrentStage: 'مدير المكتب',
       RegisteredVia: 'استعلامات',
       CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
       AttendanceType: citizenForNewRequest.AttendanceType,
       ProxyName: citizenForNewRequest.ProxyName,
       ProxyPhone: citizenForNewRequest.ProxyPhone,
-      ProxyAddress: citizenForNewRequest.ProxyAddress
+      ProxyAddress: citizenForNewRequest.ProxyAddress,
+      ReceptionNotes: newReqNotes.trim() || undefined,
+      referredToOrganization: false
     });
     setCitizenForNewRequest(null);
     setNewReqSubject('');
@@ -1089,8 +1093,10 @@ export const ReceptionModule: React.FC = () => {
         Entity: entityName,
         Details: details,
         Priority: req.priority,
-        RequestStatus: 'مستلم',
+        RequestStatus: 'غير مستلم',
+        DeliveryStatus: 'غير مستلم',
         ProcessingStatus: 'قيد الإجراء',
+        CurrentStage: 'مدير المكتب',
         RegisteredVia: 'استعلامات',
         CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
         AttendanceType: attendanceType,
@@ -1098,7 +1104,8 @@ export const ReceptionModule: React.FC = () => {
         ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
         ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
         ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
-        ReceptionNotes: req.notes?.trim() || notes.trim() || undefined
+        ReceptionNotes: req.notes?.trim() || notes.trim() || undefined,
+        referredToOrganization: false
       });
       addedMinistries.push(entityName);
       addedRequestsCount++;
@@ -1115,8 +1122,10 @@ export const ReceptionModule: React.FC = () => {
         Entity: defaultEntity,
         Details: details,
         Priority: 'عام',
-        RequestStatus: 'مستلم',
+        RequestStatus: 'غير مستلم',
+        DeliveryStatus: 'غير مستلم',
         ProcessingStatus: 'قيد الإجراء',
+        CurrentStage: 'مدير المكتب',
         RegisteredVia: 'استعلامات',
         CreatedBy: currentUser?.FullName || 'موظف الاستعلامات',
         AttendanceType: attendanceType,
@@ -1124,7 +1133,8 @@ export const ReceptionModule: React.FC = () => {
         ProxyPhone: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyPhone.trim() : undefined,
         ProxyAddress: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyAddress.trim() : undefined,
         ProxyRelation: attendanceType === 'بيد شخص آخر (معتمد)' ? proxyRelation.trim() : undefined,
-        ReceptionNotes: notes.trim() || undefined
+        ReceptionNotes: notes.trim() || undefined,
+        referredToOrganization: false
       });
       addedMinistries.push(defaultEntity);
       addedRequestsCount = 1;

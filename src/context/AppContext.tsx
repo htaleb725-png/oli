@@ -284,7 +284,7 @@ interface AppContextType {
   updateCitizen: (citizen: Citizen) => void;
   deleteCitizen: (citizenId: string) => void;
   findCitizenByIdOrName: (query: string) => Citizen[];
-  blockCitizen: (citizenId: string, reason: string, blockedBy?: string, fallbackInfo?: { FullName: string; Phone1?: string; District?: string }) => void;
+  blockCitizen: (citizenId: string, reason: string, blockedBy?: string, fallbackInfo?: { FullName: string; Phone1?: string; Phone2?: string; District?: string }) => void;
   unblockCitizen: (citizenId: string) => void;
   checkIfCitizenBlocked: (nameOrId: string, phone?: string) => { isBlocked: boolean; citizen?: Citizen; reason?: string };
 
@@ -1088,6 +1088,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               map.set(cid, {
                 ...existing,
                 IsBlocked: true,
+                Phone2: b.Phone2 || existing.Phone2,
                 BlockReason: b.BlockReason || existing.BlockReason || 'محظور من قبل الإدارة',
                 BlockedAt: b.BlockedAt || existing.BlockedAt,
                 BlockedBy: b.BlockedBy || existing.BlockedBy
@@ -1099,6 +1100,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               Citizen_ID: cid,
               FullName: b.FullName || 'مراجع محظور',
               Phone1: b.Phone1 || '',
+              Phone2: b.Phone2 || undefined,
               Gender: 'ذكر',
               District: b.District || 'الناصرية - المركز',
               SubDistrict: 'المركز',
@@ -2315,7 +2317,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     citizenId: string,
     reason: string,
     blockedBy?: string,
-    fallbackInfo?: { FullName: string; Phone1?: string; District?: string }
+    fallbackInfo?: { FullName: string; Phone1?: string; Phone2?: string; District?: string }
   ) => {
     const cleanId = (citizenId || '').trim().toLowerCase();
     const normStr = (s: string) =>
@@ -2344,6 +2346,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (existingCit) {
       targetCitizen = {
         ...existingCit,
+        Phone1: existingCit.Phone1 || (fallbackInfo?.Phone1 || '').trim(),
+        Phone2: existingCit.Phone2 || (fallbackInfo?.Phone2 || '').trim() || undefined,
         IsBlocked: true,
         BlockReason: cleanReason,
         BlockedAt: nowStamp,
@@ -2362,6 +2366,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         GreatGrandFatherName: nameParts.slice(3).join(' ') || '',
         FullName: fallbackInfo.FullName.trim(),
         Phone1: (fallbackInfo.Phone1 || '').trim(),
+        Phone2: (fallbackInfo.Phone2 || '').trim() || undefined,
         Gender: 'ذكر',
         District: (fallbackInfo.District || 'الناصرية - المركز').trim(),
         SubDistrict: 'المركز',
@@ -2381,9 +2386,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return next;
       });
       emitServerMutation('citizens', 'upsert', { item: targetCitizen });
-      fsSaveCitizen(targetCitizen).catch((err) => {
-        console.warn('Firestore manual block save:', err);
-      });
+      fsSaveCitizen(targetCitizen)
+        .then(() => {
+          const ctx = getCloudCtx();
+          void pushToGoogleSheetsRealtime('citizens', targetCitizen, 'insert', ctx.appsScriptUrl, ctx.googleSheetId, {
+            backgroundBackup: true
+          }).catch(() => {});
+        })
+        .catch((err) => {
+          console.warn('Firestore manual block save:', err);
+        });
     } else {
       console.warn('Citizen not found for blocking and no fallbackInfo provided:', citizenId);
       return;
@@ -2462,6 +2474,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       FullName: targetCitizen.FullName,
       normalizedName: targetCitizen.FullName,
       Phone1: targetCitizen.Phone1 || '',
+      Phone2: targetCitizen.Phone2 || '',
       District: targetCitizen.District || 'الناصرية - المركز',
       BlockReason: cleanReason,
       BlockedAt: nowStamp,
@@ -2716,6 +2729,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...reqData,
       Request_ID: candidate,
       CurrentStage: reqData.CurrentStage || (isFromReception ? 'مدير المكتب' : 'مدير الإدارة'),
+      referredToOrganization: reqData.referredToOrganization ?? false,
       IsHistoricalImported: reqData.IsHistoricalImported ?? false,
       IsArchived: reqData.IsArchived ?? false,
       IsDirectInstantRequest: reqData.IsDirectInstantRequest ?? false,
@@ -3295,9 +3309,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const updatedHistory = [newAction, ...(cit.WorkflowHistory || [])];
 
+    const actorLabel = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'النظام';
     const updatedCitizen: Citizen = {
       ...cit,
       CurrentStage: toStage,
+      referredToOrganization: toStage === 'مدير التنظيم' ? true : cit.referredToOrganization,
+      ReferredToOrganizationAt: toStage === 'مدير التنظيم' ? formattedDate : cit.ReferredToOrganizationAt,
+      ReferredToOrganizationBy: toStage === 'مدير التنظيم' ? actorLabel : cit.ReferredToOrganizationBy,
       WorkflowHistory: updatedHistory,
       UpdatedAt: now.toISOString()
     };
@@ -3322,7 +3340,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         title: `🏛️ إحالة مراجع إلى مدير المكتب: ${cit.FullName}`,
         message: `وارد استعلامات محال إلى مدير المكتب (${cit.Citizen_ID}) - ${cit.District} | ملاحظة: ${directiveNote || 'مراجعة وتوجيه'}`,
         type: 'urgent_request',
-        linkSection: 'director'
+        linkSection: 'director',
+        targetRoles: ['director', 'developer']
       });
     }
 
@@ -3332,11 +3351,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         title: `📋 إحالة معاملة إلى مدير الإدارة: ${cit.FullName}`,
         message: `تم توجيه ملف المراجع (${cit.Citizen_ID}) للإدارة لإعداد الكتاب الرسمي ومسح المستندات. التوجيه: ${directiveNote || 'إعداد كتاب ومتابعة'}`,
         type: 'urgent_request',
-        linkSection: 'admin'
+        linkSection: 'admin',
+        targetRoles: ['admin', 'admin_officer', 'developer']
       });
     }
 
-    // If referred to Organization
+    // If referred to Organization (explicit referral ONLY)
     if (toStage === 'مدير التنظيم') {
       const existingOrg = organizationRecords.find(o => o.Citizen_ID === citizenId);
       if (!existingOrg) {
@@ -3357,7 +3377,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         title: `👥 إحالة ملف تنظيمي وجماهيري: ${cit.FullName}`,
         message: `تمت إحالة المراجع (${cit.Citizen_ID}) إلى قسم التنظيم والجمهور للمتابعة الميدانية والانتخابية.`,
         type: 'urgent_request',
-        linkSection: 'organization'
+        linkSection: 'organization',
+        targetRoles: ['organization', 'organization_officer', 'director', 'developer']
       });
     }
   };
@@ -3367,32 +3388,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     toStage: WorkflowStage,
     directiveNote?: string
   ) => {
-    const req = requests.find(r => r.Request_ID === requestId);
+    const req = (requestsRef.current || requests).find(r => r.Request_ID === requestId);
     if (!req) return;
 
     const fromStage = req.CurrentStage || 'مدير الإدارة';
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const actorLabel = currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'النظام';
 
     const newAction: WorkflowAction = {
       id: `WF-REQ-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
       fromStage: fromStage,
       toStage: toStage,
-      fromUser: currentUser ? `${currentUser.FullName} (${currentUser.RoleArabic})` : 'النظام',
+      fromUser: actorLabel,
       actionDate: formattedDate,
       directiveNote: directiveNote || undefined,
       statusText: `تمت إحالة الطلب ${requestId} إلى ${toStage}`
     };
 
+    const isOrgReferral = toStage === 'مدير التنظيم';
     const updatedReq: OfficeRequest = {
       ...req,
       CurrentStage: toStage,
+      DeliveryStatus: isOrgReferral ? 'مستلم' : req.DeliveryStatus,
+      RequestStatus: isOrgReferral ? 'مستلم' : req.RequestStatus,
+      referredToOrganization: isOrgReferral ? true : req.referredToOrganization,
+      ReferredToOrganizationAt: isOrgReferral ? formattedDate : req.ReferredToOrganizationAt,
+      ReferredToOrganizationBy: isOrgReferral ? actorLabel : req.ReferredToOrganizationBy,
       WorkflowHistory: [newAction, ...(req.WorkflowHistory || [])],
       DeputyNotes: directiveNote ? (req.DeputyNotes ? `${req.DeputyNotes} | [${toStage}]: ${directiveNote}` : directiveNote) : req.DeputyNotes,
       UpdatedAt: now.toISOString()
     };
 
-    setRequests(prev => prev.map(r => r.Request_ID === requestId ? updatedReq : r));
+    setRequests(prev => {
+      const nextList = prev.map(r => r.Request_ID === requestId ? updatedReq : r);
+      requestsRef.current = nextList;
+      return nextList;
+    });
     emitServerMutation('requests', 'upsert', { item: sanitizeRequestsForStorage([updatedReq])[0] || updatedReq });
     fsSaveRequest(updatedReq)
       .then(() => {
@@ -3402,6 +3434,63 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }).catch(() => {});
       })
       .catch(() => {});
+
+    // When explicitly referred to Organization (after status = مستلم), also sync linked citizen & Organization queue
+    if (isOrgReferral) {
+      const linkedCit = (citizensRef.current || citizens).find(c => c.Citizen_ID === req.Citizen_ID);
+      if (linkedCit) {
+        const updatedCit: Citizen = {
+          ...linkedCit,
+          CurrentStage: 'مدير التنظيم',
+          referredToOrganization: true,
+          ReferredToOrganizationAt: formattedDate,
+          ReferredToOrganizationBy: actorLabel,
+          WorkflowHistory: [newAction, ...(linkedCit.WorkflowHistory || [])],
+          UpdatedAt: now.toISOString()
+        };
+        setCitizens(prev => {
+          const nextList = prev.map(c => c.Citizen_ID === linkedCit.Citizen_ID ? updatedCit : c);
+          citizensRef.current = nextList;
+          return nextList;
+        });
+        emitServerMutation('citizens', 'upsert', { item: updatedCit });
+        fsSaveCitizen(updatedCit)
+          .then(() => {
+            const ctx = getCloudCtx();
+            void pushToGoogleSheetsRealtime('citizens', updatedCit, 'update', ctx.appsScriptUrl, ctx.googleSheetId, {
+              backgroundBackup: true
+            }).catch(() => {});
+          })
+          .catch(() => {});
+      }
+
+      const existingOrg = organizationRecords.find(o => o.Citizen_ID === req.Citizen_ID);
+      if (!existingOrg && req.Citizen_ID) {
+        upsertOrgRecord({
+          Citizen_ID: req.Citizen_ID,
+          FullName: linkedCit?.FullName || req.CitizenName || 'مراجع',
+          District: linkedCit?.District || req.Address || 'الناصرية',
+          SubDistrict: linkedCit?.SubDistrict || req.ResidentialArea || 'المركز',
+          Phone1: linkedCit?.Phone1 || req.CitizenPhone || '',
+          OrgRating: 'مؤيد',
+          InfluenceType: 'وجيه منطقة',
+          EvaluationPoints: 85,
+          Notes: `إحالة من كافة المعاملات بعد الاستلام (${req.Request_ID}). ${directiveNote || 'متابعة تنظيمية وجماهيرية'}`
+        });
+      }
+
+      addNotification({
+        title: `👥 إحالة معاملة مستلمة للتنظيم: ${req.CitizenName}`,
+        message: `تم ضبط المعاملة (${req.Request_ID}) على حالة «مستلم» وإحالتها لقسم التنظيم — الجهة: ${req.Entity}${directiveNote ? ` | ملاحظة: ${directiveNote}` : ''}`,
+        type: 'urgent_request',
+        category: 'request',
+        priority: 'high',
+        linkSection: 'organization',
+        entityId: req.Request_ID,
+        targetRoles: ['organization', 'organization_officer', 'director', 'developer']
+      });
+    }
+
     addAuditLog('إحالة مسار طلب إداري', 'قسم الإدارة', `تمت إحالة الطلب ${requestId} إلى ${toStage}`);
   };
 

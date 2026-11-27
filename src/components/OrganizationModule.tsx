@@ -154,21 +154,37 @@ export const OrganizationModule: React.FC = () => {
     const archivedEntries: DailyWorkEntry[] = [];
     const seen = new Set<string>();
 
+    const isDeliveredAndReferredToOrg = (r?: OfficeRequest): boolean => {
+      if (!r) return false;
+      const isDelivered = r.DeliveryStatus === 'مستلم' || r.RequestStatus === 'مستلم';
+      const isReferred = Boolean(r.referredToOrganization) || r.CurrentStage === 'مدير التنظيم';
+      return isDelivered && isReferred;
+    };
+
     (citizens || []).forEach(cit => {
       if (!cit?.Citizen_ID || seen.has(cit.Citizen_ID)) return;
       seen.add(cit.Citizen_ID);
 
       const allCitReqs = requestsByCitizenId.get(cit.Citizen_ID) || [];
-      const isArchivedInOrg = isCitizenArchivedInSection(cit, 'organization', allCitReqs);
-      const citReqs = isArchivedInOrg
-        ? allCitReqs
-        : allCitReqs.filter(r => !isRequestArchivedInSection(r, 'organization'));
       const orgRec = orgRecordByCitizenId.get(cit.Citizen_ID);
 
-      const latestReq = citReqs[0];
+      // Strict isolation: NEVER auto-show Reception or Director->Admin records in Organization!
+      // Only show when a request is explicitly marked "مستلم" AND referred to Organization (or already has an explicit Organization record).
+      const referredDeliveredReqs = allCitReqs.filter(isDeliveredAndReferredToOrg);
+      if (referredDeliveredReqs.length === 0 && !orgRec) {
+        return;
+      }
+
+      const relevantReqs = referredDeliveredReqs.length > 0 ? referredDeliveredReqs : allCitReqs;
+      const isArchivedInOrg = isCitizenArchivedInSection(cit, 'organization', relevantReqs);
+      const citReqs = isArchivedInOrg
+        ? relevantReqs
+        : relevantReqs.filter(r => !isRequestArchivedInSection(r, 'organization'));
+
+      const latestReq = citReqs[0] || relevantReqs[0];
       const sortTs = Math.max(
-        parseTimestamp(latestReq?.UpdatedAt || latestReq?.CreatedAt),
-        parseTimestamp(cit.UpdatedAt || cit.CreatedAt),
+        parseTimestamp(latestReq?.ReferredToOrganizationAt || latestReq?.UpdatedAt || latestReq?.CreatedAt),
+        parseTimestamp(cit.ReferredToOrganizationAt || cit.UpdatedAt || cit.CreatedAt),
         parseTimestamp(orgRec?.finalEvaluation?.evaluatedAt)
       );
 

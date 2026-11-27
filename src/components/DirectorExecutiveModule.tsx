@@ -40,7 +40,8 @@ import {
   HeartHandshake,
   Archive,
   History,
-  RotateCcw
+  RotateCcw,
+  Ban
 } from 'lucide-react';
 import { CustomSectionsManager } from './developer/CustomSectionsManager';
 import { UsersAndPermissionsManager } from './developer/UsersAndPermissionsManager';
@@ -77,6 +78,7 @@ export const DirectorExecutiveModule: React.FC = () => {
     currentUser,
     addAuditLog,
     addNotification,
+    blockCitizen,
     archiveDailyWorkItems,
     restoreDailyWorkItem,
     restoreDailyWorkItems,
@@ -130,6 +132,18 @@ export const DirectorExecutiveModule: React.FC = () => {
   // Rejection Reason Modal & Prompt State
   const [rejectModalRequest, setRejectModalRequest] = useState<OfficeRequest | null>(null);
   const [rejectionReasonText, setRejectionReasonText] = useState<string>('');
+
+  // Director Block Citizen Modal State (القائمة السوداء والحظر من شاشة المدير)
+  const [blockModalRequest, setBlockModalRequest] = useState<OfficeRequest | null>(null);
+  const [blockReasonText, setBlockReasonText] = useState<string>('');
+
+  const PRESET_BLOCK_REASONS = [
+    'تجاوز وإساءة لفظية أو سلوكية تجاه كادر المكتب',
+    'تقديم معلومات أو مستمسكات غير صحيحة أو مزورة',
+    'تكرار المراجعة والطلبات الكيدية رغم حسم الموضوع سابقاً',
+    'إخلال بضوابط وتعليمات مكتب النائب',
+    'حظر إداري وأمني بقرار مباشر من مدير المكتب'
+  ];
 
   const PRESET_REJECTION_REASONS = [
     'عدم استيفاء الشروط والضوابط القانونية النافذة',
@@ -270,7 +284,8 @@ export const DirectorExecutiveModule: React.FC = () => {
     }, 4500);
   };
 
-  const resolveNormalizedDecision = (r: OfficeRequest): 'خاص' | 'عام' | 'رفض' | '' => {
+  const resolveNormalizedDecision = (r: OfficeRequest): 'خاص' | 'عام' | 'رفض' | 'حظر' | '' => {
+    if (r.DirectorDecision === 'حظر' || r.pathType === 'blocked' || r.route === 'blocked') return 'حظر';
     if (r.DirectorDecision === 'خاص' || r.pathType === 'private' || r.route === 'private') return 'خاص';
     if (r.DirectorDecision === 'عام' || r.pathType === 'public' || r.route === 'public') return 'عام';
     if (r.DirectorDecision === 'رفض' || r.pathType === 'rejected' || r.route === 'rejected') return 'رفض';
@@ -301,7 +316,7 @@ export const DirectorExecutiveModule: React.FC = () => {
         if (statusFilter === 'pending') return !dec;
         if (statusFilter === 'special') return dec === 'خاص';
         if (statusFilter === 'general') return dec === 'عام';
-        if (statusFilter === 'rejected') return dec === 'رفض';
+        if (statusFilter === 'rejected') return dec === 'رفض' || dec === 'حظر';
         if (statusFilter === 'all') return true;
         return !dec;
       });
@@ -319,7 +334,7 @@ export const DirectorExecutiveModule: React.FC = () => {
       if (!dec) pending++;
       else if (dec === 'خاص') special++;
       else if (dec === 'عام') general++;
-      else if (dec === 'رفض') rejected++;
+      else if (dec === 'رفض' || dec === 'حظر') rejected++;
     });
 
     return { total: activeDirectorRequests.length, pending, special, general, rejected };
@@ -340,7 +355,7 @@ export const DirectorExecutiveModule: React.FC = () => {
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const linkedCitizen = citizenMap.get(request.Citizen_ID);
 
-    const nextStage = decision === 'رفض' ? 'مكتمل' : 'مدير الإدارة';
+    const nextStage = decision === 'رفض' ? 'مدير الإدارة' : 'مدير الإدارة';
     const pathTypeValue = decision === 'خاص' ? 'private' : decision === 'عام' ? 'public' : 'rejected';
     const targetDeptValue =
       decision === 'خاص'
@@ -350,6 +365,7 @@ export const DirectorExecutiveModule: React.FC = () => {
         : (request.TargetDepartment || 'قسم الإدارة');
 
     // Preserve ALL existing citizen & request fields intact (never empty or lose any field!)
+    // Strictly route Director -> Admin (never auto-referring to Organization)
     const updatedRequest: OfficeRequest = {
       ...request,
       CitizenName: request.CitizenName || linkedCitizen?.FullName || 'مراجع',
@@ -371,6 +387,7 @@ export const DirectorExecutiveModule: React.FC = () => {
       DirectorDecisionDate: formattedDate,
       DirectorDecisionBy: currentUser ? `${currentUser.FullName} (مدير المكتب)` : 'مدير المكتب',
       CurrentStage: nextStage,
+      referredToOrganization: false,
       ProcessingStatus: decision === 'رفض' ? 'مرفوض' : (request.ProcessingStatus === 'قيد الإجراء' ? 'قيد التدقيق' : request.ProcessingStatus || 'قيد التدقيق'),
       DeputyNotes: decision === 'رفض'
         ? `[سبب الرفض من قبل مدير المكتب]: ${noteText.trim() || 'عدم استيفاء الشروط والضوابط'}`
@@ -382,7 +399,7 @@ export const DirectorExecutiveModule: React.FC = () => {
 
     updateRequest(updatedRequest);
 
-    // Advance linked Citizen workflow stage instantaneously so Admin & Reception trackers reflect Director's decision live
+    // Advance linked Citizen workflow stage to Admin (never Organization)
     if (linkedCitizen && linkedCitizen.CurrentStage !== nextStage) {
       updateCitizen({
         ...linkedCitizen,
@@ -423,6 +440,90 @@ export const DirectorExecutiveModule: React.FC = () => {
 
     setSavedFeedbackId(updatedRequest.Request_ID);
     setTimeout(() => setSavedFeedbackId(null), 3000);
+  };
+
+  // Handle Director Block action: saves to Firestore `blacklist`, updates `visitors` + `requests` (IsBlocked: true), notifies Admin & Reception, and syncs Google Sheets in background
+  const handleDirectorBlockCitizen = (request: OfficeRequest, explicitBlockReason: string) => {
+    const cleanReason =
+      explicitBlockReason.trim() ||
+      (directorNotesMap[request.Request_ID] || '').trim() ||
+      'حظر بقرار مباشر من مدير المكتب التنفيذي';
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const linkedCitizen = citizenMap.get(request.Citizen_ID);
+    const directorActor = currentUser ? `${currentUser.FullName} (مدير المكتب)` : 'مدير المكتب';
+
+    // 1. Add directly to Firestore `blacklist` + update citizen & matching requests + non-blocking Google Sheets backup
+    blockCitizen(
+      request.Citizen_ID,
+      cleanReason,
+      directorActor,
+      {
+        FullName: request.CitizenName || linkedCitizen?.FullName || 'مراجع',
+        Phone1: request.CitizenPhone || linkedCitizen?.Phone1 || '',
+        Phone2: linkedCitizen?.Phone2 || '',
+        District: linkedCitizen?.District || request.Address || 'الناصرية - المركز'
+      }
+    );
+
+    // 2. Forward the transaction to Admin with full fields preserved & marked blocked (isolated from Organization)
+    const updatedRequest: OfficeRequest = {
+      ...request,
+      CitizenName: request.CitizenName || linkedCitizen?.FullName || 'مراجع',
+      CitizenPhone: request.CitizenPhone || linkedCitizen?.Phone1 || '',
+      Address: request.Address || request.CitizenAddress || linkedCitizen?.District || '',
+      ResidentialArea: request.ResidentialArea || linkedCitizen?.ResidentialArea || linkedCitizen?.SubDistrict || '',
+      ReferralSource: request.ReferralSource || linkedCitizen?.ReferralSource || '',
+      Education: request.Education || linkedCitizen?.Education || '',
+      Job: request.Job || linkedCitizen?.Job || '',
+      Entity: request.Entity || 'غير محدد',
+      Details: request.Details || '',
+      IsBlocked: true,
+      BlockReason: cleanReason,
+      DirectorDecision: 'حظر',
+      pathType: 'blocked',
+      route: 'blocked',
+      department: 'قسم الإدارة',
+      TargetDepartment: 'قسم الإدارة',
+      CurrentStage: 'مدير الإدارة',
+      referredToOrganization: false,
+      ProcessingStatus: 'مرفوض',
+      DirectorNotes: cleanReason,
+      RejectionReason: cleanReason,
+      DirectorDecisionDate: formattedDate,
+      DirectorDecisionBy: directorActor,
+      DeputyNotes: `[قرار حظر من مدير المكتب]: ${cleanReason}`,
+      UpdatedAt: nowIso
+    };
+
+    updateRequest(updatedRequest);
+
+    // 3. Live Firestore notification to Admin & Reception
+    addNotification({
+      title: `🚫 حظر مراجع بقرار مدير المكتب: ${updatedRequest.CitizenName}`,
+      message: `تم إدراج المراجع (${updatedRequest.Citizen_ID}) في القائمة السوداء وحظر المعاملة (${updatedRequest.Request_ID}) — سبب الحظر: ${cleanReason}`,
+      type: 'director_decision',
+      category: 'director',
+      priority: 'urgent',
+      linkSection: 'admin',
+      entityId: updatedRequest.Request_ID,
+      targetRoles: ['admin', 'admin_officer', 'reception', 'reception_officer', 'developer']
+    });
+
+    addAuditLog(
+      'حظر مراجع (قرار مدير المكتب)',
+      'قسم مدير المكتب',
+      `تم حظر المواطن ${updatedRequest.CitizenName} (${updatedRequest.Citizen_ID}) وإدراجه في القائمة السوداء بسبب: ${cleanReason}`
+    );
+
+    setDecisionBanner({
+      id: updatedRequest.Request_ID,
+      name: updatedRequest.CitizenName,
+      decision: 'حظر (القائمة السوداء)'
+    });
+    setSavedFeedbackId(updatedRequest.Request_ID);
+    setTimeout(() => setSavedFeedbackId(null), 3500);
   };
 
   const handleSaveNotesOnly = (request: OfficeRequest) => {
@@ -1091,6 +1192,12 @@ export const DirectorExecutiveModule: React.FC = () => {
                               <span>معتمد مسار عام</span>
                             </span>
                           )}
+                          {(currentDecision === 'حظر' || cit?.IsBlocked || req.IsBlocked) && (
+                            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-red-900 text-white shadow-2xs flex items-center gap-1">
+                              <Ban className="w-3 h-3" />
+                              <span>محظور (القائمة السوداء)</span>
+                            </span>
+                          )}
                           {currentDecision === 'رفض' && (
                             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-red-600 text-white shadow-2xs flex items-center gap-1">
                               <XCircle className="w-3 h-3" />
@@ -1216,6 +1323,29 @@ export const DirectorExecutiveModule: React.FC = () => {
                           >
                             <XCircle className="w-3.5 h-3.5 shrink-0" />
                             <span>رفض الطلب</span>
+                          </button>
+
+                          {/* 3b. حظر وإدراج في القائمة السوداء */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBlockModalRequest(req);
+                              setBlockReasonText(
+                                directorNotesMap[req.Request_ID] ||
+                                req.BlockReason ||
+                                cit?.BlockReason ||
+                                ''
+                              );
+                            }}
+                            className={`flex-1 min-w-[68px] h-9 rounded-xl font-black text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95 border border-red-950/60 ${
+                              currentDecision === 'حظر' || cit?.IsBlocked || req.IsBlocked
+                                ? 'bg-red-950 text-white ring-2 ring-red-400 shadow-red-900/40'
+                                : 'bg-red-900 hover:bg-red-950 text-white'
+                            }`}
+                            title="حظر المواطن وإدراجه فوراً في القائمة السوداء وتعميم الحظر على كافة الأقسام"
+                          >
+                            <Ban className="w-3.5 h-3.5 shrink-0" />
+                            <span>حظر</span>
                           </button>
 
                           {/* 4. السجل التراكمي للمراجع */}
@@ -1636,6 +1766,93 @@ export const DirectorExecutiveModule: React.FC = () => {
         </div>
       )}
 
+      {/* Director Block Citizen Reason Modal (حظر وإدراج فوري في القائمة السوداء) */}
+      {blockModalRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs animate-in fade-in duration-200" dir="rtl">
+          <div className="bg-white dark:bg-slate-900 border-2 border-red-800/60 rounded-3xl p-5 sm:p-6 max-w-lg w-full shadow-2xl text-right space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-red-900 dark:text-red-400">
+                <Ban className="w-5 h-5 text-red-800 dark:text-red-400" />
+                <h3 className="font-black text-sm text-slate-900 dark:text-white">
+                  حظر المواطن وإدراجه في القائمة السوداء
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBlockModalRequest(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3 bg-red-950/10 dark:bg-red-950/40 rounded-2xl border border-red-800/30 space-y-1 text-xs">
+              <div className="flex items-center justify-between font-bold text-slate-800 dark:text-slate-200">
+                <span>المواطن: <strong className="text-red-900 dark:text-red-300">{blockModalRequest.CitizenName}</strong></span>
+                <span className="font-mono text-[11px] text-slate-500">{blockModalRequest.Citizen_ID}</span>
+              </div>
+              <div className="text-[11px] text-slate-600 dark:text-slate-400">
+                الهاتف: <span className="font-mono font-bold">{blockModalRequest.CitizenPhone || citizenMap.get(blockModalRequest.Citizen_ID)?.Phone1 || 'غير مسجل'}</span>
+                {' • '}
+                الطلب: <span className="font-mono">{blockModalRequest.Request_ID}</span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-black text-slate-800 dark:text-slate-200">
+                سبب الحظر (سيظهر كتحذير فوري في الاستعلامات والإدارة وكافة الأقسام) *
+              </label>
+              <textarea
+                value={blockReasonText}
+                onChange={(e) => setBlockReasonText(e.target.value)}
+                placeholder="اكتب سبب الحظر بدقة..."
+                rows={3}
+                className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-white focus:outline-none focus:border-red-800"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="text-[10px] font-bold text-slate-500 block">أسباب حظر جاهزة للاختيار السريع:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {PRESET_BLOCK_REASONS.map((reason, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setBlockReasonText(reason)}
+                    className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-red-100 hover:text-red-900 dark:hover:bg-red-950 text-slate-700 dark:text-slate-300 transition-colors border border-slate-200 dark:border-slate-700 cursor-pointer"
+                  >
+                    + {reason}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setBlockModalRequest(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                إلغاء وتراجع
+              </button>
+              <button
+                type="button"
+                disabled={!blockReasonText.trim()}
+                onClick={() => {
+                  handleDirectorBlockCitizen(blockModalRequest, blockReasonText.trim());
+                  setBlockModalRequest(null);
+                  setBlockReasonText('');
+                }}
+                className="px-5 py-2 rounded-xl bg-red-900 hover:bg-red-950 disabled:opacity-50 text-white font-black text-xs flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-95"
+              >
+                <Ban className="w-4 h-4 text-white" />
+                <span>تأكيد الحظر وإدراجه بالقائمة السوداء</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Permanent Delete Confirmation Dialog for Director: Request */}
       {requestToDelete && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1679,7 +1896,18 @@ export const DirectorExecutiveModule: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  deleteRequest(requestToDelete.Request_ID);
+                  const deletedInfo = requestToDelete;
+                  deleteRequest(deletedInfo.Request_ID);
+                  addNotification({
+                    title: `🗑️ حذف معاملة بقرار مدير المكتب: ${deletedInfo.CitizenName}`,
+                    message: `قام مدير المكتب بحذف الطلب (${deletedInfo.Request_ID}) نهائياً من قاعدة البيانات.`,
+                    type: 'director_decision',
+                    category: 'director',
+                    priority: 'high',
+                    linkSection: 'admin',
+                    entityId: deletedInfo.Request_ID,
+                    targetRoles: ['admin', 'admin_officer', 'developer']
+                  });
                   setRequestToDelete(null);
                 }}
                 className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-600/25 active:scale-95"

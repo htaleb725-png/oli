@@ -150,6 +150,9 @@ export interface Citizen {
   archivedBy?: string;   // الموظف الذي قام بالأرشفة (حقل موحد واضح)
   department?: string;   // القسم المختص (حقل موحد واضح)
   status?: string;       // الحالة الحالية (حقل موحد واضح)
+  referredToOrganization?: boolean;   // هل تمت إحالة المراجع صراحةً إلى قسم التنظيم بعد الاستلام
+  ReferredToOrganizationAt?: string;  // تاريخ الإحالة إلى التنظيم
+  ReferredToOrganizationBy?: string;  // الموظف الذي أحال المعاملة للتنظيم
   archivedInSections?: string[];   // أرشفة مستقلة لكل قسم (مثل: reception, director, admin, organization)
   unarchivedInSections?: string[]; // استرجاع مستقل لكل قسم لسجلات الأرشيف/المسترد
   UpdatedAt?: string;
@@ -234,6 +237,9 @@ export interface OfficeRequest {
   DeliveredAt?: string;   // تاريخ استلام الطلب من قبل المراجع
   DeliveredBy?: string;   // الموظف الذي وثّق تسليم الطلب
   TargetDepartment?: string; // القسم المخصص الذي تنزل فيه المعاملة (admin, social_care, interviews, reception, organization, أو معرف قسم مخصص)
+  referredToOrganization?: boolean;   // لا تظهر المعاملة في قسم التنظيم إلا بعد ضبطها مستلم + إحالة للتنظيم
+  ReferredToOrganizationAt?: string;  // تاريخ ووقت الإحالة الصريحة للتنظيم
+  ReferredToOrganizationBy?: string;  // اسم الموظف الذي أحال المعاملة للتنظيم
   SerialNumber?: string;  // التسلسل الأصلي في ملف الإكسل
   IsDirectInstantRequest?: boolean; // طلب إداري فوري مباشر (بدون إشعارات ودون تسجيل في القسم الرقابي)
   archivedInSections?: string[];    // أرشفة مستقلة لكل قسم (مثل: reception, director, admin, organization)
